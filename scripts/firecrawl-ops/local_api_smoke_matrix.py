@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -484,12 +485,13 @@ def write_artifacts(ctx: SmokeContext) -> tuple[Path, Path]:
     skipped = sum(1 for item in ctx.results if item.status == "skip")
     summary = {
         "timestamp": stamp,
+        "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "api_url": ctx.api_url,
         "parse_file": str(ctx.parse_file),
         "counts": {"pass": passed, "fail": failed, "skip": skipped},
         "results": [result_to_dict(item) for item in ctx.results],
     }
-    json_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
+    json_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     lines = [
         "# Local Firecrawl API Smoke Matrix",

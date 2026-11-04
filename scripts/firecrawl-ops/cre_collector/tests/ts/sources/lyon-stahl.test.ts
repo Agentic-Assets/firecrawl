@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { brokers, resetBrokerStateForTests } from "../../../lib/broker.js";
 import {
   assertLyonStahlUniqueProviderIds,
   classifyLyonStahlAvailability,
   lyonStahlAssetUrl,
   lyonStahlFetchText,
+  lyonStahlPacedFetch,
   lyonStahlPropertySitemaps,
   lyonStahlPropertyUrls,
   lyonStahlProviderIdentity,
@@ -19,6 +20,142 @@ type LyonFixtureOptions = {
   availability?: string | null;
   name?: string;
 };
+
+async function withLyonClock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+  t.mock.method(performance, "now", () => Date.now());
+  let settled = false;
+  const result = run();
+  void result.then(() => { settled = true; }, () => { settled = true; });
+  for (let tick = 0; !settled && tick < 2_000; tick++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (!settled) t.mock.timers.tick(250);
+  }
+  assert.ok(settled, "bounded fake-clock source must settle");
+  return result;
+}
+
+test("Lyon actual source spaces sitemap, concurrent detail, redirect and retry starts", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const starts: number[] = [];
+  const calls = new Map<string, number>();
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    starts.push(Date.now());
+    const count = (calls.get(url) ?? 0) + 1;
+    calls.set(url, count);
+    if (url.endsWith("/sitemap.xml")) return new Response("", { status: 301, headers: { location: "/sitemap_index.xml" } });
+    if (url.endsWith("/sitemap_index.xml")) return new Response(`<sitemapindex><sitemap><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></sitemap><sitemap><loc>https://lyonstahl.com/properties-sitemap2.xml</loc></sitemap></sitemapindex>`);
+    if (url.includes("properties-sitemap")) {
+      if (url.endsWith("1.xml") && count === 1) return new Response("unavailable", { status: 502 });
+      const slug = url.endsWith("1.xml") ? "one" : "two";
+      return new Response(`<urlset><url><loc>https://lyonstahl.com/properties/${slug}/</loc></url></urlset>`);
+    }
+    return new Response(lyonFixture({ id: url.endsWith("one/") ? "50001" : "50002", path: url.endsWith("one/") ? "one" : "two" }), { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const result = await withLyonClock(t, () => srcLyonStahl("sale", Infinity, false));
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.truncated, false);
+  assert.equal(starts.length, 7);
+  for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= 10_000, `physical starts ${i - 1}/${i} must be separated`);
+});
+
+test("Lyon start gate shares spacing without serializing responses or adding elapsed delay", async (t) => {
+  await withLyonClock(t, async () => {
+    const starts: number[] = [];
+    let finishFirst!: (response: Response) => void;
+    const paced = lyonStahlPacedFetch(async () => {
+      starts.push(Date.now());
+      return starts.length === 1 ? new Promise<Response>((resolve) => { finishFirst = resolve; }) : new Response("ok");
+    });
+    const first = paced("first");
+    const second = paced("second");
+    await second;
+    assert.deepEqual(starts, [100_000, 110_000]);
+    finishFirst(new Response("first"));
+    await first;
+    t.mock.timers.tick(15_000);
+    await paced("third");
+    assert.equal(starts[2], 125_000, "elapsed interval must not add another ten seconds");
+  });
+});
+
+test("Lyon aborted queued start never dispatches or poisons the following start", async (t) => {
+  await withLyonClock(t, async () => {
+    const calls: string[] = [];
+    const starts: number[] = [];
+    const paced = lyonStahlPacedFetch(async (url, init) => {
+      assert.equal(init?.signal?.aborted ?? false, false);
+      calls.push(String(url)); starts.push(Date.now());
+      return new Response("ok");
+    });
+    await paced("first");
+    const controller = new AbortController();
+    const aborted = assert.rejects(paced("cancelled", { signal: controller.signal }), /cancelled/);
+    setTimeout(() => controller.abort(new Error("cancelled")), 5_000);
+    const following = paced("following");
+    await Promise.all([aborted, following]);
+    assert.deepEqual(calls, ["first", "following"]);
+    assert.deepEqual(starts, [100_000, 110_000]);
+    await assert.rejects(paced("already-aborted", { signal: AbortSignal.abort(new Error("pre-aborted")) }), /pre-aborted/);
+    assert.equal(calls.length, 2);
+  });
+});
+
+test("Lyon forward wall-clock adjustment cannot shorten physical start spacing", async (t) => {
+  await withLyonClock(t, async () => {
+    let wallCorrection = 0;
+    t.mock.method(performance, "now", () => Date.now() - wallCorrection);
+    const monotonicStarts: number[] = [];
+    const paced = lyonStahlPacedFetch(async () => {
+      monotonicStarts.push(performance.now());
+      return new Response("ok");
+    });
+    await paced("before-wall-jump");
+    wallCorrection = 60_000;
+    t.mock.timers.setTime(160_000);
+    await paced("after-wall-jump");
+    assert.deepEqual(monotonicStarts, [100_000, 110_000]);
+  });
+});
+
+test("Lyon fail-fast refusals preserve request spacing and a usable start queue", async (t) => {
+  await withLyonClock(t, async () => {
+    const starts: number[] = [];
+    const paced = lyonStahlPacedFetch(async () => {
+      starts.push(Date.now());
+      if (starts.length === 1) {
+        throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    await assert.rejects(lyonStahlFetchText("https://lyonstahl.com/properties/failure/", "html", paced), /HTTP 404/);
+    assert.deepEqual(starts, [100_000, 110_000]);
+    await paced("next");
+    assert.deepEqual(starts, [100_000, 110_000, 120_000]);
+    await assert.rejects(lyonStahlFetchText("http://foreign.example/", "html", paced, 60_000, 100, 1), /unsafe/);
+    assert.equal(starts.length, 3, "URL refusal must not reserve a physical request");
+  });
+});
+
+test("Lyon existing attempt timeout prevents expired queued physical requests", async (t) => {
+  await withLyonClock(t, async () => {
+    const starts: number[] = [];
+    const paced = lyonStahlPacedFetch(async (_url, init) => {
+      assert.equal(init?.signal?.aborted ?? false, false);
+      starts.push(Date.now());
+      return new Response("ok", { headers: { "content-type": "text/html" } });
+    });
+    const outcomes = await Promise.allSettled(Array.from({ length: 8 }, (_, index) =>
+      lyonStahlFetchText(`https://lyonstahl.com/properties/queued-${index}/`, "html", paced, 60_000, 100, 1)));
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 6);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 2);
+    assert.deepEqual(starts, [100_000, 110_000, 120_000, 130_000, 140_000, 150_000]);
+    await paced("after-timeout");
+    assert.equal(starts.at(-1), 160_000);
+  });
+});
 
 function lyonFixture(options: LyonFixtureOptions = {}): string {
   const id = options.id ?? "39858";
@@ -145,6 +282,81 @@ test("Lyon Stahl sitemap parsers keep only numbered same-host property sitemaps 
   );
 });
 
+// First three locs from the retained primary shard (SHA256 c37dd421d712d8b5e1ecf5281e28cc46e4b32219e11ed39cc0759aecbfc931e4).
+// Detail HTML below remains synthetic; these URLs do not assert provider IDs/status.
+const archiveAndDetailsSitemap = `
+  <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://lyonstahl.com/properties/</loc><lastmod>2026-04-17T18:00:05+00:00</lastmod></url>
+    <url><loc>https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/</loc><lastmod>2026-04-17T18:00:05+00:00</lastmod></url>
+    <url><loc>https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/</loc><lastmod>2026-04-17T17:58:04+00:00</lastmod></url>
+  </urlset>`;
+
+test("Lyon Stahl excludes the observed exact listing archive while retaining its detail members", () => {
+  assert.deepEqual(lyonStahlPropertyUrls(archiveAndDetailsSitemap), [
+    "https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/",
+    "https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/",
+  ]);
+});
+
+test("Lyon Stahl refuses archive-only or empty detail snapshots", () => {
+  assert.throws(
+    () => lyonStahlPropertyUrls("<urlset><url><loc>https://lyonstahl.com/properties/</loc></url></urlset>"),
+    /no valid detail URL/
+  );
+  assert.throws(() => lyonStahlPropertyUrls("<urlset/>"), /url child/);
+});
+
+test("Lyon Stahl archive exclusion never hides another invalid sitemap member", () => {
+  for (const invalid of [
+    "https://example.com/properties/",
+    "https://www.lyonstahl.com/properties/",
+    "https://lyonstahl.com/properties",
+    "https://lyonstahl.com/properties/?preview=1",
+    "https://lyonstahl.com/properties/#listing",
+    "https://user@lyonstahl.com/properties/",
+    "https://lyonstahl.com/properties/nested/detail/",
+    "https://lyonstahl.com/team/",
+    "https://lyonstahl.com/properties/brochure.pdf",
+    "https://lyonstahl.com:bad/properties/",
+  ]) {
+    assert.throws(
+      () => lyonStahlPropertyUrls(`<urlset>
+        <url><loc>https://lyonstahl.com/properties/</loc></url>
+        <url><loc>https://lyonstahl.com/properties/valid/</loc></url>
+        <url><loc>${invalid}</loc></url>
+      </urlset>`),
+      /URL 2 is invalid/
+    );
+  }
+});
+
+test("Lyon Stahl source fetches details but never the archive member", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  const responses = new Map<string, string>([
+    ["https://lyonstahl.com/sitemap.xml", "<sitemapindex><sitemap><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></sitemap></sitemapindex>"],
+    ["https://lyonstahl.com/properties-sitemap1.xml", archiveAndDetailsSitemap],
+    ["https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/", lyonFixture()],
+    ["https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/", lyonFixture({ id: "40000", path: "2536-atlantic-ave-long-beach-ca-90806" })],
+  ]);
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    assert.ok(responses.has(url), `unexpected source request: ${url}`);
+    return new Response(responses.get(url), {
+      headers: { "content-type": url.endsWith(".xml") ? "application/xml" : "text/html" },
+    });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const result = await withLyonClock(t, () => srcLyonStahl("sale", Infinity, false));
+  assert.equal(result.totalAvailable, 2);
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.listings.map((row) => row.id).sort(), ["2536-atlantic-ave-long-beach-ca-90806", "6789-sabado-tarde-rd-goleta-ca-93117"]);
+  assert.deepEqual(result.listings.map((row) => row.lyonStahlPostId).sort(), ["39858", "40000"]);
+  assert.deepEqual(requests.slice().sort(), [...responses.keys()].sort());
+  assert.equal(requests.includes("https://lyonstahl.com/properties/"), false);
+});
+
 test("Lyon Stahl sitemap parsing rejects malformed structure, unsafe URLs, and empty property snapshots", () => {
   assert.throws(
     () => lyonStahlPropertySitemaps("<urlset><url><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></url></urlset>"),
@@ -228,10 +440,10 @@ test("Lyon Stahl asset URLs preserve benign queries and reject unsafe or sensiti
 
 test("Lyon Stahl emitted provider IDs must be unique", () => {
   assert.doesNotThrow(() =>
-    assertLyonStahlUniqueProviderIds([{ id: "1" }, { id: "2" }])
+    assertLyonStahlUniqueProviderIds([{ id: "first", lyonStahlPostId: "1" }, { id: "second", lyonStahlPostId: "2" }])
   );
   assert.throws(
-    () => assertLyonStahlUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertLyonStahlUniqueProviderIds([{ id: "first", lyonStahlPostId: "1" }, { id: "second", lyonStahlPostId: "1" }]),
     /duplicate provider ID 1/
   );
 });
@@ -377,7 +589,7 @@ test("Lyon Stahl rejects the run when any indexed property sitemap has no valid 
     globalThis.fetch = originalFetch;
   });
   await assert.rejects(
-    () => srcLyonStahl("sale", Infinity, false),
+    () => withLyonClock(t, () => srcLyonStahl("sale", Infinity, false)),
     /properties-sitemap2\.xml is invalid/
   );
 });
@@ -444,7 +656,8 @@ test("Lyon Stahl parser maps current rich JSON-LD with stable identity and prove
   });
   assert.equal(outcome.kind, "accepted");
   if (outcome.kind !== "accepted") return;
-  assert.equal(outcome.listing.id, "39858");
+  assert.equal(outcome.listing.id, "6789-sabado-tarde-rd-goleta-ca-93117");
+  assert.equal(outcome.listing.lyonStahlPostId, "39858");
   assert.equal(outcome.listing.transactionType, "Sale");
   assert.equal(outcome.listing.street, "6789 Sabado Tarde Rd");
   assert.equal(outcome.listing.city, "Goleta");
@@ -541,7 +754,7 @@ test("Lyon Stahl parser excludes terminal rows and holds missing or novel availa
   );
 });
 
-test("Lyon Stahl lease pass is explicitly empty and performs no network calls", async (t) => {
+test("Lyon Stahl lease acquisition is explicitly incomplete and performs no network calls", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = (async () => {
@@ -553,7 +766,8 @@ test("Lyon Stahl lease pass is explicitly empty and performs no network calls", 
   });
 
   const result = await srcLyonStahl("lease", Infinity, false);
-  assert.equal(result.totalAvailable, 0);
+  assert.equal(result.totalAvailable, null);
+  assert.equal(result.truncated, true);
   assert.deepEqual(result.listings, []);
   assert.equal(calls, 0);
 });
@@ -616,13 +830,103 @@ test("Lyon Stahl source holds unknown availability, marks coverage incomplete, a
     globalThis.fetch = originalFetch;
   });
 
-  const result = await srcLyonStahl("sale", Infinity, false);
+  const result = await withLyonClock(t, () => srcLyonStahl("sale", Infinity, false));
   assert.equal(result.totalAvailable, 2);
   assert.equal(result.listings.length, 1);
-  assert.equal(result.listings[0].id, "40001");
+  assert.equal(result.listings[0].id, "active-sale");
+  assert.equal(result.listings[0].lyonStahlPostId, "40001");
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /1 detail page\(s\) held/);
   assert.equal(calls.some((url) => /\.pdf(?:$|[?#])/i.test(url)), false);
+});
+
+test("Lyon Stahl reports detail acquisition failures separately from parser rejects", async (t) => {
+  resetBrokerStateForTests();
+  const originalFetch = globalThis.fetch;
+  const acceptedUrl = "https://lyonstahl.com/properties/accepted/";
+  const identityRejectUrl = "https://lyonstahl.com/properties/identity-reject/";
+  const parserExceptionUrl = "https://lyonstahl.com/properties/parser-exception/";
+  const heldUrl = "https://lyonstahl.com/properties/held/";
+  const terminalUrl = "https://lyonstahl.com/properties/terminal/";
+  const notFoundUrl = "https://lyonstahl.com/properties/not-found/";
+  const rateLimitedUrl = "https://lyonstahl.com/properties/rate-limited/";
+  const details = new Map<string, string>([
+    [acceptedUrl, lyonFixture({ id: "42001", path: "accepted", name: "Accepted" })],
+    [
+      identityRejectUrl,
+      lyonFixture({ id: "42002", path: "identity-reject", name: "Identity Reject" })
+        .replace(
+          'href="https://lyonstahl.com/properties/identity-reject/"',
+          'href="https://lyonstahl.com/properties/not-this-listing/"'
+        ),
+    ],
+    [
+      parserExceptionUrl,
+      lyonFixture({ id: "42007", path: "parser-exception", name: "Parser Exception" })
+        .replace('"price": "1800000"', '"price": {"toString": null}'),
+    ],
+    [
+      heldUrl,
+      lyonFixture({
+        id: "42003",
+        path: "held",
+        name: "Held",
+        availability: "https://schema.org/BackOrder",
+      }),
+    ],
+    [
+      terminalUrl,
+      lyonFixture({
+        id: "42004",
+        path: "terminal",
+        name: "Terminal",
+        availability: "https://schema.org/SoldOut",
+      }),
+    ],
+  ]);
+  const sitemap = `<urlset>${[
+    acceptedUrl,
+    identityRejectUrl,
+    parserExceptionUrl,
+    heldUrl,
+    terminalUrl,
+    notFoundUrl,
+    rateLimitedUrl,
+  ].map((url) => `<url><loc>${url}</loc></url>`).join("")}</urlset>`;
+  const calls = new Map<string, number>();
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.set(url, (calls.get(url) ?? 0) + 1);
+    if (url === "https://lyonstahl.com/sitemap.xml") {
+      return new Response(
+        `<sitemapindex><sitemap><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></sitemap></sitemapindex>`,
+        { headers: { "content-type": "application/xml" } }
+      );
+    }
+    if (url === "https://lyonstahl.com/properties-sitemap1.xml") {
+      return new Response(sitemap, { headers: { "content-type": "application/xml" } });
+    }
+    if (url === notFoundUrl) return new Response("not found", { status: 404 });
+    if (url === rateLimitedUrl) return new Response("rate limited", { status: 429 });
+    const body = details.get(url);
+    assert.ok(body, `unexpected source request: ${url}`);
+    return new Response(body, { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const result = await withLyonClock(t, () => srcLyonStahl("sale", Infinity, false));
+
+  assert.equal(result.totalAvailable, 7);
+  assert.deepEqual(result.listings.map((listing) => listing.id), ["accepted"]);
+  assert.equal(result.truncated, true);
+  assert.match(result.note ?? "", /1 detail page\(s\) held for unknown availability/);
+  assert.match(result.note ?? "", /1 terminal detail page\(s\) excluded/);
+  assert.match(result.note ?? "", /2 detail page\(s\) failed identity or structure validation/);
+  assert.match(result.note ?? "", /2 detail page\(s\) failed acquisition/);
+  assert.equal(calls.get(notFoundUrl), 1);
+  assert.equal(calls.get(rateLimitedUrl), 3);
 });
 
 test("Lyon Stahl source rejects duplicate emitted shortlink IDs across different property URLs", async (t) => {
@@ -655,7 +959,7 @@ test("Lyon Stahl source rejects duplicate emitted shortlink IDs across different
     globalThis.fetch = originalFetch;
   });
   await assert.rejects(
-    () => srcLyonStahl("sale", Infinity, false),
+    () => withLyonClock(t, () => srcLyonStahl("sale", Infinity, false)),
     /duplicate provider ID 41001/
   );
 });

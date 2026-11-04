@@ -4,7 +4,7 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as cheerio from "cheerio";
 import {
   colliersUrl,
@@ -31,6 +31,9 @@ import {
   colliersStrandedDocs,
   colliersStrandedMedia,
   colliersStrandedStructured,
+  srcColliers,
+  colliersAverageUnitSf,
+  enrichColliersCard,
 } from "../../../sources/colliers.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
@@ -39,10 +42,7 @@ import { parseLeaseRate } from "../../../lib/parse.js";
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-const FIXTURE_PATH = join(
-  new URL(".", import.meta.url).pathname,
-  "../../fixtures/raw_data/colliers.json"
-);
+const FIXTURE_PATH = fileURLToPath(new URL("../../fixtures/raw_data/colliers.json", import.meta.url));
 
 function loadFixture(): any[] {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
@@ -54,6 +54,53 @@ function fixtureFor(sourceKey: string): any {
   const entry = fixtures.find((f: any) => f.sourceKey === sourceKey);
   if (!entry) throw new Error(`No fixture for sourceKey=${sourceKey}`);
   return entry.raw_data;
+}
+
+function syntheticSalesTrackerPage(projectIds: string[], start: number) {
+  const html = `<ul>${projectIds
+    .map((id) => `<li class="item"><a class="headline">Property ${id}</a></li>`)
+    .join("")}</ul>`;
+  return {
+    list: {
+      success: true,
+      total: 4,
+      totalAvail: 4,
+      numProjects: projectIds.length,
+      html,
+    },
+    map: {
+      success: true,
+      projectLocations: projectIds.map((ProjectId, index) => ({
+        ProjectId,
+        Latitude: 30 + start + index,
+        Longitude: -90 - start - index,
+      })),
+    },
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function requestUrl(input: RequestInfo | URL): URL {
+  if (input instanceof Request) return new URL(input.url);
+  return new URL(String(input));
+}
+
+function installSalesTrackerFetch(
+  t: { after(callback: () => void): void },
+  handler: (url: URL, init?: RequestInit) => Promise<Response>
+): void {
+  const priorFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = priorFetch;
+  });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    handler(requestUrl(input), init)) as typeof fetch;
 }
 
 test("parseColliersLocation extracts city and state", () => {
@@ -154,7 +201,7 @@ test("colliersContactsFromCard extracts broker rows from card HTML", () => {
   assert.equal(contacts[0].name, "Alex Broker");
   assert.equal(contacts[0].email, "alex@colliers.com");
   assert.equal(contacts[0].phone, "555-0100");
-  assert.equal(contacts[0].company, "Colliers");
+  assert.equal(contacts[0].company, undefined);
 });
 
 test("parseColliersCards uses the ordered grouped map ProjectId", () => {
@@ -197,7 +244,7 @@ test("parseColliersCards uses the ordered grouped map ProjectId", () => {
   assert.equal(card.salePriceUsd, 5000000);
   assert.equal(card.latitude, 32.78);
   assert.equal(card.longitude, -96.8);
-  assert.equal(card.brokerIds.length, 1);
+  assert.equal(card.brokerIds.length, 0);
   assert.match(card.photos[0]!, /thumb\.jpg$/);
   assert.equal(
     card.colliersSalesTrackerCard.identitySource,
@@ -285,7 +332,7 @@ test("Colliers cards without canonical detail stay inventory-only", () => {
   assert.equal(listing.canonicalUrl, undefined);
 });
 
-test("colliersDetailContacts maps project contacts and respects ShowEmail", () => {
+test("colliersDetailContacts retains source email with ShowEmail provenance", () => {
   const detail = {
     ProjectContacts: [
       {
@@ -314,7 +361,8 @@ test("colliersDetailContacts maps project contacts and respects ShowEmail", () =
   assert.equal(contacts[0].email, "jane@colliers.com");
   assert.equal(contacts[0].profileUrl, "https://my.rcm1.com/bio/jane");
   assert.equal(contacts[0].avatarUrl, "https://my.rcm1.com/img/jane.png");
-  assert.equal("email" in contacts[1] ? contacts[1].email : undefined, undefined);
+  assert.equal(contacts[1].email, "hidden@colliers.com");
+  assert.equal(contacts[1].sourceDisplayControls.ShowEmail.state, "false");
 });
 
 test("colliersDetailImages merges gallery and fallback image URLs", () => {
@@ -462,4 +510,285 @@ test("colliers SalesTracker: parseLeaseRate on NNN rate text returns correct typ
   assert.equal(lr.min, 18.5);
   assert.equal(lr.max, null);
   assert.equal(lr.type, "nnn");
+});
+
+test("Colliers SalesTracker retries only the failed page pair after settling the sibling", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const pageTwo = syntheticSalesTrackerPage(["P3", "P4"], 3);
+  const pageRequests: string[] = [];
+  let laterListAttempts = 0;
+  let siblingSettled = false;
+  const observations: any[] = [];
+
+  installSalesTrackerFetch(t, async (url, init) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    pageRequests.push(
+      `${url.pathname.split("/").at(-1)}|${url.searchParams.get("pv")}|${start}|${url.searchParams.get("PageSize")}`
+    );
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+
+    if (isList) {
+      laterListAttempts++;
+      if (laterListAttempts === 1) {
+        return Promise.reject(new DOMException("synthetic request deadline", "TimeoutError"));
+      }
+      assert.equal(siblingSettled, true, "retry must wait for the paired request to settle");
+      return jsonResponse(pageTwo.list);
+    }
+
+    if (laterListAttempts === 1) {
+      const signal = init?.signal;
+      assert.ok(signal, "paired map request should receive the attempt cancellation signal");
+      return new Promise<Response>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(new DOMException("aborted with failed list request", "AbortError"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted with failed list request", "AbortError")),
+          { once: true }
+        );
+      }).finally(() => {
+        siblingSettled = true;
+      });
+    }
+    return jsonResponse(pageTwo.map);
+  });
+
+  const result = await srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  });
+  assert.deepEqual(observations.map(row => [row.page, row.attempt]), [[1, 1], [2, 2]]);
+  assert.equal(result.listings.length, 4);
+  assert.equal(laterListAttempts, 2);
+  assert.deepEqual(
+    pageRequests.sort(),
+    [
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|1|4`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|1|4`,
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+    ].sort(),
+    "the earlier page is fetched once and only the identical later pair is repeated"
+  );
+});
+
+test("Colliers keeps prior provisional cards when a later map page fails", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? first.list : first.map);
+    return jsonResponse(isList ? first.list : { success: false });
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /success=false/);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].cards.length, 2);
+  assert.equal(captured[0].cards[0].inventoryOnly.reason, "detail_not_attempted");
+  assert.equal(captured[0].cards[0].provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.notEqual(captured[0].cards[0].detailUnavailable.publicPageObserved, true);
+});
+
+test("Colliers retains both parsed pages when the later page count mismatches", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const second = syntheticSalesTrackerPage(["P3", "P4"], 3);
+  second.list.numProjects = 1;
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const page = Number(url.searchParams.get("Start")) === 1 ? first : second;
+    return jsonResponse(url.pathname.endsWith("GetListingsHtml") ? page.list : page.map);
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /numProjects\/card parity failed at start 3: 1 != 2/);
+  assert.deepEqual(captured.map((entry) => [entry.page, entry.start, entry.cards.length]),
+    [[1, 1, 2], [2, 3, 2]]);
+  assert.deepEqual(captured[1].cards.map((card: any) => card.mapProjectId), ["P3", "P4"]);
+});
+
+
+for (const mode of ["parity", "malformed", "omission", "one-side"] as const) test(`Colliers retains received responses before ${mode} failure`, async (t) => {
+  const data = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  if (mode === "parity") data.map.projectLocations.pop();
+  if (mode === "omission") data.list.html = '<ul><li class="item"></li><li class="item">Property</li></ul>';
+  const observations: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (mode === "one-side" && !isList) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return new Response("denied", {status: 403});
+    }
+    if (mode === "malformed" && isList) return new Response("NOT_JSON_BODY");
+    return jsonResponse(isList ? data.list : data.map);
+  });
+  const expected = mode === "parity" ? /card\/map-group parity/ : mode === "malformed" ? /non-JSON/ :
+    mode === "omission" ? /parsed-card\/map-group parity/ : /HTTP 403/;
+  await assert.rejects(srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  }), expected);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].page, 1);
+  assert.equal(observations[0].attempt, 1);
+  if (mode === "malformed") assert.equal(observations[0].responses.list, "NOT_JSON_BODY");
+  else assert.match(observations[0].responses.list, /Property|class=/);
+  if (mode === "one-side") assert.equal("map" in observations[0].responses, false);
+  else assert.ok(observations[0].responses.map);
+});
+
+test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const pageStarts: number[] = [];
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    pageStarts.push(start);
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    if (isList) return new Response("temporary upstream error", { status: 503 });
+    return new Response("not found", { status: 404 });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 404/);
+  assert.deepEqual(pageStarts.sort((a, b) => a - b), [1, 1, 3, 3]);
+});
+
+test("Colliers SalesTracker leaves a 5xx with Retry-After beyond its bounded wait fatal", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const laterPageStarts: number[] = [];
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    laterPageStarts.push(start);
+    if (isList) {
+      return new Response("retry later", {
+        status: 503,
+        headers: { "retry-after": "120" },
+      });
+    }
+    return jsonResponse({ success: true, projectLocations: [] });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 503/);
+  assert.deepEqual(laterPageStarts, [3, 3]);
+});
+
+test("Colliers SalesTracker does not retry malformed page data or exceed one eligible pair retry", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  let mode: "malformed" | "repeat-503" | "arbitrary-typeerror" | "undefined-rejection" = "malformed";
+  let laterListAttempts = 0;
+  let laterMapAttempts = 0;
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    if (isList) {
+      laterListAttempts++;
+      if (mode === "malformed") return new Response("<html>not JSON</html>");
+      if (mode === "arbitrary-typeerror") throw new TypeError("synthetic invalid URL failure");
+      if (mode === "undefined-rejection") return Promise.reject(undefined);
+      return new Response("temporary upstream error", { status: 503 });
+    }
+    laterMapAttempts++;
+    return mode === "malformed"
+      ? new Response("temporary upstream error", { status: 503 })
+      : jsonResponse({ success: true, projectLocations: [] });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /non-JSON/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "arbitrary-typeerror";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /synthetic invalid URL failure/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "undefined-rejection";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /without an error value/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "repeat-503";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 503/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [2, 2]);
+});
+
+function salesTrackerCard(sizeText: string | null): any {
+  return {
+    id: "147023", mapProjectId: "147023",
+    url: "https://my.rcm1.com/handler/landing.aspx?pv=fixture",
+    detailUrl: "https://my.rcm1.com/handler/landing.aspx?pv=fixture", detailPv: "fixture",
+    name: "Indigo 19", transactionType: "Sale", assetType: null, status: null,
+    city: "Virginia Beach", state: "VA", country: "US",
+    salePriceUsd: null, salePriceText: null, sizeText,
+    latitude: null, longitude: null, brokerIds: [], contactsDetailed: [], photos: [],
+    colliersSalesTrackerCard: {},
+  };
+}
+
+function salesTrackerDetail(assetType: string, fields: Array<{ Name: string; Value: string }>): any {
+  return {
+    ProjectSummary: { ProjectId: 147023, ProjectName: "Indigo 19", AskingPrice: "$48,020,000", Address: {} },
+    ProjectDetails: { AssetType: { Value: assetType }, ProjectType: { Value: "Investment Sale" }, ProjectFields: fields },
+  };
+}
+
+test("Colliers multifamily average unit size never reaches building size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(
+    salesTrackerDetail("Multifamily - Mid-Rise", [{ Name: "Size", Value: "931 sq ft" }, { Name: "Units", Value: "196" }])
+  ));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.buildingSizeSqft, undefined);
+  assert.equal(row.sizeText, undefined, "the ingest would re-parse sizeText into size_sf");
+  assert.equal(row.extraFacts.avg_unit_sf, 931);
+  assert.equal(row.extraFacts.project_type, "Investment Sale");
+  assert.equal(row.colliersSalesTrackerDetail.sizeField, "931 sq ft");
+  assert.equal(row.units, 196);
+});
+
+test("Colliers average unit size is caught from the card when the detail has no Size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(
+    salesTrackerDetail("Multi Family", [{ Name: "Units", Value: "196" }])
+  ));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.sizeText, undefined);
+  assert.equal(row.extraFacts.avg_unit_sf, 931);
+});
+
+test("Colliers office Size stays building size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(salesTrackerDetail("Office", [{ Name: "Size", Value: "931 sq ft" }])));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.buildingSizeSqft, 931);
+  assert.equal(row.sizeText, "931 sq ft");
+  assert.equal(row.extraFacts.avg_unit_sf, undefined);
+});
+
+test("colliersAverageUnitSf: per-unit sizes with and without a unit count", () => {
+  assert.equal(colliersAverageUnitSf("Multifamily", 931, 196, 48_020_000), 931);
+  assert.equal(colliersAverageUnitSf("Multifamily", 2_400, 12, null), 2_400);
+  assert.equal(colliersAverageUnitSf("Multifamily", 182_000, 196, 48_020_000), null);
+  // No unit count: a small size priced above $1,000/SF is per unit.
+  assert.equal(colliersAverageUnitSf("Multifamily - Garden", 872, null, 95_760_000), 872);
+  assert.equal(colliersAverageUnitSf("Multifamily", 2_400, null, 600_000), null);
+  assert.equal(colliersAverageUnitSf("Retail", 931, 196, 48_020_000), null);
 });

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import conftest as _conftest
+import cre_collector_root_conftest as _conftest
 import pytest
 
 import cre_capacity_benchmark as benchmark

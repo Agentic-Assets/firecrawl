@@ -1,0 +1,597 @@
+"""Pure Pyramid coverage admission with strict fresh detail and literal path IDs."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+from cre_current_inventory_admission import (
+    SCOPE,
+    VERDICT,
+    _time,
+    admission_configuration,
+    configuration,
+    require,
+    validate_report_scope,
+)
+from cre_gate import DEFAULT_FLOOR, count_artifacts
+from cre_ingest import (
+    strict_full_source_scope,
+    to_row,
+    validate_strict_artifact_freshness,
+)
+from cre_source_policy import load_source_policy
+
+SOURCE = "pyramid-brokerage"
+SCHEMA = "pyramid-strict-detail-v1"
+SUBSET_SCHEMA = "pyramid-verified-subset-v1"
+SUBSET_SCOPE = "pyramid_verified_subset_v1"
+INCOMPLETE_SCHEMA = "pyramid-incomplete-v2"
+INCOMPLETE_SCOPE = "pyramid_incomplete_v2"
+SUBSET_VERDICT = "ok_additive_verified_subset"
+SUBSET_REASON = "verified Pyramid subset admitted; whole source remains partial"
+HOST = "www.pyramidbrokerage.com"
+ENDPOINT = f"https://{HOST}/wp-json/wp/v2/pbc-listings"
+REASON = (
+    "complete current inventory admitted additively; historical baseline remains absent"
+)
+
+
+def _sha(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _digest(value):
+    require(isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value))
+
+
+def _path_key(value):
+    require(
+        isinstance(value, str) and not any(c.isspace() or ord(c) < 32 for c in value)
+    )
+    url = urlsplit(value)
+    require(
+        url.scheme == "https"
+        and url.netloc == HOST
+        and not url.query
+        and not url.fragment
+    )
+    require(
+        url.path.startswith("/listings/") and url.path[len("/listings/") :].strip("/")
+    )
+    return url.path.strip("/")
+
+
+def _transaction_evidence(listing, tx, url, post, pages):
+    record = listing.get("wordpressRecord")
+    require(isinstance(record, dict))
+    expected_id = 246 if tx == "sale" else 249
+    require(
+        record.get("id") == post
+        and record.get("link") == url
+        and record.get("status") == "publish"
+        and record.get("type") == "pbc-listings"
+        and record.get("saleType") == [expected_id]
+    )
+    facts = listing.get("detailFacts")
+    capture = listing.get("detailTransactionFacts")
+    evidence = listing.get("transactionEvidence")
+    require(isinstance(facts, dict) and bool(facts))
+    require(isinstance(capture, dict) and isinstance(evidence, dict))
+    count = capture.get("count")
+    require(type(count) is int and count in (0, 1))
+    tenure = [
+        value
+        for label, value in facts.items()
+        if re.sub(r"\s+", "", label.strip().removesuffix(":")).lower() == "sale/lease"
+    ]
+    if count == 1:
+        values = capture.get("values")
+        require(isinstance(values, list) and len(values) == 1)
+        value = values[0]
+        require(isinstance(value, str) and tenure == [value])
+        normalized = value.strip().lower()
+        derived = {"sale": "sale", "lease": "lease", "sublease": "lease"}.get(
+            normalized
+        )
+        require(derived == tx)
+        require(
+            evidence
+            == {"kind": "html_property_fact", "transaction": tx, "value": value}
+        )
+    else:
+        require(not tenure and capture.get("values", []) == [])
+        terms = record.get("saleTypeTerms")
+        require(isinstance(terms, list) and len(terms) == 1)
+        term = terms[0]
+        require(isinstance(term, dict) and type(term.get("id")) is int)
+        require(term["id"] == expected_id and term.get("taxonomy") == "sale-type")
+        require(
+            all(
+                isinstance(term.get(k), str) and term[k].strip().lower() == tx
+                for k in ("name", "slug")
+            )
+        )
+        page = next((page for page in pages if post in page[6]), None)
+        require(page is not None)
+        require(
+            evidence
+            == {
+                "kind": "wordpress_sale_type",
+                "transaction": tx,
+                "inventoryPage": [page[0], page[2], page[3]],
+            }
+        )
+
+
+def subset_source_scope(data, *, identity_holds=False):
+    """Structural partition only; full source/aggregate admission remains mandatory."""
+    require(isinstance(data, dict))
+    meta = data.get("runMeta")
+    require(isinstance(meta, dict) and meta.get("mode") == "full"
+            and meta.get("transactions") == ["sale", "lease"]
+            and meta.get("maxItemsPerSource") is None)
+    require(_time(meta.get("startedAt")) <= _time(meta.get("finishedAt")))
+    entries, listings = data.get("sources"), data.get("listings")
+    require(isinstance(entries, list) and len(entries) == 2 and isinstance(listings, list)
+            and type(data.get("totalListings")) is int and data["totalListings"] == len(listings))
+    require(all(isinstance(e, dict) and e.get("sourceKey") == SOURCE for e in entries))
+    require(sorted(e.get("transaction") for e in entries) == ["lease", "sale"])
+    for entry in entries:
+        proof = entry.get("currentInventoryProof")
+        require(isinstance(proof, dict) and proof.get("schema") in (SCHEMA, SUBSET_SCHEMA, INCOMPLETE_SCHEMA))
+        held = proof.get("held", [])
+        incomplete = proof.get("incomplete", [])
+        require(isinstance(held, list) and isinstance(incomplete, list)
+                and (proof["schema"] == SUBSET_SCHEMA) == bool(held)
+                and (proof["schema"] == INCOMPLETE_SCHEMA) == bool(incomplete))
+        require(entry.get("supported") is True and entry.get("error") is None
+                and entry.get("truncated") is bool(held or incomplete)
+                and type(entry.get("listingsCollected")) is int
+                and type(entry.get("totalAvailableOnSource")) is int)
+        require(all(isinstance(row, dict) and row.get("sourceKey") == SOURCE
+                    and row.get("transactionMode") in ("sale", "lease") for row in listings))
+        require(sum(row["transactionMode"] == entry["transaction"] for row in listings)
+                == entry["listingsCollected"])
+    require(identity_holds or any(e["currentInventoryProof"].get("held") or e["currentInventoryProof"].get("incomplete") for e in entries))
+    return {"entries": entries, "listings": listings}
+
+
+def admit(
+    artifact_path: Path,
+    manifest: dict,
+    report: dict,
+    *,
+    current_code_sha: str,
+    current_git_dirty: bool,
+    phase: str,
+    source=SOURCE,
+) -> dict:
+    require(source == SOURCE and phase in {"source", "aggregate"})
+    config = manifest["config"]
+    require(
+        SOURCE in config["sources"] and config["transactions"] == ["sale", "lease"]
+    )
+    require(admission_configuration(config, SOURCE) == configuration(SOURCE))
+    require(
+        config.get("additive") is True
+        and config.get("mark_missing") is False
+        and config.get("status_activation") is False
+        and config.get("max_items") == 0
+    )
+    require(manifest.get("collector_git_dirty") is False and current_git_dirty is False)
+    require(
+        re.fullmatch(r"[a-f0-9]{40}", current_code_sha)
+        and manifest["collector_git_sha"] == current_code_sha
+    )
+    policy = load_source_policy()[SOURCE]
+    require(
+        [
+            policy[k]
+            for k in (
+                "evidence_class",
+                "canonical_claim",
+                "detail_claim",
+                "child_contract",
+                "inventory_only_namespace",
+            )
+        ]
+        == [
+            "strict_detail",
+            "canonical_listing",
+            "current_strict_detail",
+            "replace_from_fresh_detail",
+            None,
+        ]
+    )
+    target = manifest["preflight"]["database_target"]
+    require(target.get("algorithm") == "sha256")
+    _digest(target.get("value"))
+    info = manifest["sources"][SOURCE]["artifact"]
+    require(not artifact_path.is_symlink() and artifact_path.is_file())
+    raw = artifact_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    require(digest == info["sha256"] and len(raw) == info["bytes"])
+    artifact = json.loads(raw)
+    identity_probe = manifest["sources"][SOURCE].get("pyramid_identity_probe")
+    identity_held = identity_probe.get("held", []) if isinstance(identity_probe, dict) else []
+    identity_transitions = identity_probe.get("transitions", []) if isinstance(identity_probe, dict) else []
+    if identity_probe is not None:
+        from cre_pyramid_identity_probe import projection_digest, stage
+        require(identity_probe.get("schema") == "pyramid-identity-probe-v1"
+                and identity_probe.get("artifact_sha256") == digest
+                and identity_probe.get("generation_id") == manifest["run_id"]
+                and identity_probe.get("producer_sha") == current_code_sha
+                and identity_probe.get("database_target_sha256") == target["value"]
+                and identity_probe.get("staged_sha256") == projection_digest(stage(artifact))
+                and isinstance(identity_held, list) and identity_held == sorted(set(identity_held))
+                and isinstance(identity_transitions, list) and identity_transitions == sorted(set(identity_transitions)))
+    incomplete_mode = bool(identity_held or identity_transitions) or any((entry.get("currentInventoryProof") or {}).get("schema") == INCOMPLETE_SCHEMA
+                          for entry in artifact.get("sources", []) if isinstance(entry, dict))
+    partial = incomplete_mode or any((entry.get("currentInventoryProof") or {}).get("schema") == SUBSET_SCHEMA
+                  for entry in artifact.get("sources", []) if isinstance(entry, dict))
+    scope = subset_source_scope(artifact, identity_holds=bool(identity_held or identity_transitions)) if partial else strict_full_source_scope(artifact, SOURCE)
+    require(
+        len(artifact["sources"]) == 2
+        and len(artifact["listings"]) == len(scope["listings"])
+    )
+    incomplete_ids = frozenset(item["postId"] for entry in artifact["sources"]
+                               for item in entry["currentInventoryProof"].get("incomplete", [])) if incomplete_mode else frozenset()
+    validate_strict_artifact_freshness(artifact, require_strict_freshness=True,
+                                       pyramid_incomplete_ids=incomplete_ids)
+    meta = artifact["runMeta"]
+    start = _time(manifest["started_at"])
+    fresh = meta["freshness"]
+    require(
+        fresh.get("generationId") == manifest["run_id"]
+        and fresh.get("requireFreshDetails") is True
+        and _time(fresh.get("generationStartedAt")) == start
+    )
+    collect_start, end = _time(meta["startedAt"]), _time(meta["finishedAt"])
+    require(start <= collect_start <= end <= datetime.now(UTC) + timedelta(minutes=5))
+    entries = {entry["transaction"]: entry for entry in artifact["sources"]}
+    proofs = [entries[tx]["currentInventoryProof"] for tx in ("sale", "lease")]
+    proof = proofs[0]
+    excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
+    for tx, item in zip(("sale", "lease"), proofs):
+        require(isinstance(item, dict))
+        require(
+            item.get("schema") in ((SCHEMA, INCOMPLETE_SCHEMA) if incomplete_mode else (SCHEMA, SUBSET_SCHEMA) if partial else (SCHEMA,))
+            and item.get("sourceKey") == SOURCE
+            and item.get("transaction") == tx
+            and item.get("generationId") == manifest["run_id"]
+            and _time(item.get("generationStartedAt")) == start
+        )
+        require(
+            {k: v for k, v in item.items() if k not in excluded}
+            == {k: v for k, v in proof.items() if k not in excluded}
+        )
+    total, total_pages, cohort = proof["total"], proof["totalPages"], proof["cohort"]
+    require(
+        type(total) is int
+        and total >= DEFAULT_FLOOR
+        and type(total_pages) is int
+        and total_pages == (total + 99) // 100
+        and isinstance(cohort, list)
+        and len(cohort) == total
+    )
+    native, keys = {}, set()
+    for member in cohort:
+        require(isinstance(member, list) and len(member) == 4)
+        post, url, key, tx = member
+        require(
+            type(post) is int and 0 < post <= 9007199254740991 and post not in native
+        )
+        require(key == _path_key(url) and key not in keys and tx in {"sale", "lease"})
+        native[post] = (url, key, tx)
+        keys.add(key)
+    require(list(native) == sorted(native))
+    observed = _time(proof["observedAt"])
+    require(collect_start <= observed <= end)
+    passes = proof["passes"]
+    require(isinstance(passes, list) and len(passes) == 2)
+    require(passes[0]["fingerprint"] == passes[1]["fingerprint"])
+    previous_end = collect_start
+    for snapshot in passes:
+        require(isinstance(snapshot, dict))
+        _digest(snapshot["fingerprint"])
+        pages = snapshot["pages"]
+        require(isinstance(pages, list) and len(pages) == total_pages)
+        times = []
+        for index, page in enumerate(pages, 1):
+            require(isinstance(page, list) and len(page) == 7)
+            number, endpoint, clock, body_hash, page_total, page_count, ids = page
+            require(
+                all(type(value) is int for value in (number, page_total, page_count))
+                and number == index
+                and page_total == total
+                and page_count == total_pages
+            )
+            url = urlsplit(endpoint)
+            require(
+                url.scheme == "https"
+                and url.netloc == HOST
+                and url.path == urlsplit(ENDPOINT).path
+                and not url.fragment
+                and parse_qs(url.query, strict_parsing=True, keep_blank_values=True)
+                == {
+                    "per_page": ["100"],
+                    "orderby": ["id"],
+                    "order": ["asc"],
+                    "page": [str(index)],
+                    "_embed": ["wp:term"],
+                }
+            )
+            require(isinstance(ids, list) and all(type(value) is int for value in ids))
+            require(ids == list(native)[(index - 1) * 100 : index * 100])
+            _digest(body_hash)
+            clock = _time(clock)
+            require(previous_end <= clock <= observed)
+            times.append(clock)
+        previous_end = max(times)
+    details = {}
+    excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
+    for tx, item in zip(("sale", "lease"), proofs):
+        members = item["details"]
+        require(isinstance(members, list))
+        for member in members:
+            require(isinstance(member, list) and len(member) == 4)
+            post, canonical, clock, body_hash = member
+            require(type(post) is int and post in native and post not in details)
+            require(native[post][0] == canonical and native[post][2] == tx)
+            require(observed <= _time(clock) <= end)
+            _digest(body_hash)
+            details[post] = (canonical, clock, body_hash)
+        count = sum(member[2] == tx for member in native.values())
+        require(
+            len(members) == count
+            and entries[tx]["listingsCollected"] == count - len(item.get("held", []))
+            and entries[tx]["totalAvailableOnSource"] == count
+        )
+    require(set(details) == set(native))
+    listings = scope["listings"]
+    held = {}
+    incomplete = {}
+    if incomplete_mode:
+        for tx, item in zip(("sale", "lease"), proofs):
+            for record in item.get("incomplete", []):
+                require(isinstance(record, dict) and set(record) == {"postId", "missingFields"})
+                post, fields = record["postId"], record["missingFields"]
+                require(type(post) is int and post in native and post not in incomplete and native[post][2] == tx
+                        and isinstance(fields, list) and fields
+                        and fields == [field for field in ("state", "city", "assetType") if field in fields])
+                incomplete[post] = fields
+        require(incomplete or identity_held or identity_transitions)
+    if partial:
+        excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
+    for tx, item in zip(("sale", "lease"), proofs):
+            for record in item.get("held", []):
+                require(isinstance(record, dict) and set(record) == {"postId", "reason", "listing"})
+                post, listing = record["postId"], record["listing"]
+                require(record["reason"] == "missing_city" and type(post) is int
+                        and post in native and post not in held and isinstance(listing, dict))
+                url, key, expected_tx = native[post]
+                canonical, clock, body_hash = details[post]
+                require(expected_tx == tx and listing.get("id") == key and listing.get("url") == url
+                        and listing.get("canonicalUrl") == canonical and listing.get("transactionMode") == tx
+                        and listing.get("transactionType") == tx.title()
+                        and not str(listing.get("city") or "").strip()
+                        and all(isinstance(listing.get(k), str) and listing[k].strip() for k in ("state", "assetType"))
+                        and listing.get("inventoryObservedAt") == proof["observedAt"]
+                        and listing.get("detailObservedAt") == clock
+                        and listing["wordpressRecord"].get("detailResponseSha256") == body_hash)
+                provenance = listing.get("freshnessProvenance") or {}
+                require(provenance.get("generationId") == manifest["run_id"]
+                        and provenance.get("detailScope") == "detail_page"
+                        and provenance.get("cacheDisposition") == "live"
+                        and provenance.get("method") == "pyramid_direct_detail_html"
+                        and provenance.get("identityMethod") == "literal_owned_listing_path+wordpress_post_id")
+                _transaction_evidence(listing, tx, url, post, passes[1]["pages"])
+                held[post] = (url, key, tx)
+    if incomplete_mode:
+        require(not held and (set(identity_held) | set(identity_transitions)) <= {key for _url, key, _tx in native.values()})
+        held = {post: values for post, values in native.items() if values[1] in identity_held}
+    require(len(listings) == (total if incomplete_mode else total - len(held)))
+    staged, emitted = {}, set()
+    for listing in listings:
+        post = listing["wordpressRecord"]["id"]
+        require(type(post) is int and post in native and post not in emitted and (incomplete_mode or post not in held))
+        emitted.add(post)
+        url, key, tx = native[post]
+        canonical, clock, body_hash = details[post]
+        require(
+            listing.get("id") == key
+            and listing.get("url") == url
+            and listing.get("canonicalUrl") == canonical
+            and listing.get("transactionMode") == tx
+            and listing.get("transactionType") == tx.title()
+        )
+        require(
+            listing.get("inventoryObservedAt") == proof["observedAt"]
+            and listing.get("detailObservedAt") == clock
+            and listing["wordpressRecord"].get("detailResponseSha256") == body_hash
+        )
+        missing_fields = [field for field in ("state", "city", "assetType")
+                          if not isinstance(listing.get(field), str) or not listing[field].strip()]
+        if post in incomplete:
+            require(missing_fields == incomplete[post]
+                    and listing.get("missingFieldEvidence") == {"fields": missing_fields, "method": "source_detail_and_taxonomy"}
+                    and listing.get("preserveChildCollections") is True
+                    and listing.get("detailObservedWithChildPreservation") is True)
+        else:
+            require(not missing_fields)
+        require(
+            (post in incomplete or not listing.get("preserveChildCollections"))
+            and not listing.get("detailError")
+            and listing.get("inventoryOnly") is None
+        )
+        provenance = listing.get("freshnessProvenance") or {}
+        require(
+            provenance.get("generationId") == manifest["run_id"]
+            and provenance.get("detailScope") == "detail_page"
+            and provenance.get("cacheDisposition") == "live"
+            and provenance.get("method") == "pyramid_direct_detail_html"
+            and provenance.get("identityMethod")
+            == "literal_owned_listing_path+wordpress_post_id"
+        )
+        _transaction_evidence(listing, tx, url, post, passes[1]["pages"])
+        transformed = to_row(listing, {}, meta["finishedAt"])
+        require(
+            transformed is not None
+            and transformed["external_id"] == key
+            and key not in staged
+        )
+        if post not in held:
+            staged[key] = [key, transformed["transaction_type"], post, url]
+    require(len(staged) == total - len(held) and len(staged) > 0
+            and emitted | set(held) == set(native))
+    current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
+    require(
+        sources == {SOURCE}
+        and (errors.get(SOURCE) == "source pass truncated" if any(e.get("truncated") for e in entries.values()) else not any(errors.values()))
+        and rejects == 0
+        and current.get(SOURCE) == (total if incomplete_mode else total - len(held))
+    )
+    validate_report_scope(report, manifest, SOURCE, artifact_path)
+    summary, gate = report["summary"], report["per_source"][SOURCE]
+    require(
+        summary.get("mode") == "live"
+        and type(summary.get("torow_errors")) is int
+        and summary["torow_errors"] == 0
+        and summary.get("baseline_updated") is False
+        and summary.get("baseline_update_sources") == []
+    )
+    verdict = SUBSET_VERDICT if partial else VERDICT
+    reason = SUBSET_REASON if partial else REASON
+    admission_scope = INCOMPLETE_SCOPE if incomplete_mode else SUBSET_SCOPE if partial else SCOPE
+    raw_reason = ("no baseline row; cannot gate (first sight); a source pass also errored this run"
+                  if any(e.get("truncated") for e in entries.values()) else "no baseline row; cannot gate (first sight)")
+    rechecking = gate.get("verdict") == verdict and (phase == "aggregate" or partial)
+    require(
+        (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
+        and (gate.get("raw_reason") if rechecking else gate.get("reason"))
+        == raw_reason
+        and gate.get("baseline_median") is None
+        and gate.get("mark_missing_safe") is False
+    )
+    require(
+        type(gate.get("current_active")) is int
+        and gate["current_active"] == (total if incomplete_mode else total - len(held))
+        and type(gate.get("effective_floor")) is int
+        and gate["effective_floor"] == DEFAULT_FLOOR
+    )
+    binding = {
+        "schema": INCOMPLETE_SCHEMA if incomplete_mode else SUBSET_SCHEMA if partial else SCHEMA,
+        "scope": admission_scope,
+        "artifact_sha256": digest,
+        "collector_git_sha": current_code_sha,
+        "database_target_sha256": target["value"],
+        "source_policy_sha256": configuration(SOURCE)["source_policy_sha256"],
+        "generation_id": manifest["run_id"],
+        "generation_started_at": manifest["started_at"],
+        "observed_at": proof["observedAt"],
+        "pages_sha256": _sha(passes),
+        "cohort_sha256": _sha(cohort),
+        "detail_receipts_sha256": _sha([item["details"] for item in proofs]),
+        "emitted_count": total - len(held),
+        "staged_count": len(staged),
+        "staged_identities_sha256": _sha([staged[k] for k in sorted(staged)]),
+    }
+    if partial:
+        members = [{"native_id": post, "source_url": url, "external_id": key,
+                    "transaction": tx, "emitted": post not in held,
+                    **({"incomplete": post in incomplete and post not in held,
+                        "transition": key in identity_transitions and post not in held,
+                        "missing_fields": incomplete.get(post, []) if post not in held else []} if incomplete_mode else {})}
+                   for post, (url, key, tx) in native.items()]
+        binding.update(inventory_count=total, held_count=len(held), held_sha256=_sha(held),
+                       members_sha256=_sha(members), whole_source_coverage=False, whole_lease_coverage="unknown")
+        if incomplete_mode:
+            binding.update(incomplete_count=len(set(incomplete) - set(held)), incomplete_sha256=_sha(incomplete),
+                           identity_probe_sha256=_sha(identity_probe) if identity_probe else None,
+                           transition_count=len(set(identity_transitions) - set(identity_held)),
+                           missing_field_counts={field: sum(field in fields for post, fields in incomplete.items() if post not in held)
+                                                 for field in ("state", "city", "assetType")},
+                           emitted_transactions={
+                               "sale": sum(row[1] in ("sale", "sale_or_lease") for row in staged.values()),
+                               "lease": sum(row[1] in ("lease", "sale_or_lease") for row in staged.values()),
+                               "both": sum(row[1] == "sale_or_lease" for row in staged.values()),
+                           })
+    if phase == "aggregate":
+        require(
+            _sha(manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof"))
+            == _sha(binding)
+        )
+    if rechecking:
+        require(
+            _sha(gate.get("current_inventory_proof")) == _sha(binding)
+            and gate.get("admission_scope") == admission_scope
+            and gate.get("reason") == reason
+        )
+    gate.update(
+        raw_verdict="first_seen",
+        raw_reason=raw_reason,
+        verdict=verdict,
+        reason=reason,
+        mark_missing_safe=False,
+        admission_scope=admission_scope,
+        current_inventory_proof=binding,
+    )
+    report["scope"] = {
+        "kind": admission_scope,
+        "transactions": ["sale", "lease"],
+        "whole_source_coverage": False,
+    }
+    summary.update(mark_missing_safe_sources=[], mark_missing_safe_brokerages=[])
+    manifest["scope"].update(
+        kind="collector_registry_verified_subset" if partial else "collector_registry_additive_current_inventory",
+        whole_source_coverage=False,
+    )
+    return binding
+
+
+def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_git_dirty,
+                          expected_database_target_sha256, attempt_id):
+    """Reprove both gates and the exact partition at the ingest boundary."""
+    require(isinstance(envelope, dict) and set(envelope) ==
+            {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"})
+    require(isinstance(attempt_id, str) and re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+            and envelope["attempt_id"] == attempt_id)
+    manifest = copy.deepcopy(envelope["manifest"])
+    require(manifest["preflight"]["database_target"] ==
+            {"algorithm": "sha256", "value": expected_database_target_sha256})
+    binding = envelope["binding"]
+    require(isinstance(binding, dict) and binding.get("scope") in (SUBSET_SCOPE, INCOMPLETE_SCOPE))
+    for phase, key in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = copy.deepcopy(envelope[key])
+        require(_sha(report["per_source"][SOURCE].get("current_inventory_proof")) == _sha(binding))
+        require(_sha(admit(Path(artifact_path), manifest, report, current_code_sha=current_code_sha,
+                           current_git_dirty=current_git_dirty, phase=phase)) == _sha(binding))
+    raw = Path(artifact_path).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
+    entries = json.loads(raw)["sources"]
+    proof = entries[0]["currentInventoryProof"]
+    held = {item["postId"] for entry in entries
+            for item in entry["currentInventoryProof"].get("held", [])}
+    probe = manifest["sources"][SOURCE].get("pyramid_identity_probe") or {}
+    identity_held = set(probe.get("held", []))
+    identity_transitions = set(probe.get("transitions", []))
+    held.update(row[0] for row in proof["cohort"] if row[2] in identity_held)
+    incomplete = {item["postId"]: item["missingFields"] for entry in entries
+                  for item in entry["currentInventoryProof"].get("incomplete", [])}
+    is_incomplete = binding["scope"] == INCOMPLETE_SCOPE
+    return {"schema": INCOMPLETE_SCHEMA if is_incomplete else SUBSET_SCHEMA,
+            "binding": binding, "attempt_id": attempt_id,
+            "members": [{"native_id": row[0], "source_url": row[1], "external_id": row[2],
+                         "transaction": row[3], "emitted": row[0] not in held,
+                         **({"incomplete": row[0] in incomplete and row[0] not in held,
+                             "transition": row[2] in identity_transitions and row[0] not in held,
+                             "missing_fields": incomplete.get(row[0], []) if row[0] not in held else []} if is_incomplete else {})}
+                        for row in proof["cohort"]]}

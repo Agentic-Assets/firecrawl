@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import fcntl
+from cre_posix import fcntl
 import hashlib
 import json
 import math
@@ -32,12 +32,15 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 
 import cre_recovery_guard_journal as recovery_guard_journal
+from cre_partial_page_custody import PARTIAL_PAGE_SOURCES, partial_env_name
+import cre_current_inventory_admission as current_inventory
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     BUILDOUT_SOURCE_KEYS,
@@ -56,10 +59,34 @@ from cre_ingest import (
     to_inventory_only_row,
     to_row,
 )
+from cre_memory_guard import (
+    DEFAULT_MEMORY_SAMPLE_SECONDS,
+    DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    HostMemoryGuard,
+    memory_guard_config,
+)
+from cre_linux_telemetry import LinuxTelemetryError, cpu_percent as linux_cpu_percent
+from cre_linux_telemetry import read_cpu_ticks as read_linux_cpu_ticks
+from cre_owned_processes import (
+    OwnedProcessGroup,
+    _defer_cleanup_signals,
+    _group_alive,
+    settle_owned_groups,
+)
 from cre_performance import capture_runtime_configuration, run_observed_command
+from cre_refresh_pipeline import (artifact_compute_enabled, artifact_compute_scope, compute_root, initial_preflight_binding, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
+from cre_performance_report import save_report
+from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
 from cre_source_policy import load_source_policy
-from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
+from cre_validate import (
+    CHECKPOINT_PREFLIGHT_PROFILE,
+    FULL_VALIDATION_PROFILE,
+    LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
+    VALIDATION_AUDIT_SCOPES,
+    require_checkpoint_preflight_report,
+    require_full_validation_report,
+)
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
 REPO_ROOT = COLLECTOR_DIR.parents[2]
@@ -112,6 +139,98 @@ class RefreshError(RuntimeError):
     """Base runner error."""
 
 
+class ProcessCleanupUnknown(RefreshError):
+    """Owned local work could not be proven stopped; require manual recovery."""
+
+
+# Only the internal worker's known-settled return paths emit these codes.
+COHORT_SETTLED_FAILURE_EXIT = 80
+COHORT_SETTLED_INTERRUPT_EXIT = 81
+COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
+COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
+PYRAMID_GUARD_SETTLED_EXIT = 86
+PYRAMID_DENIED_EXITS = {401: 76, 403: 77}
+COHORT_SETTLED_PYRAMID_DENIED_EXITS = {401: 84, 403: 85}
+PYRAMID_DENIED_FAILURE_CODE = "PYRAMID_HTTP_ACCESS_DENIED"
+COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79
+COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403"
+AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78
+AVISON_YOUNG_TERMINAL_FAILURE_CODE = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404"
+COHORT_SETTLED_EXIT_CODES = frozenset(
+    {
+        0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT,
+        COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
+        *COHORT_SETTLED_PYRAMID_DENIED_EXITS.values(),
+    }
+)
+
+
+def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
+    """A later guard or evidence failure must not erase uncertain settlement."""
+    from source_evidence.document_process import DocumentProcessCleanupUnknown
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (ProcessCleanupUnknown, DocumentProcessCleanupUnknown)):
+            return True
+        pending.extend((current.__context__, current.__cause__))
+    return False
+
+
+def command_local_settlement(error: BaseException) -> dict | None:
+    """Keep positive local cleanup evidence through later observer/I/O errors."""
+    if _cleanup_unknown_in_chain(error):
+        return None
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        evidence = getattr(current, "cre_local_settlement", None)
+        if isinstance(evidence, dict) and evidence.get("state") == "confirmed":
+            return evidence
+        pending.extend((current.__context__, current.__cause__))
+    return None
+
+
+def _require_completed_group_settlement(group: OwnedProcessGroup) -> None:
+    """After leader reap, only observe disappearance; never signal its PGID."""
+    try:
+        if (
+            type(group.pgid) is not int
+            or group.pgid <= 1
+            or group.pgid != group.process.pid
+            or group.pgid == os.getpgrp()
+        ):
+            raise ProcessCleanupUnknown("completed command group identity changed")
+        if group.process.returncode is None:
+            raise ProcessCleanupUnknown("completed command leader is not reaped")
+        group.reaped = True
+        group.gone = not _group_alive(group.pgid)
+    except (Exception, KeyboardInterrupt) as exc:
+        raise ProcessCleanupUnknown(
+            "owned process cleanup_unknown after command completion"
+        ) from exc
+    if not group.gone:
+        raise ProcessCleanupUnknown(
+            "owned process cleanup_unknown: group remains after leader reap"
+        )
+
+
+def _raise_unsettled_dispatch(error: BaseException) -> None:
+    """Preserve interrupt classification while retaining unregistered work."""
+    unknown = ProcessCleanupUnknown("child dispatch or settlement is cleanup_unknown")
+    if isinstance(error, KeyboardInterrupt):
+        raise error from unknown
+    raise unknown from error
+
+
 class ArtifactValidationError(RefreshError):
     """Collector artifact violated the full-source contract."""
 
@@ -124,8 +243,24 @@ class GlobalStageError(RefreshError):
     """A shared infrastructure or live-write stage failed."""
 
 
+class SourceGuardRefusal(RefreshError):
+    """A typed source guard refusal with verified rollback."""
+
+
+class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
+    """Exact source-local guard refusal with a verified transaction rollback."""
+
+
+class TranswesternImageGuardRefusal(SourceGuardRefusal):
+    """The protected image multiplicity guard refused and rolled back."""
+
+
 class CpuTelemetryError(GlobalStageError):
     """Host CPU usage cannot be measured safely."""
+
+
+class CpuEvidenceError(CpuTelemetryError):
+    """A valid required CPU observation could not be recorded."""
 
 
 class CpuGuardTrip(KeyboardInterrupt):
@@ -144,11 +279,15 @@ class CpuGuardTripDetails:
     occurred_at: str
     context: dict[str, Any]
     owned_processes_reaped: bool = True
+    host_memory_pressure_level: int | None = None
 
 
 _CPU_GUARD_TRIP_REASON: str | None = None
 _CPU_GUARD_TRIP_DETAILS: CpuGuardTripDetails | None = None
 _CPU_GUARD_TRIP_LOCK = threading.Lock()
+_RESOURCE_GUARD_SIGNAL_CLAIMED = False
+_RESOURCE_GUARD_SIGNALS_FROZEN = False
+_RESOURCE_GUARD_SIGNAL_LOCK = threading.Lock()
 _HOST_CPU_LOAD_INFO = 3
 _HOST_CPU_LOAD_INFO_COUNT = 4
 _CPU_STATE_MAX = 4
@@ -163,9 +302,27 @@ def _set_cpu_guard_trip(
     host_cpu_percent: float | None = None,
     context: Mapping[str, Any] | None = None,
     owned_processes_reaped: bool = True,
+    host_memory_pressure_level: int | None = None,
 ) -> None:
     global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
     with _CPU_GUARD_TRIP_LOCK:
+        existing = _CPU_GUARD_TRIP_DETAILS
+        if existing is not None:
+            evidence_valid = evidence_valid and existing.evidence_valid
+            owned_processes_reaped = (
+                owned_processes_reaped and existing.owned_processes_reaped
+            )
+        if (
+            existing is not None
+            and existing.reason_code.startswith("host_memory_")
+            and not reason_code.startswith("host_memory_")
+        ):
+            _CPU_GUARD_TRIP_DETAILS = replace(
+                existing,
+                evidence_valid=evidence_valid,
+                owned_processes_reaped=owned_processes_reaped,
+            )
+            return
         _CPU_GUARD_TRIP_REASON = reason
         _CPU_GUARD_TRIP_DETAILS = CpuGuardTripDetails(
             reason_code=reason_code,
@@ -176,6 +333,7 @@ def _set_cpu_guard_trip(
             occurred_at=utc_now(),
             context=dict(context or {}),
             owned_processes_reaped=owned_processes_reaped,
+            host_memory_pressure_level=host_memory_pressure_level,
         )
 
 
@@ -189,11 +347,101 @@ def _peek_cpu_guard_trip_details() -> CpuGuardTripDetails | None:
         return _CPU_GUARD_TRIP_DETAILS
 
 
-def _clear_cpu_guard_trip() -> None:
-    global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
+def _clear_cpu_guard_trip(*, reset_signals: bool = True) -> None:
+    global \
+        _CPU_GUARD_TRIP_DETAILS, \
+        _CPU_GUARD_TRIP_REASON, \
+        _RESOURCE_GUARD_SIGNAL_CLAIMED
+    global _RESOURCE_GUARD_SIGNALS_FROZEN
     with _CPU_GUARD_TRIP_LOCK:
         _CPU_GUARD_TRIP_REASON = None
+        _RESOURCE_GUARD_SIGNAL_CLAIMED = False
         _CPU_GUARD_TRIP_DETAILS = None
+    if reset_signals:
+        with _RESOURCE_GUARD_SIGNAL_LOCK:
+            _RESOURCE_GUARD_SIGNALS_FROZEN = False
+
+
+def _claim_resource_guard_signal() -> bool:
+    """Only the first watchdog signals, so a second trip cannot interrupt reaping."""
+    global _RESOURCE_GUARD_SIGNAL_CLAIMED
+    with _CPU_GUARD_TRIP_LOCK:
+        if _RESOURCE_GUARD_SIGNAL_CLAIMED:
+            return False
+        _RESOURCE_GUARD_SIGNAL_CLAIMED = True
+        return True
+
+
+def _trip_host_memory_guard(
+    *,
+    reason_code: str,
+    pressure: int | None,
+    telemetry_valid: bool,
+    evidence_valid: bool,
+    context: Mapping[str, Any] | None = None,
+) -> None:
+    should_signal = _claim_resource_guard_signal()
+    _set_cpu_guard_trip(
+        "host memory pressure guard stopped the checkpoint run",
+        reason_code=reason_code,
+        telemetry_valid=telemetry_valid,
+        evidence_valid=evidence_valid,
+        context=context,
+        host_memory_pressure_level=pressure,
+    )
+    if should_signal:
+        _signal_resource_guard_if_active(os.getpid())
+
+
+def _signal_resource_guard_if_active(pid: int) -> None:
+    with _RESOURCE_GUARD_SIGNAL_LOCK:
+        if not _RESOURCE_GUARD_SIGNALS_FROZEN:
+            os.kill(pid, signal.SIGTERM)
+
+
+def quiesce_resource_guards(
+    memory_guard: HostMemoryGuard, cpu_guard: HostCpuGuard
+) -> None:
+    """Drain in-flight safety decisions before any terminal manifest is saved."""
+    global _RESOURCE_GUARD_SIGNALS_FROZEN
+    deferred_signal = False
+
+    def defer_sigterm(_signum: int, _frame: Any) -> None:
+        nonlocal deferred_signal
+        deferred_signal = True
+
+    previous = signal.signal(signal.SIGTERM, defer_sigterm)
+    try:
+        with _RESOURCE_GUARD_SIGNAL_LOCK:
+            _RESOURCE_GUARD_SIGNALS_FROZEN = True
+        memory_guard.stop_event.set()
+        cpu_guard.stop_event.set()
+        memory_guard.stop()
+        cpu_guard.stop()
+        if any(
+            guard.thread is not None and guard.thread.is_alive()
+            for guard in (memory_guard, cpu_guard)
+        ):
+            _set_cpu_guard_trip(
+                "resource guard did not stop within its bounded join",
+                reason_code="host_memory_telemetry_failed",
+                telemetry_valid=False,
+                evidence_valid=False,
+            )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if _peek_cpu_guard_trip() is not None:
+        raise CpuGuardTrip(_peek_cpu_guard_trip())
+    if deferred_signal:
+        raise KeyboardInterrupt("operator interruption during resource guard shutdown")
+
+
+@contextmanager
+def resource_guard_boundary(memory_guard: HostMemoryGuard, cpu_guard: HostCpuGuard):
+    try:
+        yield
+    finally:
+        quiesce_resource_guards(memory_guard, cpu_guard)
 
 
 class _HostCpuLoadInfo(ctypes.Structure):
@@ -264,9 +512,41 @@ class DarwinCpuSampler:
         return cpu_percent_from_ticks(previous, current)
 
 
+@dataclass
+class LinuxCpuSampler:
+    read_ticks: Callable[[], tuple[int, ...]] = read_linux_cpu_ticks
+    initial_interval_seconds: float = 0.1
+    previous: tuple[int, ...] | None = field(default=None, init=False)
+
+    def __call__(self) -> float:
+        try:
+            previous = self.previous
+            if previous is None:
+                previous = self.read_ticks()
+                time.sleep(self.initial_interval_seconds)
+            current = self.read_ticks()
+            percent = linux_cpu_percent(previous, current)
+            self.previous = current
+            return percent
+        except LinuxTelemetryError as exc:
+            raise CpuTelemetryError(str(exc)) from exc
+
+
+def host_cpu_sampler(*, initial_interval_seconds: float = 0.1) -> Callable[[], float]:
+    if sys.platform == "darwin":
+        return DarwinCpuSampler(initial_interval_seconds=initial_interval_seconds)
+    if sys.platform.startswith("linux"):
+        return LinuxCpuSampler(initial_interval_seconds=initial_interval_seconds)
+
+    def unsupported() -> float:
+        raise CpuTelemetryError("host CPU telemetry unsupported on this platform")
+
+    return unsupported
+
+
 def read_host_cpu_percent() -> float:
-    """Return a one-shot total Darwin host CPU utilization sample."""
-    return DarwinCpuSampler()()
+    """Sample the native host on Darwin, or the Linux kernel/VM on Linux."""
+    return host_cpu_sampler()()
 
 
 @dataclass
@@ -283,25 +563,40 @@ class HostCpuGuard:
     max_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT
     sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS
     sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS
-    sampler: Callable[[], float] = field(default_factory=DarwinCpuSampler)
+    # Required admission allows kernel counters to advance before its first read.
+    sampler: Callable[[], float] = field(
+        default_factory=lambda: host_cpu_sampler(initial_interval_seconds=2.0)
+    )
     coordinator_pid: int = field(default_factory=os.getpid)
     incident_log_path: Path | None = None
     incident_context: dict[str, Any] = field(default_factory=dict)
     high_since: float | None = field(default=None, init=False)
+    previous_observed: float | None = field(default=None, init=False)
+    diagnostic_allowance_seconds: float = field(default=0.0, init=False)
     last_incident_snapshot: dict[str, Any] | None = field(default=None, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
 
     def config(self) -> dict[str, float | str]:
-        return {
+        config = {
             "max_host_cpu_percent": self.max_percent,
             "sustain_seconds": self.sustain_seconds,
             "sample_seconds": self.sample_seconds,
             "action": "interrupt_and_checkpoint",
             "telemetry_failure_action": "interrupt_and_checkpoint",
         }
+        if sys.platform.startswith("linux"):
+            config["telemetry_scope"] = "linux_kernel_or_vm_not_windows_host"
+        return config
 
     def observe(self, percent: float, *, observed_monotonic: float) -> str | None:
+        self._validate_clock(observed_monotonic)
+        if self.previous_observed is not None and (
+            observed_monotonic <= self.previous_observed
+            or observed_monotonic - self.previous_observed
+            > self.sample_seconds * 1.5 + self.diagnostic_allowance_seconds
+        ):
+            raise CpuTelemetryError("host CPU observation time stale")
         try:
             valid = (
                 not isinstance(percent, bool)
@@ -312,6 +607,8 @@ class HostCpuGuard:
             valid = False
         if not valid:
             raise CpuTelemetryError(f"invalid host CPU percentage: {percent!r}")
+        self.previous_observed = observed_monotonic
+        self.diagnostic_allowance_seconds = 0.0
         if percent < self.max_percent:
             self.high_since = None
             return None
@@ -325,6 +622,19 @@ class HostCpuGuard:
             f"host CPU remained at or above {self.max_percent:.1f}% for "
             f"{self.sustain_seconds:.1f} seconds; latest sample {percent:.1f}%"
         )
+
+    @staticmethod
+    def _validate_clock(value: float) -> None:
+        try:
+            valid = (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+            )
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            raise CpuTelemetryError("host CPU observation clock invalid")
 
     def _write_record(
         self,
@@ -344,6 +654,14 @@ class HostCpuGuard:
                 record["host_cpu_percent"] = round(percent, 2)
             if reason is not None:
                 record["reason"] = reason
+            if state == "tripped":
+                details = _peek_cpu_guard_trip_details()
+                if details is not None:
+                    record.update(
+                        reason_code=details.reason_code,
+                        telemetry_valid=details.telemetry_valid,
+                        evidence_valid=details.evidence_valid,
+                    )
             if self.incident_context:
                 record["context"] = dict(self.incident_context)
             if self.last_incident_snapshot is not None:
@@ -351,13 +669,26 @@ class HostCpuGuard:
             with self.log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
                 handle.flush()
-        except OSError as exc:
-            raise CpuTelemetryError(f"host CPU guard log unavailable: {exc}") from exc
+        except Exception as exc:  # Required evidence must fail closed.
+            raise CpuEvidenceError("host CPU guard log unavailable") from exc
 
     def sample_once(self) -> float:
         was_high = self.high_since is not None
+        started = time.monotonic()
+        self._validate_clock(started)
+        if self.previous_observed is not None and started < self.previous_observed:
+            raise CpuTelemetryError("host CPU read clock moved backward")
         percent = self.sampler()
-        reason = self.observe(percent, observed_monotonic=time.monotonic())
+        observed = time.monotonic()
+        self._validate_clock(observed)
+        # The required sampler deliberately waits two seconds only on its first
+        # read. These are after-return checks, not a native-call hard deadline.
+        read_budget = min(1.0, self.sample_seconds)
+        if self.previous_observed is None:
+            read_budget += 2.0
+        if not 0.0 <= observed - started <= read_budget:
+            raise CpuTelemetryError("host CPU read time stale")
+        reason = self.observe(percent, observed_monotonic=observed)
         if (
             not was_high
             and self.high_since is not None
@@ -369,8 +700,18 @@ class HostCpuGuard:
                 max_host_cpu_percent=self.max_percent,
                 context=self.incident_context,
             )
+            finished = time.monotonic()
+            self._validate_clock(finished)
+            if finished < observed:
+                raise CpuTelemetryError("host CPU diagnostic clock moved backward")
+            # Incident capture permits two one-second subprocesses. Allow only
+            # its measured time (capped with small overhead), for the next gap.
+            self.diagnostic_allowance_seconds = min(2.5, finished - observed)
         state = "high" if self.high_since is not None else "ok"
-        self._write_record(state=state, percent=percent, reason=reason)
+        try:
+            self._write_record(state=state, percent=percent, reason=reason)
+        except Exception as exc:  # Adapters must not silently end monitoring.
+            raise CpuEvidenceError("host CPU guard log unavailable") from exc
         if reason is not None:
             self._trip(reason, percent=percent)
         return percent
@@ -382,18 +723,25 @@ class HostCpuGuard:
         percent: float | None = None,
         reason_code: str = "host_cpu_sustained",
         telemetry_valid: bool = True,
+        evidence_valid: bool = True,
+        signal_coordinator: bool = True,
     ) -> None:
+        should_signal = signal_coordinator and _claim_resource_guard_signal()
         _set_cpu_guard_trip(
             reason,
             reason_code=reason_code,
             telemetry_valid=telemetry_valid,
+            evidence_valid=evidence_valid,
             host_cpu_percent=percent,
             context=self.incident_context,
         )
         try:
             self._write_record(state="tripped", percent=percent, reason=reason)
-        except CpuTelemetryError as exc:
-            reason = f"{reason}; {exc}"
+        except Exception as exc:  # noqa: BLE001 - stopping must survive required-log failure
+            detail = (
+                str(exc) if isinstance(exc, CpuTelemetryError) else type(exc).__name__
+            )
+            reason = f"{reason}; {detail}"
             _set_cpu_guard_trip(
                 reason,
                 reason_code="host_cpu_evidence_failed",
@@ -407,7 +755,8 @@ class HostCpuGuard:
             # same disk-pressure conditions in which fail-closed behavior is
             # most important.
             try:
-                os.kill(self.coordinator_pid, signal.SIGTERM)
+                if should_signal:
+                    _signal_resource_guard_if_active(self.coordinator_pid)
             except ProcessLookupError:
                 pass
 
@@ -415,11 +764,20 @@ class HostCpuGuard:
         while not self.stop_event.wait(self.sample_seconds):
             try:
                 self.sample_once()
-            except CpuTelemetryError as exc:
+            except Exception as exc:  # noqa: BLE001 - every required sampler failure stops work
+                evidence_failure = isinstance(exc, CpuEvidenceError)
+                detail = (
+                    str(exc)
+                    if isinstance(exc, CpuTelemetryError)
+                    else type(exc).__name__
+                )
                 self._trip(
-                    f"host CPU telemetry failed closed: {exc}",
-                    reason_code="host_cpu_telemetry_failed",
-                    telemetry_valid=False,
+                    f"host CPU telemetry failed closed: {detail}",
+                    reason_code="host_cpu_evidence_failed"
+                    if evidence_failure
+                    else "host_cpu_telemetry_failed",
+                    telemetry_valid=evidence_failure,
+                    evidence_valid=not evidence_failure,
                 )
                 return
             if _peek_cpu_guard_trip() is not None:
@@ -446,25 +804,19 @@ def run_cpu_guard_preflight(cpu_guard: HostCpuGuard) -> float:
     """Take the admission sample and preserve resource-guard exit semantics."""
     try:
         return cpu_guard.sample_once()
-    except CpuTelemetryError as exc:
-        reason = f"host CPU guard preflight failed closed: {exc}"
-        _set_cpu_guard_trip(
+    except Exception as exc:  # Admission has the same fail-closed contract.
+        evidence_failure = isinstance(exc, CpuEvidenceError)
+        detail = str(exc) if isinstance(exc, CpuTelemetryError) else type(exc).__name__
+        reason = f"host CPU guard preflight failed closed: {detail}"
+        cpu_guard._trip(
             reason,
-            reason_code="host_cpu_telemetry_failed",
-            telemetry_valid=False,
-            context=cpu_guard.incident_context,
+            reason_code="host_cpu_evidence_failed"
+            if evidence_failure
+            else "host_cpu_telemetry_failed",
+            telemetry_valid=evidence_failure,
+            evidence_valid=not evidence_failure,
+            signal_coordinator=False,
         )
-        try:
-            cpu_guard._write_record(state="tripped", reason=reason)
-        except CpuTelemetryError as log_exc:
-            reason = f"{reason}; {log_exc}"
-            _set_cpu_guard_trip(
-                reason,
-                reason_code="host_cpu_evidence_failed",
-                telemetry_valid=False,
-                evidence_valid=False,
-                context=cpu_guard.incident_context,
-            )
         raise CpuGuardTrip(reason) from exc
 
 
@@ -533,7 +885,7 @@ def resource_stop_record(
 ) -> dict[str, Any]:
     """Build the child-to-series typed stop contract after owned cleanup."""
     phase, active_operation, source = _resource_stop_phase(manifest, details.context)
-    return {
+    record = {
         "schema_version": 1,
         "reason_code": details.reason_code,
         "phase": phase,
@@ -551,6 +903,9 @@ def resource_stop_record(
         "recorded_at": utc_now(),
         "owned_processes_reaped": details.owned_processes_reaped,
     }
+    if details.reason_code.startswith("host_memory_"):
+        record["host_memory_pressure_level"] = details.host_memory_pressure_level
+    return record
 
 
 def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
@@ -561,9 +916,8 @@ def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
     reap any owned collector process group, then lets main persist an
     interrupted manifest before its lock context exits.
     """
-    cpu_guard_reason = _peek_cpu_guard_trip()
-    if cpu_guard_reason is not None:
-        raise CpuGuardTrip(cpu_guard_reason)
+    # A signal can interrupt the main thread while it owns the trip lock.
+    # Inspect recorded resource state only after ordinary stack unwinding.
     raise KeyboardInterrupt
 
 
@@ -587,6 +941,8 @@ def parse_iso8601(value: Any, *, field: str) -> datetime:
 
 
 def sha256_file(path: Path) -> str:
+    if poll_hook() is not None:
+        return run_artifact_compute(compute_root(path), "hash", {"path": str(path)})["sha256"]
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -697,7 +1053,14 @@ def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
     a replacement is therefore a fail-closed error, not a synchronization
     object we might accidentally trust.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = lock_path.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        raise LockHeldError("CRE lock parent directory is unsafe")
     sync_path = quarantine_recovery_sync_path(lock_path)
     descriptor = -1
     try:
@@ -1610,7 +1973,7 @@ class SharedLock:
 
     def _acquire_with_authority(self) -> None:
         try:
-            self.path.mkdir()
+            self.path.mkdir(mode=0o700)
             self._record_created_directory()
         except FileExistsError:
             raise LockHeldError("CRE lock directory changed before acquisition")
@@ -1637,6 +2000,13 @@ class SharedLock:
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
         self.directory_identity = _lock_directory_identity(self.path)
+        # Persist newly created authority/lock pathnames before admission.
+        # A failed acknowledgement leaves held=False and the crash fence armed.
+        parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         self.partial_directory_identity = None
         self.retain_on_exit = False
         self.held = True
@@ -1945,7 +2315,7 @@ class SharedLock:
     def release(self) -> None:
         try:
             directory_fd = self._owned_directory_fd()
-        except LockHeldError:
+        except (LockHeldError, OSError):
             directory_fd = -1
         try:
             try:
@@ -1976,7 +2346,51 @@ class SharedLock:
         self.acquire()
         return self
 
+    @_defer_cleanup_signals()
     def __exit__(self, _exc_type, _exc, _tb) -> None:
+        details = _peek_cpu_guard_trip_details()
+        # Finally blocks can replace an unknown-cleanup exception with an
+        # operator interrupt. Retain its uncertainty across that entire chain.
+        cleanup_unknown = _cleanup_unknown_in_chain(_exc)
+        if cleanup_unknown or (
+            details is not None and not details.owned_processes_reaped
+        ):
+            # Preserve the existing fail-closed operator recovery lease. A new
+            # foreground owner must not overlap a possibly surviving group.
+            self.retain_on_exit = True
+            directory_fd = -1
+            recovery_errors = []
+            try:
+                try:
+                    directory_fd = self._owned_directory_fd()
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                # Fence stale reclaim before the atomic lease rename. Failure
+                # of either independent record must not skip the other fence.
+                try:
+                    self._update_authority_generation(
+                        self.lease_token, recovery_required=True
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                if directory_fd >= 0:
+                    token = OPERATOR_RECOVERY_LEASE_PREFIX + secrets.token_urlsafe(32)
+                    try:
+                        self._replace_owned_lease(directory_fd, token)
+                        self.lease_token = token
+                        self.recovery_required = True
+                        self._update_authority_generation(token, recovery_required=True)
+                    except Exception as exc:  # noqa: BLE001
+                        recovery_errors.append(exc)
+            finally:
+                if directory_fd >= 0:
+                    os.close(directory_fd)
+                self.release()
+            if recovery_errors:
+                raise ProcessCleanupUnknown(
+                    "owned process cleanup_unknown; operator recovery evidence failed"
+                ) from recovery_errors[0]
+            return
         self.release()
 
 
@@ -2030,6 +2444,8 @@ def build_cohort_collect_worker_argv(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str],
+    daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> list[str]:
     """Build the no-manifest collection worker command for one source.
 
@@ -2058,7 +2474,8 @@ def build_cohort_collect_worker_argv(
         str(concurrency),
         "--transactions",
         "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
-    ]
+    ] + (["--admit-daum-verified-subset"] if daum_verified_subset else []) + (
+        ["--daum-subset-policy", daum_subset_policy] if daum_subset_policy != "tenure-only-v1" else [])
 
 
 def build_gate_argv(
@@ -2137,7 +2554,19 @@ def build_validate_argv(
     *,
     expected_db_target_sha256: str | None = None,
     expected_artifact_run_key: str | None = None,
+    expected_ingest_attempt: str | None = None,
+    profile: str = FULL_VALIDATION_PROFILE,
+    transwestern_image_state: bool = False,
 ) -> list[str]:
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation profile")
+    if profile != FULL_VALIDATION_PROFILE and expected_artifact_run_key is not None:
+        raise ValueError("artifact recovery requires full validation")
+    if transwestern_image_state and (
+        profile != FULL_VALIDATION_PROFILE or not expected_artifact_run_key
+        or not expected_db_target_sha256
+    ):
+        raise ValueError("Transwestern image state requires bound full validation")
     argv = [
         sys.executable,
         "cre_validate.py",
@@ -2152,6 +2581,14 @@ def build_validate_argv(
         argv.extend(["--expected-db-target-sha256", expected_db_target_sha256])
     if expected_artifact_run_key:
         argv.extend(["--expected-artifact-run-key", expected_artifact_run_key])
+    if expected_ingest_attempt is not None:
+        if not expected_artifact_run_key or not expected_db_target_sha256:
+            raise ValueError("ingest attempt requires bound recovery validation")
+        argv.extend(["--expected-ingest-attempt", expected_ingest_attempt])
+    if profile != FULL_VALIDATION_PROFILE:
+        argv.extend(["--profile", profile])
+    if transwestern_image_state:
+        argv.append("--transwestern-image-state")
     return argv
 
 
@@ -2175,6 +2612,8 @@ def fresh_source_env(
     generation_started_at: str | None = None,
     attempt_number: int = 1,
     collector_concurrency: int | None = None,
+    daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -2198,6 +2637,35 @@ def fresh_source_env(
                 return
             overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
+    for partial_source in PARTIAL_PAGE_SOURCES:
+        for partial_field in ("PATH", "ATTEMPT"):
+            name = partial_env_name(partial_source, partial_field)
+            if name in env:
+                clear(name)
+    if source in PARTIAL_PAGE_SOURCES:
+        from cre_partial_page_custody import expected_path
+        partial = expected_path(run_dir, attempt_number, source)
+        try:
+            directory = partial.parent.lstat()
+            if (stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
+                    and stat.S_IMODE(directory.st_mode) == 0o700
+                    and not os.path.lexists(partial)):
+                set_value(partial_env_name(source, "PATH"), str(partial))
+                set_value(partial_env_name(source, "ATTEMPT"), str(attempt_number))
+        except OSError:
+            pass
+
+    current_inventory.require(daum_subset_policy in current_inventory.DAUM_SUBSET_POLICIES)
+    current_inventory.require(daum_subset_policy == "tenure-only-v1" or daum_verified_subset)
+    if "DAUM_SUBSET_POLICY" in env:
+        clear("DAUM_SUBSET_POLICY")
+    clear("DAUM_VERIFIED_SUBSET")
+    if daum_verified_subset:
+        if source != "daum-commercial":
+            raise ValueError("DAUM subset environment requires the DAUM source")
+        set_value("DAUM_VERIFIED_SUBSET", "1")
+        if daum_subset_policy != "tenure-only-v1":
+            set_value("DAUM_SUBSET_POLICY", daum_subset_policy)
     set_value("CRE_REFRESH_GENERATION", run_dir.name)
     if generation_started_at:
         set_value("CRE_REFRESH_STARTED_AT", generation_started_at)
@@ -2277,7 +2745,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
+def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, Any]:
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -2350,6 +2818,15 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
                 f"{key[1]!r}"
             )
         merged[key] = merge_rows(merged[key], row) if key in merged else row
+    transaction_types = [row.get("transaction_type") for row in merged.values()]
+    breakdown = None
+    if all(kind in {"sale", "lease", "sale_or_lease"} for kind in transaction_types):
+        breakdown = {
+            "sale": sum(kind in {"sale", "sale_or_lease"} for kind in transaction_types),
+            "lease": sum(kind in {"lease", "sale_or_lease"} for kind in transaction_types),
+            "both": sum(kind == "sale_or_lease" for kind in transaction_types),
+            "measurement": "current_staged_inventory_transaction_types",
+        }
     return {
         "flat_listings": len(listings),
         "staged_unique": len(merged),
@@ -2358,7 +2835,22 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
         "detail_unavailable": detail_unavailable,
         "provisional_identities": provisional_identities,
         "inventory_only": len(inventory_only),
+        "transaction_breakdown": breakdown,
     }
+
+
+def pyramid_subset_authorized(config: Mapping[str, Any], source: str) -> bool:
+    return (source == "pyramid-brokerage"
+            and current_inventory.admission_configuration(config, source) == current_inventory.configuration(source))
+
+
+def pyramid_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (pyramid_subset_authorized(manifest["config"], source)
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("pyramid_subset") is True)
+
+
+def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return current_inventory.is_verified_subset(manifest["config"], source) or pyramid_subset_candidate(manifest, source)
 
 
 def validate_source_artifact(
@@ -2372,10 +2864,91 @@ def validate_source_artifact(
     expected_transactions: Sequence[str] = TRANSACTIONS,
     max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
+    daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
+) -> dict[str, Any]:
+    if not artifact_compute_enabled():
+        return _validate_source_artifact_local(
+            path, expected_source, attempt_started_at,
+            require_strict_freshness=require_strict_freshness,
+            expected_generation_id=expected_generation_id,
+            expected_generation_started_at=expected_generation_started_at,
+            expected_transactions=expected_transactions,
+            max_observation_age_hours=max_observation_age_hours, now=now,
+            daum_verified_subset=daum_verified_subset,
+            pyramid_subset_allowed=pyramid_subset_allowed,
+        )
+    def timestamp(value):
+        return value.isoformat() if isinstance(value, datetime) else value
+    return run_artifact_compute(compute_root(path), "validate", {
+        "path": str(path), "source": expected_source,
+        "attempt_started_at": timestamp(attempt_started_at),
+        "kwargs": {
+            "require_strict_freshness": require_strict_freshness,
+            "expected_generation_id": expected_generation_id,
+            "expected_generation_started_at": timestamp(expected_generation_started_at),
+            "expected_transactions": list(expected_transactions),
+            "max_observation_age_hours": max_observation_age_hours,
+            "now": timestamp(now),
+            "daum_verified_subset": daum_verified_subset,
+            "pyramid_subset_allowed": pyramid_subset_allowed,
+        },
+    })
+
+
+def _validate_source_artifact_local(
+    path: Path,
+    expected_source: str,
+    attempt_started_at: str | datetime,
+    *,
+    require_strict_freshness: bool = False,
+    expected_generation_id: str | None = None,
+    expected_generation_started_at: str | datetime | None = None,
+    expected_transactions: Sequence[str] = TRANSACTIONS,
+    max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
+    now: datetime | None = None,
+    daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if type(daum_verified_subset) is not bool:
+        raise ArtifactValidationError("invalid DAUM subset option")
+    daum_retained_unknown_ids = frozenset()
+    if daum_verified_subset:
+        if (
+            expected_source != "daum-commercial"
+            or tuple(expected_transactions) != TRANSACTIONS
+        ):
+            raise ArtifactValidationError(
+                "DAUM subset requires exact DAUM both-transaction scope"
+            )
+        from cre_daum_current_inventory import checkpoint_retained_unknown_ids
+
+        try:
+            daum_retained_unknown_ids = checkpoint_retained_unknown_ids(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError(
+                "DAUM subset structural evidence refused"
+            ) from exc
+    pyramid_partial = False
+    pyramid_incomplete_ids = set()
+    if expected_source == "pyramid-brokerage":
+        from cre_pyramid_current_inventory import INCOMPLETE_SCHEMA, SUBSET_SCHEMA, subset_source_scope
+        pyramid_partial = any(isinstance(entry, dict)
+            and isinstance(entry.get("currentInventoryProof"), dict)
+            and entry["currentInventoryProof"].get("schema") in (SUBSET_SCHEMA, INCOMPLETE_SCHEMA)
+            for entry in (data.get("sources") if isinstance(data.get("sources"), list) else []))
+        if pyramid_partial:
+            if not pyramid_subset_allowed:
+                raise ArtifactValidationError("Pyramid subset lacks current-inventory admission")
+            try:
+                subset_source_scope(data)
+                pyramid_incomplete_ids = {item["postId"] for entry in data["sources"]
+                    for item in entry["currentInventoryProof"].get("incomplete", [])}
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ArtifactValidationError("Pyramid subset structural evidence refused") from exc
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -2536,11 +3109,11 @@ def validate_source_artifact(
         if entry.get("error"):
             raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
         truncated = entry.get("truncated")
-        if truncated is True:
+        if truncated is True and not (daum_verified_subset or pyramid_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} reported truncated=true"
             )
-        if truncated is not False:
+        if truncated is not False and not (daum_verified_subset or pyramid_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} is missing explicit truncated=false"
             )
@@ -2575,8 +3148,13 @@ def validate_source_artifact(
                     f"{expected_source}/{tx} lacks current inventory observations"
                 )
             child_preservation_rows = metrics.get("childPreservationRows")
+            if daum_verified_subset and type(child_preservation_rows) is not int:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} has an invalid child-preservation count"
+                )
             if property_detail_freshness:
-                if child_preservation_rows not in {0, canonical_count}:
+                incomplete_rows = len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial else 0
+                if child_preservation_rows not in ({0, canonical_count, incomplete_rows} if pyramid_partial else {0, canonical_count}):
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} has partial child-preservation coverage"
                     )
@@ -2596,7 +3174,11 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
-            elif child_preservation_rows != 0:
+            elif child_preservation_rows != (
+                len(daum_retained_unknown_ids) if daum_verified_subset and tx == "sale"
+                else len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial
+                else 0
+            ):
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} must not preserve child collections"
                 )
@@ -2759,7 +3341,13 @@ def validate_source_artifact(
                         raise ArtifactValidationError(
                             f"listings[{index}] must preserve child collections"
                         )
-                elif preserves_children:
+                elif preserves_children and not (
+                    ((listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
+                     and listing.get("detailObservedWithChildPreservation") is True
+                     and bool((listing.get("missingFieldEvidence") or {}).get("fields")))
+                    or (daum_verified_subset and listing.get("transactionMode") == "sale"
+                        and listing.get("daumPostId") in daum_retained_unknown_ids)
+                ):
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
                     )
@@ -2822,6 +3410,15 @@ def validate_source_artifact(
         and not (expected_source in INVENTORY_ONLY_SOURCE_DEFINITIONS and not listings)
     ):
         raise ArtifactValidationError("artifact has no usable unique rows")
+    artifact_sha256 = sha256_file(path)
+    artifact_bytes = path.stat().st_size
+    breakdown = stats.get("transaction_breakdown")
+    if isinstance(breakdown, dict):
+        stats["transaction_breakdown"] = {
+            **breakdown, "source_key": expected_source,
+            "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes,
+            "generation_id": generation_id,
+        }
     return {
         **stats,
         "started_at": started.isoformat(),
@@ -2830,12 +3427,13 @@ def validate_source_artifact(
         "observation_cutoff_at": observation_cutoff.isoformat(),
         "strict_freshness": strict_freshness,
         "property_detail_freshness": property_detail_freshness,
+        **({"pyramid_subset": True} if pyramid_partial else {}),
         "freshness_generation_id": generation_id,
         "freshness_generation_started_at": (
             generation_started.isoformat() if generation_started is not None else None
         ),
-        "sha256": sha256_file(path),
-        "bytes": path.stat().st_size,
+        "sha256": artifact_sha256,
+        "bytes": artifact_bytes,
     }
 
 
@@ -2847,12 +3445,19 @@ def _mark_cpu_interrupt_evidence_failed(*, reaped: bool) -> None:
             if details is not None
             else "host CPU guard interruption evidence failed"
         ),
-        reason_code="host_cpu_evidence_failed",
+        reason_code=(
+            "host_memory_evidence_failed"
+            if details and details.reason_code.startswith("host_memory_")
+            else "host_cpu_evidence_failed"
+        ),
         telemetry_valid=(details.telemetry_valid if details is not None else False),
         evidence_valid=False,
         host_cpu_percent=(details.host_cpu_percent if details is not None else None),
         context=(details.context if details is not None else None),
         owned_processes_reaped=reaped,
+        host_memory_pressure_level=(
+            details.host_memory_pressure_level if details else None
+        ),
     )
 
 
@@ -2874,6 +3479,7 @@ def _run_logged_command(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
     reaped_after_interrupt = False
+    local_settlement_proved = False
     try:
         log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
         log.flush()
@@ -2890,70 +3496,101 @@ def _run_logged_command(
             text=True,
             start_new_session=True,
         )
+        owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
-            rc = proc.wait()
-        except KeyboardInterrupt as interrupted:
-            cleanup_errors: list[Exception] = []
-
-            def record_interrupt(message: str) -> None:
-                try:
-                    log.write(message)
-                    log.flush()
-                except (OSError, ValueError) as exc:
-                    cleanup_errors.append(exc)
-
-            record_interrupt(
-                f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
-            )
-            try:
-                os.killpg(proc.pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
-            except OSError as exc:
-                cleanup_errors.append(exc)
-            try:
-                proc.wait(timeout=COMMAND_INTERRUPT_GRACE_SECONDS)
-                reaped_after_interrupt = True
-            except subprocess.TimeoutExpired:
-                record_interrupt(
-                    f"[{utc_now()}] interrupt: killing process group {proc.pid}\n"
+            rc = wait_with_poll_hook(proc)
+        except BaseException as interrupted:
+            if not isinstance(interrupted, KeyboardInterrupt) and poll_hook() is None:
+                raise
+            with _defer_cleanup_signals():
+                resource_reason = _peek_cpu_guard_trip()
+                cleanup_interrupt = (
+                    CpuGuardTrip(resource_reason)
+                    if resource_reason is not None
+                    else interrupted
                 )
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError as exc:
-                    cleanup_errors.append(exc)
-                try:
-                    proc.wait()
-                    reaped_after_interrupt = True
-                except (ChildProcessError, OSError) as exc:
-                    cleanup_errors.append(exc)
-            except (ChildProcessError, OSError) as exc:
-                cleanup_errors.append(exc)
-            if cleanup_errors:
-                if isinstance(interrupted, CpuGuardTrip):
-                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                else:
-                    raise RefreshError(
-                        "interrupt cleanup or required evidence failed"
-                    ) from cleanup_errors[0]
-            raise
+                cleanup_errors: list[Exception] = []
+
+                def record_interrupt(message: str) -> None:
+                    try:
+                        log.write(message)
+                        log.flush()
+                    except (OSError, ValueError) as exc:
+                        cleanup_errors.append(exc)
+
+                record_interrupt(
+                    f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
+                )
+                settlement = settle_owned_groups(
+                    [owned_group], grace_seconds=COMMAND_INTERRUPT_GRACE_SECONDS
+                )
+                reaped_after_interrupt = settlement.settled
+                local_settlement_proved = settlement.settled
+                if settlement.settled:
+                    # Positive local evidence, independent of later log/observer
+                    # failures. Never an assertion about remote rollback.
+                    evidence = {
+                        "state": "confirmed",
+                        "groups": list(settlement.groups),
+                        "errors": list(settlement.errors),
+                    }
+                    interrupted.cre_local_settlement = evidence
+                    cleanup_interrupt.cre_local_settlement = evidence
+                record_interrupt(
+                    f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
+                )
+                if not settlement.settled:
+                    cleanup_errors.append(
+                        ProcessCleanupUnknown(
+                            f"owned process cleanup_unknown: {settlement.errors}"
+                        )
+                    )
+                if cleanup_errors:
+                    if isinstance(cleanup_interrupt, CpuGuardTrip):
+                        _mark_cpu_interrupt_evidence_failed(
+                            reaped=reaped_after_interrupt
+                        )
+                    else:
+                        error_type = (
+                            ProcessCleanupUnknown
+                            if not settlement.settled
+                            else RefreshError
+                        )
+                        raise error_type(
+                            "interrupt cleanup or required evidence failed; "
+                            + (
+                                "cleanup_unknown"
+                                if not settlement.settled
+                                else "local settlement proved"
+                            )
+                        ) from cleanup_errors[0]
+                raise cleanup_interrupt
+        _require_completed_group_settlement(owned_group)
+        local_settlement_proved = True
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
+    except (Exception, KeyboardInterrupt) as exc:
+        # This includes interruption inside Popen or before group registration,
+        # and unexpected wait failures. No child-ID reconstruction is safe.
+        if not local_settlement_proved and not _cleanup_unknown_in_chain(exc):
+            _raise_unsettled_dispatch(exc)
+        raise
     finally:
-        active_error = sys.exception()
-        try:
-            log.close()
-        except (OSError, ValueError) as close_exc:
-            if isinstance(active_error, CpuGuardTrip):
-                _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                raise active_error from close_exc
-            if isinstance(active_error, KeyboardInterrupt):
-                raise RefreshError(
-                    "interrupt cleanup or required evidence failed"
-                ) from close_exc
-            raise
+        with _defer_cleanup_signals():
+            active_error = sys.exception()
+            try:
+                log.close()
+            except (Exception, KeyboardInterrupt) as close_exc:
+                if isinstance(active_error, ProcessCleanupUnknown):
+                    raise active_error from close_exc
+                if isinstance(active_error, CpuGuardTrip):
+                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
+                    raise active_error from close_exc
+                if isinstance(active_error, KeyboardInterrupt):
+                    raise RefreshError(
+                        "interrupt cleanup or required evidence failed"
+                    ) from close_exc
+                raise
 
 
 def run_cohort_collection_worker(
@@ -2967,6 +3604,8 @@ def run_cohort_collection_worker(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str],
+    daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> int:
     """Collect one source without reading or writing a checkpoint manifest.
 
@@ -2982,6 +3621,8 @@ def run_cohort_collection_worker(
         generation_started_at=generation_started_at,
         attempt_number=attempt_number,
         collector_concurrency=concurrency,
+        daum_verified_subset=daum_verified_subset,
+        daum_subset_policy=daum_subset_policy,
     )
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
@@ -2999,8 +3640,11 @@ def run_cohort_collection_worker(
             "see sibling chunk logs for commands and output.\n",
             encoding="utf-8",
         )
-        return rc
-    return run_command(
+        return (
+            COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT
+            if rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE else rc
+        )
+    rc = run_command(
         build_collect_argv(
             source,
             output,
@@ -3011,6 +3655,13 @@ def run_cohort_collection_worker(
         attempt_log,
         env=env,
     )
+    if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
+        return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    if source == "pyramid-brokerage":
+        for status, exit_code in PYRAMID_DENIED_EXITS.items():
+            if rc == exit_code:
+                return COHORT_SETTLED_PYRAMID_DENIED_EXITS[status]
+    return rc
 
 
 @dataclass
@@ -3023,6 +3674,7 @@ class CohortCollectionProcess:
     tmp_artifact: Path
     attempt: dict[str, Any]
     attempt_started_at: str
+    owned_group: OwnedProcessGroup | None = None
 
 
 def source_worker_lanes(source: str) -> frozenset[str]:
@@ -3081,6 +3733,7 @@ def select_cohort_sources(
     return selected
 
 
+@_defer_cleanup_signals()
 def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> None:
     """Terminate every active source process group before releasing the lock."""
     processes = list(active)
@@ -3095,57 +3748,51 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(exc)
 
-    def process_is_running(item: CohortCollectionProcess) -> bool:
-        try:
-            return item.process.poll() is None
-        except Exception as exc:  # noqa: BLE001
-            cleanup_errors.append(exc)
-            return True
-
     for item in processes:
-        if not process_is_running(item):
-            continue
         record_log(
             item,
             f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n",
         )
-        try:
-            os.killpg(item.process.pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            cleanup_errors.append(exc)
+    settlement = settle_owned_groups(
+        [
+            item.owned_group or OwnedProcessGroup.from_spawn(item.process)
+            for item in processes
+        ],
+        grace_seconds=COHORT_INTERRUPT_GRACE_SECONDS,
+    )
+    nested_settlement_known = True
     for item in processes:
         try:
-            if process_is_running(item):
-                try:
-                    item.process.wait(timeout=COHORT_INTERRUPT_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    record_log(
-                        item,
-                        f"[{utc_now()}] interrupt: killing process group "
-                        f"{item.process.pid}\n",
-                    )
-                    try:
-                        os.killpg(item.process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append(exc)
-                    try:
-                        item.process.wait()
-                    except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append(exc)
-                except Exception as exc:  # noqa: BLE001
-                    cleanup_errors.append(exc)
-        finally:
-            try:
-                item.log_handle.close()
-            except Exception as exc:  # noqa: BLE001
-                cleanup_errors.append(exc)
+            nested_settlement_known &= (
+                item.process.returncode in COHORT_SETTLED_EXIT_CODES
+            )
+        except (Exception, KeyboardInterrupt):  # noqa: BLE001 - missing proof stays unknown
+            nested_settlement_known = False
+    for item in processes:
+        record_log(
+            item,
+            f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n",
+        )
+        try:
+            item.log_handle.close()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(exc)
+    if not settlement.settled or not nested_settlement_known:
+        _mark_cpu_interrupt_evidence_failed(reaped=False)
+        cleanup_errors.append(
+            ProcessCleanupUnknown(
+                f"owned process cleanup_unknown: {settlement.errors}; "
+                f"nested settlement known={nested_settlement_known}"
+            )
+        )
     if cleanup_errors:
         first_error = cleanup_errors[0]
-        raise RefreshError(
+        error_type = (
+            ProcessCleanupUnknown
+            if not settlement.settled or not nested_settlement_known
+            else RefreshError
+        )
+        raise error_type(
             "cohort cleanup completed with failed process or log evidence: "
             f"{first_error}"
         ) from first_error
@@ -3176,7 +3823,17 @@ def _cohort_attempt(
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
     tmp_artifact = run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
-    tmp_artifact.unlink(missing_ok=True)
+    evidence_config = manifest["config"].get("automatic_source_evidence")
+    evidence_enabled = bool(evidence_config and source in evidence_config["source_keys"])
+    if evidence_enabled:
+        if os.path.lexists(tmp_artifact):
+            raise RefreshError("automatic evidence attempt path already exists")
+    else:
+        tmp_artifact.unlink(missing_ok=True)
+    partial_state = None
+    if source in PARTIAL_PAGE_SOURCES:
+        from cre_partial_page_custody import prepare
+        partial_state = prepare(run_dir, attempt_number, source)
     attempt = {
         "number": attempt_number,
         "started_at": attempt_started,
@@ -3184,6 +3841,7 @@ def _cohort_attempt(
         "rc": None,
         "log": _relative_to_run(attempt_log, run_dir),
         "temporary_artifact": _relative_to_run(tmp_artifact, run_dir),
+        **({f"{source}_partial": partial_state} if partial_state is not None else {}),
         "freshness_overrides": {
             key: ("<run-local-path>" if str(run_dir) in value else value)
             for key, value in fresh_source_env(
@@ -3192,16 +3850,27 @@ def _cohort_attempt(
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
                 collector_concurrency=collector_concurrency,
+                daum_verified_subset=current_inventory.is_verified_subset(
+                    manifest["config"], source
+                ),
+                daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
             )[1].items()
         },
         "rejected_artifact": None,
+        "rejected_artifact_sha256": None,
         "error": None,
     }
     if source == "colliers-main":
         # The worker does not write the manifest, including incremental chunks.
         attempt["chunks"] = []
+    if evidence_enabled:
+        from source_evidence import automatic
+        automatic.mark_attempt(manifest, source, attempt, _relative_to_run(tmp_artifact, run_dir))
+        from source_evidence import native_pages
+        native_pages.mark(run_dir, manifest, source, attempt)
     checkpoint["attempts"].append(attempt)
     checkpoint["state"] = "collecting"
+    checkpoint.pop("pipeline_stage", None)
     save_manifest(run_dir, manifest)
     return attempt, tmp_artifact, attempt_log, attempt_started
 
@@ -3234,16 +3903,24 @@ def _start_cohort_collection(
         page_cap=page_cap,
         concurrency=concurrency,
         transactions=tuple(manifest["config"]["transactions"]),
+        daum_verified_subset=current_inventory.is_verified_subset(
+            manifest["config"], source
+        ),
+        daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
     )
     attempt_log.parent.mkdir(parents=True, exist_ok=True)
     log_handle = attempt_log.open("a", encoding="utf-8")
     log_handle.write(f"[{utc_now()}] coordinator worker: {' '.join(argv)}\n")
     log_handle.flush()
     try:
+        worker_env = safe_process_env()
+        from source_evidence import native_pages
+        native_pages.configure_worker_env(worker_env, run_dir, source, attempt,
+                                          manifest["config"].get("automatic_source_evidence") or {})
         process = subprocess.Popen(
             argv,
             cwd=COLLECTOR_DIR,
-            env=safe_process_env(),
+            env=worker_env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             text=True,
@@ -3265,19 +3942,53 @@ def _start_cohort_collection(
         tmp_artifact=tmp_artifact,
         attempt=attempt,
         attempt_started_at=attempt_started,
+        owned_group=OwnedProcessGroup.from_spawn(process),
     )
+
+
+def make_private_artifact(path: Path) -> None:
+    """Tighten only a singly linked owned regular file, without following aliases."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        opened = os.fstat(descriptor)
+        named = path.lstat()
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                or opened.st_nlink != 1 or not stat.S_ISREG(named.st_mode)
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            raise ArtifactValidationError("artifact publication requires an owned, singly linked regular file")
+        os.fchmod(descriptor, 0o600)
+        after = os.fstat(descriptor)
+        named = path.lstat()
+        if (after.st_nlink != 1 or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
+                or stat.S_IMODE(after.st_mode) != 0o600):
+            raise ArtifactValidationError("artifact changed during private publication")
+    except OSError as exc:
+        raise ArtifactValidationError("artifact private publication refused") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _finalize_cohort_collection(
     run_dir: Path,
     manifest: dict[str, Any],
     item: CohortCollectionProcess,
+    *,
+    candidate_only: bool = False,
 ) -> bool:
     """Validate and publish a completed source worker's artifact centrally."""
     checkpoint = manifest["sources"][item.source]
     rc = item.process.poll()
     if rc is None:
         raise RuntimeError("cannot finalize a running cohort source worker")
+    _require_completed_group_settlement(
+        item.owned_group or OwnedProcessGroup.from_spawn(item.process)
+    )
+    if rc not in COHORT_SETTLED_EXIT_CODES:
+        raise ProcessCleanupUnknown(
+            f"cohort worker exit {rc} does not prove nested command settlement"
+        )
     recorded_attempts = checkpoint.get("attempts") or []
     recorded_attempt = recorded_attempts[-1] if recorded_attempts else None
     owns_completion = (
@@ -3302,14 +4013,78 @@ def _finalize_cohort_collection(
     item.log_handle.close()
     item.attempt["rc"] = rc
     item.attempt["finished_at"] = utc_now()
+    mark_source_document_settlement(manifest, item.attempt)
+    if item.attempt.get("native_source_evidence"):
+        from source_evidence import native_pages
+        native_pages.settle(run_dir, manifest, item.source, item.attempt, save_manifest)
     if rc != 0:
         item.attempt["error"] = f"collector exited {rc}"
-        item.attempt["rejected_artifact"] = _archive_rejected(
-            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        (
+            item.attempt["rejected_artifact"],
+            item.attempt["rejected_artifact_sha256"],
+        ) = archive_rejected_with_evidence(
+            item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
+        seal_source_evidence(run_dir, manifest, item.source, item.attempt,
+                             run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
         checkpoint["state"] = "collect_failed"
+        terminal = None
+        if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+            terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+        elif item.source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT:
+            terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+        elif item.source == "pyramid-brokerage":
+            for status, exit_code in COHORT_SETTLED_PYRAMID_DENIED_EXITS.items():
+                if rc == exit_code:
+                    terminal = {"code": PYRAMID_DENIED_FAILURE_CODE, "http_status": status}
+                    break
+        if terminal is not None:
+            terminal["attempt_number"] = item.attempt["number"]
+            item.attempt["terminal_failure"] = terminal
+            checkpoint["terminal_collection_failure"] = terminal
+            item.attempt["error"] = (
+                "typed terminal required-detail HTTP 404; see private attempt log"
+                if item.source == "avison-young"
+                else "typed terminal Pyramid access denial; see private attempt log"
+                if item.source == "pyramid-brokerage"
+                else "typed terminal browser bootstrap HTTP 403; see private attempt log"
+            )
         save_manifest(run_dir, manifest)
         return False
+    try:
+        if not item.tmp_artifact.exists() and not item.tmp_artifact.is_symlink():
+            seal_source_evidence(run_dir, manifest, item.source, item.attempt, item.tmp_artifact)
+        make_private_artifact(item.tmp_artifact)
+    except ArtifactValidationError as exc:
+        refuse_unsafe_source_evidence(run_dir, manifest, item.source, item.attempt)
+        checkpoint["state"] = "artifact_rejected"
+        item.attempt["error"] = str(exc)
+        save_manifest(run_dir, manifest)
+        return False
+    seal_source_evidence(run_dir, manifest, item.source, item.attempt, item.tmp_artifact)
+    if candidate_only:
+        if item.tmp_artifact.is_symlink() or not item.tmp_artifact.is_file():
+            checkpoint["state"] = "artifact_rejected"
+            item.attempt["error"] = "collector did not publish a regular candidate"
+            save_manifest(run_dir, manifest)
+            return False
+        canonical = run_dir / "sources" / f"{item.source}.json"
+        os.replace(item.tmp_artifact, canonical)
+        make_private_artifact(canonical)
+        if item.source in PARTIAL_PAGE_SOURCES:
+            settle_partial_pages(run_dir, item.attempt, canonical, item.source)
+        identity = canonical.stat()
+        checkpoint["candidate"] = {
+            "path": _relative_to_run(canonical, run_dir),
+            "attempt_started_at": item.attempt_started_at,
+            "attempt_number": item.attempt["number"],
+            "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                              identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size,
+        }
+        checkpoint["state"] = "candidate"
+        save_manifest(run_dir, manifest)
+        return True
     try:
         generation_bound = (
             item.source in STRICT_FRESHNESS_SOURCE_KEYS
@@ -3325,17 +4100,27 @@ def _finalize_cohort_collection(
                 manifest["started_at"] if generation_bound else None
             ),
             expected_transactions=tuple(manifest["config"]["transactions"]),
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], item.source
+            ),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], item.source),
         )
     except ArtifactValidationError as exc:
         item.attempt["error"] = str(exc)
-        item.attempt["rejected_artifact"] = _archive_rejected(
-            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        (
+            item.attempt["rejected_artifact"],
+            item.attempt["rejected_artifact_sha256"],
+        ) = archive_rejected_with_evidence(
+            item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
         checkpoint["state"] = "artifact_rejected"
         save_manifest(run_dir, manifest)
         return False
     canonical = run_dir / "sources" / f"{item.source}.json"
     os.replace(item.tmp_artifact, canonical)
+    make_private_artifact(canonical)
+    if item.source in PARTIAL_PAGE_SOURCES:
+        settle_partial_pages(run_dir, item.attempt, canonical, item.source)
     stats["sha256"] = sha256_file(canonical)
     stats["bytes"] = canonical.stat().st_size
     checkpoint["artifact"] = {
@@ -3415,16 +4200,26 @@ def new_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
-    source_workers: int = 1,
+    source_workers: int | None = None,
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
+    memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
+    admit_current_inventory_source: str | None = None,
+    admit_daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
+    pipeline: bool = False,
+    admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
+    automatic_source_evidence: Mapping[str, Any] | None = None,
+    source_document_acquisition: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    source_workers = resolve_source_workers(pipeline, source_workers)
     now = utc_now()
-    return {
+    manifest = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_dir.name,
         "status": "running",
@@ -3456,6 +4251,9 @@ def new_manifest(
                 "action": "interrupt_and_checkpoint",
                 "telemetry_failure_action": "interrupt_and_checkpoint",
             },
+            "host_memory_guard": memory_guard_config(
+                memory_sustain_seconds, memory_sample_seconds
+            ),
             "additive": True,
             "status_activation": False,
             "mark_missing": False,
@@ -3482,6 +4280,62 @@ def new_manifest(
         "error": None,
     }
 
+    if pipeline:
+        manifest["config"]["pipeline"] = True
+        current_inventory.validate_options(
+            admit_current_inventory_sources,
+            sources,
+            transactions,
+            pipeline=True,
+            daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=git_dirty,
+        )
+        manifest["config"]["current_inventory_admissions"] = (
+            current_inventory.configuration_map(
+            admit_current_inventory_sources,
+                sources,
+                daum_verified_subset=admit_daum_verified_subset,
+                daum_subset_policy=daum_subset_policy,
+            )
+        )
+    if admit_daum_verified_subset:
+        current_inventory.validate_options(
+            [admit_current_inventory_source] if admit_current_inventory_source else [],
+            sources,
+            transactions,
+            pipeline=pipeline,
+            additive_hold=admit_baseline_hold_additively,
+            daum_verified_subset=True,
+            daum_subset_policy=daum_subset_policy,
+            allow_dirty=git_dirty,
+        )
+        if not pipeline:
+            manifest["config"]["current_inventory_admission"] = (
+                current_inventory.subset_configuration(daum_subset_policy)
+            )
+    if admit_current_inventory_source is not None:
+        current_inventory.validate_option(
+            admit_current_inventory_source,
+            sources,
+            transactions,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=git_dirty,
+        )
+        manifest["config"]["current_inventory_admission"] = (
+            current_inventory.configuration(admit_current_inventory_source)
+        )
+    if admit_daum_verified_subset:
+        manifest["scope"].update(
+            kind="collector_registry_verified_subset", whole_source_coverage=False
+        )
+    if automatic_source_evidence is not None:
+        manifest["config"]["automatic_source_evidence"] = dict(automatic_source_evidence)
+    if source_document_acquisition is not None:
+        manifest["config"]["source_document_acquisition"] = dict(source_document_acquisition)
+    return manifest
+
 
 def load_resume_manifest(
     manifest_path: Path,
@@ -3490,21 +4344,39 @@ def load_resume_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
-    source_workers: int = 1,
+    source_workers: int | None = None,
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
+    memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
+    admit_current_inventory_source: str | None = None,
+    admit_daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
+    pipeline: bool = False,
+    admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
+    automatic_source_evidence: Mapping[str, Any] | None = None,
+    source_document_acquisition: Mapping[str, Any] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    source_workers = resolve_source_workers(pipeline, source_workers)
     value = _load_json(manifest_path)
+    if "cleanup_unknown" in str(value.get("error", "")) or (
+        (value.get("resource_stop") or {}).get("owned_processes_reaped") is False
+    ):
+        raise ProcessCleanupUnknown(
+            "manual owned-process settlement required before resume"
+        )
     if value.get("schema_version") != SCHEMA_VERSION:
         raise RefreshError("unsupported checkpoint manifest schema")
     if value.get("collector_git_sha") != git_sha:
         raise RefreshError("cannot resume with a different collector Git SHA")
+    if pipeline and value.get("pipeline"):
+        raise GlobalStageError("pipeline resume requires manual exact-generation reconciliation; no mixed-stage replay")
     expected = {
         "sources": list(sources),
         "transactions": list(transactions),
@@ -3519,11 +4391,60 @@ def load_resume_manifest(
             "action": "interrupt_and_checkpoint",
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
+        "host_memory_guard": memory_guard_config(
+            memory_sustain_seconds, memory_sample_seconds
+        ),
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
+    if automatic_source_evidence is not None:
+        expected["automatic_source_evidence"] = dict(automatic_source_evidence)
+    if source_document_acquisition is not None:
+        expected["source_document_acquisition"] = dict(source_document_acquisition)
+    if pipeline:
+        expected["pipeline"] = True
+        current_inventory.validate_options(
+            admit_current_inventory_sources,
+            sources,
+            transactions,
+            pipeline=True,
+            daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=False,
+        )
+        expected["current_inventory_admissions"] = current_inventory.configuration_map(
+            admit_current_inventory_sources,
+            sources,
+            daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
+        )
+    if admit_daum_verified_subset:
+        current_inventory.validate_options(
+            [admit_current_inventory_source] if admit_current_inventory_source else [],
+            sources,
+            transactions,
+            pipeline=pipeline,
+            additive_hold=admit_baseline_hold_additively,
+            daum_verified_subset=True,
+            daum_subset_policy=daum_subset_policy,
+        )
+        if not pipeline:
+            expected["current_inventory_admission"] = (
+                current_inventory.subset_configuration(daum_subset_policy)
+            )
+    if admit_current_inventory_source is not None:
+        current_inventory.validate_option(
+            admit_current_inventory_source,
+            sources,
+            transactions,
+            additive_hold=admit_baseline_hold_additively,
+        )
+        expected["current_inventory_admission"] = current_inventory.configuration(
+            admit_current_inventory_source
+        )
     recorded_config = dict(value.get("config") or {})
     # Checkpoints created before these config blocks retain their exact prior
     # contracts. Normalize in memory for comparison and for the next canonical
@@ -3542,6 +4463,12 @@ def load_resume_manifest(
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
     )
+    if sys.platform.startswith("linux") and "host_memory_guard" not in recorded_config:
+        # An absent Linux block cannot establish which versioned policy ran.
+        raise RefreshError(
+            "resume configuration differs: Linux memory policy is missing"
+        )
+    recorded_config.setdefault("host_memory_guard", memory_guard_config())
     if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")
     value["config"] = recorded_config
@@ -3644,15 +4571,159 @@ def _relative_to_run(path: Path, run_dir: Path) -> str:
     return str(path.relative_to(run_dir))
 
 
+def seal_source_evidence(run_dir: Path, manifest: dict, source: str, attempt: dict, artifact: Path) -> None:
+    if "automatic_source_evidence" not in manifest["config"]:
+        return
+    from source_evidence import automatic
+    if git_identity() != (manifest["collector_git_sha"], False):
+        attempt["source_evidence"] = {"state": "refused", "reason": "collector_identity_changed"}
+        manifest["automatic_source_evidence_paused"] = True
+    else:
+        was_paused = manifest.get("automatic_source_evidence_paused", False)
+        automatic.seal(run_dir, manifest, source, attempt, artifact)
+        native = attempt.get("native_source_evidence") or {}
+        if (not was_paused and (attempt.get("source_evidence") or {}).get("state") == "refused"
+                and any(page.get("state") == "pending" for page in native.get("pages", []))):
+            manifest["automatic_source_evidence_paused"] = False
+    save_manifest(run_dir, manifest)
+
+
+def refuse_unsafe_source_evidence(run_dir: Path, manifest: dict, source: str, attempt: dict) -> None:
+    config = manifest["config"].get("automatic_source_evidence")
+    state = attempt.get("source_evidence") or {}
+    if not config or source not in config["source_keys"] or state.get("state") not in (None, "awaiting_artifact"):
+        return
+    attempt["source_evidence"] = {"state": "refused", "reason": "unsafe_artifact"}
+    if not any(page.get("state") == "pending" for page in (attempt.get("native_source_evidence") or {}).get("pages", [])):
+        manifest["automatic_source_evidence_paused"] = True
+    manifest["automatic_source_evidence_status"] = "incomplete"
+    save_manifest(run_dir, manifest)
+
+
+def settle_partial_pages(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre") -> None:
+    """Keep large collector JSON parsing outside a pipeline coordinator."""
+    if not isinstance(attempt.get(f"{source}_partial"), dict):
+        return
+    from cre_partial_page_custody import settle
+    if main is not None and main.is_file() and artifact_compute_enabled():
+        try:
+            result = run_artifact_compute(run_dir, "partial_pages", {
+                "path": str(main), "run_dir": str(run_dir), "attempt": attempt, "source": source,
+            })
+            state = result.get(f"{source}_partial")
+            if not isinstance(state, dict) or state.get("path") != attempt[f"{source}_partial"].get("path"):
+                raise ValueError("partial sidecar identity changed")
+            attempt[f"{source}_partial"] = state
+        except CpuTelemetryError:
+            raise
+        except (OSError, GlobalStageError, ArtifactValidationError, ValueError, TypeError, KeyError):
+            attempt[f"{source}_partial"]["state"] = "unverified"
+        return
+    settle(run_dir, attempt, main, source)
+
+
+def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: dict,
+                                   source: str, attempt: dict) -> tuple[str | None, str | None]:
+    try:
+        result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
+        if source in PARTIAL_PAGE_SOURCES:
+            settle_partial_pages(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
+        return result
+    except ArtifactValidationError:
+        refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
+        raise
+
+
+def save_foreground_evidence(run_dir: Path, manifest: dict) -> None:
+    """Persist work, then honor a sticky watchdog trip before more foreground I/O.
+
+    Owned-process cleanup briefly defers signals. Watchdogs still record their
+    trip, so a signal deferred in that window must not permit another request.
+    Terminal/error publication continues to use save_manifest directly.
+    """
+    save_manifest(run_dir, manifest)
+    reason = _peek_cpu_guard_trip()
+    if reason is not None:
+        raise CpuGuardTrip(reason)
+
+
+def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
+    if "automatic_source_evidence" not in manifest["config"]:
+        return
+    from source_evidence import automatic, guarded_fence
+    try:
+        guarded_fence.require_clear(canonical_shared_lock_dir())
+    except (OSError, ValueError):
+        manifest["automatic_source_evidence_paused"] = True
+        manifest["automatic_source_evidence_status"] = "incomplete"
+        save_manifest(run_dir, manifest)
+        return
+    if git_identity() != (manifest["collector_git_sha"], False):
+        manifest["automatic_source_evidence_paused"] = True
+        save_manifest(run_dir, manifest)
+        return
+    automatic.pump(run_dir, manifest, save_foreground_evidence)
+
+
+def mark_source_document_settlement(manifest: dict, attempt: dict) -> None:
+    """Record only after the owned collection command/group has actually settled."""
+    if not manifest["config"].get("source_document_acquisition"):
+        return
+    if type(attempt.get("rc")) is not int or not attempt.get("finished_at"):
+        raise GlobalStageError("document collection settlement is unavailable")
+    attempt["document_collection_settlement"] = {
+        "schema_version": "cre-document-collection-settlement/v1",
+        "attempt_number": attempt["number"], "collector_git_sha": manifest["collector_git_sha"],
+        "rc": attempt["rc"], "finished_at": attempt["finished_at"],
+    }
+
+
+def pump_source_documents(run_dir: Path, manifest: dict, *, owner_check) -> None:
+    """Drain only on the outer foreground lane after collection/DB workers return."""
+    if not manifest["config"].get("source_document_acquisition"):
+        return
+    owner_check()
+    if git_identity() != (manifest["collector_git_sha"], False):
+        manifest["source_document_acquisition_paused"] = True
+        manifest["source_document_acquisition_status"] = "incomplete"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("document collector identity changed")
+    from source_evidence import document_automatic
+    try:
+        document_automatic.pump(run_dir, manifest, save_foreground_evidence)
+        evidence = manifest["config"].get("automatic_source_evidence") or {}
+        formats = evidence.get("document_text_formats", {})
+        if formats:
+            from source_evidence import document_jobs
+            for source, checkpoint in manifest["sources"].items():
+                if formats.get(source) != document_jobs.FORMAT:
+                    continue
+                for attempt in checkpoint.get("attempts", []):
+                    for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
+                        if document.get("state") == "extraction_sealed":
+                            owner_check()
+                            document_jobs.mark(run_dir, manifest, source, attempt, document, save_foreground_evidence)
+            owner_check()
+            # Reuse the existing role/transport-guarded foreground writer. Its
+            # exact replays precede all ordinary collector/native/document jobs.
+            pump_source_evidence(run_dir, manifest)
+    finally:
+        owner_check()
+
+
 def _archive_rejected(
     tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int
-) -> str | None:
+) -> tuple[str | None, str | None]:
+    if tmp_artifact.is_symlink():
+        raise ArtifactValidationError("artifact private publication refused")
     if not tmp_artifact.exists():
-        return None
+        return None, None
+    make_private_artifact(tmp_artifact)
+    artifact_sha256 = sha256_file(tmp_artifact)
     rejected = run_dir / "rejected" / f"{source}-attempt-{attempt_number}.json"
     rejected.parent.mkdir(parents=True, exist_ok=True)
     os.replace(tmp_artifact, rejected)
-    return _relative_to_run(rejected, run_dir)
+    return _relative_to_run(rejected, run_dir), artifact_sha256
 
 
 def _checkpoint_artifact_valid(
@@ -3662,6 +4733,8 @@ def _checkpoint_artifact_valid(
     generation_started_at: str | datetime | None = None,
     *,
     transactions: Sequence[str] = TRANSACTIONS,
+    daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
 ) -> tuple[Path, dict[str, Any]] | None:
     artifact_info = checkpoint.get("artifact")
     if not isinstance(artifact_info, dict):
@@ -3691,8 +4764,12 @@ def _checkpoint_artifact_valid(
                 generation_started_at if generation_bound else None
             ),
             expected_transactions=transactions,
+            daum_verified_subset=daum_verified_subset,
+            pyramid_subset_allowed=pyramid_subset_allowed,
         )
     except ArtifactValidationError:
+        return None
+    if artifact_compute_enabled() and stats.get("sha256") != expected_hash:
         return None
     return path, stats
 
@@ -3710,6 +4787,8 @@ def _manifest_checkpoint_artifact_valid(
             checkpoint,
             source,
             manifest["started_at"],
+            daum_verified_subset=current_inventory.is_verified_subset(manifest["config"], source),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
     return _checkpoint_artifact_valid(
         run_dir,
@@ -3838,6 +4917,16 @@ def collect_colliers_main_chunks(
     )
 
 
+def has_terminal_collection_failure(source: str, checkpoint: Mapping[str, Any]) -> bool:
+    terminal = checkpoint.get("terminal_collection_failure")
+    return isinstance(terminal, Mapping) and (
+        (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
+        or (source == "colliers-main" and terminal.get("code") == COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE)
+        or (source == "pyramid-brokerage" and terminal.get("code") == PYRAMID_DENIED_FAILURE_CODE
+            and terminal.get("http_status") in (401, 403))
+    )
+
+
 def collect_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -3849,6 +4938,8 @@ def collect_source(
     attempts_this_run: int,
 ) -> tuple[Path, dict[str, Any]] | None:
     checkpoint = manifest["sources"][source]
+    if has_terminal_collection_failure(source, checkpoint):
+        return None
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if existing:
         return existing
@@ -3867,20 +4958,35 @@ def collect_source(
 
     canonical = run_dir / "sources" / f"{source}.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
-    tmp_artifact = canonical.with_suffix(".json.tmp")
     for _ in range(attempts_this_run):
         attempt_number = len(checkpoint["attempts"]) + 1
+        evidence_config = manifest["config"].get("automatic_source_evidence")
+        evidence_enabled = bool(evidence_config and source in evidence_config["source_keys"])
+        tmp_artifact = (run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
+                        if evidence_enabled else canonical.with_suffix(".json.tmp"))
         attempt_started = utc_now()
         attempt_log = (
             run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
         )
-        tmp_artifact.unlink(missing_ok=True)
+        if evidence_enabled:
+            if os.path.lexists(tmp_artifact):
+                raise RefreshError("automatic evidence attempt path already exists")
+        else:
+            tmp_artifact.unlink(missing_ok=True)
+        partial_state = None
+        if source in PARTIAL_PAGE_SOURCES:
+            from cre_partial_page_custody import prepare
+            partial_state = prepare(run_dir, attempt_number, source)
         env, overrides = fresh_source_env(
             source,
             run_dir,
             generation_started_at=manifest["started_at"],
             attempt_number=attempt_number,
             collector_concurrency=concurrency,
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], source
+            ),
+            daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
         )
         attempt = {
             "number": attempt_number,
@@ -3888,18 +4994,29 @@ def collect_source(
             "finished_at": None,
             "rc": None,
             "log": _relative_to_run(attempt_log, run_dir),
+            "temporary_artifact": _relative_to_run(tmp_artifact, run_dir),
             "freshness_overrides": {
                 key: ("<run-local-path>" if str(run_dir) in value else value)
                 for key, value in overrides.items()
             },
             "rejected_artifact": None,
+            "rejected_artifact_sha256": None,
             "error": None,
+            **({f"{source}_partial": partial_state} if partial_state is not None else {}),
         }
         if source == "colliers-main":
             # Preserve the durable progression of each short-lived Node
             # process. The run-local detail cache makes an interrupted attempt
             # resumable even before a complete artifact exists.
             attempt["chunks"] = []
+        if evidence_enabled:
+            from source_evidence import automatic
+            attempt["temporary_artifact"] = _relative_to_run(tmp_artifact, run_dir)
+            automatic.mark_attempt(manifest, source, attempt, attempt["temporary_artifact"])
+            from source_evidence import native_pages
+            native_pages.mark(run_dir, manifest, source, attempt)
+        from source_evidence import native_pages
+        native_pages.configure_worker_env(env, run_dir, source, attempt, evidence_config or {})
         checkpoint["attempts"].append(attempt)
         checkpoint["state"] = "collecting"
         save_manifest(run_dir, manifest)
@@ -3942,15 +5059,53 @@ def collect_source(
             )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
+        mark_source_document_settlement(manifest, attempt)
+        if attempt.get("native_source_evidence"):
+            from source_evidence import native_pages
+            native_pages.settle(run_dir, manifest, source, attempt, save_manifest)
         if rc != 0:
             attempt["error"] = collection_error or f"collector exited {rc}"
-            attempt["rejected_artifact"] = _archive_rejected(
-                tmp_artifact, run_dir, source, attempt_number
+            (
+                attempt["rejected_artifact"],
+                attempt["rejected_artifact_sha256"],
+            ) = archive_rejected_with_evidence(
+                tmp_artifact, run_dir, manifest, source, attempt
             )
+            seal_source_evidence(run_dir, manifest, source, attempt,
+                                 run_dir / attempt["rejected_artifact"] if attempt["rejected_artifact"] else tmp_artifact)
+            pump_source_evidence(run_dir, manifest)
             checkpoint["state"] = "collect_failed"
+            terminal = None
+            if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
+                terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+            elif source == "colliers-main" and rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE:
+                terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+            elif source == "pyramid-brokerage":
+                for status, exit_code in PYRAMID_DENIED_EXITS.items():
+                    if rc == exit_code:
+                        terminal = {"code": PYRAMID_DENIED_FAILURE_CODE, "http_status": status}
+                        break
+            if terminal is not None:
+                terminal["attempt_number"] = attempt_number
+                attempt["terminal_failure"] = terminal
+                checkpoint["terminal_collection_failure"] = terminal
+                attempt["error"] = (
+                    "typed terminal required-detail HTTP 404; see private attempt log"
+                    if source == "avison-young"
+                    else "typed terminal Pyramid access denial; see private attempt log"
+                    if source == "pyramid-brokerage"
+                    else "typed terminal browser bootstrap HTTP 403; see private attempt log"
+                )
+                save_manifest(run_dir, manifest)
+                return None
             save_manifest(run_dir, manifest)
             continue
         try:
+            if not tmp_artifact.exists() and not tmp_artifact.is_symlink():
+                seal_source_evidence(run_dir, manifest, source, attempt, tmp_artifact)
+            make_private_artifact(tmp_artifact)
+            seal_source_evidence(run_dir, manifest, source, attempt, tmp_artifact)
+            pump_source_evidence(run_dir, manifest)
             generation_bound = (
                 source in STRICT_FRESHNESS_SOURCE_KEYS
                 or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -3965,16 +5120,28 @@ def collect_source(
                     manifest["started_at"] if generation_bound else None
                 ),
                 expected_transactions=transactions,
+                daum_verified_subset=current_inventory.is_verified_subset(
+                    manifest["config"], source
+                ),
+                pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
             )
         except ArtifactValidationError as exc:
+            refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
             attempt["error"] = str(exc)
-            attempt["rejected_artifact"] = _archive_rejected(
-                tmp_artifact, run_dir, source, attempt_number
+            (
+                attempt["rejected_artifact"],
+                attempt["rejected_artifact_sha256"],
+            ) = archive_rejected_with_evidence(
+                tmp_artifact, run_dir, manifest, source, attempt
             )
             checkpoint["state"] = "artifact_rejected"
             save_manifest(run_dir, manifest)
-            continue
+            # The completed artifact is rejected, not a retryable process exit.
+            return None
         os.replace(tmp_artifact, canonical)
+        make_private_artifact(canonical)
+        if source in PARTIAL_PAGE_SOURCES:
+            settle_partial_pages(run_dir, attempt, canonical, source)
         stats["sha256"] = sha256_file(canonical)
         stats["bytes"] = canonical.stat().st_size
         checkpoint["artifact"] = {
@@ -4003,13 +5170,82 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
     )
 
 
-def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
+def gate_verdict_is_admitted(
+    manifest: Mapping[str, Any], verdict: Any, *, source: str | None = None
+) -> bool:
+    if source is not None and verified_subset_candidate(manifest, source):
+        return verdict == current_inventory.DAUM_SUBSET_VERDICT
     transactions = tuple(manifest["config"]["transactions"])
     if transactions != TRANSACTIONS:
         return verdict == "ok_additive_subset"
     if manifest["config"].get("admit_baseline_hold_additively") is True:
         return verdict in {"ok", "ok_additive_coverage_hold"}
+    if manifest["config"].get("current_inventory_admissions"):
+        return verdict in {"ok", current_inventory.VERDICT}
+    if manifest["config"].get("current_inventory_admission"):
+        return verdict == current_inventory.VERDICT
     return verdict == "ok"
+
+
+def _admit_current_inventory(
+    run_dir, manifest, report, artifact, phase, *, source=None, local=False
+):
+    source = source or manifest["config"]["current_inventory_admission"]["source_key"]
+    subset = verified_subset_candidate(manifest, source)
+    if subset and phase == "aggregate":
+        manifest["sources"][source].setdefault("subset_ingest_attempt_id", secrets.token_hex(16))
+    if not local and (artifact_compute_enabled() or subset):
+        response = run_artifact_compute(run_dir, "admit", {
+            "path": str(artifact), "source": source, "run_dir": str(run_dir),
+            "manifest": manifest, "report": report, "phase": phase,
+        })
+        evidence = Path(response["report_path"])
+        if sha256_file(evidence) != response["sha256"]:
+            raise GlobalStageError("pipeline admission evidence changed")
+        scope = response.get("scope")
+        if (
+            not isinstance(scope, dict)
+            or scope.get("kind") != ("collector_registry_verified_subset" if subset else "collector_registry_additive_current_inventory")
+            or scope.get("whole_source_coverage") is not False
+            or scope.get("source_keys") != manifest["scope"]["source_keys"]
+        ):
+            raise GlobalStageError("pipeline admission scope changed")
+        if subset and phase == "aggregate":
+            claims = response.get("subset_claims")
+            if not isinstance(claims, dict) or sha256_file(Path(claims["path"])) != claims["sha256"]:
+                raise GlobalStageError("verified subset claims evidence changed")
+            key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+            manifest["sources"][source][key] = claims
+        manifest["scope"].update(scope)
+        report.clear()
+        report.update(_load_json(evidence))
+        return
+    info = manifest["sources"][source]["artifact"]
+    try:
+        validate_source_artifact(
+            artifact,
+            source,
+            info.get("attempt_started_at") or info["started_at"],
+            expected_generation_id=manifest["run_id"],
+            expected_generation_started_at=manifest["started_at"],
+            expected_transactions=TRANSACTIONS,
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], source
+            ),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
+        )
+        git_sha, git_dirty = git_identity()
+        return current_inventory.admit(
+            artifact,
+            manifest,
+            report,
+            current_code_sha=git_sha,
+            current_git_dirty=git_dirty,
+            phase=phase,
+            source=source,
+        )
+    except (ArtifactValidationError, KeyError, TypeError, ValueError) as exc:
+        raise GlobalStageError("current-inventory admission refused") from exc
 
 
 def gate_source(
@@ -4046,6 +5282,20 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
+        if current_inventory.admission_configuration(manifest["config"], source):
+            if source == "pyramid-brokerage":
+                from cre_pyramid_identity_probe import run_probe
+                try:
+                    probe = run_probe(artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                                      manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Pyramid identity classification failed") from exc
+                checkpoint["pyramid_identity_probe"] = probe
+                if probe["held"] or probe["transitions"]:
+                    checkpoint["artifact"]["pyramid_subset"] = True
+            _admit_current_inventory(run_dir, manifest, result, artifact, "source", source=source)
+            per_source = result["per_source"][source]
+            atomic_write_json(gate_path, result)
         subset_mode = not full_transaction_scope
         additive_coverage_hold = (
             full_transaction_scope
@@ -4121,6 +5371,11 @@ def gate_source(
         "raw_verdict": per_source.get("raw_verdict"),
         "raw_reason": per_source.get("raw_reason"),
         "admission_scope": per_source.get("admission_scope"),
+        **(
+            {"current_inventory_proof": per_source["current_inventory_proof"]}
+            if "current_inventory_proof" in per_source
+            else {}
+        ),
         # A transaction subset can prove additive freshness for the selected
         # rows, but can never authorize whole-source lifecycle deletion.
         "mark_missing_safe": (
@@ -4134,6 +5389,25 @@ def gate_source(
     save_manifest(run_dir, manifest)
 
 
+def subset_ingest_arguments(run_dir, manifest, source):
+    if not verified_subset_candidate(manifest, source):
+        return []
+    checkpoint = manifest["sources"][source]
+    pyramid = pyramid_subset_candidate(manifest, source)
+    claims = checkpoint.get("pyramid_verified_subset_claims" if pyramid else "daum_verified_subset_claims")
+    if not isinstance(claims, dict):
+        raise GlobalStageError("verified subset requires both sealed gate claims")
+    path = Path(claims["path"])
+    if not path.is_relative_to(run_dir) or path.is_symlink() or sha256_file(path) != claims["sha256"]:
+        raise GlobalStageError("verified subset claims changed")
+    attempt = checkpoint.get("subset_ingest_attempt_id")
+    if claims.get("attempt_id") != attempt:
+        raise GlobalStageError("verified subset attempt changed")
+    return ["--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims", str(path),
+            "--checkpoint-ingest-attempt", attempt,
+            "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
+
+
 def dry_run_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -4141,6 +5415,11 @@ def dry_run_source(
     artifact: Path,
 ) -> bool:
     checkpoint = manifest["sources"][source]
+    claim_key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+    if verified_subset_candidate(manifest, source) and not checkpoint.get(claim_key):
+        checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
+        save_manifest(run_dir, manifest)
+        return True
     sql_dir = run_dir / "dry-run" / source
     log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
@@ -4149,7 +5428,7 @@ def dry_run_source(
             artifact,
             sql_dir,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-        ),
+        ) + subset_ingest_arguments(run_dir, manifest, source),
         log_path,
         env=safe_process_env(),
     )
@@ -4188,7 +5467,27 @@ def ingest_source(
         require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         expected_db_target_sha256=manifest_database_target_sha256(manifest),
     )
+    subset = verified_subset_candidate(manifest, source)
+    if subset:
+        if checkpoint.get("state") != "dry_run_passed" and not dry_run_source(run_dir, manifest, source, artifact):
+            raise GlobalStageError("verified subset sealed dryrun failed")
+        argv.extend(subset_ingest_arguments(run_dir, manifest, source))
+    attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
+    if source == "pyramid-brokerage":
+        from cre_pyramid_rollback_result import expected_binding
+        if not subset:
+            argv.extend(["--checkpoint-ingest-attempt", attempt_id])
+        argv.extend(["--checkpoint-pyramid-code-sha", manifest["collector_git_sha"]])
+        pyramid_binding = expected_binding(run_dir, manifest, attempt_id)
+    if source == "colliers-main":
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id])
+    if source == "transwestern":
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id,
+                     "--checkpoint-collector-git-sha", manifest["collector_git_sha"]])
+        from cre_transwestern_rollback_result import expected_binding
+        transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
     checkpoint["ingest"] = {
+        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage"} or subset else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -4209,8 +5508,83 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
+        if source in {"transwestern", "pyramid-brokerage"} or poll_hook() is not None:
+            checkpoint["state"] = "ingest_recovery_required"
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
         return
+    if source == "transwestern":
+        # The existing after-commit image receipt already proves the ordinary
+        # success path. Only absence of that proof needs the rollback protocol.
+        from cre_transwestern_image_outcome import read_outcome, verified_checkpoint
+        try:
+            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
+        except (OSError, ValueError, TypeError):
+            checkpoint["ingest"]["image_transition"] = None
+        checkpoint["state"] = "ingested"
+        if verified_checkpoint(run_dir, manifest) is not None:
+            save_manifest(run_dir, manifest)
+            return
+        checkpoint["state"] = "ingest_recovery_required"
+    if source in {"pyramid-brokerage", "transwestern"}:
+        if source == "pyramid-brokerage":
+            from cre_pyramid_rollback_result import read_result
+            binding, result_key, reason, held_state, refused, refusal = pyramid_binding, "pyramid_guard_result", "pyramid_historical_guard_refusal", "pyramid_historical_guard_refused", "historical_identity_refused", PyramidHistoricalGuardRefusal
+        else:
+            from cre_transwestern_rollback_result import read_result
+            binding, result_key, reason, held_state, refused, refusal = transwestern_binding, "transwestern_guard_result", "transwestern_image_guard_refusal", "transwestern_image_guard_refused", "protected_image_multiplicity_refused", TranswesternImageGuardRefusal
+        try:
+            evidence = read_result(log_path, binding)
+        except (OSError, ValueError, TypeError) as exc:
+            checkpoint["state"] = "ingest_recovery_required"
+            checkpoint["ingest_recovery"] = {"reason": "invalid_source_guard_result", "readback_ok": False}
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("source guard outcome requires exact reconciliation") from exc
+        checkpoint["ingest"][result_key] = evidence
+        if evidence["outcome"]["outcome"] == refused:
+            checkpoint["state"] = "ingest_recovery_required"
+            checkpoint["ingest_recovery"] = {"reason": reason, "subprocess_rc": rc, "readback_ok": False}
+            save_manifest(run_dir, manifest)
+            try:
+                recover_interrupted_ingest(run_dir, manifest, source, env_file)
+            except GlobalStageError as exc:
+                if _cleanup_unknown_in_chain(exc):
+                    raise
+                recovery = checkpoint.get("ingest_recovery") or {}
+                if not (checkpoint.get("state") == "ingest_recovery_required"
+                        and recovery.get("outcome") == "exact_rollback"
+                        and recovery.get("replay_safe") is True
+                        and recovery.get("reason") == reason):
+                    raise
+            else:
+                raise GlobalStageError("source refusal unexpectedly read back as committed")
+            from cre_pyramid_rollback_result import verified_rollback
+            try:
+                recovery["validation_sha256"] = sha256_file(run_dir / recovery["validation_path"])
+            except (OSError, KeyError, TypeError) as exc:
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("source rollback report is unavailable") from exc
+            checkpoint["state"] = held_state
+            if not verified_rollback(run_dir, manifest, source):
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("source rollback evidence is not bound")
+            save_manifest(run_dir, manifest)
+            trip = _peek_cpu_guard_trip()
+            if trip is not None:
+                raise CpuGuardTrip(trip)
+            message = ("Transwestern protected image multiplicity lost" if source == "transwestern"
+                       else "Pyramid historical identity guard refused")
+            raise refusal(message)
+    if source == "colliers-main":
+        from cre_colliers_image_transition import read_outcome
+        try:
+            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
+        except (OSError, ValueError, TypeError):
+            # Missing/invalid evidence never disables the raw final audit.
+            checkpoint["ingest"]["image_transition"] = None
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -4228,6 +5602,8 @@ def advance_source(
     checkpoint = manifest["sources"][source]
     transactions = tuple(manifest["config"]["transactions"])
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
+    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused"}:
+        raise GlobalStageError("held source artifact cannot be replayed on resume")
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(
             f"source {source} requires reviewed ingest recovery before resume"
@@ -4247,12 +5623,12 @@ def advance_source(
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
     if checkpoint.get("state") == "ingested" and existing:
         prior_verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if gate_verdict_is_admitted(manifest, prior_verdict):
+        if gate_verdict_is_admitted(manifest, prior_verdict, source=source):
             return True
         artifact, _stats = existing
         gate_source(run_dir, manifest, source, artifact, env_file)
         verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if not gate_verdict_is_admitted(manifest, verdict):
+        if not gate_verdict_is_admitted(manifest, verdict, source=source):
             checkpoint["state"] = "ingested"
             checkpoint["admission_state"] = (
                 "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
@@ -4277,7 +5653,7 @@ def advance_source(
     artifact, _stats = collected
     gate_source(run_dir, manifest, source, artifact, env_file)
     verdict = (checkpoint.get("gate") or {}).get("verdict")
-    if not gate_verdict_is_admitted(manifest, verdict):
+    if not gate_verdict_is_admitted(manifest, verdict, source=source):
         checkpoint["state"] = (
             "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
         )
@@ -4322,8 +5698,11 @@ def _cohort_needs_collection(
     checkpoint = manifest["sources"][source]
     if _manifest_checkpoint_artifact_valid(run_dir, manifest, source):
         return False
+    if has_terminal_collection_failure(source, checkpoint):
+        return False
     if checkpoint.get("state") in {
         "collect_infrastructure_failed",
+        "artifact_rejected",
         "ingesting",
         "ingest_recovery_required",
     }:
@@ -4386,12 +5765,16 @@ def prepare_sources_cohort(
         source: len(manifest["sources"][source].get("attempts") or [])
         for source in sources
     }
+    dispatch_pending = False
     try:
         while True:
-            completed = [item for item in active if item.process.poll() is not None]
-            for item in completed:
-                _finalize_cohort_collection(run_dir, manifest, item)
-                active.remove(item)
+            # Finalize each reaped leader before polling a sibling. If
+            # finalization fails, cleanup still owns unreaped sibling leaders.
+            for item in tuple(active):
+                if item.process.poll() is not None:
+                    _finalize_cohort_collection(run_dir, manifest, item)
+                    active.remove(item)
+            pump_source_evidence(run_dir, manifest)
 
             active_sources = {item.source for item in active}
             pending = [
@@ -4411,6 +5794,9 @@ def prepare_sources_cohort(
                 [item.source for item in active],
                 source_workers=source_workers,
             ):
+                # Keep the admission fence if interruption lands between the
+                # spawn helper returning and enrollment in this existing list.
+                dispatch_pending = True
                 started = _start_cohort_collection(
                     run_dir,
                     manifest,
@@ -4420,6 +5806,7 @@ def prepare_sources_cohort(
                 )
                 if started is not None:
                     active.append(started)
+                dispatch_pending = False
 
             if active:
                 # Keep the coordinator responsive to operator interrupt while
@@ -4435,8 +5822,12 @@ def prepare_sources_cohort(
             )
             if not selectable:
                 break
-    except BaseException:
-        _terminate_cohort_processes(active)
+    except BaseException as exc:
+        try:
+            _terminate_cohort_processes(active)
+        finally:
+            if dispatch_pending and not _cleanup_unknown_in_chain(exc):
+                _raise_unsettled_dispatch(exc)
         raise
 
     collection_failures = [
@@ -4464,17 +5855,29 @@ def prepare_sources_cohort(
     return failures
 
 
+def scoped_source_keys(manifest, sources=None):
+    selected = tuple(manifest["config"]["sources"] if sources is None else sources)
+    if not selected or len(selected) != len(set(selected)) or not set(selected) <= set(manifest["config"]["sources"]):
+        raise GlobalStageError("invalid sealed source scope")
+    return selected
+
+
 def run_aggregate_gate(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
-) -> None:
+    *,
+    sources: Sequence[str] | None = None,
+    evidence_dir: Path | None = None,
+) -> dict[str, Any]:
+    selected = scoped_source_keys(manifest, sources)
     artifacts = [
         run_dir / manifest["sources"][source]["artifact"]["path"]
-        for source in manifest["config"]["sources"]
+        for source in selected
     ]
-    output = run_dir / "aggregate-gate.json"
-    log = run_dir / "logs" / "aggregate-gate.log"
+    output = (evidence_dir or run_dir) / "aggregate-gate.json"
+    log = (run_dir / "logs" / f"{evidence_dir.name}-aggregate-gate.log") if evidence_dir else run_dir / "logs" / "aggregate-gate.log"
+    output.parent.mkdir(parents=True, exist_ok=True)
     argv = [sys.executable, "cre_gate.py"]
     for artifact in artifacts:
         argv.extend(["--in", str(artifact)])
@@ -4488,6 +5891,10 @@ def run_aggregate_gate(
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
+    for source, artifact in zip(selected, artifacts):
+        if current_inventory.admission_configuration(manifest["config"], source):
+            _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
+            atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     per_source = result.get("per_source") or {}
     additive_hold_enabled = (
@@ -4567,15 +5974,17 @@ def run_aggregate_gate(
         )
         summary["mark_missing_safe_brokerages"] = []
         atomic_write_json(output, result)
-    configured_sources = set(manifest["config"]["sources"])
+    configured_sources = set(selected)
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()
     non_ok_sources = sorted(
-        configured_sources - observed_sources
+        configured_sources ^ observed_sources
         | {
             source
             for source, info in per_source.items()
             if not isinstance(info, dict)
-            or not gate_verdict_is_admitted(manifest, info.get("verdict"))
+            or not gate_verdict_is_admitted(
+                manifest, info.get("verdict"), source=source
+            )
         }
     )
     manifest["aggregate_gate"] = {
@@ -4593,6 +6002,11 @@ def run_aggregate_gate(
             else []
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
+        **(
+            {"admission_scope": manifest["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]["scope"] if pyramid_subset_candidate(manifest, "pyramid-brokerage") else current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
+            if manifest["config"].get("current_inventory_admission")
+            else {}
+        ),
     }
     save_manifest(run_dir, manifest)
     if non_ok_sources:
@@ -4600,33 +6014,45 @@ def run_aggregate_gate(
             "aggregate coverage gate is not established for source(s): "
             + ", ".join(non_ok_sources)
         )
+    for source, artifact in zip(selected, artifacts):
+        if verified_subset_candidate(manifest, source):
+            if not dry_run_source(run_dir, manifest, source, artifact):
+                raise GlobalStageError("verified subset sealed dryrun failed")
+    return manifest["aggregate_gate"]
 
 
 def ingest_admitted_sources(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
+    *,
+    owner_check: Callable[[], None] | None = None,
 ) -> None:
-    """Ingest only after every configured source clears the aggregate gate."""
+    """Ingest after every source clears the aggregate gate."""
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
         existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
         if checkpoint.get("state") == "ingested" and existing:
             continue
         if checkpoint.get("state") == "ingesting" and existing:
-            recover_interrupted_ingest(
-                run_dir,
-                manifest,
-                source,
-                env_file,
-            )
+            recover_interrupted_ingest(run_dir, manifest, source, env_file)
             continue
         if checkpoint.get("state") != "dry_run_passed" or not existing:
-            raise GlobalStageError(
-                f"source {source} is not prepared for admitted ingest"
-            )
-        artifact, _stats = existing
-        ingest_source(run_dir, manifest, source, artifact, env_file)
+            raise GlobalStageError(f"source {source} is not prepared for admitted ingest")
+        if owner_check is not None:
+            owner_check()
+        try:
+            ingest_source(run_dir, manifest, source, existing[0], env_file)
+        except SourceGuardRefusal as exc:
+            from cre_pyramid_rollback_result import verified_rollback
+            if (manifest["config"]["sources"] != [source]
+                    or owner_check is None):
+                raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
+            owner_check()
+            if not verified_rollback(run_dir, manifest, source):
+                raise GlobalStageError("source-local rollback evidence changed") from exc
+            manifest["serial_guard_holds"] = [source]
+            raise
 
 
 def _artifact_run_job_probe_is_exact(
@@ -4658,6 +6084,14 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    guard_reasons = {"pyramid-brokerage": "pyramid_historical_guard_refusal", "transwestern": "transwestern_image_guard_refusal"}
+    if source in guard_reasons and (checkpoint.get("ingest_recovery") or {}).get("reason") != guard_reasons[source]:
+        # After an interrupted parent, no persisted process-group identity proves
+        # its child and descendants have settled. A receipt alone cannot do so.
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_pyramid_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Pyramid ingest requires reviewed recovery")
     artifact_info = checkpoint.get("artifact") or {}
     artifact_run_key, _artifact_run_uuid = artifact_run_identity_from_digests(
         [str(artifact_info.get("sha256") or "")]
@@ -4665,17 +6099,27 @@ def recover_interrupted_ingest(
     output = run_dir / "recovery" / f"{source}-validation.json"
     log = run_dir / "logs" / f"{source}-ingest-recovery.log"
     output.parent.mkdir(parents=True, exist_ok=True)
+    prior_recovery = checkpoint.get("ingest_recovery") or {}
+    guard_attempt = (
+        (checkpoint.get("ingest") or {}).get("attempt_id")
+        if prior_recovery.get("reason") in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal"} else None
+    )
+    probe_started_at = utc_now()
     rc = run_command(
         build_validate_argv(
             output,
             env_file,
             expected_db_target_sha256=manifest_database_target_sha256(manifest),
             expected_artifact_run_key=artifact_run_key,
+            **({"expected_ingest_attempt": guard_attempt} if guard_attempt is not None else {}),
         ),
         log,
         env=safe_process_env(),
     )
+    probe_finished_at = utc_now()
     recovery = {
+        "probe_started_at": probe_started_at,
+        "probe_finished_at": probe_finished_at,
         "validation_path": _relative_to_run(output, run_dir),
         "log": _relative_to_run(log, run_dir),
         "rc": rc,
@@ -4697,6 +6141,7 @@ def recover_interrupted_ingest(
         )
     try:
         validation = _load_json(output)
+        require_full_validation_report(validation)
         probe_manifest = {
             "config": {"sources": [source]},
             "sources": {
@@ -4731,7 +6176,15 @@ def recover_interrupted_ingest(
             probe_manifest, artifact_info, source
         )
         queries = validation.get("queries") or {}
-        generation_rows = queries.get("freshness_generations") or []
+        generation_rows = queries.get("freshness_generations")
+        if not isinstance(generation_rows, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("source_key"), str)
+            or not row["source_key"] or not isinstance(row.get("generation_id"), str)
+            or not row["generation_id"] for row in generation_rows
+        ):
+            checkpoint["state"] = "ingest_recovery_required"
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("malformed generation evidence requires reconciliation")
         generation_matches = [
             row
             for row in generation_rows
@@ -4754,11 +6207,13 @@ def recover_interrupted_ingest(
                     "generation_id": generation_id,
                 }
             )
-            checkpoint["state"] = "dry_run_passed"
+            is_guard_refusal = recovery["reason"] in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal"}
+            checkpoint["state"] = "ingest_recovery_required" if is_guard_refusal else "dry_run_passed"
             save_manifest(run_dir, manifest)
             raise GlobalStageError(
                 f"interrupted ingest fully rolled back for {source}; "
-                "the immutable artifact is safe to replay on reviewed resume"
+                + ("source refusal requires bound settlement" if is_guard_refusal
+                   else "the immutable artifact is safe to replay on reviewed resume")
             )
         checkpoint["state"] = "ingest_recovery_required"
         save_manifest(run_dir, manifest)
@@ -4855,6 +6310,7 @@ def verify_validation_readback(
     *,
     now: datetime | None = None,
     persist_manifest: bool = True,
+    sources: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate generation-exact readback and optionally persist its manifest.
 
@@ -4862,6 +6318,7 @@ def verify_validation_readback(
     persistence so only the canonical full checkpoint can replace
     ``manifest.json``. Full final validation keeps the default persistence.
     """
+    selected = scoped_source_keys(manifest, sources)
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     queries = validation.get("queries")
@@ -4883,7 +6340,7 @@ def verify_validation_readback(
 
     canonical_sources = [
         source
-        for source in manifest["config"]["sources"]
+        for source in selected
         if requires_canonical_generation(source)
     ]
     if canonical_sources and not isinstance(generation_rows, list):
@@ -4953,11 +6410,15 @@ def verify_validation_readback(
                 "inventory generation does not cover every active listing"
             )
     failures: list[str] = []
-    for source in manifest["config"]["sources"]:
+    for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
         try:
             staged = int(artifact["staged_unique"])
+            if source == "pyramid-brokerage" and pyramid_subset_candidate(manifest, source):
+                binding = checkpoint["gate"]["current_inventory_proof"]
+                if binding.get("schema") == "pyramid-incomplete-v2":
+                    staged = int(binding["emitted_count"])
         except (KeyError, TypeError, ValueError, ArtifactValidationError):
             checkpoint["readback"] = {
                 "ok": False,
@@ -5418,28 +6879,67 @@ def run_final_validation(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
-) -> None:
-    output = run_dir / "validation.json"
-    log = run_dir / "logs" / "validation.log"
+    *, sources: Sequence[str] | None = None, evidence_dir: Path | None = None,
+    before_path: Path | None = None,
+) -> dict[str, Any]:
+    output = (evidence_dir or run_dir) / "validation.json"
+    log = (run_dir / "logs" / f"{evidence_dir.name}-validation.log") if evidence_dir else run_dir / "logs" / "validation.log"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    from cre_transwestern_image_outcome import verified_checkpoint as verified_tw_checkpoint
+    tw_checkpoint = manifest["sources"].get("transwestern", {})
+    tw_ingest = tw_checkpoint.get("ingest") or {}
+    tw_required = (tw_checkpoint.get("state") in {
+        "ingested", "ingesting", "ingest_recovery_required"
+    } or bool(tw_ingest)) and (
+        sources is None or "transwestern" in sources
+    )
+    tw_transition = verified_tw_checkpoint(run_dir, manifest) if tw_required else None
+    if tw_required and tw_transition is None:
+        raise GlobalStageError("Transwestern image transition evidence is missing or invalid")
     rc = run_command(
         build_validate_argv(
             output,
             env_file,
             expected_db_target_sha256=manifest_database_target_sha256(manifest),
+            **({"expected_artifact_run_key": tw_transition["binding"]["artifact_run_key"],
+                "transwestern_image_state": True} if tw_required else {}),
         ),
         log,
         env=safe_process_env(),
     )
     if rc != 0:
         raise GlobalStageError(f"final validation failed (rc={rc})")
+    make_private_artifact(output)
     result = _load_json(output)
+    if sources is not None or manifest["config"].get("pipeline") is True:
+        from cre_refresh_pipeline import require_pipeline_full_report
+        require_pipeline_full_report(result)
+    try:
+        require_full_validation_report(result)
+    except (TypeError, ValueError) as exc:
+        raise GlobalStageError("final validation requires a full report") from exc
     before_rel = (manifest.get("preflight") or {}).get("validation_path")
-    if not isinstance(before_rel, str):
+    if before_path is None and not isinstance(before_rel, str):
         raise GlobalStageError("pre-refresh validation snapshot is missing")
-    before = _load_json(run_dir / before_rel)
-    quality = compare_validation_quality(before, result)
+    before = _load_json(before_path if before_path is not None else run_dir / before_rel)
+    if "validation_profile" in before or "audit_scope" in before:
+        try:
+            require_checkpoint_preflight_report(before)
+        except (TypeError, ValueError) as exc:
+            raise GlobalStageError(
+                "pre-refresh validation profile is incomplete"
+            ) from exc
+    from cre_colliers_image_transition import verified_checkpoint
+    transition = verified_checkpoint(run_dir, manifest)
+    quality = compare_validation_quality(
+        before, result, image_transition=transition,
+        transwestern_image_transition=tw_transition if tw_required else None,
+    )
     absolute_quality = verify_absolute_validation_quality(result)
-    readback = verify_validation_readback(run_dir, manifest, result)
+    readback = (
+        verify_validation_readback(run_dir, manifest, result)
+        if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources)
+    )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
         "log": _relative_to_run(log, run_dir),
@@ -5447,6 +6947,9 @@ def run_final_validation(
         "query_execution_ok": result.get("ok") is True,
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
+        "image_transition": quality.get("image_transition"),
+        **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
+           if tw_required else {}),
         "absolute_quality_ok": absolute_quality["ok"],
         "absolute_quality_failures": absolute_quality["failures"],
         "readback_ok": readback["ok"],
@@ -5462,6 +6965,7 @@ def run_final_validation(
         raise GlobalStageError(
             "final validation or per-source freshness readback failed"
         )
+    return manifest["validation"]
 
 
 def _int_value(value: Any) -> int:
@@ -5484,9 +6988,19 @@ def _rows_by(
 
 
 def compare_validation_quality(
-    before: Mapping[str, Any], after: Mapping[str, Any]
+    before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
+    transwestern_image_transition=None,
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
+    try:
+        if "validation_profile" in before or "audit_scope" in before:
+            require_checkpoint_preflight_report(before)
+        require_full_validation_report(after)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "failures": ["validation report profile is incomplete or unsuitable"],
+        }
     before_queries = (
         before.get("queries") if isinstance(before.get("queries"), dict) else {}
     )
@@ -5495,6 +7009,16 @@ def compare_validation_quality(
     )
     policy = load_source_policy()
     failures: list[str] = []
+    tw_qualified = False
+    if transwestern_image_transition is not None:
+        from cre_transwestern_image_outcome import matches_reports, matches_readback, report_image_count
+        tw_qualified = (
+            matches_reports(transwestern_image_transition, report_image_count(before),
+                            report_image_count(after))
+            and matches_readback(transwestern_image_transition, after.get("transwestern_image_state"))
+        )
+        if not tw_qualified:
+            failures.append("Transwestern image transition count or image-state readback mismatch")
 
     count_specs = (
         ("duplicates", ("check_name", "source_key"), ("groups", "rows")),
@@ -5548,6 +7072,12 @@ def compare_validation_quality(
         old_count = _int_value(prior.get("count"))
         new_count = _int_value(new_children.get(identity, {}).get("count"))
         if child_count_regressed(old_count, new_count):
+            if identity == ("transwestern", "images") and tw_qualified:
+                continue
+            if identity == ("colliers-main", "images") and image_transition is not None:
+                from cre_colliers_image_transition import matches_reports
+                if matches_reports(image_transition, old_count, new_count):
+                    continue
             failures.append(
                 f"child_counts/{identity} fell more than 30%: {old_count}->{new_count}"
             )
@@ -5555,7 +7085,16 @@ def compare_validation_quality(
     for row in after_queries.get("search_smoke") or []:
         if isinstance(row, dict) and _int_value(row.get("rows")) <= 0:
             failures.append(f"search_smoke/{row.get('smoke')} returned zero rows")
-    return {"ok": not failures, "failures": failures}
+    outcome = {"ok": not failures, "failures": failures}
+    if tw_qualified:
+        outcome["transwestern_image_transition"] = transwestern_image_transition
+    if image_transition is not None:
+        from cre_colliers_image_transition import matches_reports
+        key = ("colliers-main", "images")
+        if matches_reports(image_transition, _int_value(old_children.get(key, {}).get("count")),
+                           _int_value(new_children.get(key, {}).get("count"))):
+            outcome["image_transition"] = image_transition
+    return outcome
 
 
 ABSOLUTE_LISTING_QUALITY_FIELDS = (
@@ -5637,6 +7176,13 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
     economics remain.  Missing coordinates and other source-policy-permitted
     sparse fields are informational and intentionally do not appear here.
     """
+    try:
+        require_full_validation_report(after)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "failures": ["absolute quality audit requires a full validation report"],
+        }
     queries = after.get("queries")
     failures: list[str] = []
     if not isinstance(queries, dict):
@@ -5826,6 +7372,26 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         "| Source | State | Flat | Staged | Inventory-only | Detail unavailable | Provisional IDs | Gate | Readback |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
+    if (manifest.get("config") or {}).get("automatic_source_evidence"):
+        lines.insert(7, "- Private source evidence: " + (
+            "paused or incomplete; inspect per-attempt receipts." if manifest.get("automatic_source_evidence_paused") or manifest.get("automatic_source_evidence_status") == "incomplete"
+            else "enabled; inspect per-attempt receipts for append and no-artifact outcomes."
+        ))
+    if (manifest.get("config") or {}).get("source_document_acquisition"):
+        lines.insert(8, "- Private document text: " + (
+            "selected attempts settled; recorded outcomes may include extraction failures or OCR-needed documents; coverage remains unknown."
+            if manifest.get("source_document_acquisition_status") == "settled"
+            and manifest.get("source_document_acquisition_paused") is False
+            else "incomplete or not started; inspect per-attempt document receipts before any resume."
+        ))
+        evidence = manifest["config"].get("automatic_source_evidence") or {}
+        if evidence.get("document_text_formats"):
+            from source_evidence import document_automatic
+            lines.insert(9, "- Private document append: " + (
+                "pending or unresolved sealed outcomes; exact append reconciliation is required."
+                if document_automatic.append_incomplete(manifest)
+                else "no pending append among recorded sealed outcomes; see separate acquisition status."
+            ))
     sources = manifest.get("sources") or {}
     for source in (manifest.get("config") or {}).get("sources") or []:
         checkpoint = sources.get(source) or {}
@@ -5935,8 +7501,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--resume", default=None, help="existing run directory or manifest.json"
     )
     parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--series-control-invocation-id", default=None, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--series-control-child-id", default=None, help=argparse.SUPPRESS
+    )
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
+    parser.add_argument("--source-evidence-policy", default=None)
+    parser.add_argument("--source-evidence-policy-sha256", default=None)
+    parser.add_argument("--source-evidence-env-file", default=None)
+    parser.add_argument("--source-evidence-target-sha256", default=None)
+    parser.add_argument("--source-evidence-replay-unknown", action="store_true")
+    parser.add_argument("--source-document-policy", default=None)
+    parser.add_argument("--source-document-policy-sha256", default=None)
+    parser.add_argument("--source-document-node", default=None)
     parser.add_argument("--sources", default="all")
     parser.add_argument(
         "--transactions",
@@ -5955,14 +7535,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Never authorizes mark-missing or whole-source lifecycle coverage."
         ),
     )
+    parser.add_argument(
+        "--admit-current-inventory-source",
+        default=None, action="append", dest="admit_current_inventory_sources",
+        help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
+    )
+    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default="tenure-only-v1")
+    parser.add_argument(
+        "--admit-daum-verified-subset",
+        action="store_true",
+        help="Explicit DAUM verified subset with held rows; always partial, never complete-source credit",
+    )
+    parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
         "--source-workers",
         type=int,
-        default=1,
+        default=None,
         help=(
-            "opt-in bounded source collection workers (default: 1 serial). "
+            "bounded source collection workers (default: 2 with --pipeline, 1 otherwise; maximum: 4). "
             "Provider lanes and coordinator-only checkpoint finalization apply."
         ),
     )
@@ -5989,6 +7581,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=DEFAULT_CPU_SAMPLE_SECONDS,
         help=(f"host CPU sampling interval (default: {DEFAULT_CPU_SAMPLE_SECONDS:g}s)"),
+    )
+    parser.add_argument(
+        "--memory-sustain-seconds", type=float, default=DEFAULT_MEMORY_SUSTAIN_SECONDS
+    )
+    parser.add_argument(
+        "--memory-sample-seconds", type=float, default=DEFAULT_MEMORY_SAMPLE_SECONDS
     )
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
@@ -6026,6 +7624,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        args.source_workers = resolve_source_workers(args.pipeline, args.source_workers)
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.admit_current_inventory_sources = tuple(args.admit_current_inventory_sources or ())
+    args.admit_current_inventory_source = (
+        args.admit_current_inventory_sources[0]
+        if not args.pipeline and len(args.admit_current_inventory_sources) == 1 else None
+    )
+
+    if (args.series_control_invocation_id is None) != (
+        args.series_control_child_id is None
+    ):
+        parser.error("series control requires both exact invocation identities")
+    if args.series_control_invocation_id is not None:
+        from cre_series_control import SeriesControlError, validate_child_invocation
+
+        try:
+            validate_child_invocation(args.series_control_invocation_id)
+            validate_child_invocation(args.series_control_child_id)
+        except SeriesControlError as exc:
+            parser.error(str(exc))
 
     internal_worker_requested = any(
         value is not None
@@ -6038,6 +7658,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args._cohort_generation_started_at,
         )
     )
+    if args.series_control_invocation_id is not None and internal_worker_requested:
+        parser.error("series control cannot be combined with internal worker arguments")
     if args.run_id is not None and args.resume:
         parser.error("--run-id cannot be combined with --resume")
     if args.run_id is not None and internal_worker_requested:
@@ -6061,7 +7683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("incomplete internal cohort collection worker arguments")
         try:
             worker_transactions = parse_transactions(args.transactions)
-            return run_cohort_collection_worker(
+            worker_rc = run_cohort_collection_worker(
                 args._cohort_collect_source,
                 Path(args._cohort_output),
                 run_dir=Path(args._cohort_run_dir),
@@ -6071,7 +7693,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 page_cap=args.page_cap,
                 concurrency=args.concurrency,
                 transactions=worker_transactions,
+                daum_verified_subset=args.admit_daum_verified_subset,
+                daum_subset_policy=args.daum_subset_policy,
             )
+            if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+                return worker_rc
+            if (
+                args._cohort_collect_source == "colliers-main"
+                and worker_rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT
+            ):
+                return worker_rc
+            if (args._cohort_collect_source == "pyramid-brokerage"
+                    and worker_rc in COHORT_SETTLED_PYRAMID_DENIED_EXITS.values()):
+                return worker_rc
+            return 0 if worker_rc == 0 else COHORT_SETTLED_FAILURE_EXIT
+        except KeyboardInterrupt as exc:
+            if _cleanup_unknown_in_chain(exc):
+                raise
+            return COHORT_SETTLED_INTERRUPT_EXIT
         except ValueError as exc:
             parser.error(str(exc))
 
@@ -6079,12 +7718,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "page-cap must be positive and concurrency must be between 1 and 6"
         )
-    # This is intentionally lower than the number of independent provider
-    # lanes.  Two workers lets a direct/API source overlap one heavy detail
-    # source without turning the first operational rollout into an unmeasured
-    # provider or local-queue stress test.
-    if not 1 <= args.source_workers <= 2:
-        parser.error("source-workers must be between 1 and 2")
+    # Wider pools are opt-in for supervised calibration. Provider lanes,
+    # exclusive sources, and coordinator-only admission still constrain them.
+    if not 1 <= args.source_workers <= 4:
+        parser.error("source-workers must be between 1 and 4")
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")
     if (
@@ -6103,6 +7740,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "cpu-sample-seconds must be finite, positive, and no greater than "
             "cpu-sustain-seconds"
         )
+    try:
+        memory_guard_config(args.memory_sustain_seconds, args.memory_sample_seconds)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not math.isfinite(args.max_resume_age_hours) or args.max_resume_age_hours <= 0:
         parser.error("max-resume-age-hours must be finite and positive")
     try:
@@ -6115,11 +7756,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--admit-baseline-hold-additively is only valid with --transactions both"
         )
 
+    try:
+        current_inventory.validate_options(
+            args.admit_current_inventory_sources,
+            sources,
+            transactions,
+            pipeline=args.pipeline,
+            daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
+            additive_hold=args.admit_baseline_hold_additively,
+            allow_dirty=args.allow_dirty,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     lock_dir = checkpoint_lock_dir(args.lock_dir)
     database_target = database_target_fingerprint(args.env_file)
     git_sha, git_dirty = git_identity()
     if git_dirty and not args.allow_dirty:
         raise RefreshError("refusing operational refresh from a dirty checkout")
+    evidence_options = (args.source_evidence_policy, args.source_evidence_policy_sha256,
+                        args.source_evidence_env_file, args.source_evidence_target_sha256)
+    automatic_source_evidence = None
+    if any(evidence_options):
+        if git_dirty:
+            raise RefreshError("automatic evidence requires a clean collector checkout")
+        from source_evidence.automatic import configuration
+        automatic_source_evidence = configuration(*evidence_options, git_sha, sources)
+    if args.source_evidence_replay_unknown and (not args.resume or automatic_source_evidence is None):
+        raise RefreshError("evidence replay requires an opted-in checkpoint resume")
+    source_document_acquisition = None
+    document_options = (args.source_document_policy, args.source_document_policy_sha256,
+                        args.source_document_node)
+    if any(document_options):
+        from source_evidence import document_automatic
+        try:
+            source_document_acquisition = document_automatic.configuration(
+                *document_options, automatic_source_evidence, git_sha, sources)
+        except (OSError, ValueError) as exc:
+            raise RefreshError("source document acquisition configuration refused") from exc
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()
         manifest_path = (
@@ -6136,11 +7810,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_host_cpu_percent=args.max_host_cpu_percent,
             cpu_sustain_seconds=args.cpu_sustain_seconds,
             cpu_sample_seconds=args.cpu_sample_seconds,
+            memory_sustain_seconds=args.memory_sustain_seconds,
+            memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
+            admit_current_inventory_source=args.admit_current_inventory_source,
+            admit_daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
+            pipeline=args.pipeline,
+            admit_current_inventory_sources=args.admit_current_inventory_sources
+            if args.pipeline
+            else (),
             database_target=database_target,
+            automatic_source_evidence=automatic_source_evidence,
+            source_document_acquisition=source_document_acquisition,
             max_age_hours=args.max_resume_age_hours,
         )
+        if source_document_acquisition is not None:
+            from source_evidence import document_automatic
+            try:
+                document_automatic.require_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
+            except ValueError as exc:
+                raise RefreshError("source document acquisition requires prior-run reconciliation") from exc
         manifest["status"] = "running"
         manifest["resource_stop"] = None
         manifest["error"] = None
@@ -6158,19 +7849,60 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_host_cpu_percent=args.max_host_cpu_percent,
             cpu_sustain_seconds=args.cpu_sustain_seconds,
             cpu_sample_seconds=args.cpu_sample_seconds,
+            memory_sustain_seconds=args.memory_sustain_seconds,
+            memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
+            admit_current_inventory_source=args.admit_current_inventory_source,
+            admit_daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
+            pipeline=args.pipeline,
+            admit_current_inventory_sources=args.admit_current_inventory_sources
+            if args.pipeline
+            else (),
             database_target=database_target,
+            automatic_source_evidence=automatic_source_evidence,
+            source_document_acquisition=source_document_acquisition,
         )
-    save_manifest(run_dir, manifest)
+    # Publish the existing durable recovery barrier before any native child can
+    # escape an uncatchable coordinator exit. Only this exact held owner may
+    # clear it after local settlement, guard quiescence and terminal evidence.
+    lock = SharedLock(lock_dir, recovery_required=True)
+    ownership = ExitStack()
+    terminal_evidence_saved = False
+    terminal_publication_failed = False
+    settlement_unknown = False
+    guards_stopped = False
+    local_refusal = False
+    local_refusal_settled = False
+    details = None
 
-    lock = SharedLock(lock_dir)
+    def persist_terminal() -> None:
+        nonlocal terminal_evidence_saved, terminal_publication_failed
+        terminal_evidence_saved = False
+        try:
+            save_manifest(run_dir, manifest)
+            atomic_write_text(run_dir / "report.md", render_report(manifest))
+        except BaseException:
+            terminal_publication_failed = True
+            raise
+        terminal_evidence_saved = True
+
     cpu_guard = HostCpuGuard(
         log_path=run_dir / "logs" / "host-cpu-guard.jsonl",
         max_percent=args.max_host_cpu_percent,
         sustain_seconds=args.cpu_sustain_seconds,
         sample_seconds=args.cpu_sample_seconds,
         incident_log_path=run_dir / "logs" / "cpu-incidents.jsonl",
+    )
+    memory_guard = HostMemoryGuard(
+        log_path=run_dir / "logs" / "host-memory-guard.jsonl",
+        sustain_seconds=args.memory_sustain_seconds,
+        sample_seconds=args.memory_sample_seconds,
+        context_provider=lambda: dict(cpu_guard.incident_context),
+        on_trip=lambda **values: _trip_host_memory_guard(
+            **values, context=cpu_guard.incident_context
+        ),
     )
     set_cpu_guard_context(
         cpu_guard,
@@ -6181,9 +7913,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        with lock:
+        ownership.enter_context(lock)
+        if args.resume and automatic_source_evidence is not None:
+            from source_evidence import automatic
+            automatic.prepare_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
+        save_manifest(run_dir, manifest)
+        with (
+            artifact_compute_scope(run_dir),
+            resource_guard_boundary(memory_guard, cpu_guard),
+            observe_resource_usage(
+                run_dir,
+                env=safe_process_env(),
+                cpu_sampler=host_cpu_sampler(),
+                context_provider=lambda: dict(cpu_guard.incident_context),
+            ),
+        ):
             if not args.resume:
                 capture_runtime_configuration(run_dir)
+            memory_pressure = memory_guard.preflight()
+            if memory_guard.tripped:
+                raise CpuGuardTrip("host memory pressure prevented admission")
+            memory_guard.start()
+            manifest["preflight"]["host_memory_guard"] = {
+                **memory_guard.config(),
+                "pressure_level": memory_pressure,
+                "log": "logs/host-memory-guard.jsonl",
+            }
             initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
             manifest["preflight"]["host_cpu_guard"] = {
                 **cpu_guard.config(),
@@ -6269,6 +8024,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         expected_db_target_sha256=(
                             manifest_database_target_sha256(manifest)
                         ),
+                        profile=CHECKPOINT_PREFLIGHT_PROFILE,
                     ),
                     pre_validation_log,
                     env=safe_process_env(),
@@ -6286,6 +8042,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "validation_sha256": sha256_file(pre_validation),
                     }
                 )
+            try:
+                profile = require_checkpoint_preflight_report(
+                    pre_result,
+                    expected_profile=None
+                    if recorded_pre_hash
+                    else CHECKPOINT_PREFLIGHT_PROFILE,
+                )
+            except (TypeError, ValueError) as exc:
+                raise GlobalStageError(
+                    "pre-refresh validation profile is incomplete"
+                ) from exc
+            manifest["preflight"]["validation_profile"] = profile
+            manifest["preflight"]["validation_audit_scope"] = VALIDATION_AUDIT_SCOPES[
+                profile
+            ]
             manifest["preflight"]["lifecycle_schema_contract"] = (
                 require_lifecycle_schema_contract(pre_result)
             )
@@ -6298,58 +8069,140 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source=sources[0] if len(sources) == 1 else None,
                 active_operation="source_collection_preflight",
             )
-            source_failures = prepare_sources_cohort(
-                run_dir,
-                manifest,
-                sources,
-                page_cap=args.page_cap,
-                concurrency=args.concurrency,
-                attempts_this_run=args.attempts_per_source,
-                env_file=args.env_file,
-                source_workers=args.source_workers,
-            )
-            if source_failures:
-                raise RefreshError(
-                    "source checkpoints remain incomplete: "
-                    + ", ".join(source_failures)
+            if args.resume:
+                from cre_partial_page_custody import reconcile
+                lock._require_authority()
+                for partial_source in PARTIAL_PAGE_SOURCES:
+                    reconcile(run_dir, manifest, partial_source)
+                save_manifest(run_dir, manifest)
+                lock._require_authority()
+            if args.resume and automatic_source_evidence is not None and not args.pipeline:
+                from source_evidence import automatic
+                lock._require_authority()
+                if git_identity() != (manifest["collector_git_sha"], False):
+                    manifest["automatic_source_evidence_paused"] = True
+                    manifest["automatic_source_evidence_status"] = "incomplete"
+                    save_manifest(run_dir, manifest)
+                else:
+                    automatic.recover_unsealed(run_dir, manifest, save_manifest,
+                                               make_private=make_private_artifact)
+                lock._require_authority()
+            pump_source_evidence(run_dir, manifest)
+            if source_document_acquisition is not None:
+                from source_evidence import document_automatic
+                # An explicit DB replay can reconcile a prior sealed document
+                # even when acquisition is incomplete. It cannot authorize a
+                # new fetch or collector pass until that uncertainty is gone.
+                try:
+                    document_automatic.require_resume(manifest)
+                except ValueError as exc:
+                    raise RefreshError("document reconciliation remains incomplete after evidence replay") from exc
+            if args.pipeline:
+                set_cpu_guard_context(cpu_guard, phase="pipeline", active_operation="bounded_pipeline_manual_reconciliation")
+                source_failures = run_bounded_pipeline(
+                    run_dir, manifest, sources,
+                    page_cap=args.page_cap, concurrency=args.concurrency,
+                    attempts_this_run=args.attempts_per_source, env_file=args.env_file,
+                    source_workers=args.source_workers,
+                    owner_check=lock._require_authority,
+                    initial_before=initial_preflight_binding(
+                        run_dir, manifest, fresh=not bool(recorded_pre_hash),
+                        resumed=bool(args.resume), owner_check=lock._require_authority,
+                    ),
                 )
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="aggregate_gate",
-                active_operation="aggregate_gate",
-            )
-            run_aggregate_gate(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="ingest",
-                active_operation="serial_additive_ingest",
-            )
-            ingest_admitted_sources(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="readback",
-                active_operation="generation_exact_readback",
-            )
-            run_final_validation(run_dir, manifest, args.env_file)
-            manifest["status"] = (
-                "selected_transaction_scope_complete"
-                if transactions != TRANSACTIONS
-                else (
-                    "additive_scope_complete_coverage_hold"
-                    if (manifest.get("aggregate_gate") or {}).get(
-                        "baseline_advisory_holds"
+                if source_document_acquisition is not None:
+                    set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
+                    pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
+                if source_failures:
+                    raise RefreshError("pipeline source checkpoints remain incomplete: " + ", ".join(source_failures))
+            else:
+                source_failures = prepare_sources_cohort(
+                    run_dir,
+                    manifest,
+                    sources,
+                    page_cap=args.page_cap,
+                    concurrency=args.concurrency,
+                    attempts_this_run=args.attempts_per_source,
+                    env_file=args.env_file,
+                    source_workers=args.source_workers,
+                )
+                if source_document_acquisition is not None:
+                    set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
+                    pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
+                if source_failures:
+                    raise RefreshError(
+                        "source checkpoints remain incomplete: "
+                        + ", ".join(source_failures)
                     )
-                    else "supported_scope_complete"
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="aggregate_gate",
+                    active_operation="aggregate_gate",
+                )
+                run_aggregate_gate(run_dir, manifest, args.env_file)
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="ingest",
+                    active_operation="serial_additive_ingest",
+                )
+                ingest_admitted_sources(
+                    run_dir, manifest, args.env_file, owner_check=lock._require_authority
+                )
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="readback",
+                    active_operation="generation_exact_readback",
+                )
+                run_final_validation(run_dir, manifest, args.env_file)
+            quiesce_resource_guards(memory_guard, cpu_guard)
+            manifest["status"] = (
+                "additive_scope_complete_current_inventory"
+                if manifest["config"].get("current_inventory_admission") or manifest["config"].get("current_inventory_admissions")
+                else (
+                    "selected_transaction_scope_complete"
+                    if transactions != TRANSACTIONS
+                    else (
+                        "additive_scope_complete_coverage_hold"
+                        if (manifest.get("aggregate_gate") or {}).get(
+                            "baseline_advisory_holds"
+                        )
+                        else "supported_scope_complete"
+                    )
                 )
             )
+            if any(verified_subset_candidate(manifest, source) for source in manifest["config"]["sources"]):
+                manifest["status"] = current_inventory.DAUM_SUBSET_STATUS
+                manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
             manifest["finished_at"] = utc_now()
             manifest["resource_stop"] = None
             manifest["error"] = None
-            save_manifest(run_dir, manifest)
-            atomic_write_text(run_dir / "report.md", render_report(manifest))
+            evidence_incomplete = bool(manifest.get("automatic_source_evidence_paused")) or bool(
+                automatic_source_evidence and any(
+                    ((attempt.get("source_evidence") or {}).get("state") != "appended"
+                     or (source in automatic_source_evidence.get("native_source_formats", {}) and
+                         ((attempt.get("native_source_evidence") or {}).get("state") != "settled"
+                          or any(page.get("state") != "appended" for page in
+                                 (attempt.get("native_source_evidence") or {}).get("pages", [])))))
+                    for source, checkpoint in manifest["sources"].items()
+                    if source in automatic_source_evidence["source_keys"]
+                    for attempt in checkpoint.get("attempts", [])
+                )
+            )
+            if source_document_acquisition is not None:
+                evidence_incomplete = evidence_incomplete or document_automatic.append_incomplete(manifest)
+            if automatic_source_evidence is not None:
+                manifest["automatic_source_evidence_status"] = "incomplete" if evidence_incomplete else "settled"
+            documents_incomplete = bool(source_document_acquisition and (
+                manifest.get("source_document_acquisition_paused")
+                or manifest.get("source_document_acquisition_status") != "settled"
+                or document_automatic.append_incomplete(manifest)))
+            persist_terminal()
             print(run_dir)
-            return 0
+            return 1 if evidence_incomplete or documents_incomplete else 0
     except CpuGuardTrip as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
         details = _peek_cpu_guard_trip_details()
         if details is None:
             details = CpuGuardTripDetails(
@@ -6363,29 +8216,93 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         manifest["status"] = "resource_guard_interrupted"
         manifest["resource_stop"] = resource_stop_record(manifest, details)
-        manifest["error"] = "host CPU guard stopped the checkpoint run"
+        manifest["error"] = (
+            "host memory pressure guard stopped the checkpoint run"
+            if details.reason_code.startswith("host_memory_")
+            else "host CPU guard stopped the checkpoint run"
+        )
         manifest["finished_at"] = utc_now()
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        persist_terminal()
         return 75
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
         manifest["status"] = "interrupted"
         manifest["resource_stop"] = None
         manifest["error"] = "operator interruption"
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        manifest["finished_at"] = utc_now()
+        persist_terminal()
         return 130
-    except Exception as exc:
+    except SourceGuardRefusal as exc:
+        if not lock.held:
+            raise
+        lock._require_authority()
         manifest["status"] = "failed"
         manifest["resource_stop"] = None
         manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        manifest["finished_at"] = utc_now()
+        persist_terminal()
+        local_refusal = True
+        return PYRAMID_GUARD_SETTLED_EXIT
+    except Exception as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
+        manifest["status"] = "failed"
+        manifest["resource_stop"] = None
+        manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+        manifest["finished_at"] = utc_now()
+        persist_terminal()
         raise
     finally:
-        cpu_guard.stop()
-        _clear_cpu_guard_trip()
-        signal.signal(signal.SIGTERM, previous_sigterm)
+        try:
+            memory_guard.stop()
+            cpu_guard.stop()
+            details = _peek_cpu_guard_trip_details()
+            guards_stopped = all(
+                guard.thread is None or not guard.thread.is_alive()
+                for guard in (memory_guard, cpu_guard)
+            )
+            settlement_unknown |= _cleanup_unknown_in_chain(sys.exception())
+            _clear_cpu_guard_trip(reset_signals=False)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            if lock.held:
+                save_report(run_dir)
+            if (
+                lock.held
+                and terminal_evidence_saved
+                and not terminal_publication_failed
+                and guards_stopped
+                and not settlement_unknown
+                and not (manifest.get("pipeline") or {}).get("commit_outcome_unknown", False)
+                and (details is None or details.owned_processes_reaped)
+            ):
+                lock.clear_recovery_requirement()
+                local_refusal_settled = details is None
+        finally:
+            # This runs even if final evidence, guard teardown or fence clearing
+            # fails. A still-armed authority/lease is preserved by SharedLock.
+            ownership.__exit__(*sys.exc_info())
+            if args.series_control_invocation_id is not None:
+                from cre_series_control import publish_checkpoint_settlement
+
+                publish_checkpoint_settlement(
+                    run_dir,
+                    args.series_control_invocation_id,
+                    manifest,
+                    child_invocation_id=args.series_control_child_id,
+                    guards_stopped=guards_stopped,
+                    nested_cleanup_confirmed=(
+                        not settlement_unknown
+                        and not _cleanup_unknown_in_chain(sys.exception())
+                        and (details is None or details.owned_processes_reaped)
+                    ),
+                    terminal_evidence_saved=terminal_evidence_saved
+                    and not terminal_publication_failed,
+                )
+            if local_refusal and not local_refusal_settled and sys.exception() is None:
+                raise GlobalStageError("source refusal local settlement is unknown")
 
 
 if __name__ == "__main__":

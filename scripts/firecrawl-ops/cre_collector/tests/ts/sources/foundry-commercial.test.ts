@@ -4,7 +4,6 @@ import {
   assertFoundryUniqueProviderIds,
   classifyFoundryStatus,
   foundryAssetUrl,
-  foundryFetchText,
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
@@ -207,124 +206,11 @@ test("Foundry asset URLs preserve benign queries and reject unsafe or sensitive 
 
 test("Foundry emitted provider IDs must be unique", () => {
   assert.doesNotThrow(() =>
-    assertFoundryUniqueProviderIds([{ id: "1" }, { id: "2" }])
+    assertFoundryUniqueProviderIds([{ id: "property/first", foundryPostId: "1" }, { id: "property/second", foundryPostId: "2" }])
   );
   assert.throws(
-    () => assertFoundryUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertFoundryUniqueProviderIds([{ id: "property/first", foundryPostId: "1" }, { id: "property/second", foundryPostId: "1" }]),
     /duplicate provider ID 1/
-  );
-});
-
-test("Foundry fetch validates redirect targets, streams byte bounds, and supplies an abort signal", async () => {
-  let cancelled = false;
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/oversized/",
-        "html",
-        async (_input, init) => {
-          assert.ok(init?.signal);
-          assert.equal(init?.redirect, "manual");
-          return new Response(
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode("abc"));
-                controller.enqueue(new TextEncoder().encode("def"));
-              },
-              cancel() {
-                cancelled = true;
-              },
-            }),
-            { headers: { "content-type": "text/html" } }
-          );
-        },
-        1_000,
-        4,
-        1
-      ),
-    /exceeds 4 bytes/
-  );
-  assert.equal(cancelled, true);
-  let redirectCalls = 0;
-  assert.equal(
-    await foundryFetchText(
-      "https://www.foundrycommercial.com/sitemap.xml",
-      "xml",
-      async (input, init) => {
-        assert.equal(init?.redirect, "manual");
-        redirectCalls++;
-        return redirectCalls === 1
-          ? new Response("", {
-              status: 301,
-              headers: { location: "/sitemap_index.xml" },
-            })
-          : new Response("<sitemapindex><sitemap><loc>https://www.foundrycommercial.com/property-sitemap.xml</loc></sitemap></sitemapindex>", {
-              headers: { "content-type": "application/xml" },
-            });
-      },
-      1_000,
-      1_000,
-      1
-    ),
-    "<sitemapindex><sitemap><loc>https://www.foundrycommercial.com/property-sitemap.xml</loc></sitemap></sitemapindex>"
-  );
-  assert.equal(redirectCalls, 2);
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/redirected/",
-        "html",
-        async () =>
-          new Response("", {
-            status: 302,
-            headers: { location: "http://www.foundrycommercial.com/property/insecure/" },
-          }),
-        1_000,
-        1_000,
-        1
-      ),
-    /refused unsafe html URL/
-  );
-  const secret = "synthetic-redirect-secret";
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/redirected/",
-        "html",
-        async () =>
-          new Response("", {
-            status: 302,
-            headers: {
-              location:
-                `/property/redirected/?session=${secret}#${secret}`,
-            },
-          }),
-        1_000,
-        1_000,
-        1
-      ),
-    (error: unknown) => {
-      assert.match(String(error), /refused unsafe html URL/);
-      assert.equal(String(error).includes(secret), false);
-      return true;
-    }
-  );
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/timeout/",
-        "html",
-        async (_input, init) =>
-          new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
-              once: true,
-            });
-          }),
-        5,
-        100,
-        1
-      ),
-    /aborted/
   );
 });
 
@@ -428,7 +314,8 @@ test("Foundry parser combines stable identity, JSON-LD, and provider DOM without
   });
   assert.equal(outcome.kind, "accepted");
   if (outcome.kind !== "accepted") return;
-  assert.equal(outcome.listing.id, "23716");
+  assert.equal(outcome.listing.id, "property/offices-at-wade-park-wade-ii");
+  assert.equal(outcome.listing.foundryPostId, "23716");
   assert.equal(outcome.listing.name, "Offices at Wade Park | Wade II");
   assert.equal(outcome.listing.transactionType, "Lease");
   assert.equal(outcome.listing.assetType, "Office");
@@ -580,7 +467,8 @@ test("Foundry source holds unknown status, marks coverage incomplete, and never 
   const result = await srcFoundryCommercial("sale", Infinity, false);
   assert.equal(result.totalAvailable, 2);
   assert.equal(result.listings.length, 1);
-  assert.equal(result.listings[0].id, "30001");
+  assert.equal(result.listings[0].id, "property/active-sale");
+  assert.equal(result.listings[0].foundryPostId, "30001");
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /1 detail page\(s\) held/);
   assert.equal(calls.some((url) => /\.pdf(?:$|[?#])/i.test(url)), false);

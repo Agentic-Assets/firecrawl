@@ -51,6 +51,12 @@ export function samePage(left: string, right: string): boolean {
   }
 }
 
+export function foundryListingId(value: string): string {
+  const url = foundryUrl(value, "detail");
+  if (!url) throw new Error("Foundry listing key requires an owned property URL");
+  return new URL(url).pathname.replace(/^\/+|\/+$/g, "");
+}
+
 function sitemapLocations(
   xml: string,
   rootName: "sitemapindex" | "urlset",

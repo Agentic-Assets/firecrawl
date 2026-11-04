@@ -1,21 +1,44 @@
 # CRE Collector Start Here
 
+For a short map of active code, tests, operations, and historical material, see [README.md](README.md).
+
+For a reviewed Windows/Ubuntu **code-only handoff**, follow the maintained
+[checkout and runtime handoff procedure](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#moving-a-reviewed-build-to-a-runtime).
+The foreground tooling defaults to offline preview. Observation, independent
+authorization, apply and independent postreadback are distinct gates. This route
+does not authorize a refresh, dependency installation, source/data acceptance,
+task scope/cadence expansion or changes to another host.
+
 > **Current ownership, 2026-07-11:** GetCREdata is the sole production OM
 > extraction writer. `om_parse.py --apply` fails closed with exit `78`, and
 > `cre_enrich.py` has no OM-parse invocation. The dated snapshots below are
 > historical records, not authorization to reactivate that writer.
 >
 > **Current operational handoff:** For supervised listing refreshes, use the
-> strict-refresh procedure below and the dated status ledger at
-> `../../../tasks/2026-07-29-cre-complete-freshness-refresh/refresh-summary.md`.
+> strict-refresh procedure below and the current execution evidence on
+> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+> Dated files under `tasks/` are historical evidence, not a live status ledger.
 > The July 11 operator runbook remains historical scheduler-recovery and
 > OM-canary context only. Always obtain live scheduler, lock, manifest, and
 > database readback evidence before acting.
+> Unattended scheduled operation is a goal, not blanket current acceptance; see
+> [the operating goal and acceptance](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
 
-> **Supported production path:** When collection and ingest are enabled, they
-> run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
-> `cre_daily_update.sh`). `../cre_scrapers/brokers/` is legacy reference code,
-> not a source of board updates.
+> **Collector implementation:** Source adapters and ingest implementation live
+> here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`). For supervised refreshes,
+> use `cre_checkpoint_refresh.py` or `cre_checkpoint_series.py`; `cre_daily_update.sh`
+> is a legacy backstop, not the default supervised entrypoint. `../cre_scrapers/brokers/`
+> is legacy reference code, not a source of board updates.
+
+For provider, endpoint, or page-layout variations, follow the source-backed
+[brokerage completion and evidence guidance](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+before changing an adapter. Current runtime and source-specific contracts
+remain in this guide and `sources/AGENTS.md`.
+
+For adapter completeness and reported UI data gaps, use the
+[comprehensive listing fidelity standard](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity):
+trace fresh public detail through artifacts, normalized/raw fields, children and
+consumer display; counts alone do not prove information fidelity.
 
 ## Agent rule: verify counts before you quote or edit them
 
@@ -27,18 +50,117 @@ its date. Never treat a historical launchd statement as live proof.
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 bash cre_status.sh                    # read-only scheduler and marker preflight
-python3 -m pytest tests/ -q           # obtain the current pytest count
-npm run test:unit                     # obtain the current TypeScript count
+# Ubuntu/WSL uses external scheduler mode instead of the macOS command above:
+# bash cre_status.sh --scheduler external
 ```
+
+Obtain test counts only from a genuine standalone `git clone --no-hardlinks`,
+never the runtime checkout or its worktrees. Follow the dependency-complete
+[isolated verification recipe in SETUP.md](SETUP.md#isolated-verification).
 
 ## Strict listing refresh
 
 Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
 collects, validates, gates, and dry-runs each source into a resumable manifest.
-It stops on the first non-`ok` source gate, runs one aggregate gate over the
-complete prepared artifact set, and only then begins additive live ingest. The
-monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
-path for a source-fresh detail sweep.
+Default serial mode stops on a refused source gate and requires the complete
+prepared artifact set to pass its aggregate gate before additive live ingest.
+Opt-in pipeline mode applies those gates to each sealed unit before its serial
+writes and full audit, while other sources may collect. The pipeline first
+checks each validated artifact's source gate before sealing.
+Exactly bound standard `hold` and `first_seen` refusals become terminal
+`gate_blocked` and `baseline_seed_required` source failures; other eligible
+sources continue. Their artifact and gate evidence remain in the checkpoint,
+outside sealed membership. Malformed, foreign, changed or unknown evidence,
+failed admission proof, and any refusal after sealing still stop all lanes.
+For Essex, a positive, bound historical identity conflict is also a pre-seal
+source hold; the checkpoint's `identity_preseal` records the validated verdict,
+conflict count and report reference. The in-transaction identity guard remains
+in place for changes after the check. Query failures, malformed or changed
+evidence, and failures after sealing remain global failures. See
+[AGENTIC-5215](https://linear.app/agenticassets/issue/AGENTIC-5215).
+This adds a baseline read, artifact/report hashes and code identity checks per
+candidate. The monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
+source-fresh detail sweep or a new Windows schedule. For explicit-source,
+bounded inventory/enrichment trials, see the
+[guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
+Scheduling and full-source acceptance remain separately gated.
+
+### Opt-in stage overlap
+
+The same foreground pipeline runs on macOS and Linux/WSL. Serial behavior is
+still the default on both hosts. Opt in with `--pipeline`; its brokerage-slot
+setting is `--source-workers` (1–4, default 2). Changing this setting changes
+collection capacity only. Database transactions remain serial.
+
+```bash
+python3 cre_checkpoint_series.py --pipeline --source-workers 2 \
+  --sources interra-realty,faris-lee \
+  --admit-current-inventory-source interra-realty \
+  --admit-current-inventory-source faris-lee \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+This example performs additive database writes when run. Use an explicitly
+approved finite source selection and reviewed clean SHA. Every source requiring
+current-inventory admission needs its own repeated exact key. Family names and
+`all` never grant admission. Existing historical-baseline certificates retain
+all existing requirements. Serial resume requires the identical source order,
+worker setting, admissions, target and generation. Once pipeline state is
+recorded, `--resume` refuses mixed-stage replay; settle and reconcile the exact
+generation and any uncertain writes before deciding the next invocation.
+
+One refresh owner keeps collecting while owned artifact inspection and database
+commands wait. Buildout shares one acquisition lane; existing JLL/CBRE family
+exclusions remain. Colliers Main runs alone through the complete database unit.
+A ready unit seals immediately with 1–5 artifacts, then runs existing gates,
+dry runs and one transaction per source, followed by a complete audit and exact
+member generation readback. Audit quality is enforced after the unit, so an
+audit failure can leave earlier source commits in place and global regressions
+can offset within that unit. Verified counts appear only after this audit.
+
+Outside a sealed unit, ready plus in-flight reservations are capped at five.
+Dispatch pauses at a 512 MiB soft pending-byte watermark, charging at least
+64 MiB per active output plus actual larger temporary/retry files, and requires
+1 GiB free beyond remaining reservations. These are dispatch limits: legitimate
+oversized artifacts retain their unchanged acceptance checks and drain alone.
+Confirmed terminal pre-seal held artifacts leave the pending-work budget but
+remain on disk and count against the unchanged minimum-free-space check.
+Mixed-stage resource, telemetry, ownership, evidence or database failures stop
+new dispatch and settle owned groups. There is no automatic mixed-stage
+cooldown/restart; uncertain writes retain existing reconciliation fences.
+
+Evidence stays in the single refresh manifest and `pipeline/unit-0001/` etc.
+Never-sealed empty preparation units are omitted; source failure evidence is
+retained. Mixed and all-held runs remain failed/incomplete and never advance
+all-source last-good. Partial summaries report only qualified member counts,
+including no listing counts when every source is held.
+The manifest records sealed membership and per-source outcomes in
+`pipeline.source_results`; qualified members also carry audit/readback bindings.
+Series entries point to
+that same refresh run; partial completion cannot publish all-source last-good
+health. `cre_series_status.py` exposes stage counts and the resolved worker
+setting. For a valid pipeline child, its human progress bar counts only members
+qualified by the existing audit/readback checks. Recorded parent status, counters
+and update age remain separate: the parent reconciles after its child settles,
+so it may still be running with zero parent-complete members while child units
+are already qualified. The human pipeline view omits the arbitrary singular
+parent source; JSON fields (including `current_source`) retain their recorded
+parent meanings. Intermediate progress is not whole-run settlement or acceptance.
+Terminal Slack messages report only qualified brokerage counts.
+Supported inventory-only index records are counted separately; they do not
+increase property-listing or sale/lease totals or claim refreshed parent details.
+No scheduler or Mac configuration is activated by selecting this mode.
+
+After a failed pipeline settles with a known rollback, the strict finish summary
+can retain qualified siblings while an exact `global pipeline stop` leaves
+prewrite members without credit. An ingest with exact rollback evidence is failed;
+cancelled, unstarted or prepared-but-never-ingested members remain unfinished. This is a partial
+summary, not whole-run success; unknown writes, active recovery, unsettled owners
+or invalid qualification evidence still make counts unavailable.
+
+For concise scheduled-run messages, see [Slack setup](slack-setup.md). It owns
+the private webhook-file format, local configuration check and exact-channel
+delivery verification; it does not authorize or enable a schedule.
 
 Strict Avison generations use validated direct HTTP detail reads because the
 same public static property pages can exceed the local browser-render timeout.
@@ -59,7 +181,7 @@ python3 cre_checkpoint_refresh.py \
   --sources svn,lee-associates,franklin-street \
   --env-file "$HOME/.config/cre/equire.env"
 
-# Resume the exact run after interruption. Keep the same source list, page cap,
+# Resume the exact serial run after interruption. Keep the same source list, page cap,
 # concurrency, source-worker count, attempts, collector SHA, and environment:
 python3 cre_checkpoint_refresh.py \
   --resume out/checkpoint-refresh/<run-id> \
@@ -67,35 +189,133 @@ python3 cre_checkpoint_refresh.py \
   --env-file "$HOME/.config/cre/equire.env"
 ```
 
-`--source-workers` defaults to `1`, preserving serial source preparation. It
-is an explicit, opt-in collection-only pool, capped at `2`; it does not change
-the per-source `--concurrency` setting and it never permits concurrent ingest.
-The checkpoint coordinator remains the only manifest writer, waits until every
-selected artifact is collected and validated, then runs each gate and dry-run,
-one aggregate gate, and deterministic serial additive ingests. Colliers Main
-is exclusive; the JLL, CBRE, and Buildout source families each share a provider
-lane. Use the default until a specific two-source pairing has its own
-no-write calibration evidence. A source failure, rejected artifact, gate, or
-dry-run failure prevents aggregate admission and every database write.
+`--source-workers` resolves to `1` in serial mode and `2` in `--pipeline` mode
+unless explicitly set. The collection pool is capped at `4`; this setting does
+not change per-source `--concurrency` or permit concurrent database transactions.
+`cre_checkpoint_series.py` supports the same foreground pipeline mode and worker
+setting. The checkpoint coordinator remains the only manifest writer.
 
-### CPU safety and evidence
+Serial mode waits for the selected artifacts before gates and deterministic
+ingestion. Pipeline mode seals ready units of one to five sources, runs their
+gates and dry runs, then commits each source serially. Verified counts are
+published only after the unit's full audit and exact generation readback.
+A later pipeline failure can leave earlier source commits in place; partial
+completion is not all-source success. Reconcile the exact failed attempt before
+further work rather than replaying uncertain writes.
 
-Every checkpoint run has a fail-closed Darwin host-CPU watchdog. The code
+Colliers Main is exclusive; the JLL, CBRE, and Buildout source families each
+share a provider lane. Four workers are available for explicitly authorized
+supervised calibration; retain the selected cohort's calibrated setting until
+further evidence supports changing it.
+
+### CPU and memory safety and evidence
+
+Every checkpoint run has a fail-closed platform-selected CPU watchdog: Darwin
+Mach counters on macOS and aggregate `/proc/stat` counters on Linux. The code
 defaults are 90% for 30 seconds, sampled every 2 seconds. It rejects a start
 already at the ceiling and, on sustained pressure or telemetry failure,
 terminates its owned collector process group, releases the canonical lock,
 writes `resource_guard_interrupted`, and exits `75`.
 
-This is a safe stop with an exact resume point, not a background monitor or an
-automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
+Every checkpoint also requires memory-pressure telemetry. macOS continues to
+use the Darwin userspace dispatch pressure level. Linux requires kernel memory
+PSI, `MemAvailable`, swap totals, and unified cgroup v2 memory-controller
+evidence. A start
+requires normal pressure. Warning pressure sustained for 20 seconds or any
+critical sample stops the checkpoint through the same owned-process cleanup
+path. A combined journal and scheduling interval longer than the greater of one second
+or 1.5 sample intervals resets the warning window; the one-second floor permits
+ordinary journal overhead at subsecond sampling cadences; the missing interval is not treated as observed pressure. A gap
+longer than the greater of the warning sustain period or three sample intervals
+stops on telemetry failure, except that a fresh critical reading trips immediately.
+Missing, malformed, timed-out or stale pressure readings and failed required
+evidence also stop it. Exceptional sample gaps are recorded in the guard log. `--memory-sustain-seconds` (maximum 30) and
+`--memory-sample-seconds` (default 2, maximum 5) are recorded and passed from
+series to children. `logs/host-memory-guard.jsonl` stores compact bounded samples;
+policy and the terminal reason are saved in the manifest. Memory stops never
+qualify for automatic CPU-only recovery. Resume only after host pressure clears.
+
+Linux warning and trip records also retain `linux_memory_sample`, the bounded
+validated inputs and cause codes from that exact guard read: VM totals and PSI,
+plus visible cgroup usage, PSI and event deltas. Ancestor indices run from leaf
+to root and contain no raw paths. Normal ticks stay compact; Darwin and custom
+sampler records are unchanged. Nearby optional samples cannot identify or refute
+a transient guard stop. See [AGENTIC-4188](https://linear.app/agenticassets/issue/AGENTIC-4188).
+
+On Linux, policy v2 warning pressure means PSI `some avg10 >= 10%` or
+`full avg10 >= 2%`, available memory
+at or below 10%, a visible cgroup at or above 90% of `memory.max`, or new
+cgroup `high`/`max` events. Exhausted swap (at most 10% free) warns only when
+available memory is also at most 20%; historical swap use alone is not pressure.
+PSI measures [time spent stalled](https://docs.kernel.org/accounting/psi.html),
+not the percentage of RAM consumed. PSI-only warnings use the configured
+warning sustain window (20 seconds by default); normal pressure resets it.
+Critical pressure still means available memory at or below 5%, a visible cgroup
+at or above 95% of its limit, or new OOM/OOM-kill events, and stops immediately.
+All visible ancestor limits are checked. Cgroup usage includes page cache;
+this deliberately conservative guard may stop before an OOM. Missing or
+malformed PSI/controller evidence, changing cgroup membership, and decreasing
+counters fail closed. Cgroup v1 is unsupported. These Linux policy values and
+the measured scope are bound into the manifest; do not resume a Darwin run on
+Linux or hand-edit a manifest to cross platforms.
+
+The v2 basis applies to fresh Linux runs. New code refuses missing, v1, unknown
+or mutated Linux memory policies on resume, including policy drift between a
+series and child or in matched resource evidence. Keep the original pinned
+code/policy for an existing generation; do not rewrite old receipts. Darwin
+pressure behavior and its missing-block legacy compatibility are unchanged.
+Freshness certificates retain their data contract and do not attest memory
+safety. See [AGENTIC-4189](https://linear.app/agenticassets/issue/AGENTIC-4189).
+
+Under WSL2 or Docker Desktop these CPU and memory samples measure the Linux
+VM, plus the collector's visible cgroups. They do **not** measure Windows host
+CPU/RAM or unrelated Windows applications, and cgroup namespaces may hide
+ancestors. Keep the bounded `.wslconfig` and container hard limits, use an ext4
+checkout, and supervise foreground collection. This guard port does not
+authorize production cutover, simultaneous Mac/Windows writers, or scheduling.
+The Linux safety port merged after founder approval in
+[PR108](https://github.com/Agentic-Assets/firecrawl/pull/108); the production
+handoff and scheduler gates remain separate.
+
+Linux telemetry definitions follow the kernel's [proc filesystem](https://docs.kernel.org/filesystems/proc.html),
+[PSI](https://docs.kernel.org/accounting/psi.html), and
+[cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) documentation.
+
+These thresholds govern the decision to begin cleanup, not a guarantee that
+CPU, memory or previously queued server work ends at that instant. For a tighter
+foreground run, `--max-host-cpu-percent 90 --cpu-sustain-seconds 10
+--cpu-sample-seconds 2` leaves more room for owned-process cleanup. Docker jobs
+may continue after a client interrupt; verify backend settlement separately.
+
+On macOS, memory protection uses whole-host pressure rather than free RAM
+percentage or old swap occupancy. Container usage remains diagnostic on that
+path; normal Mac host pressure does not predict a Docker VM/container OOM.
+Linux instead uses the PSI, available-memory/swap and visible cgroup policy
+above, including percentage thresholds. Under WSL those samples cover the
+Linux VM and visible cgroups, not aggregate Windows memory.
+
+The optional resource timeline uses platform-specific memory readers too:
+Darwin VM categories on macOS, Linux available-memory/swap bytes and the
+existing PSI/cgroup pressure policy on Linux. Linux records the VM/visible-cgroup
+scope explicitly and leaves Darwin-only VM categories absent. Diagnostic gaps
+remain visible and do not replace or disable the required safety guards. For
+an IPv4-only loopback stack, set `FIRECRAWL_API_URL=http://127.0.0.1:3002`
+before starting a fresh generation so performance diagnostics can bind to the
+actual publication; do not relax the runtime identity check or rewrite an
+existing generation to hide missing evidence.
+
+This is a safe stop, not a background monitor or an automatic pause/resume
+service. Serial mode retains an exact resume point; pipeline mode requires
+[exact-generation reconciliation](#opt-in-stage-overlap) before another invocation. `logs/host-cpu-guard.jsonl` records samples;
 `logs/cpu-incidents.jsonl` records one best-effort, sanitized process and
 container snapshot when a high window begins. Incident capture is evidence
 only; the watchdog makes the stop decision.
 
 For a supervised full-registry run on a shared Mac, use the more conservative
 profile below. It limits the browser to one page and gives the API and browser
-sidecar one CPU each. Compose defaults are two CPUs each, so the profile takes
-effect only after the explicit recreate.
+sidecar one CPU each. Compose defaults are one CPU for the API and two for the
+browser, so the conservative profile reduces browser capacity only after the
+explicit recreate.
 
 ```bash
 # From the repository root. This changes only four non-secret .env keys.
@@ -124,6 +344,11 @@ completed additive ingests, so this is not an all-registry atomic transaction.
 
 Use this conservative supervised command after applying the resource profile:
 
+For a new series, use a normal-priority shell (coordinator niceness 0).
+`--nice 15` applies the worker adjustment once. Do not also wrap the coordinator
+in `nice -n 15`: its children inherit that priority before adding their own
+adjustment, reaching niceness 19 on Linux.
+
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 JLL_DETAIL_CONCURRENCY=1 \
@@ -134,7 +359,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --sources all \
   --concurrency 1 \
   --nice 15 \
@@ -146,8 +371,14 @@ NAI_ENUMERATION_CONCURRENCY=1 \
 
 ### Supervised accelerated profile
 
-The 2026-09-13 browser-only calibration below supersedes the one-page browser
-capacity for supervised JLL runs; conservative defaults remain available.
+**Historical capacity recipe, not current JLL C4 admission.** The dated
+measurements and command below do not establish current listing-field fidelity
+or authorize that production profile. Follow the current reviewed source and
+provider settings on [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895)
+and [AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900).
+
+The 2026-09-13 browser-only calibration below compared capacity for
+supervised JLL runs at that time; conservative defaults remain available.
 
 The conservative profile above remains the default. On 2026-09-09, supervised
 production observations plus Cayman's tuning authorization established the
@@ -159,7 +390,7 @@ following evidence and decision record:
 | CBRE API page size 500, snapshot concurrency 2, no render wait | Live lease proof reconciled 15,044 unique IDs and URLs across two complete passes with an exact 44-row terminal page and empty sentinel; full TypeScript suite passed | Current strict unlimited CBRE profile |
 | CBRE API page size 1,000 or 2,000 | High-offset requests stalled or failed transport | Rejected; do not use |
 | JLL detail concurrency 1 | Exact and stable; observed cache-write interarrival mean 3.846 seconds and median 3.704 seconds over 230 current rows | Conservative fallback |
-| JLL detail concurrency 4 | Bounded no-database proof completed 200/200 fresh sale details in 496.69 seconds, including enumeration, with zero detail errors and zero duplicate or missing IDs, URLs, or canonical URLs | Current supervised accelerated profile; fall back to 2, then 1, on provider errors or resource pressure |
+| JLL detail concurrency 4 | Bounded no-database proof completed 200/200 fresh sale details in 496.69 seconds, including enumeration, with zero detail errors and zero duplicate or missing IDs, URLs, or canonical URLs | Historical capacity result; not current production C4 admission |
 | Direct JLL HTML | Exact structured property and broker payload in one sample, about 6x faster, but not yet equivalent for rendered Markdown, links, images, and attributes | Not admitted for production |
 | Host CPU ceiling 55% for 10 seconds | Correctly interrupted once when unrelated local application builds sustained 65-81% total host CPU | Conservative shared-host profile |
 | Host CPU ceiling 75% for 10 seconds | Cayman-authorized supervised calibration target; the guard, serial source checkpoints, and fail-closed telemetry remain enabled | Use only with live operator supervision and the constrained container profile |
@@ -169,11 +400,35 @@ series use the current 90%/30-second/2-second guard shown in the commands.
 Resume an older series only with its exact recorded guard configuration; never
 reinterpret or hand-edit an existing manifest to adopt the new default.
 
+CBRE's strict unlimited acquisition allows up to four full snapshot passes for
+typed inventory churn, with the same page-size-500/concurrency-two profile and
+two consecutive complete matching snapshots required. A third pass that is the
+first valid snapshot cannot qualify alone. Malformed or denied reads do not
+start another snapshot pass; the existing HTTP/JSON helper policy is unchanged.
+The [source contract](sources/AGENTS.md) and
+[AGENTIC-4547](https://linear.app/agenticassets/issue/AGENTIC-4547) describe this
+bounded recovery. It does not establish fresh source acceptance or permit
+replaying a rejected artifact.
+
+Marcus detail HTML keeps a 30-second headers-and-body deadline per attempt.
+Only a typed deadline expiry permits one same-URL replacement, after the first
+operation settles locally within a bounded one-second cleanup wait. An
+abort-ignoring operation that remains unsettled receives no replacement;
+known body cancellation must also settle, and late response headers never
+permit a replacement.
+HTTP refusals, arbitrary transport errors, returned challenge pages and POST requests
+do not gain this retry. The existing successful-detail cache and strict
+full-source artifact gate still apply. See the [source contract](sources/AGENTS.md)
+and [AGENTIC-4562](https://linear.app/agenticassets/issue/AGENTIC-4562).
+This recovery changes neither the guarded owner's overall deadline nor
+source acceptance, and does not authorize replay of an old failed generation.
+
 The accelerated profile changes request scheduling and throughput while the
 source cardinality, identity, freshness, artifact, SQL dry-run, ingest, and
 readback gates remain unchanged. Provider reliability still has to be observed
-through the source checkpoint. Sources remain serial, Colliers Main stays at
-concurrency 1 because of its provider challenge behavior, and NAI enumeration
+through the source checkpoint. In that historical serial runner, sources remain
+serial, Colliers Main stays at concurrency 1 because of its provider challenge
+behavior, and NAI enumeration
 stays at concurrency 1. Start a new series when changing the global concurrency
 or CPU ceiling; never resume an existing series with a different recorded
 configuration.
@@ -230,7 +485,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --sources all \
   --concurrency 2 \
   --nice 15 \
@@ -265,12 +520,15 @@ collision-resistant run ID that
 the parent records before process launch; terminal handling reads only that
 reserved manifest path. If startup is interrupted before that manifest becomes
 readable, the next invocation fails closed for operator review instead of
-assuming a fresh run or automatic replay. It reports source phase and the last
-JLL detail-pass counter, with its attempt number, from up to eight recent linked
-collection logs (at most 64 KiB per log, 512 KiB total). A detail-pass counter
-includes processed outcomes, including cache reuse and errors; it is not a
-successful-enrichment or overall listing-completion percentage. The main
-percentage counts completed sources, which have very different sizes.
+assuming a fresh run or automatic replay. For a bound single-source child, it
+reports the latest recognized exact-source sale/lease detail counter, with its
+attempt number, from up to eight recent linked collection logs (at most 64 KiB
+per log, 512 KiB total). The reported pass counter can include cache/error
+outcomes and need not be monotonic for concurrent adapters; it is not a
+successful-enrichment, qualification, or overall listing-completion percentage.
+In serial mode the main percentage counts completed sources. A valid pipeline
+view counts audit/readback-qualified child members and keeps parent completion
+separate. Source sizes differ.
 
 During bounded CPU recovery the display shows `cooling_down`, the measured CPU,
 the continuous low-CPU window, remaining recovery budgets and preserved cache
@@ -279,8 +537,16 @@ process liveness, scans unbound child runs, prints raw provider errors, calls
 the database or alters the running series. Recorded state and manifest age
 remain visible so a stopped viewer cannot imply that a process is alive.
 
-For optimization data, the checkpoint runner also saves body-free command
-journals and per-invocation scraper snapshots automatically. Read their
+The before-collection database audit uses the eight consumed query families.
+Standalone, post-ingest and recovery validation retain the full audit. See
+[validation profiles](../../../docs/firecrawl-ops/references/cre-validation-profiles.md)
+for report scope, completeness checks and timing interpretation.
+
+For optimization data, the checkpoint runner saves body-free command journals,
+per-invocation scraper snapshots and a five-second resource timeline automatically.
+Checkpoint and series exits also save `performance-report.json` and
+`performance-report.md`, including interrupted and failed runs when their
+manifest is available. Read their
 performance report without calling the database or the scraper:
 
 ```bash
@@ -288,14 +554,18 @@ python3 cre_performance_report.py
 python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
 ```
 
-The compact Terminal report shows staged rows and the slowest measured command
-phase. JSON adds invocation identity, retry/backoff, approximate request latency,
-locally awaited concurrency, accepted JLL cache hits, sampled Node resources,
-and bounded host-CPU evidence. Unmeasured or stale evidence is explicit, not zero.
+The report separates source outcomes and staged rows from shared coordinator
+phases and machine usage. Resource evidence includes host CPU, load, memory
+pressure, compressed memory, swap and disk space; owned process RSS; and the
+selected API/browser containers with their configured limits. It labels sample
+coverage, gaps and sampled maxima. JSON also includes invocation identity,
+retry/backoff, approximate request latency, locally awaited concurrency, accepted
+JLL cache hits and sampled Node resources. Unmeasured or stale evidence is explicit, not zero.
 Old runs do not gain historical timings retroactively. Request success and field
 presence are not proof of accurate, complete listings or successful ingestion.
-Definitions, saved file names, retention and interpretation:
-`../../../docs/firecrawl-ops/references/cre-performance-telemetry.md`.
+For definitions, retention, timing interpretation and the existing Linear
+learning/experiment workflow, follow the
+[performance evidence guide](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md).
 
 ### Bounded resource recovery
 
@@ -330,8 +600,19 @@ Cancellation cannot silently restart a child. No daemon or scheduler is added.
 Outer attempts have separate logs, and child runs retain collection, gate,
 dry-run, ingest, readback and host-guard artifacts. Keep these run directories
 for diagnosis; do not publish scraped bodies, credentials or unrestricted logs.
+Within a child generation, a typed artifact-validation rejection or source-specific
+terminal refusal ends automatic collection attempts for that source; ordinary
+settled nonzero collector exits use
+the configured retry budget. An artifact's source error may be transient after
+its inner retries, so this refusal does not prohibit a separately admitted fresh run.
 Recorded experiments and rejected settings are summarized in
 [`cre-throughput-recovery-2026-09-13.md`](../../../docs/firecrawl-ops/references/cre-throughput-recovery-2026-09-13.md).
+
+A confirmed Colliers-main browser bootstrap denial is also source-local and
+terminal for that generation: collector exit79 / settled cohort marker83,
+`COLLIERS_MAIN_BOOTSTRAP_HTTP_403`, failed/no artifact. It does not authorize
+fallback access or count as empty inventory; pipeline peers continue under the
+existing coordinator. Untyped/transient browser failures retain bounded retries.
 
 Every manifest save updates `source-health-publication.json` with the attempted
 publication state. While a series is incomplete it records `not_advanced` and
@@ -369,9 +650,17 @@ These receipts report state only. This change did not enable launchd, ingest,
 status activation, lifecycle deletion, a scheduler, or a production canary.
 
 Exit `0` means every selected source completed. Exit `2` means the series
-finished with recorded source-local failures. Exit `75` means the CPU guard
+finished with recorded source-local failures. Exit `75` means a required CPU or memory guard
 stopped it; inspect the guard and incident evidence, let host pressure clear,
 then resume the exact series:
+
+The example below resumes a new conservative series launched from the
+normal-priority shell above. Historical series must retain their original
+coordinator priority/wrapper as well as their exact SHA, configuration and
+environment. Resume validation binds `--nice`, but not inherited coordinator
+niceness; removing an old outer wrapper would change effective worker priority
+even when configuration validation passes. Do not edit saved manifests or
+reinterpret an existing run's priority to match these new-run examples.
 
 ```bash
 JLL_DETAIL_CONCURRENCY=1 \
@@ -382,7 +671,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --resume out/checkpoint-series/<series-id> \
   --sources all \
   --concurrency 1 \
@@ -401,6 +690,139 @@ hand, and do not use this flag as a normal retry mechanism.
 Use `--retry-failed` only after repairing or reviewing the recorded
 source-local failures. Resume configuration and collector SHA must match.
 
+For a manual Windows/WSL resume, preserve the launcher's explicit environment,
+including `FIRECRAWL_API_URL=http://127.0.0.1:3002` from
+[`Invoke-CreGuardedTier.ps1`](windows/Invoke-CreGuardedTier.ps1), alongside the
+original source concurrency and wait settings. Keep each Mac's admitted endpoint
+when resuming there. Substituting `localhost` on an IPv4-only binding can produce
+`api_port_mismatch` and unavailable optional container-usage figures even when
+scraping works. See the [runtime telemetry binding contract](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md)
+for address-family checks; missing optional figures do not establish a required
+CPU/memory guard failure or justify changing guards.
+
+#### Optional reviewed-code and Windows startup admission
+
+AGENTIC-4173 adds optional `--expected-sha <lowercase-full-40>` and
+`--windows-admission-unix-ms <integer>` to the canonical series CLI. Omit both
+to preserve the existing manual/Mac invocation and historical resume contract.
+An explicit SHA must match clean current HEAD and a local origin tracking tip.
+Inspection is local only: it never fetches, authenticates to a remote or proves
+that tracking references are up to date. Refresh and review the deployment's
+tracking state separately before using this admission.
+
+Windows evidence requires the explicit SHA. The existing guarded-tier validator
+checks the timestamp after bounded Git inspection and before credential loading
+or output allocation; it must be no more than 15 seconds old and cannot be in the
+future. This means whole-Windows admission at startup only. It does not establish
+continuous Windows CPU/RAM safety, and the timestamp is not rechecked or relabeled
+as fresh hours later at each source. Required Linux/VM CPU and memory guards stay
+unchanged. The current PowerShell launcher supports foreground series mode with
+an explicit work budget and database-write acknowledgement; see the
+[Windows series procedure](../../../docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md).
+It does not enable a weekly schedule.
+
+Custom Windows callers should pass native integer Unix milliseconds. If reading
+an ISO timestamp from JSON in PowerShell 7.5 or later, preserve its UTC marker with
+`ConvertFrom-Json -DateKind String` before `DateTimeOffset.Parse` and
+`ToUnixTimeMilliseconds`. Parsing a `DateTime` object's implicit local string
+can lose its UTC marker and introduce a timezone offset. The shipped launcher
+generates Unix milliseconds directly and does not use that conversion. Keep
+the existing stale/future checks; do not adjust clocks or admission evidence
+to compensate for a parsing error.
+
+PowerShell 7.5+ can deserialize ISO JSON timestamps as `DateTime` values unless
+`-DateKind String` is requested; Windows PowerShell 5.1 has no such parameter
+and leaves the timestamp text as a string. Test both supported shells with
+serialized JSON fixtures, not only in-memory values. For Task Scheduler COM,
+trim a trailing separator before `GetFolder` and traverse folder components as
+`Install-CreScheduledTask.ps1` does. `Schedule.Service.NewTask(0).XmlText` can
+validate proposed XML in memory without registering it; registration and task
+acceptance remain separate gates.
+
+If an update fails after a task was held, preserve the failed attempt and exact
+task definition. Do not replay registration or re-enable by inference. Confirm
+the owner is settled first; a remaining recovery fence follows the explicit
+[settled-owner recovery procedure](LOCK_AUTHORITY_RECOVERY.md#explicit-recovery-of-a-known-settled-dead-owner)
+under AGENTIC-4607.
+
+When configured, reviewed code is checked again before every child dispatch,
+including recovery retries, before an attempt counter or child log is created.
+Drift refuses new child work and records a global failure. This is admission
+inspection, not a race-free filesystem freeze, and does not retrofit children
+already running. Local Git stdout is capped at 64 KiB per command with a 5-second
+observation budget; timeout/error uses existing exact-owned process settlement.
+Unresolved local cleanup remains `cleanup_unknown`. Native calls are assumed to
+return, so these budgets are not kernel-call deadlines. No second canonical
+CRE lock, controller or scheduler is added.
+
+Explicit admission is recorded in top-level `latest_invocation_admission`,
+separately from immutable config and resume fingerprints. It is a replaceable
+observation of the current invocation, not append-only history. A later explicit
+resume replaces it; a legacy resume without the options removes it rather than
+presenting prior Windows evidence as current. Source artifacts, database-target
+binding, resource recovery, freshness gates and data-write policy remain unchanged.
+
+#### Optional Linux work deadline and exact invocation stop
+
+[AGENTIC-4174](https://linear.app/agenticassets/issue/AGENTIC-4174) adds explicit
+one-shot Linux CLI control through `--work-deadline-seconds`. Omit it to keep
+existing manual/Mac commands unchanged. An explicit integer budget must be
+30–86400 seconds; unsupported platforms refuse before credentials or output.
+Add the option to a separately reviewed series command, keeping its original
+source, provider, resource, environment and admission arguments.
+
+The budget starts after initial control publication and covers foreground child
+work, local Git checks and resource cooldown. It is a cooperative work deadline,
+with the existing separate child cleanup budgets (45-second parent grace plus
+5-second kill/reap allowance), not a kernel-call or total execution deadline.
+Stop signals are briefly latched during native spawn and ownership registration;
+child signal masks remain unchanged. No new source or recovery retry is dispatched
+after a delivered control interruption. A resumed invocation has a fresh explicit
+budget; this never extends a child generation's freshness or resume-age limits.
+
+The controlled CLI prints JSON containing the exact series directory and fresh
+32-character invocation ID before native work. Its private receipt lives at
+`.series-control/INVOCATION_ID.json` inside that series. Use those exact values;
+there is no latest-run selector. From the selected Linux collector checkout:
+
+```bash
+# Placeholder identities only; replace both with the controlled CLI's output.
+python3 cre_stop_checkpoint_series.py \
+  --series-dir /absolute/path/to/out/checkpoint-series/2026-10-14T030000Z \
+  --invocation-id 0123456789abcdef0123456789abcdef --wait-seconds 60
+```
+
+The stop helper checks process birth, boot, namespace and UID; series/control
+inodes; and the actual held `.series.lock` descriptor and flock. It sends one
+SIGTERM through a pidfd and waits on that same handle for up to 1–120 seconds.
+It never signals a bare PID/group, escalates, stops Docker, clears a checkpoint
+fence or authorizes a retry. The existing foreground owner handles child cleanup.
+A naturally finishing owner may be reported as completed without a signal.
+
+Exit 0 from the helper requires owner exit and matching terminal control evidence
+with confirmed local settlement or verified `not_started`. This is distinct from
+pipeline success: inspect `terminal_status`. Exit 1 means refusal before a verified
+stop; exit 2 means timeout or an unverified outcome. A known work deadline returns
+124 from the series; operator interruption returns 130. Uncertain spawn, process
+cleanup, nested checkpoint work or evidence publication cannot certify settlement.
+
+Controlled checkpoint children receive a fresh per-dispatch nonce and publish a
+separate private settlement receipt only after existing guard and canonical-lock
+teardown. The parent requires exact run/SHA/PID/invocation/dispatch binding and
+positive guard, nested-cleanup and terminal-evidence flags. Missing, stale or false
+proof remains unknown even when the coordinator group disappeared. The checkpoint's
+existing recovery-fence and reconciliation behavior remains authoritative; local
+settlement establishes neither remote provider cancellation nor SQL rollback.
+
+Receipt publication uses strict fsync and a private `.pending` witness. Readers
+refuse incomplete publication; do not remove a witness or rewrite a receipt to
+force acceptance. Current controls are recorded separately in
+`latest_invocation_control`, outside immutable config and fingerprints. A later
+legacy resume removes that current-invocation observation; old receipts do not
+become current authority. Library/manual/Mac calls and already-running series
+receive no retrofitted stop capability. This code enables no scheduler, Windows
+wrapper, deployment or supervised lifecycle acceptance.
+
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
 supervised production refresh. Before starting, require a clean worktree and
@@ -412,6 +834,29 @@ passes the expected fingerprint to every database child process for a
 before-access check. Ambiguous multi-host or target-overriding libpq URI forms
 fail closed. This prevents an environment-file change during a long run from
 redirecting a gate, validation query, or write.
+
+For Supabase shared poolers, the fingerprint also binds the project reference
+in the effective `role.PROJECT_REF` username. A shared pooler host and database
+alone cannot identify the project. Role/password rotation within that project
+keeps its identity; conflicting or malformed user routing fails closed. Alternate
+Supavisor `.cluster.` usernames and nonempty URI `options` startup parameters
+are refused because they can override project routing. Direct
+endpoint fingerprints retain their previous format. Start a fresh checkpoint
+generation after changing between direct and pooled endpoints or upgrading a
+historical pooler fingerprint; never edit a saved manifest to make resume pass.
+
+Linux abstract Unix socket names (decoded URI hosts beginning with `@`) retain
+their exact case and trailing dots in both target fingerprints and connection
+parameters. Percent-encoded spellings of the same name share one identity.
+Control characters in an abstract socket name, or literal controls in its URI,
+are refused rather than silently changing the selected route.
+[AGENTIC-4117](https://linear.app/agenticassets/issue/AGENTIC-4117) corrects the
+older DNS-style folding of these names: an affected abstract-socket checkpoint
+must start a fresh generation after upgrading, rather than rewriting its saved
+fingerprint or historical manifest to resume. This migration affects only
+abstract sockets; DNS (including Supabase poolers), absolute Unix socket paths
+and IPv6 retain their existing fingerprint contracts. This does not enable
+abstract sockets on macOS or change any database or scheduler configuration.
 
 ### Freshness evidence SLO
 
@@ -430,18 +875,45 @@ freshness claim.
 The final validation records two distinct gates. A bounded source refresh
 requires successful query execution, no before/after quality regression, and
 an exact source freshness readback. The whole-database absolute-quality audit
-is also recorded, but historical defects outside the refreshed source do not
-block that source's additive refresh. They do block
+is also recorded, but pre-existing flags alone do not establish a regression
+in that source's additive refresh. Unresolved absolute-quality flags do block
 `cre_freshness_certificate.py`, so no whole-registry freshness certificate can
 be issued until the absolute-quality backlog is clean. This separation keeps a
-known legacy defect visible without making the serial 51-source refresh unable
+known legacy defect visible without making the 51-source refresh unable
 to make progress.
+
+`quality_by_source` groups all undeleted database rows by source; its SQL CTE
+named `active` does not filter on listing status or the current run generation.
+A flag can therefore belong to an older row from the same brokerage. Compare
+the exact flagged ID and source URL with the bound current artifact and saved
+readback before attributing it to the current mapper. Keep the quality check
+unchanged while investigating; absence from one artifact alone does not prove
+a normalization defect or authorize retirement of the stored listing.
+
+Certificate version 3 also requires every explicit checkpoint input to carry a
+valid `preflight.database_target` SHA256 fingerprint, with one identical target
+across the entire source union. The certificate reports that credential-free
+binding. Missing, malformed or mixed-target evidence is invalid; do not patch
+historical manifests to invent a binding. Separate fresh checkpoint runs may
+be combined only when all existing scope, artifact, readback, quality and age
+requirements pass. Matching collector SHAs are not a certificate-union rule;
+the runner's separate same-SHA resume contract remains unchanged.
 
 ### Colliers Main runtime calibration
 
-`colliers-main` has a large sitemap and renders every current detail page. Do
-not change its detail concurrency based on a short or cached collection. Use
-the no-write calibration harness first. It only reads the public sitemap and
+`colliers-main` has a large sitemap. The supervised checkpoint profile
+enables its first-party Coveo bulk-detail path with
+`COLLIERS_MAIN_COVEO_ENABLE=1`; it does not render every listing individually.
+The per-page renderer is the fallback when that path is not selected. Its
+detail concurrency, start interval and challenge cooldown do not tune the
+bulk-detail path. Confirm the selected transport before estimating run time.
+An enabled bulk-path error fails collection; it does not silently retry through
+the renderer. Targeted `--enrich-input` work still uses per-item rendered reads
+and global collection concurrency, so bulk-path admission and provider-specific
+detail knobs do not establish that incremental path's capacity.
+
+For the rendered fallback, do not change detail concurrency based on a short
+or cached collection. Use the no-write calibration harness first. It only reads the public sitemap and
 rendered detail pages, writes a local evidence JSON file, clears database
 environment variables before importing collector code, and never invokes the
 collector, a gate, or ingest.
@@ -513,7 +985,19 @@ broad child-preservation marker. Its strict ingest dry run and a real
 production-schema transaction ending in an explicit `ROLLBACK` passed with
 zero canonical-price/rate, child-count, or contact-contract violations. The
 source-specific image transition guard compares
-normalized underlying assets because the legacy 234,284 image rows include
+normalized underlying assets. A checkpoint-controlled first-party ingest emits
+one versioned outcome only after COMMIT; its private log and checkpoint bind
+the artifact bytes/hash, generation, database target and ingest attempt. Final
+validation requires that known-successful receipt and exact whole-active raw
+before/after count reconciliation before using the existing semantic retention
+threshold for Colliers Main images alone. Retained-old and newly active image
+counts are distinguished; every current staged property still requires an
+image. Raw audit counts remain intact, and all other source/child regressions
+retain their ordinary checks. Missing, ambiguous, changed or uncertain evidence
+cannot qualify this transition. Historical failed runs without this outcome
+remain failed; old image IDs/digests cannot reconstruct old asset URLs.
+
+The legacy 234,284 image rows include
 malformed URL entities, rendition suffixes, and cross-listing carousel images.
 This proof admits the opt-in path for a supervised additive refresh only; it
 does not authorize scheduling, status activation, or mark-missing.
@@ -523,17 +1007,133 @@ one immutable generation and bypasses Firecrawl response caches with
 `maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
 make the blanket strict-detail claim; `avison-young` has its separate
 generation-backed inventory/property-detail contract described below. A
-`first_seen` verdict stops at `baseline_seed_required`; a `hold` stops at
-`gate_blocked`. Neither state reaches dry-run or live ingest. Seed a first
-baseline only after reviewing the complete exact artifact with
-`cre_gate.py --apply --update-baseline`, read it back without
-`--update-baseline`, and then resume the same immutable run.
+`first_seen` verdict normally stops at `baseline_seed_required`; a `hold`
+stops at `gate_blocked`. Neither state reaches dry-run or live ingest through
+the ordinary baseline-backed route. The explicit, source-specific
+[current-inventory admission](#opt-in-stage-overlap) can admit supported
+Interra/Buildout and DAUM sources with complete fresh proof and an absent baseline;
+it does not waive a hold for a source with an existing baseline.
+
+DAUM's `--admit-current-inventory-source daum-commercial` remains singleton
+in serial mode; pipeline mode may combine its exact admitted source entry with
+ordinary sources. It still requires uncapped sale+lease, two consecutive complete
+matching public POST inventories, every fresh canonical detail and at least 100
+unique staged identities. Raw `first_seen`, baseline absence, namespace guards
+and full audit/readback remain mandatory; see [the source contract](sources/AGENTS.md).
+
+DAUM also has a separately authorized verified-subset scope selected by
+`--admit-daum-verified-subset` (`-AdmitDaumVerifiedSubset` on Windows).
+It verifies the complete fresh inventory and every detail. Its default policy
+holds only records whose inventory and detail tenure are both unknown.
+The optional `--daum-subset-policy tenure-and-empty-title-v2` (Windows
+`-DaumSubsetPolicy tenure-and-empty-title-v2`) additionally permits the exactly-one-empty-visible-title
+hold; it requires the subset flag and preserves observed tenure. The default
+remains `tenure-only-v1`; neither policy maps held records into listings.
+All identity, staging, lifecycle-preservation and database checks remain mandatory. The result
+is explicitly partial, including when no records are held, and cannot advance
+complete-source receipts or certificates. The complete admission flag above
+never implies this permission. See the
+[DAUM subset contract](../../../docs/firecrawl-ops/references/daum-verified-subset.md)
+for counts, transaction guards and production acceptance.
+
+Essex's explicit `--admit-current-inventory-source essex-realty`
+(`-AdmitCurrentInventorySource essex-realty` on the native series launcher) uses
+this same carrier for uncapped full sale+lease. It requires two matching complete
+current/closed/sitemap reconciliations, every fresh current detail, historical
+literal property-path keys and separate validated native IDs. Closed archive
+members prove coverage only; lease is explicitly empty. Exact absent-baseline
+`first_seen` proof may admit fewer than100 current rows; it neither lowers the
+global floor nor waives a baseline-backed hold. Source/aggregate, staging and
+summary bindings remain mandatory. The pre-upsert transaction guard checks all
+historical parents, including soft-deleted rows, for contradictory URL/path and
+known native-ID associations; missing old native IDs remain unknown. No aliases,
+rekeys, closed-row ingestion or lifecycle authority follows. A fresh bounded
+pilot still needs pre/post preservation, full audit/generation readback and
+settlement; merged code and dated public observations are not that acceptance.
+
+Pyramid's explicit `--admit-current-inventory-source pyramid-brokerage`
+uses the same additive coverage scope only with complete strict details. It
+requires uncapped full sale+lease, a generation-local shared REST cohort from two
+consecutive identical complete passes, and a fresh identity/transaction-matched
+detail response for every member. Source and aggregate gates recheck compact
+receipts, policy/code/target/artifact bindings, absent baseline and the normal
+source-wide observed inventory floor of 100. A fresh, identity- and tenure-validated record with
+no source city is held automatically while any nonempty verified subset may be ingested. The
+result reports emitted and held counts as a qualified partial subset; held rows
+and children remain untouched and no complete-source watermark is advanced.
+Other missing or contradictory detail, identity, transport and tenure evidence
+still refuses the source. This is not inventory-only or a historical-baseline
+certificate; strict-detail child replacement for emitted rows and severe-loss/quality gates remain.
+
+Both sources also support an explicit entry in the original flat `--pipeline`
+owner, including the native plural `-AdmitCurrentInventorySources` option and
+installer preview. Serial admission still requires a singleton selection. Mixed
+selection preserves each source's own complete fresh proof and absent-baseline
+checks; another member's receipt never supplies authority. Historical singleton
+acceptance is not fresh mixed-run acceptance, which still requires the full
+audit, preservation, exact generation readback and settlement.
+
+Pyramid's pre-upsert transaction guard compares the actual staged cohort against
+all same-brokerage historical parents, including soft-deleted rows. It refuses
+sameURL/differentID, sameID/different literal URL and contradictory incoming
+claims under the existing lifecycle transaction lock. It performs no alias
+normalization, changed-slug rekey or repair; Interra's separate guard is unchanged.
+The operator must still obtain a fresh target-bound parent/five-child/baseline
+preimage under canonical ownership for preservation acceptance, then retain the
+after snapshot and all14-family/no-regression/generation-exact readback receipts.
+Keep baseline writes, source-derived activation and mark-missing off. Ordinary
+upsert revival remains possible and must be disclosed if observed.
+
+Pyramid honors configured request concurrency `C`: inventory uses `min(C, 2)`
+and details use `min(C, 4)`, without an RPS limiter. Thus `C=2` uses two detail
+workers. Older code used literal inventory2/detail4 even when configured `C=1`;
+those historical timings do not establish the runtime or deadline fit of the
+current lower-fanout setting. Follow the
+[standing throughput instructions](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md#standing-parallel-work-and-throughput-instructions)
+when choosing parallel work, effective settings and a complete-run budget.
+Each source helper allows2attempts,30s per attempt,32MiB per response and up to
+3followed redirects; logical fetch counts exclude these extra HTTP dispatches.
+Use a finite separately reviewed pilot deadline, normal guards and no outer retry.
+Merged code or an inventory/two-detail canary is not full-source acceptance.
+
+Savills alone can request the existing additive historical-hold route through
+`Invoke-CreGuardedTier.ps1 -Tier series -Source savills -AdmitBaselineHoldAdditively`
+with the usual reviewed SHA, finite work budget and database-write acknowledgement.
+It requires serial, uncapped full sale+lease and normal fresh strict artifacts,
+source/aggregate gates, dry-run and full validation/readback. Only an exact
+historical floor/drop hold is admitted; raw hold and baseline remain, absent old
+listings remain untouched, and mark-missing stays off. Its terminal
+`additive_scope_complete_coverage_hold` is additive row freshness, not whole-source
+coverage or a full-registry certificate. No current-inventory admission flag,
+pipeline selection, baseline seed or lifecycle permission is implied.
+
+Savills baseline comparisons must use the same registered U.S. commercial
+sale+lease scope. [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)
+records the verified exact historical scope correction and subsequent ordinary
+full source-native refresh. Derive a correction count from the gate's flat
+`to_row`-accepted rows; reconcile raw entries and merged unique/readback
+identities separately.
+Bind the exact artifact clock consumed by the gate (`runMeta.finishedAt`, or
+its actual `startedAt` fallback), not the correction time. A correction requires
+an exact full-row preimage and one-row permitted effects; preserve historical
+receipts and all protected data. It is separate from routine refresh and never
+substitutes for a NEW ordinary full sale+lease run with normal gates, exact
+readback and preservation. Source-native record coverage is not property-detail
+freshness or a historical database census; no observed count is a permanent floor.
+
+Baseline seeding is a separate operator procedure requiring approval for the
+exact source and artifact. Routine AGENTIC-2895/2902 refreshes prohibit baseline
+writes; the exact-evidence maintenance above is separate. Do not run
+`cre_gate.py --apply --update-baseline` to unblock those routine refreshes.
 
 The global admission floor is 100 listings. The sole reviewed exception is
 Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
-only when the gate receives exactly one uncapped, full `sale` + `lease`
-artifact whose provider totals, collector counts, and artifact listings agree
-for both transactions. An error, truncation, subset, capped run, malformed
+only when exactly one Savills-contributing artifact in the gate inputs proves
+uncapped, full `sale` + `lease` coverage, with provider totals, collector counts,
+and artifact listings agreeing for both transactions. Unrelated brokerage
+artifacts may share the batch. Any additional Savills contribution, in source
+metadata or listings, refuses rather than borrowing that proof. An error,
+truncation, subset, capped run, malformed
 evidence, or reconciliation mismatch retains the normal floor and cannot seed
 a baseline. This exception changes neither the no-schedule rule nor the
 separate whole-source freshness certificate requirements.
@@ -777,24 +1377,45 @@ description. Some bad detail ingests also removed existing child collections,
 but no defensible child preimage exists. Child restoration is therefore
 explicitly outside this repair and must not be fabricated.
 
+For the exceptional exact-manifest malformed image-reference repair, use the
+[JLL image-reference repair guide](../../../docs/firecrawl-ops/references/jll-image-reference-repair.md)
+and its current reviewed issue evidence. It is not an ordinary refresh or a
+quality-guard exception; production execution and subsequent source acceptance
+require their own concrete evidence.
+
 JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
 enumeration, then requires each rendered detail payload to match the enumerated
-provider ID and normalized URL before detail freshness is admitted. JLL Investor
-Center keeps its public sitemap as the discovery surface and reads each public
-Next.js structured-detail JSON payload; it does not use the robots-disallowed
-filtered search index. Explicit non-U.S. detail is excluded, and unresolved
-country, identity, alias, or build-rotation failures make the strict pass
-truncated.
+provider ID and normalized URL before detail freshness is admitted. The current
+[JLL Investor adapter](sources/jll-investor.ts) uses two consecutive matching,
+complete United States search snapshots, then reconciles each fresh public
+Next.js structured detail against its exact Salesforce ID and URL alias. Its
+search snapshot is authoritative; sitemap membership alone is insufficient.
+Explicit non-U.S. search evidence is excluded before enrichment. Detail country
+evidence must not conflict; missing detail country can use the exact U.S. search
+membership. Unresolved detail errors, duplicate identities,
+incomplete enumeration, or confirmed not-found candidates make the strict pass
+truncated. This describes the adapter, not fresh whole-source acceptance or
+permission to change provider access boundaries.
+
+For an ingest that exits zero but fails generation acceptance, see
+[ingest freshness troubleshooting](../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md).
+It separates missing identities from provenance lost during staging and explains
+why a corrective replay differs from an ordinary checkpoint resume.
+
+The following resume and parent-reconciliation procedure applies to serial
+runs only. Recorded pipeline state refuses mixed-stage replay; follow the
+[stage-overlap recovery contract](#opt-in-stage-overlap) instead.
 
 The manifest records `ingesting` before launching a live write. If execution
-stops in that window, resume performs a generation-exact database readback and
+stops in that window, serial resume performs a generation-exact database readback and
 never automatically replays an ambiguous ingest. Recovery distinguishes an
 exact committed generation from an exact rollback: rollback requires both zero
 rows for the expected generation and zero scrape jobs for the immutable
 artifact run key, then returns the checkpoint to `dry_run_passed` for a reviewed
 resume. Any partial, conflicting, or missing probe remains
 `ingest_recovery_required`. A successful live readback requires the expected
-generation ID, exact active canonical count, exact inventory-only scope count,
+generation ID, exact canonical count with `deleted_at IS NULL`, exact
+inventory-only scope count,
 and observation timestamps no earlier than the generation start.
 
 If an exact rollback makes the child replay-safe but the parent series has
@@ -869,8 +1490,17 @@ python3 cre_refresh_report.py \
   --out /tmp/cre-refresh-report.md
 ```
 
-`scraped_at` proves only that a row was processed by ingest. A strict
-detail-freshness claim additionally requires current source observation
+In this report, `created_since` counts currently non-deleted database rows with
+`created_at` at or after the boundary. It is not a per-invocation INSERT/UPDATE
+split or a count of newly marketed properties. `refreshed_since` filters
+`scraped_at`, the detail-observation clock. Inventory-only updates and
+child-preserving updates without admitted current detail proof can retain an
+older clock, so this field does not count every inventory refresh or upsert.
+Use the generation-qualified counts for verified run inventory. Each report
+query uses a separate read-only transaction; live-writer reports are not one
+atomic snapshot.
+
+A strict detail-freshness claim additionally requires current source observation
 provenance, the exact run generation, zero source errors or hidden truncation,
 explicit handling of every listing-level `detailError`, and the
 generation-exact database readback described above. Observation timestamps more
@@ -1098,13 +1728,15 @@ canaries and should not be read as current coverage proof.
 Read these in order:
 
 1. `AGENTS.md`
-2. `scripts/firecrawl-ops/CLAUDE.md`
-3. `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
+2. `scripts/firecrawl-ops/AGENTS.md`
+3. `scripts/firecrawl-ops/cre_collector/AGENTS.md`
 4. This file
-5. `BROKERAGE_STATUS_2026-06-12.md` (live per-broker coverage and counts)
+5. `BROKERAGE_STATUS_2026-06-12.md` (historical per-broker snapshot; obtain current coverage/counts from live readback)
 6. `docs/firecrawl-ops/references/cre-intelligence-system-design.md` (canonical architecture + go-forward monitoring plan, section 14)
 7. `docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data: views, SQL, env, quick start)
-8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
+8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+   (reusable per-source completion, website-variation evidence, and fail-closed
+   adapter guidance)
 9. `docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor/change-tracking layer: components, run model, hard gotchas) when touching 007, `--monitor`, `cre_monitor.py`, or `cre_gate.py`
 10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (colliers-main full run, COMPLETE 2026-06-14: converged + ingested additively, 15,829 active main-site rows)
 11. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening + collect.ts modular refactor + first gated `--apply` seed) when touching the monitor layer or scaling the seed
@@ -1114,10 +1746,11 @@ Historical buildout/validation detail (handoff log, lessons, validation
 snapshots, egress and security audits) lives in `archive/`; see
 `archive/README.md` for the index and the durable nuggets each file still holds.
 
-**Fresh machine (new clone, Mac mini, or this MacBook Pro)?** Start with
+**Fresh machine (new clone, Mac, or Ubuntu/WSL)?** Start with
 `SETUP.md` and run `bash cre_setup.sh` (one-command preflight + bootstrap:
-toolchain, deps, env, stack, offline smoke). Then continue below.
-
+toolchain, deps, env, API readiness, bounded public Interra inventory GET and
+database-free dry-run ingestion). `--check` skips installation and collection;
+its API check is GET-only readiness, not scrape or database transport proof.
 Then run:
 
 ```bash
@@ -1125,7 +1758,9 @@ cd <repo>                         # the firecrawl clone root on this machine
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 bash cre_setup.sh --check        # read-only health snapshot (skip if you just ran full setup)
-bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
+bash cre_status.sh               # macOS scheduler/artifact preflight
+# On Ubuntu/WSL, replace the command above with:
+# bash cre_status.sh --scheduler external
 npm run typecheck
 python3 -m py_compile cre_ingest.py
 npm run validate:supabase -- --out /tmp/cre_validate_latest.md
@@ -1204,16 +1839,15 @@ images into Supabase storage for the bulk collector.
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- **Savills live-cap evidence (2026-07-31):** the direct enumerator now proves
-  the provider pagination/count contract and fails closed on unclassified or
-  non-U.S.-only results. Its fresh full-scope attempt
+- **Historical Savills live-cap evidence (2026-07-31):** attempt
   `2026-07-31T145116Z` found three eligible lease records but the nominal U.S.
   sale endpoint exposed only two explicitly non-U.S. rows. The artifact was
   rejected before baseline, ingest, status activation, or `--mark-missing`.
-  Do not treat the old two-lease-row snapshot as a permanent baseline or a
-  current whole-source proof. The one-row Savills exception remains available
-  only if a future artifact proves complete eligible sale *and* lease coverage;
-  until then, the source is correctly blocked rather than silently partial.
+  Preserve this dated failure and the old two-lease-row snapshot as history,
+  not a permanent baseline or current blocked/whole-source status. Later
+  like-for-like commercial-scope correction and ordinary acceptance are governed
+  by [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364); every new
+  artifact must still prove complete eligible sale *and* lease coverage.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
@@ -1280,6 +1914,7 @@ historical launchd recovery commands below to create or restart a job.
   dispatcher keeps 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`
   and caps the launchd `cre-*.{out,err}.log` files), so growth is bounded
   without intervention. `cre_status.sh` warns past ~4GB (`out/daily`) / ~8GB
-  (`out/monitor`). If a crash left orphaned artifacts, they are safe to delete
-  manually (`out/` is gitignored); the durable source caches under
-  `out/cache/` are the only artifacts worth preserving for resumable runs.
+  (`out/monitor`). Preserve referenced generation artifacts, source observations,
+  manifests, validation/readback, audit and recovery evidence until the owner has
+  reviewed reconciliation and applicable retention. Use only the existing scoped
+  pruning; Git ignore status does not authorize blanket `out/` deletion.

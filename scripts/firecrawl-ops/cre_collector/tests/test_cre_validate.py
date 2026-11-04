@@ -13,6 +13,7 @@ No network, no live DB, no psql connection.  All subprocess calls are
 intercepted via monkeypatch.
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ import pytest
 
 # conftest.py already puts cre_collector/ on sys.path.
 import cre_validate
-from cre_ingest import source_key_from_values
+from cre_ingest import source_key_from_values, source_key_sql
 from cre_validate import (
     LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
     QUERIES,
@@ -56,6 +57,17 @@ def test_child_quality_queries_cover_media_and_links():
     assert "link_bad_url" in QUERIES["bad_child_urls"]
     assert "SELECT 'media'" in QUERIES["orphans"]
     assert "SELECT 'links'" in QUERIES["orphans"]
+
+
+def test_child_counts_documents_branch_excludes_boilerplate_like_the_precommit_guard():
+    """AGENTIC-5143: the post-commit comparison must stay symmetric with the precommit guard."""
+    from cre_document_boilerplate import document_boilerplate_sql
+
+    sql = QUERIES["child_counts"]
+    documents = sql[sql.index("'documents'") : sql.index("'images'")]
+
+    assert f"AND NOT {document_boilerplate_sql('d.url')}" in documents
+    assert sql.count("AND NOT COALESCE(") == 1
 
 
 def test_enrichment_queue_health_is_redaction_safe_and_classified():
@@ -308,6 +320,36 @@ def test_source_counts_separates_inventory_and_detail_observation():
     assert "detail_unavailable" in sql
 
 
+def test_source_counts_reuses_one_decoded_json_root_without_changing_attribution():
+    sql = QUERIES["source_counts"]
+    assert source_key_sql("decoded") in sql
+    assert SOURCE_KEY_SQL not in sql
+    assert "NULLIF(decoded.raw_data->>'inventoryObservedAt', '')::timestamptz" in sql
+    assert "jsonb_path_exists(decoded.raw_data, '$.**.detailUnavailable')" in sql
+    assert "SELECT l.external_id, l.raw_data #> '{}'::text[] AS raw_data" in sql
+    assert sql.count("OFFSET 0") == 1
+
+
+def test_source_counts_decoded_alias_is_the_only_frozen_query_change():
+    control = (
+        Path(__file__).parent
+        / "fixtures"
+        / "source_counts_before_decoded_source_key.json"
+    )
+    original = "".join(json.loads(control.read_text())).encode("utf-8")
+    assert (
+        hashlib.sha256(original).hexdigest()
+        == "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+    )
+    original_sql = original.decode("utf-8").strip().removesuffix(";")
+    old_expression = source_key_sql()
+    new_expression = source_key_sql("decoded")
+    assert original_sql.count(old_expression) == 1
+    assert QUERIES["source_counts"].strip().removesuffix(";") == original_sql.replace(
+        old_expression, new_expression, 1
+    )
+
+
 def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
     sql = QUERIES["inventory_generation_fingerprints"]
     assert "count(live_inventory.source_id)" in sql
@@ -452,11 +494,11 @@ def test_persisted_freshness_provenance_never_uses_scraped_at_as_detail_proof():
 
 def test_freshness_generations_groups_readback_by_persisted_generation():
     sql = QUERIES["freshness_generations"]
-    assert "l.raw_data #> '{latestInventoryObservation}'" in sql
-    assert "l.raw_data #> '{latestInventoryObservation,primary}'" in sql
-    assert "l.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
-    assert "l.raw_data #> '{primary}'" in sql
-    assert "l.raw_data #> '{secondary_pass}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation,primary}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
+    assert "decoded.raw_data #> '{primary}'" in sql
+    assert "decoded.raw_data #> '{secondary_pass}'" in sql
     assert "jsonb_to_record(" in sql
     assert 'provenance."generationId"' in sql
     assert 'provenance."detailScope"' in sql
@@ -473,10 +515,12 @@ def test_freshness_generations_groups_readback_by_persisted_generation():
     assert "latest_inventory_batch_active" not in sql
 
 
-def test_freshness_generations_materializes_once_and_has_no_presentation_sort():
+def test_freshness_generations_reuses_one_root_and_has_no_presentation_sort():
     sql = QUERIES["freshness_generations"]
     assert "raw AS MATERIALIZED" in sql
-    assert "OFFSET 0" in sql
+    assert "l.raw_data #> '{}'::text[] AS raw_data" in sql
+    assert sql.count("OFFSET 0") == 2
+    assert "decoded.raw_data" in sql
     assert "ORDER BY active.source_key" not in sql
     assert sql.rstrip().endswith("active.generation_id;")
     assert "AS detail_scopes" in sql
@@ -552,6 +596,8 @@ def test_render_markdown_all_query_labels_present():
         "inventory_only_index": "Inventory-Only Source Index",
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
+        "listing_basis_quality": "Listing Basis Quality",
+        "coordinate_conflicts": "Coordinate Conflicts",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",
@@ -613,6 +659,37 @@ def test_run_query_wraps_sql_in_repeatable_read_only_transaction(monkeypatch):
     assert "input" not in captured["kwargs"]
     assert "stdin" not in captured["kwargs"]
     assert not captured["script_path"].exists()
+
+
+PIN = "SET LOCAL standard_conforming_strings = on;"
+
+
+def test_run_query_pins_standard_conforming_strings_right_after_begin(monkeypatch):
+    """child_counts carries backslash regexes; both wrappers must make them literal."""
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query("psql", "postgres://SENTINEL", QUERIES["child_counts"])
+    script = captured["script"]
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert script.startswith(begin + PIN + "\n")
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT")
+
+
+def test_query_batch_pins_standard_conforming_strings_right_after_begin():
+    script = cre_validate._build_query_batch_script(
+        {"first": "SELECT 1;", "child_counts": QUERIES["child_counts"]}
+    )
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert begin + PIN + "\n" in script
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT 1;")
+    assert script.index(PIN) < script.index(QUERIES["child_counts"])
 
 
 def test_run_query_sql_content_inside_wrapper(monkeypatch):
@@ -1240,3 +1317,95 @@ def test_main_warnings_deduped(monkeypatch, capsys):
     # All queries emit the same (normalized) warning but it appears only once.
     warnings = parsed["psql_warnings"]
     assert len(warnings) == len(set(warnings))
+
+
+def test_main_separates_historical_conflicts_from_operational_queries(
+    monkeypatch, capsys
+):
+    _patch_main(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "json"])
+    cre_validate.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["historical_primary_child_conflicts"] == _DUMMY_ROWS
+    assert "historical_primary_child_conflicts" not in report["queries"]
+    assert (
+        "Historical Primary Child Conflicts (Soft-Deleted Listings)"
+        in render_markdown(report)
+    )
+
+
+def test_main_terminates_transwestern_fragment_in_timed_batch(monkeypatch, capsys):
+    import cre_transwestern_image_sql
+
+    captured = {}
+    monkeypatch.setattr(
+        cre_validate,
+        "load_db_url",
+        lambda _env_file: ("postgres://SENTINEL", "/fake/.env.local"),
+    )
+    monkeypatch.setattr(
+        cre_validate, "assert_expected_database_target", lambda *_args: None
+    )
+    monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
+
+    def fake_run(_psql, _url, queries):
+        captured["queries"] = dict(queries)
+        return (
+            {name: [{"value": "1"}] for name in queries},
+            {},
+            "",
+        )
+
+    monkeypatch.setattr(cre_validate, "run_queries_with_timings", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_validate.py",
+            "--format",
+            "json",
+            "--transwestern-image-state",
+            "--expected-artifact-run-key",
+            f"ingest:v1:{'a' * 64}",
+            "--expected-db-target-sha256",
+            "b" * 64,
+        ],
+    )
+
+    cre_validate.main()
+
+    report = json.loads(capsys.readouterr().out)
+    expected_base = cre_validate.queries_for_profile(
+        cre_validate.FULL_VALIDATION_PROFILE,
+        expected_artifact_run_key=f"ingest:v1:{'a' * 64}",
+    )
+    expected_transwestern = cre_transwestern_image_sql.image_state_query() + ";"
+    assert captured["queries"] == {
+        **expected_base,
+        "transwestern_image_state": expected_transwestern,
+    }
+    assert report["transwestern_image_state"] == [{"value": "1"}]
+
+
+def test_recovery_report_binds_attempt_target_and_exact_job_probe(monkeypatch, capsys):
+    import hashlib
+    _patch_main(monkeypatch)
+    monkeypatch.setattr(cre_validate, "assert_expected_database_target", lambda *_: None)
+    run_key = "ingest:v1:" + "a" * 64
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "json",
+        "--expected-artifact-run-key", run_key,
+        "--expected-db-target-sha256", "b" * 64,
+        "--expected-ingest-attempt", "c" * 32])
+    cre_validate.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["artifact_run_probe"] == {"database_target_sha256": "b" * 64,
+        "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
+        "attempt_id": "c" * 32}
+    assert "artifact_run_jobs" in report["queries"]
+
+
+def test_recovery_report_refuses_unbound_attempt_before_database(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--expected-ingest-attempt", "c" * 32])
+    monkeypatch.setattr(cre_validate, "load_db_url", lambda *_: pytest.fail("database access"))
+    with pytest.raises(SystemExit):
+        cre_validate.main()

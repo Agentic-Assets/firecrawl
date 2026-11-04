@@ -14,7 +14,7 @@ workstreams (WS1 free raw_data scalar backfill, WS2 OM/PDF parse tier, WS3 new
 high-value columns, WS4 geo-derivation + DQ guards).
 
 Inputs read to author this contract: `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md`
-(gap source of truth), `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` (fill rates),
+(gap source of truth), `archive/CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` (fill rates),
 `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` (the just-shipped media build, NOT to be
 duplicated or undone), and the live code (`cre_ingest.py`, `types.ts`,
 `lib/harvest.ts`, `lib/util.ts`, `lib/scrape.ts`, `lib/enrich.ts`, `cre_enrich.py`,
@@ -71,6 +71,23 @@ Cutline rule for downstream agents: if the gap doc names it as a NEW column
 candidate in Section "New-column candidates" AND a consumer would filter on it,
 it gets a discrete column listed in A.4; everything else the adapter promotes
 goes into `extra_facts` under a stable snake_case key.
+
+#### A.1.1 Registered listing-structure keys (AGENTIC-5119)
+
+Structure signals are captured verbatim, with no interpretation. Downstream
+classification (sale structure, lease basis) belongs to the consumer, not the
+adapter.
+
+| key | source | value |
+|---|---|---|
+| `colliers_sale_type_id` | colliers-main Coveo `salez32xtype` | Lowercase hyphen-free GUID. Label not yet decoded; do not map it to a sale type without a verified Coveo lookup. |
+| `colliers_lease_type_id` | colliers-main Coveo `leasez32xtype` | Lowercase hyphen-free GUID. Same caveat. |
+| `sale_type` | avison-young detail page "Sale type" fact | Source text as printed (e.g. `Investment`). |
+| `tenure_types` | jll `tenureTypes` | Deduped array of the source strings (today `sale`, `rent`). |
+| `avg_unit_sf` | colliers Sales Tracker multifamily `Size` | Average unit size in SF when the source `Size` is per unit, not per building. Held here because an `avg_unit_sf` column needs DDL. |
+
+Unchanged: colliers `project_type` (ProjectType), the JLL `dealType` path, the
+M&M auction type path and `salePriceText` in `raw_data`.
 
 ### A.2 OM-parsed fields: reuse vs new table (decision)
 

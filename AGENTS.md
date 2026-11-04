@@ -55,6 +55,14 @@ Linear owns Firecrawl issues, plans, decisions and follow-ups. Company rules:
 7. Durable follow-ups become deduplicated Backlog children labeled
    `Agent-Created`, the repo label and one Type. No local backlog or runner.
 
+## Integrate finished work
+
+Merge each coherent, valuable phase into `Agentic-Assets/firecrawl` main promptly
+once its applicable review, local proof, and merge gates pass. Do not merge
+unnecessary or incorrect changes merely to clear a branch. For obsolete or
+superseded work, check ownership and unique changes before closing its PR or
+cleaning its branch; preserve valuable unmerged work and respect its ownership. Merging the fork does not authorize an upstream merge or deployment.
+
 ## Shared CRE data ownership
 
 The governed version-5 contract tracked by
@@ -67,6 +75,27 @@ establishes object ownership and contract tests; it does not itself authorize
 production DDL, cache refresh, scheduling, or deployment. The collector must
 preserve the five-column OM-facts identity; it does not own OM extraction
 writes, market-data objects, or EQUIRE product views.
+
+The R2 listing document archive (bucket `cre-listing-documents` and the three `cre_document_*` tables, AGENTIC-5147) is GetCREdata's. The collector neither writes nor reads it.
+
+For development, launcher, runtime, and isolated-test checkout roles—including exact-SHA
+handoff and database rollback limits, see [Development and runtime checkouts](docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
+
+Keep the supported pipeline operating from healthy current state. Follow that
+guide's routine operation procedure; historical maintenance packets and full
+51-source acceptance are not normal restart prerequisites. Skip or hold a failed
+source while eligible sources continue, preserving local writer exclusion, data
+ownership and unresolved-write protections.
+
+Design for the pipeline to keep making useful progress with the simplest
+maintainable supported path. When individual records are incomplete or invalid,
+isolate them and process valid peers when the source has enough evidence to do
+so safely; report the result as partial and leave held records unchanged. Do
+not invent missing data, treat a partial result as complete, or retire records
+based on absence from a partial result. Avoid adding manual approvals,
+historical prerequisites or operator switches to routine operation without a
+concrete need. Implement and verify any missing partial path before relying on
+it; guidance alone does not change runtime behavior.
 
 ## Env files (which is which)
 
@@ -94,6 +123,12 @@ When making changes to the API:
    - The full suite is slow, so run only the relevant tests locally and record exactly what you ran.
 4. Push to a branch and open a PR. Hosted GitHub Actions are disabled on this fork (the repo Actions setting is off, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain), so no CI runs and there is no hosted signal. Local proof is required: `pnpm build` (tsc typecheck), `pnpm knip`, and the relevant `pnpm harness vitest run <pattern>` tests for `apps/api`; `npx tsc --noEmit -p .` and `pnpm test` for `apps/playwright-service-ts`; and `python3 -m unittest discover -s scripts/firecrawl-ops/tests` for `scripts/firecrawl-ops`. The `scripts/firecrawl-ops/cre_collector` suites (`npm test`, `python3 -m pytest tests/ -q`) must run only from a separate `git clone --no-hardlinks`, never a worktree, because their lock lookup resolves to the live checkout's `out/daily/.cre.lock`. Put the commands and results under `## Proof` in the PR body.
 
+On Windows, run the POSIX ops unit suite inside Ubuntu/WSL with Linux Python
+and a POSIX `PATH`; do not mix Windows `python.exe` with WSL `bash` for shell
+fixtures. For native capture changes, also run
+`scripts/firecrawl-ops/cre_collector/windows/Test-CreNativeCapture.ps1` in fresh
+PowerShell 7 and Windows PowerShell 5.1 processes.
+
 Useful `apps/api` scripts (see `apps/api/package.json` for the full list):
 - `pnpm test:snips` — just the snips/E2E suite
 - `pnpm dev` — tsx-based dev server via the harness
@@ -106,6 +141,12 @@ the reported unused exports or files before committing.
 
 This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream. Keep local ops work out of upstream product, API, and SDK paths unless an explicit requirement makes that change necessary.
 
+For GitHub CLI PR, review and merge operations, explicitly select
+`--repo Agentic-Assets/firecrawl`. In a fork with an upstream remote, `gh` can
+default to `firecrawl/firecrawl` even when `origin` is this fork. Inspect
+`gh repo set-default --view`; a local `gh repo set-default Agentic-Assets/firecrawl`
+corrects the clone's default without changing remotes or another computer.
+
 **Stay easy to sync with upstream.** Cayman wants `firecrawl/firecrawl:main` to merge in cheaply and often; the 2026-10-09 sync of 461 commits hit 41 conflicts, mostly where fork code was woven through upstream files.
 - When a fork behavior must touch an upstream-owned file (most of `apps/api`, the SDKs, upstream's tests), put the logic in a fork-owned module and leave only a small hook (an import plus a few lines) in the upstream file. The structured-output fallback still lives inline in `apps/api/src/scraper/scrapeURL/transformers/llmExtract.ts` and `apps/api/src/scraper/scrapeURL/lib/extractSmartScrape.ts`; PR #85 moves it into the fork-owned `apps/api/src/scraper/scrapeURL/lib/structuredOutputFallback.ts` behind small hooks (held for a live-model harness run). Do not widen the inline version meanwhile.
 - Never reformat, re-indent, rename, or reorder upstream code to make room for a fork change; wrap or spread instead, so the upstream hunk stays byte-identical.
@@ -116,6 +157,32 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 **Agent skills** (canonical in `.agents/skills/`):
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
+- `slack-docs`, `slack-api`, `block-kit` — official Slack documentation, API contracts and readable notification layouts
+
+**Every repository skill has one canonical copy in `.agents/skills/<name>/`.**
+`.claude/skills` is a tracked relative directory symlink to `../.agents/skills`,
+so Claude sees every skill through that same link. Preserve the directory link;
+do not create separate Claude copies or per-skill links inside its target.
+Install skills from the repository root in project scope, for example:
+
+```sh
+npx skills add https://github.com/slackapi/slack-skills-plugin --skill slack-docs slack-api block-kit --agent codex -y
+```
+
+Do not add `--global` or `--copy`. The existing directory symlink supplies Claude
+discovery; `--agent codex` limits this install to the canonical project folder.
+After any install or update, verify every canonical `SKILL.md` is readable with
+identical content through `.claude/skills`, and that Git records `.claude/skills`
+as mode `120000` with target `../.agents/skills`. A Windows checkout may need
+`core.symlinks=true` and Windows symlink support; a text file containing the
+target is not a working symlink. Keep `skills-lock.json` and source/license
+provenance with vendored skills. Third-party skill guidance does not grant
+credentials, OAuth scopes or permission beyond the user's authorized task.
+
+CRE Slack notifications and private webhook setup:
+[`scripts/firecrawl-ops/cre_collector/slack-setup.md`](scripts/firecrawl-ops/cre_collector/slack-setup.md).
+Keep only credential-file references in the repository; the guide owns the
+channel, local configuration check and delivery verification procedure.
 
 Default model routing: Vercel AI Gateway `gateway` profile with
 `deepseek/deepseek-v4-flash-0731` and a one-time
@@ -129,6 +196,9 @@ in `docs/firecrawl-ops/references/model-routing.md`.
   - `local-pdf-ocr-research-agent-plan.md` — profile/page-break/raw-JSON/QA roadmap for research-paper OCR agents
   - `model-routing.md` — model strategy and escalation rules
   - `ops-playbook.md` — health checks, debugging, safe ops
+  - [`cre-performance-telemetry.md`](docs/firecrawl-ops/references/cre-performance-telemetry.md) — automatic run measurements, metric boundaries, matched comparisons and the central [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895); do not create an issue per run or a second metrics service
+  - [`cre-brokerage-completion-playbook.md`](docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md) — source-backed website-variation handling,
+    adapter evidence, and regression-test guidance
   - `partner-orbstack-onboarding.md` — fresh-clone setup checklist for another Mac/business partner
   - `cayman-use-cases-and-playbooks.md` — mapped workflows (research/CRE/coding)
   - `cre-access-matrix.md` — CRE platform scrapability matrix (CBRE/Cushman accessible; CoStar/LoopNet blocked)
@@ -158,10 +228,13 @@ in `docs/firecrawl-ops/references/model-routing.md`.
 
 When the user asks about scraping workflows, model selection, runtime health, or self-hosted ops, prefer this skill over guessing — invoke it via the Skill tool (`firecrawl-ops`).
 
+For CRE unattended scheduling goals and current acceptance limits, see
+[the guarded incremental operating goal](docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
+
 For Python changes under `scripts/firecrawl-ops/`, use the relevant local
 Ruff skill, verify changed Python with `py_compile`, and read the
 `python-testing-patterns` skill before adding or changing tests. For listing
-intelligence work, read `scripts/firecrawl-ops/CLAUDE.md` and then the scoped
+intelligence work, read `scripts/firecrawl-ops/AGENTS.md` and then the scoped
 `cre_collector/` guidance before acting; that current module contract owns
 runtime, scheduler, data-write, status-activation, and soft-delete gates.
 

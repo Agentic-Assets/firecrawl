@@ -1,7 +1,14 @@
 # Handoff: capture all videos, links, documents, and stranded page data (2026-06-15)
 
-Status: BUILT and verified in code on branch `feat/cre-brokerage-collectors-2026-06-12`.
-Nothing applied to prod, nothing committed. Every live step is gated (Section 7).
+> **Historical June 15, 2026 implementation and proposed acceptance record.**
+> The dated account below reported BUILT/verified code on
+> `feat/cre-brokerage-collectors-2026-06-12`, with nothing applied to production
+> or committed at that observation. Those statements and Section 7 are historical;
+> they do not establish current merge, deployment or live state. For the current
+> [listing fidelity standard](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity),
+> operational procedure in [START_HERE.md](START_HERE.md), and current evidence on
+> [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895), follow those
+> entrypoints. GetCREdata remains the sole production OM extraction writer.
 
 ## 1. Why
 

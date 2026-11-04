@@ -1,8 +1,17 @@
+import { observationNow } from "../lib/observation-clock.js";
+import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
-import { detailObservation, refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
+import {
+  recordDirectProviderAttemptCompleted,
+  recordDirectProviderAttemptStarted,
+  recordDirectProviderPacingWaitCompleted,
+  recordDirectProviderPacingWaitStarted,
+  type DirectProviderRequestRole,
+} from "../lib/performance.js";
+import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails } from "../lib/freshness.js";
 import { parseMoney } from "../lib/parse.js";
 import { clean, prune } from "../lib/util.js";
-import type { SourceResult, Tx } from "../types.js";
+import type { EssexArchiveProof, EssexCurrentInventoryProof, EssexInventoryPass, SourceResult, Tx } from "../types.js";
 
 export const ESSEX_LISTINGS_URL = "https://essexrealtygroup.com/properties/";
 export const ESSEX_CLOSED_URL =
@@ -34,6 +43,28 @@ export type EssexInventory = {
 export type EssexTransport = {
   getText(url: string, maxBytes?: number): Promise<string>;
 };
+
+const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+let completedProof: { key: string; proof: EssexCurrentInventoryProof } | undefined;
+
+class EssexResponseLimitError extends Error {}
+
+function essexRequestRole(url: string): DirectProviderRequestRole {
+  if (url === ESSEX_LISTINGS_URL) return "current_archive";
+  if (url === ESSEX_CLOSED_URL) return "closed_archive";
+  if (url === ESSEX_SITEMAP_URL) return "sitemap";
+  return "detail";
+}
+
+function proofPath(url: string): string {
+  const owned = essexUrl(url);
+  if (!owned) throw new Error("Essex proof requires an owned property URL");
+  const parsed = new URL(owned);
+  if (parsed.search || parsed.hash || !/^\/properties\/[^/]+\/$/.test(parsed.pathname)) {
+    throw new Error("Essex proof requires a literal query-free property detail URL");
+  }
+  return parsed.pathname.replace(/^\/+|\/+$/g, "");
+}
 
 const ESSEX_ASSET_QUERY_KEYS = new Set(["ver", "w"]);
 
@@ -105,7 +136,7 @@ async function essexBoundedResponseText(
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new Error(`Essex response exceeds ${maxBytes} bytes`);
+    throw new EssexResponseLimitError(`Essex response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -119,7 +150,7 @@ async function essexBoundedResponseText(
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel();
-        throw new Error(`Essex response exceeds ${maxBytes} bytes`);
+        throw new EssexResponseLimitError(`Essex response exceeds ${maxBytes} bytes`);
       }
       text += decoder.decode(value, { stream: true });
     }
@@ -144,11 +175,21 @@ export function createEssexTransport(
     ): Promise<string> {
       const url = essexUrl(requestedUrl);
       if (!url) throw new Error("Essex direct transport rejected URL");
+      const role = essexRequestRole(url);
       const remaining = lastStartedAt + crawlDelayMs - Date.now();
-      if (remaining > 0) await sleep(remaining);
+      if (remaining > 0) {
+        const pacingToken = recordDirectProviderPacingWaitStarted(role, remaining);
+        try {
+          await sleep(remaining);
+        } finally {
+          recordDirectProviderPacingWaitCompleted(pacingToken);
+        }
+      }
       lastStartedAt = Date.now();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), ESSEX_TIMEOUT_MS);
+      const attemptToken = recordDirectProviderAttemptStarted(role);
+      let status: number | undefined;
       try {
         const response = await fetchImpl(url, {
           headers: {
@@ -160,8 +201,24 @@ export function createEssexTransport(
           redirect: "error",
           signal: controller.signal,
         });
+        status = response.status;
         if (!response.ok) throw new Error(`Essex direct transport HTTP ${response.status}`);
-        return await essexBoundedResponseText(response, maxBytes);
+        const text = await essexBoundedResponseText(response, maxBytes);
+        recordDirectProviderAttemptCompleted(attemptToken, {
+          outcome: "succeeded",
+          status,
+        });
+        return text;
+      } catch (error) {
+        recordDirectProviderAttemptCompleted(attemptToken, {
+          outcome: "failed",
+          status,
+          error,
+          ...(error instanceof EssexResponseLimitError
+            ? { errorCategory: "response_too_large" as const }
+            : {}),
+        });
+        throw error;
       } finally {
         clearTimeout(timer);
       }
@@ -311,14 +368,35 @@ export function reconcileEssexInventory(
 export async function fetchEssexInventory(
   transport = createEssexTransport()
 ): Promise<EssexInventory> {
+  return (await fetchEssexInventoryPass(transport)).inventory;
+}
+
+async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
+  inventory: EssexInventory;
+  pass: EssexInventoryPass;
+}> {
   const currentHtml = await transport.getText(ESSEX_LISTINGS_URL);
+  const currentAt = observationNow();
   const closedHtml = await transport.getText(ESSEX_CLOSED_URL);
+  const closedAt = observationNow();
   const sitemapXml = await transport.getText(ESSEX_SITEMAP_URL);
-  return reconcileEssexInventory(
-    parseEssexArchive(currentHtml, "current"),
-    parseEssexArchive(closedHtml, "closed"),
-    parseEssexSitemap(sitemapXml)
-  );
+  const sitemapAt = observationNow();
+  const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
+  const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
+  const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
+  const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
+  const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
+    endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
+    rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
+  });
+  const pass: EssexInventoryPass = {
+    fingerprint: "",
+    current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
+    closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
+    sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+  };
+  pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
+  return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
 }
 
 function labeledDetailValue($: cheerio.CheerioAPI, label: RegExp): string | null {
@@ -350,7 +428,9 @@ export function parseEssexDetail(
   expectedLifecycle: EssexCurrentLifecycle
 ): any {
   const canonicalUrl = essexUrl(requestedUrl);
-  if (!canonicalUrl) throw new Error("Essex detail requested URL is invalid");
+  if (!canonicalUrl || !/^\/properties\/[^/]+\/?$/.test(new URL(canonicalUrl).pathname)) {
+    throw new Error("Essex detail requested URL is invalid");
+  }
   if (
     !html.trim()
     || /verify you are human|attention required|cf-chl-|access denied|page not found|404 error/i.test(
@@ -368,6 +448,19 @@ export function parseEssexDetail(
     throw new Error("Essex detail currentPropertyId is invalid");
   }
   const $ = cheerio.load(html);
+  const bodies = $("body");
+  const classes = (bodies.attr("class") ?? "").split(/\s+/);
+  const postClasses = classes.filter(value => value.startsWith("postid-"));
+  const pageId = postClasses[0]?.slice("postid-".length);
+  if (
+    [...html.matchAll(/<body(?:\s|>)/gi)].length !== 1
+    || bodies.length !== 1 || !classes.includes("single-properties")
+    || classes.some(value => value.startsWith("single-") && value !== "single-properties")
+    || postClasses.length !== 1 || !pageId || !/^[1-9]\d{0,15}$/.test(pageId)
+    || !Number.isSafeInteger(Number(pageId))
+  ) {
+    throw new Error("Essex detail requires one positive WordPress property page identity");
+  }
   const identityUrls = [
     clean($("link[rel='canonical']").first().attr("href")),
     clean($("meta[property='og:url']").first().attr("content")),
@@ -452,7 +545,9 @@ export function parseEssexDetail(
     });
   });
   return {
-    id,
+    id: new URL(canonicalUrl).pathname.replace(/^\/+|\/+$/g, ""),
+    essexPropertyId: id,
+    essexWordpressPage: { type: "wordpress_properties_post", id: pageId, canonicalUrl },
     name,
     lifecycle,
     statusBadge: lifecycle === "under_contract" ? "Under Contract" : "On Market",
@@ -497,6 +592,7 @@ export function mapEssexDetail(
     freshnessProvenance: {
       ...observation,
       detailScope: "detail_page",
+      identityMethod: "literal_owned_property_path+wordpress_properties_post",
     },
     preserveChildCollections: monitor ? true : undefined,
   });
@@ -508,6 +604,11 @@ export async function srcEssexRealty(
   monitor: boolean,
   transport = createEssexTransport()
 ): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
+  const generationStartedAt = refreshStartedAt();
+  const proofEligible = strict && !monitor && !Number.isFinite(max);
+  const proofKey = JSON.stringify([generationId, generationStartedAt]);
   if (tx === "lease") {
     return {
       company: "Essex Realty Group",
@@ -515,23 +616,37 @@ export async function srcEssexRealty(
       method: "Sale-only source",
       totalAvailable: 0,
       listings: [],
+      ...(proofEligible && generationId && generationStartedAt && completedProof?.key === proofKey
+        ? { currentInventoryProof: { ...structuredClone(completedProof.proof), transaction: "lease" as const,
+            kind: "known_empty_transaction" as const, reason: "sale_only_source" as const, details: [] } }
+        : {}),
     };
   }
-  const strict = requireFreshDetails();
-  const generationId = refreshGenerationId();
   if (strict && !generationId) {
     throw new Error("Essex strict refresh requires CRE_REFRESH_GENERATION");
   }
-  const inventory = await fetchEssexInventory(transport);
-  const inventoryObservedAt = new Date().toISOString();
+  if (proofEligible && !generationStartedAt) throw new Error("Essex strict proof requires CRE_REFRESH_STARTED_AT");
+  if (proofEligible) completedProof = undefined;
+  const first = await fetchEssexInventoryPass(transport);
+  const passes = [first.pass];
+  let inventory = first.inventory;
+  if (proofEligible) {
+    const second = await fetchEssexInventoryPass(transport);
+    if (first.pass.fingerprint !== second.pass.fingerprint) throw new Error("Essex complete inventory passes drifted");
+    inventory = second.inventory;
+    passes.push(second.pass);
+    for (const url of inventory.sitemapUrls) proofPath(url);
+  }
+  const inventoryObservedAt = observationNow();
   const selected = inventory.current.slice(0, Math.max(0, max));
   const listings: any[] = [];
   for (const row of selected) {
     const html = await transport.getText(row.url, ESSEX_MAX_DETAIL_BYTES);
-    const detailObservedAt = new Date().toISOString();
+    const detailObservedAt = observationNow();
     listings.push(
       mapEssexDetail(
-        parseEssexDetail(html, row.url, row.lifecycle as EssexCurrentLifecycle),
+        { ...parseEssexDetail(html, row.url, row.lifecycle as EssexCurrentLifecycle),
+          ...(proofEligible ? { essexDetailResponseSha256: textSha256(html) } : {}) },
         inventoryObservedAt,
         detailObservedAt,
         generationId,
@@ -539,9 +654,23 @@ export async function srcEssexRealty(
       )
     );
   }
-  const ids = new Set(listings.map((row) => row.id));
+  const ids = new Set(listings.map((row) => row.essexWordpressPage.id));
   if (ids.size !== listings.length) {
-    throw new Error("Essex selected details contain duplicate currentPropertyId values");
+    throw new Error("Essex selected details contain duplicate WordPress property page identities");
+  }
+  if (new Set(listings.map((row) => row.id)).size !== listings.length) {
+    throw new Error("Essex selected details contain duplicate canonical path identities");
+  }
+  let proof: EssexCurrentInventoryProof | undefined;
+  if (proofEligible) {
+    proof = {
+      schema: "essex-strict-detail-v2", sourceKey: "essex-realty", transaction: "sale",
+      kind: "complete_current_inventory", generationId: generationId!, generationStartedAt: generationStartedAt!,
+      observedAt: inventoryObservedAt, total: inventory.current.length, passes,
+      cohort: listings.map(row => [row.essexWordpressPage.id, row.url, proofPath(row.url), row.lifecycle, row.essexPropertyId]),
+      details: listings.map(row => [row.essexWordpressPage.id, row.canonicalUrl, row.detailObservedAt, row.essexDetailResponseSha256]),
+    };
+    completedProof = { key: proofKey, proof: structuredClone(proof) };
   }
   return {
     company: "Essex Realty Group",
@@ -549,6 +678,7 @@ export async function srcEssexRealty(
     method: "Direct archive, sitemap, and rate-limited detail HTML (no LLM)",
     totalAvailable: inventory.current.length,
     listings,
+    ...(proof ? { currentInventoryProof: proof } : {}),
     truncated: listings.length < inventory.current.length,
     note:
       `Lifecycle reconciliation: ${inventory.lifecycleCounts.on_market} on market + `

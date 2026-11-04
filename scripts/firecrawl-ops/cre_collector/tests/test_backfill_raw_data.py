@@ -156,8 +156,9 @@ def test_avison_availability_and_submarket():
     cols, _ = by["17952"]                                  # range availability
     assert cols["min_divisible_sf"] == 52435.0
     assert cols["max_divisible_sf"] == 127231.0
-    assert cols["lease_rate_min"] == 4.95
-    assert cols["lease_rate_max"] == 4.95
+    # These raw feed extrema carry no period or per-SF basis.
+    assert "lease_rate_min" not in cols
+    assert "lease_rate_max" not in cols
     assert cols["submarket"] == "Earth City"
 
 

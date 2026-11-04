@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -16,9 +17,77 @@ RUN = "2026-09-13T120000Z-0123456789ab"
 SERIES = "2026-09-13T115959Z"
 SHA = "a" * 40
 NOW = datetime(2026, 9, 13, 12, 1, tzinfo=timezone.utc)
+PIPELINE_NOW = datetime.fromisoformat("2026-10-15T12:03:00+00:00")
 COMMAND = "b" * 32
 LOG = "jll-collect-attempt-1.log"
 METRICS = f"jll-collect-attempt-1.{COMMAND}.scrape-performance.json"
+
+
+def pipeline_query_evidence(tmp_path, count):
+    run = tmp_path / RUN
+    run.mkdir()
+    manifest = {
+        "config": {"pipeline": True},
+        "started_at": "2026-09-13T12:00:00Z",
+        "finished_at": "2026-09-13T12:01:00Z",
+        "pipeline": {"units": []},
+    }
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 5}
+            },
+        }
+    ).encode()
+    for number in range(1, count + 1):
+        name = f"unit-{number:04d}"
+        path = run / "pipeline" / name / "validation.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        manifest["pipeline"]["units"].append(
+            {
+                "unit_id": name,
+                "validation_path": str(path.relative_to(run)),
+                "validation_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    return run, manifest, len(raw)
+
+
+def test_retry_units_beyond_source_count_retain_query_metrics(tmp_path):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 52)
+    # Rejected preparation attempts also remain in the real unit history.
+    manifest["pipeline"]["units"].insert(0, {"unit_id": "unit-0000", "state": "failed"})
+    frames = report._validation_timings(run, manifest)
+    assert len(frames) == 52
+    assert (
+        sum(frame["queries"]["source_counts"]["elapsed_ms"] for frame in frames) == 260
+    )
+
+
+def test_query_unit_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_VALIDATION_UNITS", 2)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == [
+        "unit-0001",
+        "unit-0002",
+    ]
+    assert frames[0]["unavailable_code"] == "unit_timing_budget_exhausted"
+
+
+def test_query_byte_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, size = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_TOTAL_VALIDATION_BYTES", size)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == ["unit-0001"]
+    assert frames[-1]["unavailable_code"] == "query_timing_byte_budget_exhausted"
 
 
 def checkpoint(tmp_path: Path) -> Path:
@@ -69,6 +138,321 @@ def checkpoint(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return run
+
+
+def test_pipeline_report_reads_shared_child_journals_once(tmp_path, monkeypatch):
+    run = checkpoint(tmp_path / "child")
+    data = json.loads((run / "manifest.json").read_text())
+    data["config"].update(
+        pipeline=True, sources=["jll", "srs"], transactions=["sale", "lease"]
+    )
+    data["sources"]["jll"]["state"] = "ingested"
+    data["sources"]["srs"] = {
+        "state": "ingested",
+        "artifact": {"staged_unique": 20},
+        "readback": {"ok": True},
+    }
+    data["pipeline"] = {
+        "source_timings": {
+            "jll": {
+                "collection_started_at": "2026-09-13T12:00:00Z",
+                "collection_finished_at": "2026-09-13T12:00:10Z",
+                "validation_started_at": "2026-09-13T12:00:12Z",
+                "verified_at": "2026-09-13T12:00:40Z",
+            }
+        }
+    }
+    (run / "manifest.json").write_text(json.dumps(data))
+    journal(run)
+    series = tmp_path / SERIES
+    (series / "runs").mkdir(parents=True)
+    moved = series / "runs" / RUN
+    shutil.move(run, moved)
+    (series / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": SERIES,
+                "collector_git_sha": SHA,
+                "config": data["config"],
+                "sources": {
+                    key: {"state": "complete", "checkpoint_run": f"runs/{RUN}"}
+                    for key in ["jll", "srs"]
+                },
+            }
+        )
+    )
+    reads = []
+    original = report._commands
+
+    def counted(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(report, "_commands", counted)
+    result = report.build_report(series, now=NOW)
+    assert reads == [moved]
+    assert len(result["shared_commands"]) == 1
+    assert len(result["checkpoint_resources"]) == 1
+    assert result["sources"][0]["source_elapsed_seconds"] == 40
+    assert (
+        result["sources"][0]["stage_wall_seconds"]["awaiting_validation_seconds"] == 2
+    )
+    assert result["sources"][1]["staged_unique"] == 20
+
+
+def _verified_pipeline_series(tmp_path, *, fault=None, parent_status="failed"):
+    import test_pipeline_configuration as pipeline_fixture
+
+    series_id = "2026-10-15T115959Z"
+    series_dir = tmp_path / series_id
+    child_dir = series_dir / "runs" / pipeline_fixture.RUN_ID
+    (child_dir / "logs").mkdir(parents=True)
+    target = {"database": "fixture", "target_id": "fixture-target"}
+    child = pipeline_fixture.qualified_child(child_dir)
+    child.update(
+        schema_version=2,
+        collector_git_sha=SHA,
+        preflight={"database_target": target},
+        config={
+            "pipeline": True,
+            "sources": ["cbre"],
+            "transactions": ["sale", "lease"],
+        },
+    )
+    child["sources"]["cbre"].update(state="ingested", flat_listings=1)
+    child["pipeline"]["source_timings"] = {
+        "cbre": {
+            "queued_at": "2026-10-15T12:00:00Z",
+            "collection_started_at": "2026-10-15T12:00:01Z",
+            "collection_finished_at": "2026-10-15T12:00:20Z",
+            "validation_started_at": "2026-10-15T12:00:25Z",
+            "ingested_at": "2026-10-15T12:01:00Z",
+            "verified_at": "2026-10-15T12:01:30Z",
+        }
+    }
+    if fault == "artifact_hash":
+        child["pipeline"]["source_results"]["cbre"]["artifact_sha256"] = "b" * 64
+    elif fault == "readback_count":
+        child["sources"]["cbre"]["readback"]["expected_staged_unique"] = 2
+    elif fault == "artifact_count":
+        child["sources"]["cbre"]["artifact"]["staged_unique"] = 2
+        child["sources"]["cbre"]["readback"]["expected_staged_unique"] = 2
+    (child_dir / "manifest.json").write_text(json.dumps(child), encoding="utf-8")
+    parent_target = target.copy()
+    if fault == "target":
+        parent_target["target_id"] = "other-target"
+    (series_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": series_id,
+                "collector_git_sha": SHA,
+                "status": parent_status,
+                "started_at": pipeline_fixture.PARENT_START,
+                "finished_at": pipeline_fixture.PARENT_END,
+                "database_target": parent_target,
+                "config": {
+                    "pipeline": True,
+                    "sources": ["cbre"],
+                    "transactions": ["sale", "lease"],
+                },
+                "sources": {
+                    "cbre": {
+                        "state": "interrupted"
+                        if parent_status == "failed"
+                        else "complete",
+                        "checkpoint_run": f"runs/{pipeline_fixture.RUN_ID}",
+                        "attempts": pipeline_fixture.PARENT_ATTEMPTS,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return series_dir
+
+
+def test_pipeline_performance_report_counts_only_a_source_with_exact_readback(tmp_path):
+    series_dir = _verified_pipeline_series(tmp_path)
+
+    result = report.build_report(series_dir, now=PIPELINE_NOW)
+
+    assert result["run_status"] == "failed"
+    row = result["sources"][0]
+    assert row["verified_current_inventory_unique"] == 1
+    assert row["verified_current_inventory_per_minute"] == pytest.approx(
+        round(60 / 89, 3)
+    )
+    assert (
+        row["verified_current_inventory_basis"] == "pipeline_source_unit_full_readback"
+    )
+    assert row["fresh_qualified_unique"] is None
+    assert row["ingested_rows"] is None
+    rendered = report.render(result)
+    assert "Verified current staged inventory: 1 unique identities" in rendered
+    assert "not a new-row or strict-detail count" in rendered
+
+
+@pytest.mark.parametrize(
+    "fault", ["target", "artifact_hash", "readback_count", "artifact_count"]
+)
+def test_pipeline_performance_report_keeps_unqualified_current_count_unknown(
+    tmp_path, fault
+):
+    series_dir = _verified_pipeline_series(tmp_path, fault=fault)
+
+    result = report.build_report(series_dir, now=PIPELINE_NOW)
+
+    row = result["sources"][0]
+    assert row["verified_current_inventory_unique"] is None
+    assert row["verified_current_inventory_per_minute"] is None
+    assert row["verified_current_inventory_basis"] is None
+
+
+def test_query_timing_projection_and_current_inventory_status_are_retained(tmp_path):
+    run = checkpoint(tmp_path)
+    data = json.loads((run / "manifest.json").read_text())
+    data["status"] = "additive_scope_complete_current_inventory"
+    (run / "manifest.json").write_text(json.dumps(data))
+    (run / "validation.json").write_text(
+        json.dumps(
+            {
+                "validation_profile": "full",
+                "env_file": "private-password",
+                "queries": {"secret": "provider-body"},
+                "query_timings": {
+                    "source_counts": {"status": "available", "elapsed_ms": 125.2},
+                    "private-password": {"status": "available", "elapsed_ms": 1},
+                },
+            }
+        )
+    )
+    result = report.build_report(run, now=NOW)
+    row = result["sources"][0]
+    assert row["status"] == "additive_scope_complete_current_inventory"
+    assert row["verified_current_inventory_unique"] is None
+    assert row["verified_current_inventory_per_minute"] is None
+    assert result["validation_query_timings"][0]["queries"] == {
+        "source_counts": {"status": "available", "elapsed_ms": 125.2}
+    }
+    assert "private-password" not in json.dumps(result)
+    assert "provider-body" not in json.dumps(result)
+
+
+def test_cli_compares_saved_generations_without_network(tmp_path, capsys):
+    before = checkpoint(tmp_path / "before")
+    after = checkpoint(tmp_path / "after")
+    assert report.main([str(after), "--baseline", str(before), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["comparison"]["baseline_generation_id"] == RUN
+    assert result["comparison"]["causal_improvement_established"] is False
+
+
+def test_total_journal_budget_keeps_prior_measurements_and_marks_gap(
+    tmp_path, monkeypatch
+):
+    run = checkpoint(tmp_path)
+    path = journal(run)
+    (run / "logs" / "z-extra.performance.jsonl").write_bytes(path.read_bytes())
+    monkeypatch.setattr(report, "MAX_TOTAL_JOURNAL_BYTES", path.stat().st_size)
+    commands, warnings = report._commands(run, now=NOW)
+    assert len(commands) == 1
+    assert "journal_total_byte_limit_exceeded" in warnings
+
+
+def test_pipeline_query_timings_include_first_before_and_refuse_changed_hash(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    before = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "validation_profile": "checkpoint-preflight",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    post = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 222}
+            },
+        }
+    ).encode()
+    (unit / "before.json").write_bytes(before)
+    (unit / "validation.json").write_bytes(post)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(before).hexdigest(),
+                "validation_path": "pipeline/unit-0001/validation.json",
+                "validation_sha256": hashlib.sha256(post).hexdigest(),
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert (
+        sum(
+            row["queries"].get("source_counts", {}).get("elapsed_ms", 0) or 0
+            for row in result
+        )
+        == 333
+    )
+    (unit / "validation.json").write_bytes(post.replace(b"222", b"999"))
+    result = report._validation_timings(run, manifest)
+    assert not any(
+        row["queries"].get("source_counts", {}).get("elapsed_ms") == 999
+        for row in result
+    )
+    assert any(
+        row.get("unavailable_code") == "report_binding_invalid" for row in result
+    )
+
+
+def test_copied_reused_initial_preflight_is_one_query_not_two(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    (run / "pre-validation.json").write_bytes(raw)
+    (unit / "before.json").write_bytes(raw)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["preflight"] = {"validation_path": "pre-validation.json"}
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(raw).hexdigest(),
+                "before_reused": True,
+                "before_reuse_kind": "initial_preflight",
+                "before_source_path": "pre-validation.json",
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert len(result) == 1
+    assert result[0]["queries"]["source_counts"]["elapsed_ms"] == 111
 
 
 def journal(run: Path, *, identity: str = COMMAND, finish: bool = True) -> Path:
@@ -336,7 +720,8 @@ def test_missing_readback_and_timing_are_unknown_not_false_or_zero(tmp_path):
     path.write_text(json.dumps(manifest))
     result = report.build_report(run, now=NOW)
     assert result["sources"][0]["database_readback_ok"] is None
-    assert "0.0s" not in report.render(result)
+    assert result["sources"][0]["collection_seconds"] is None
+    assert " 0.0s" not in report.render(result)
 
 
 def test_directory_enumeration_is_bounded_including_unrelated_files(
@@ -448,7 +833,15 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     run = checkpoint(tmp_path)
     journal(run)
     script = """
-        import { createPerformanceRecorder } from './lib/performance.ts';
+        import {
+          createPerformanceRecorder,
+          recordDirectProviderAttemptCompleted,
+          recordDirectProviderAttemptStarted,
+          recordDirectProviderPacingWaitCompleted,
+          recordDirectProviderPacingWaitStarted,
+          setPerformanceRecorderForTests,
+          withPerformanceSource,
+        } from './lib/performance.ts';
         let clock = 0;
         const recorder = createPerformanceRecorder({
           path: process.argv[1], runId: process.argv[2], commandId: process.argv[3],
@@ -456,7 +849,16 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
           nowIso: () => new Date(Date.UTC(2026,8,13,12) + clock).toISOString(),
           processResources: () => ({rssBytes: 200000000, cpuUserMicros: 50, cpuSystemMicros: 25})
         });
+        setPerformanceRecorderForTests(recorder);
         const tokens = Array.from({length: 4}, () => recorder.recordClientAttemptStarted(true, {source:'jll',transaction:'sale'}));
+        await withPerformanceSource('essex-realty', 'sale', async () => {
+          const wait = recordDirectProviderPacingWaitStarted('current_archive', 250);
+          clock += 250;
+          recordDirectProviderPacingWaitCompleted(wait);
+          const attempt = recordDirectProviderAttemptStarted('current_archive');
+          clock += 125;
+          recordDirectProviderAttemptCompleted(attempt, {outcome:'succeeded', status:200});
+        });
         clock = 2000;
         for (const token of tokens) recorder.recordClientAttemptCompleted(token, 'succeeded');
         recorder.flush(true);
@@ -487,3 +889,369 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     assert scrape["requests"]["other_valid_statuses"] == 0
     assert scrape["successful_client_attempts_per_second"] == 2
     assert scrape["collector_process"]["rss_bytes"] == 200_000_000
+    assert (
+        scrape["coverage"]["direct_provider_requests"]
+        == "essex_pyramid_only_other_direct_sources_unknown"
+    )
+    direct = scrape["direct_provider_requests"]
+    assert len(direct) == 1
+    assert direct[0]["role"] == "current_archive"
+    assert direct[0]["attempts_completed"] == 1
+    assert direct[0]["status_counts"] == {"200": 1}
+    assert direct[0]["latency_histogram"] == {
+        "bounds_ms": [100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000],
+        "counts": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    }
+    assert direct[0]["pacing_wait_ms_scheduled"] == 250
+    assert direct[0]["pacing_wait_ms_elapsed"] == 250
+
+
+def test_legacy_snapshot_keeps_direct_provider_coverage_unknown(tmp_path):
+    run = checkpoint(tmp_path)
+    journal(run)
+    snapshot(run)
+    scrape = report.build_report(run, now=NOW)["sources"][0]["commands"][0]["scrape"]
+    assert scrape["direct_provider_requests"] == []
+    assert scrape["coverage"]["direct_provider_requests"] == "unknown_uninstrumented"
+
+
+def test_direct_provider_report_ignores_unbounded_or_malformed_group_keys():
+    assert (
+        report._direct_provider_metrics(
+            {
+                "by_source_transaction_role": [
+                    {"source": "essex-realty", "transaction": [], "role": "detail"},
+                    {"source": "essex-realty", "transaction": "sale", "role": {}},
+                    {
+                        "source": "other-provider",
+                        "transaction": "sale",
+                        "role": "detail",
+                    },
+                ]
+            }
+        )
+        == []
+    )
+    assert (
+        report._direct_provider_metrics({"by_source_transaction_role": [{}] * 13}) == []
+    )
+
+
+def test_multi_source_coordinator_filters_commands_and_labels_shared_resources(
+    tmp_path,
+):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre"]
+    manifest["sources"]["cbre"] = {
+        "state": "dry_run_failed",
+        "artifact": {"staged_unique": 4, "flat_listings": 6, "rejected_by_ingest": 2},
+    }
+    manifest["sources"]["jll"]["state"] = "complete"
+    write = journal(run)
+    records = [json.loads(line) for line in write.read_text().splitlines()]
+    for item in records:
+        item["source"] = "jll"
+    write.write_text("\n".join(json.dumps(item) for item in records))
+    path.write_text(json.dumps(manifest))
+    snapshot(run)
+    result = report.build_report(run, now=NOW)
+    jll, cbre = result["sources"]
+    assert jll["timed_command_seconds"] == {"collection": 20}
+    assert cbre["timed_command_seconds"] == {}
+    assert cbre["commands"] == []
+    assert cbre["source_elapsed_seconds"] is None
+    assert cbre["host_cpu"]["scope"] == "shared_coordinator"
+    assert cbre["resources"]["scope"] == "shared_coordinator"
+    assert cbre["status"] == "dry_run_failed"
+    rendered = report.render(result)
+    assert "Rejected" in rendered and "Readback" in rendered
+    assert "dry_run_failed" in rendered
+    assert result["comparison"]["speedup_percent"] is None
+
+
+def test_shared_coordinator_gate_is_reported_once(tmp_path):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre"]
+    manifest["sources"]["cbre"] = {}
+    path.write_text(json.dumps(manifest))
+    log = journal(run)
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    for item in records:
+        item["phase"] = "aggregate_gate"
+    log.write_text("\n".join(json.dumps(item) for item in records))
+    result = report.build_report(run, now=NOW)
+    assert len(result["shared_commands"]) == 1
+    assert all(row["commands"] == [] for row in result["sources"])
+
+
+def test_save_report_is_best_effort_and_writes_only_sanitized_projection(
+    tmp_path, monkeypatch, capsys
+):
+    run = checkpoint(tmp_path)
+    assert report.save_report(run) is True
+    saved = json.loads((run / "performance-report.json").read_text())
+    assert saved["collector_git_sha"] == SHA
+    assert "do-not-publish" not in json.dumps(saved)
+    assert (
+        "No matched quality-valid baseline"
+        in (run / "performance-report.md").read_text()
+    )
+
+    def broken(_path):
+        raise RuntimeError("private-token")
+
+    monkeypatch.setattr(report, "build_report", broken)
+    assert report.save_report(run) is False
+    assert "private-token" not in capsys.readouterr().err
+
+
+def test_output_replaces_file_symlink_without_following_it(tmp_path):
+    run = checkpoint(tmp_path)
+    secret = tmp_path / "private.txt"
+    secret.write_text("private-secret")
+    (run / "performance-report.json").symlink_to(secret)
+    report.write_report(report.build_report(run, now=NOW), run)
+    assert secret.read_text() == "private-secret"
+    assert not (run / "performance-report.json").is_symlink()
+
+
+def test_series_includes_child_resource_sessions_without_assuming_parent_usage(
+    tmp_path,
+):
+    root = tmp_path / SERIES
+    run = checkpoint(root / "runs")
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": SERIES,
+                "collector_git_sha": SHA,
+                "sources": {"jll": {"checkpoint_run": f"runs/{RUN}"}},
+            }
+        )
+    )
+    records = [
+        {
+            "schema_version": 1,
+            "kind": "cre_resource_usage",
+            "run_id": RUN,
+            "session_id": "a" * 32,
+            "observed_at": "2026-09-13T12:00:00Z",
+            "elapsed_seconds": 0,
+            "host": {"cpu_percent": 20},
+        },
+        {
+            "schema_version": 1,
+            "kind": "cre_resource_usage",
+            "run_id": RUN,
+            "session_id": "a" * 32,
+            "observed_at": "2026-09-13T12:00:05Z",
+            "elapsed_seconds": 5,
+            "host": {"cpu_percent": 30},
+        },
+    ]
+    (run / "resource-usage.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in records)
+    )
+    result = report.build_report(root, now=NOW)
+    assert result["resources"]["state"] == "unavailable"
+    assert (
+        result["sources"][0]["resources"]["sessions"][0]["metrics"]["cpu_percent"][
+            "mean"
+        ]
+        == 25
+    )
+    assert "Checkpoint resource evidence for jll" in report.render(result)
+    assert "prior failed/recovery attempts are not aggregated" in report.render(result)
+
+
+def test_custom_project_runtime_configuration_is_bound_to_project_and_service(tmp_path):
+    run = checkpoint(tmp_path)
+    value = {
+        "schema_version": 1,
+        "kind": "cre_runtime_performance",
+        "run_id": RUN,
+        "observed_at": "2026-09-13T12:00:00Z",
+        "availability": "available",
+        "project": "cre-trial",
+        "containers": [
+            {
+                "name": "cre-trial-api-1",
+                "project": "cre-trial",
+                "service": "api",
+                "running": True,
+                "id": "c" * 64,
+                "image": "sha256:" + "d" * 64,
+                "cpu_limit": 2,
+            }
+        ],
+    }
+    path = run / "runtime-performance.json"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "available"
+    assert runtime["containers"][0]["project"] == "cre-trial"
+    value["containers"][0]["name"] = "canary-api"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "available"
+    assert runtime["containers"][0]["name"] == "canary-api"
+    value["containers"][0]["name"] = "private/secret"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "invalid"
+    assert "private/secret" not in json.dumps(runtime)
+
+
+def test_save_report_suppresses_writer_and_broken_stderr_failures(
+    tmp_path, monkeypatch
+):
+    run = checkpoint(tmp_path)
+
+    def broken_write(*_args):
+        raise OSError("private-secret")
+
+    class BrokenStream:
+        def write(self, _value):
+            raise RuntimeError("private-secret")
+
+    monkeypatch.setattr(report, "write_report", broken_write)
+    monkeypatch.setattr(report.sys, "stderr", BrokenStream())
+    assert report.save_report(run) is False
+
+
+def test_report_writer_creates_private_output_directory(tmp_path):
+    import stat
+
+    run = checkpoint(tmp_path)
+    out = tmp_path / "reports"
+    report.write_report(report.build_report(run, now=NOW), out)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o700
+    assert (out / "performance-report.json").is_file()
+
+
+def test_coordinator_overlap_counts_duration_and_ignores_nonterminal_commands(tmp_path):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre", "svn"]
+    manifest["sources"].update(cbre={}, svn={})
+    path.write_text(json.dumps(manifest))
+    for source, offset, terminal in (
+        ("jll", 0, True),
+        ("cbre", 10, True),
+        ("svn", 15, False),
+    ):
+        log = f"{source}-collect.log"
+        base = {
+            "schema_version": 1,
+            "kind": "cre_command_performance",
+            "run_id": RUN,
+            "command_id": {"jll": "a", "cbre": "b", "svn": "c"}[source] * 32,
+            "command_log": log,
+            "phase": "collection",
+            "source": source,
+        }
+        records = [
+            {
+                **base,
+                "event": "started",
+                "outcome": "running",
+                "observed_at": f"2026-09-13T12:00:{offset:02d}Z",
+                "elapsed_seconds": 0,
+            }
+        ]
+        if terminal:
+            records.append(
+                {
+                    **base,
+                    "event": "finished",
+                    "outcome": "success",
+                    "observed_at": f"2026-09-13T12:00:{offset + 20:02d}Z",
+                    "elapsed_seconds": 20,
+                }
+            )
+        (run / "logs" / Path(log).with_suffix(".performance.jsonl")).write_text(
+            "\n".join(json.dumps(item) for item in records)
+        )
+    result = report.build_report(run, now=NOW)
+    measured = result["collection_overlap"]
+    assert measured["peak_overlapping_source_collections"] == 2
+    assert measured["seconds_by_active_sources"] == {"1": 20, "2": 10}
+    assert measured["summed_source_collection_seconds"] == 40
+    assert "subprocess wall-time overlap" in report.render(result)
+
+
+def test_pipeline_text_report_renders_shared_checkpoint_resources_once():
+    shared = "2026-10-18T045739Z-aaaaaaaaaaaa"
+    second = "2026-10-18T045740Z-bbbbbbbbbbbb"
+    missing = "2026-10-18T045741Z-cccccccccccc"
+
+    def resource_session(sample_count, cpu_mean=None):
+        metrics = {"host_cpu_percent": {"mean": cpu_mean}} if cpu_mean else {}
+        return {
+            "sample_count": sample_count,
+            "memory_pressure_samples": {},
+            "runtime_availability_samples": {},
+            "runtime_gap_code_samples": {},
+            "metrics": metrics,
+            "containers": [],
+        }
+
+    rows = [
+        {
+            "source": source,
+            "run_id": run_id,
+            "status": "ingested",
+            "timed_command_seconds": {},
+            "commands": [],
+            "warnings": [],
+            "resources": {"scope": "shared_coordinator", "state": "see_run_resources"},
+        }
+        for source, run_id in (
+            ("faris-lee", shared),
+            ("hanley", shared),
+            ("jll", second),
+            ("cbre", missing),
+        )
+    ]
+    report_data = {
+        "generation_id": "2026-10-18T045739Z",
+        "collector_git_sha": SHA,
+        "run_elapsed_seconds": 146.725,
+        "resource_coverage": "current_bound_checkpoint_per_source_prior_failed_or_recovery_attempts_not_aggregated",
+        "sources": rows,
+        "resources": {"state": "unavailable"},
+        "checkpoint_resources": [
+            {
+                "run_id": shared,
+                "resources": {
+                    "state": "observed",
+                    "sessions": [resource_session(29, 11.5)],
+                },
+            },
+            {
+                "run_id": second,
+                "resources": {"state": "observed", "sessions": [resource_session(7)]},
+            },
+            {"run_id": missing, "resources": {"state": "unavailable", "sessions": []}},
+        ],
+        "collection_overlap": {},
+        "validation_query_timings": [],
+        "comparison": {"state": "unavailable"},
+    }
+
+    rendered = report.render(report_data)
+
+    assert f"Shared checkpoint resources ({shared})" in rendered
+    assert "Sources sharing this checkpoint: faris-lee, hanley" in rendered
+    assert rendered.count("29 observations") == 1
+    assert "mean/p50/p95=11.5/unknown/unknown%" in rendered
+    assert f"Shared checkpoint resources ({second})" in rendered
+    assert "7 observations" in rendered
+    assert f"Shared checkpoint resources ({missing})" in rendered
+    assert rendered.count("Resource usage unknown: saved telemetry unavailable.") == 2

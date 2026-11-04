@@ -5,6 +5,7 @@
 .firecrawl/
 *.csv
 !scripts/firecrawl-ops/cre_collector/tests/fixtures/geo/mini_crosswalk.csv
+!scripts/firecrawl-ops/cre_collector/data/zip_cbsa_crosswalk.csv
 dump.rdb
 /mongo-data
 apps/js-sdk/node_modules/
@@ -81,6 +82,9 @@ test-runs/
 
 # Agent working output; publish durable proof to Linear or the PR.
 .scratch/
+
+# Reviewed benchmark metadata only; original documents and outputs stay private.
+!docs/firecrawl-ops/references/document-input-benchmark/*/measurements.csv
 
 # stray test runner logs
 vitest.out

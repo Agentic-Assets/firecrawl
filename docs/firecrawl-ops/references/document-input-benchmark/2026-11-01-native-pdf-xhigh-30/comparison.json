@@ -1,0 +1,974 @@
+{
+  "schema": "native-pdf-comparison/v1",
+  "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "gold_sha256": "0f11938434dad29d0b4972d33386b18f3571e6071babc39e119173d9d9f2a497",
+  "summary": [
+    {
+      "group": 0,
+      "report_index": 0,
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "high",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 9,
+      "usable_after_fence": 28,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.28523339999999997,
+      "total_cost_usd": 0.28523339999999997,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 26.765693145993282,
+        "p90_nearest_rank": 43.38323308399413,
+        "p90_interpolated": 43.56479031729687
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 28,
+      "cost_per_format_and_selected_reference_pass_usd": 0.010186907142857141,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "unscorable": 70,
+            "clean_correct": 27,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "unscorable": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 1,
+      "report_index": 0,
+      "model": "google/gemini-3.5-flash-lite",
+      "provider": "vertex",
+      "effort": "high",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 28,
+      "usable_after_fence": 28,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.3665205,
+      "total_cost_usd": 0.3665205,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 15.859221728998818,
+        "p90_nearest_rank": 21.155925415980164,
+        "p90_interpolated": 21.162495628581382
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 25,
+      "cost_per_format_and_selected_reference_pass_usd": 0.014660820000000001,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 85,
+            "uncertain_reference": 1,
+            "missing": 4,
+            "unscorable": 8
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "unscorable": 6,
+            "clean_correct": 10
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 85,
+            "uncertain_reference": 1,
+            "missing": 4,
+            "unscorable": 8
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "unscorable": 6,
+            "clean_correct": 10
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 2,
+      "report_index": 0,
+      "model": "google/gemini-3.8-flash",
+      "provider": "vertex",
+      "effort": "high",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 30,
+      "usable_after_fence": 30,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.72137625,
+      "total_cost_usd": 0.72137625,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 29.768224291998195,
+        "p90_nearest_rank": 71.12963433301775,
+        "p90_interpolated": 76.21254712881353
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 30,
+      "cost_per_format_and_selected_reference_pass_usd": 0.024045875,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 3,
+      "report_index": 0,
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "high",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 29,
+      "usable_after_fence": 29,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.1753763,
+      "total_cost_usd": 0.1753763,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 31.392052208000678,
+        "p90_nearest_rank": 49.6699736250157,
+        "p90_interpolated": 50.80363824171656
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 29,
+      "cost_per_format_and_selected_reference_pass_usd": 0.006047458620689655,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 94,
+            "uncertain_reference": 1,
+            "unscorable": 3
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 4,
+      "report_index": 1,
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "high",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 30,
+      "usable_after_fence": 30,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.082748966,
+      "total_cost_usd": 0.082748966,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 19.75730391649995,
+        "p90_nearest_rank": 33.59424220802612,
+        "p90_interpolated": 33.705316274723735
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 29,
+      "cost_per_format_and_selected_reference_pass_usd": 0.002853412620689655,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 96,
+            "uncertain_reference": 1,
+            "missing": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 96,
+            "uncertain_reference": 1,
+            "missing": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 5,
+      "report_index": 2,
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 21,
+      "usable_after_fence": 28,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.5909609,
+      "total_cost_usd": 0.5909609,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 59.87084577100177,
+        "p90_nearest_rank": 127.48974729099427,
+        "p90_interpolated": 134.46584729529286
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 28,
+      "cost_per_format_and_selected_reference_pass_usd": 0.02110574642857143,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 69,
+            "unscorable": 28,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "unscorable": 9,
+            "clean_correct": 7
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 91,
+            "uncertain_reference": 1,
+            "unscorable": 6
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "unscorable": 3,
+            "clean_correct": 13
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 6,
+      "report_index": 2,
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 30,
+      "usable_after_fence": 30,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.099503268,
+      "total_cost_usd": 0.099503268,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 35.60501677100547,
+        "p90_nearest_rank": 66.03136558301048,
+        "p90_interpolated": 67.414550045511
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 27,
+      "cost_per_format_and_selected_reference_pass_usd": 0.0036853062222222226,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 94,
+            "uncertain_reference": 1,
+            "correct_with_conflict": 1,
+            "missing": 2
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 94,
+            "uncertain_reference": 1,
+            "correct_with_conflict": 1,
+            "missing": 2
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    },
+    {
+      "group": 7,
+      "report_index": 2,
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "documents": 30,
+      "http_200": 30,
+      "strict_usable": 30,
+      "usable_after_fence": 30,
+      "cost_known_count": 30,
+      "cost_unknown_count": 0,
+      "known_cost_sum_usd": 0.2101853,
+      "total_cost_usd": 0.2101853,
+      "timed_http_200_count": 30,
+      "api_seconds": {
+        "median": 54.06421675000456,
+        "p90_nearest_rank": 80.54491862500436,
+        "p90_interpolated": 81.17609121660354
+      },
+      "reviewed_documents": 30,
+      "complete_reference_review_documents": 30,
+      "incomplete_reference_review_documents": 0,
+      "format_and_selected_reference_pass_documents": 30,
+      "cost_per_format_and_selected_reference_pass_usd": 0.0070061766666666666,
+      "strict_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      },
+      "semantic_decision": {
+        "fact": {
+          "counts": {
+            "clean_correct": 97,
+            "uncertain_reference": 1
+          },
+          "reference_targets": 98,
+          "scorable_targets": 97
+        },
+        "table_row": {
+          "counts": {
+            "clean_correct": 16
+          },
+          "reference_targets": 16,
+          "scorable_targets": 16
+        }
+      }
+    }
+  ],
+  "paired": [
+    {
+      "a": 0,
+      "b": 1,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.3665205,
+      "b_cheaper_count": 1,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 27,
+      "both_format_and_complete_selected_reference_pass_documents": 24,
+      "passing_paired_known_cost_count": 24,
+      "passing_b_cheaper_count": 0,
+      "passing_paired_timing_count": 24,
+      "passing_b_faster_count": 22
+    },
+    {
+      "a": 0,
+      "b": 2,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.72137625,
+      "b_cheaper_count": 1,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 7,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 1,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 7
+    },
+    {
+      "a": 0,
+      "b": 3,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.1753763,
+      "b_cheaper_count": 28,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 7,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 25,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 7
+    },
+    {
+      "a": 0,
+      "b": 4,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.082748966,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 23,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 27,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 20
+    },
+    {
+      "a": 0,
+      "b": 5,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.5909609,
+      "b_cheaper_count": 0,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 0,
+      "both_format_and_complete_selected_reference_pass_documents": 26,
+      "passing_paired_known_cost_count": 26,
+      "passing_b_cheaper_count": 0,
+      "passing_paired_timing_count": 26,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 0,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 5,
+      "both_format_and_complete_selected_reference_pass_documents": 25,
+      "passing_paired_known_cost_count": 25,
+      "passing_b_cheaper_count": 25,
+      "passing_paired_timing_count": 25,
+      "passing_b_faster_count": 5
+    },
+    {
+      "a": 0,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.28523339999999997,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 17,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 2,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 15,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 2
+    },
+    {
+      "a": 1,
+      "b": 2,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.72137625,
+      "b_cheaper_count": 1,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 0,
+      "both_format_and_complete_selected_reference_pass_documents": 25,
+      "passing_paired_known_cost_count": 25,
+      "passing_b_cheaper_count": 1,
+      "passing_paired_timing_count": 25,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 1,
+      "b": 3,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.1753763,
+      "b_cheaper_count": 29,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 1,
+      "both_format_and_complete_selected_reference_pass_documents": 24,
+      "passing_paired_known_cost_count": 24,
+      "passing_b_cheaper_count": 24,
+      "passing_paired_timing_count": 24,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 1,
+      "b": 4,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.082748966,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 4,
+      "both_format_and_complete_selected_reference_pass_documents": 25,
+      "passing_paired_known_cost_count": 25,
+      "passing_b_cheaper_count": 25,
+      "passing_paired_timing_count": 25,
+      "passing_b_faster_count": 3
+    },
+    {
+      "a": 1,
+      "b": 5,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.5909609,
+      "b_cheaper_count": 19,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 0,
+      "both_format_and_complete_selected_reference_pass_documents": 24,
+      "passing_paired_known_cost_count": 24,
+      "passing_b_cheaper_count": 15,
+      "passing_paired_timing_count": 24,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 1,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 1,
+      "both_format_and_complete_selected_reference_pass_documents": 24,
+      "passing_paired_known_cost_count": 24,
+      "passing_b_cheaper_count": 24,
+      "passing_paired_timing_count": 24,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 1,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.3665205,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 29,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 1,
+      "both_format_and_complete_selected_reference_pass_documents": 25,
+      "passing_paired_known_cost_count": 25,
+      "passing_b_cheaper_count": 25,
+      "passing_paired_timing_count": 25,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 2,
+      "b": 3,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.72137625,
+      "b_cost_usd": 0.1753763,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 15,
+      "both_format_and_complete_selected_reference_pass_documents": 29,
+      "passing_paired_known_cost_count": 29,
+      "passing_b_cheaper_count": 29,
+      "passing_paired_timing_count": 29,
+      "passing_b_faster_count": 15
+    },
+    {
+      "a": 2,
+      "b": 4,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.72137625,
+      "b_cost_usd": 0.082748966,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 30,
+      "both_format_and_complete_selected_reference_pass_documents": 29,
+      "passing_paired_known_cost_count": 29,
+      "passing_b_cheaper_count": 29,
+      "passing_paired_timing_count": 29,
+      "passing_b_faster_count": 29
+    },
+    {
+      "a": 2,
+      "b": 5,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.72137625,
+      "b_cost_usd": 0.5909609,
+      "b_cheaper_count": 29,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 3,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 28,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 3
+    },
+    {
+      "a": 2,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.72137625,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 13,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 27,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 10
+    },
+    {
+      "a": 2,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.72137625,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 4,
+      "both_format_and_complete_selected_reference_pass_documents": 30,
+      "passing_paired_known_cost_count": 30,
+      "passing_b_cheaper_count": 30,
+      "passing_paired_timing_count": 30,
+      "passing_b_faster_count": 4
+    },
+    {
+      "a": 3,
+      "b": 4,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.1753763,
+      "b_cost_usd": 0.082748966,
+      "b_cheaper_count": 29,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 29,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 28,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 27
+    },
+    {
+      "a": 3,
+      "b": 5,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.1753763,
+      "b_cost_usd": 0.5909609,
+      "b_cheaper_count": 0,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 1,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 0,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 1
+    },
+    {
+      "a": 3,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.1753763,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 26,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 14,
+      "both_format_and_complete_selected_reference_pass_documents": 26,
+      "passing_paired_known_cost_count": 26,
+      "passing_b_cheaper_count": 23,
+      "passing_paired_timing_count": 26,
+      "passing_b_faster_count": 12
+    },
+    {
+      "a": 3,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.1753763,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 0,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 2,
+      "both_format_and_complete_selected_reference_pass_documents": 29,
+      "passing_paired_known_cost_count": 29,
+      "passing_b_cheaper_count": 0,
+      "passing_paired_timing_count": 29,
+      "passing_b_faster_count": 1
+    },
+    {
+      "a": 4,
+      "b": 5,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.082748966,
+      "b_cost_usd": 0.5909609,
+      "b_cheaper_count": 0,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 0,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 0,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 4,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.082748966,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 2,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 0,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 2,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 0
+    },
+    {
+      "a": 4,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.082748966,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 1,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 1,
+      "both_format_and_complete_selected_reference_pass_documents": 29,
+      "passing_paired_known_cost_count": 29,
+      "passing_b_cheaper_count": 1,
+      "passing_paired_timing_count": 29,
+      "passing_b_faster_count": 1
+    },
+    {
+      "a": 5,
+      "b": 6,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.5909609,
+      "b_cost_usd": 0.099503268,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 26,
+      "both_format_and_complete_selected_reference_pass_documents": 26,
+      "passing_paired_known_cost_count": 26,
+      "passing_b_cheaper_count": 26,
+      "passing_paired_timing_count": 26,
+      "passing_b_faster_count": 22
+    },
+    {
+      "a": 5,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.5909609,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 30,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 16,
+      "both_format_and_complete_selected_reference_pass_documents": 28,
+      "passing_paired_known_cost_count": 28,
+      "passing_b_cheaper_count": 28,
+      "passing_paired_timing_count": 28,
+      "passing_b_faster_count": 14
+    },
+    {
+      "a": 6,
+      "b": 7,
+      "common_documents": 30,
+      "paired_known_cost_count": 30,
+      "a_cost_usd": 0.099503268,
+      "b_cost_usd": 0.2101853,
+      "b_cheaper_count": 1,
+      "paired_http_200_timing_count": 30,
+      "all_http_200_b_faster_count": 5,
+      "both_format_and_complete_selected_reference_pass_documents": 27,
+      "passing_paired_known_cost_count": 27,
+      "passing_b_cheaper_count": 1,
+      "passing_paired_timing_count": 27,
+      "passing_b_faster_count": 3
+    }
+  ],
+  "limitations": "Selected agent-reviewed references only, not complete fact accuracy or text recall. Unknown cost is not zero. Reasoning is requested, not proven effective compute. Sequential runs are not a randomized causal effort comparison.",
+  "input_report_sha256": [
+    "867ceabf180e2c585f02c328237d98f3d33ac9b199fd541497b18cc9c6adc0a9",
+    "ec7ebff455417e4169a9a13dfc03bc252623bcc73d1ed215a66fef02f4fa2936",
+    "6daa3082ce46d41459fc5db32fa1e4e352ebf7acb24885bb152eaa54af70bdef"
+  ],
+  "input_review_sha256": [
+    "22e0f8a32d6e5f0570df7e9a70f0a045a5e492fe841eee5d5f8eff41dae66cda",
+    "b6fd8f70c8c0bcb52c3d52ef7942030cd6b9d23fd3954d5284b225cd7a6b408d"
+  ]
+}

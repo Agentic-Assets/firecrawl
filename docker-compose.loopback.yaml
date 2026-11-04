@@ -1,0 +1,8 @@
+# Part of AGENTIC-3745; implementation AGENTIC-3754, ingress decision AGENTIC-2284.
+# OPT-IN: Docker Compose >= 2.24.4. This file is not automatically loaded.
+# Review with: docker compose -f docker-compose.yaml -f docker-compose.loopback.yaml config
+# Applying/recreating an existing runtime requires the separate ingress approval.
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}"

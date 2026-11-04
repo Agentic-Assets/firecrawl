@@ -1,0 +1,10 @@
+{
+  "schema": "native-pdf-benchmark/v1",
+  "routes": [
+    {"model": "openai/gpt-6-luna", "provider": "openai", "effort": "high", "max_tokens": 65000},
+    {"model": "openai/gpt-6-luna", "provider": "openai", "effort": "xhigh", "max_tokens": 65000}
+  ],
+  "budget_usd": 10,
+  "reservation_usd": 1,
+  "workers": 2
+}

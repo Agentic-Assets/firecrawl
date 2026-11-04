@@ -1,3 +1,6 @@
+import { captureKidderRaw, preserveKidderRaw } from "./pure/kidder-raw-retention.js";
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
+import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -10,6 +13,13 @@ import { CacheDisposition, SourceResult, Tx } from "../types.js";
 
 const KIDDER_API = "https://services.kidder.com/search/public/listing";
 const KIDDER_PAGE_SIZE = 50;
+// The official property-search frontend requests 8000 rows from offset zero
+// and sorts them locally. Strict runs use that complete response, avoiding
+// unstable boundaries between unsorted 50-row pages. Never deduplicate a feed
+// or accept a provider total beyond this bound as complete.
+export const KIDDER_STRICT_MAX_RESULTS = 8000;
+export const KIDDER_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+export const KIDDER_INVENTORY_TIMEOUT_MS = 30_000;
 
 export type KidderInventoryResult = {
   items: any[];
@@ -33,6 +43,10 @@ export type KidderMappingContext = {
 };
 
 let kidderCache: KidderInventoryResult | null = null;
+const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
+function kidderDisposition(row: any): CacheDisposition {
+  return kidderCacheDisposition.get(row) ?? "live";
+}
 
 function numeric(value: any): number | null {
   return value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -112,6 +126,85 @@ export function assertKidderInventoryReconciled(
   }
 }
 
+export function assertKidderCompleteInventory(data: any): void {
+  if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.results)) {
+    throw new Error("Kidder complete inventory requires an object with a results array");
+  }
+  const total = data.totalResultCount;
+  if (
+    typeof total !== "number" || !Number.isSafeInteger(total) || total < 0
+    || total > KIDDER_STRICT_MAX_RESULTS
+  ) {
+    throw new Error("Kidder complete inventory requires an integer total within the 8000-row ceiling");
+  }
+  if (data.startIndex !== 0 || data.currentResultCount !== total || data.results.length !== total) {
+    throw new Error("Kidder complete inventory must cover the independent provider total in one response");
+  }
+  assertKidderInventoryReconciled(data.results, total, true);
+}
+
+export async function kidderFetchCompleteInventory(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = KIDDER_INVENTORY_TIMEOUT_MS,
+  maxBytes = KIDDER_MAX_RESPONSE_BYTES
+): Promise<any> {
+  if (
+    !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > KIDDER_INVENTORY_TIMEOUT_MS
+    || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > KIDDER_MAX_RESPONSE_BYTES
+  ) {
+    throw new Error("Kidder complete inventory transport bounds are invalid");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const requestBody = JSON.stringify({ startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false });
+    const response = await fetchImpl(KIDDER_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json;charset=UTF-8",
+        "User-Agent": "Mozilla/5.0",
+        Origin: "https://www.kidder.com",
+        "Cache-Control": "no-cache",
+      },
+      body: requestBody,
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error("Kidder complete inventory HTTP " + response.status);
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      throw new Error("Kidder complete inventory exceeds " + maxBytes + " bytes");
+    }
+    if (!response.body) throw new Error("Kidder complete inventory response body is missing");
+    reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let bytes = 0;
+    let text = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes) throw new Error("Kidder complete inventory exceeds " + maxBytes + " bytes");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    publishNativeJsonFeed({ profile: "kidder_bulk_post_v1", sourceKey: "kidder-mathews", requestVariant: "strict",
+      requestBody, page: 0, offset: 0, status: response.status, body: text });
+    const data = JSON.parse(text);
+    assertKidderCompleteInventory(data);
+    return data;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    if (reader) {
+      // Do not let a stalled cancellation extend the request's work budget.
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+}
+
 function strictGeneration(strict: boolean): string | null {
   const generationId = refreshGenerationId();
   if (strict && !generationId) {
@@ -136,10 +229,17 @@ async function kidderPost(startIndex: number, strict = requireFreshDetails()): P
         ...(strict ? { cache: "no-store" as const } : {}),
       });
       if (!res.ok) throw new Error(`Kidder API HTTP ${res.status}`);
-      const data: any = await res.json();
+      let data: any;
+      if (nativeJsonFeedCaptureEnabled()) {
+        const text = await res.text();
+        publishNativeJsonFeed({ profile: "kidder_paged_post_v1", sourceKey: "kidder-mathews", requestVariant: "standard",
+          requestBody: body, page: startIndex / KIDDER_PAGE_SIZE, offset: startIndex, status: res.status, body: text });
+        data = JSON.parse(text);
+      } else data = await res.json();
       if (data && Array.isArray(data.results)) return data;
       throw new Error("Kidder API response missing results[]");
     } catch (err) {
+      if (err instanceof NativeJsonFeedCaptureError) throw err;
       if (attempt === 3) throw err;
       await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
     }
@@ -155,13 +255,26 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
   ) {
     return {
       ...kidderCache,
-      items: kidderCache.items.map((row) => ({
-        ...row,
-        __creInventoryCacheDisposition: "generation_cache",
-      })),
+      items: kidderCache.items.map((row) => {
+        const copy = { ...row };
+        kidderCacheDisposition.set(copy, "generation_cache");
+        return copy;
+      }),
     };
   }
   if (kidderCache) kidderCache = null;
+  if (strict) {
+    const data = await kidderFetchCompleteInventory();
+    kidderCache = {
+      items: data.results,
+      total: data.totalResultCount,
+      truncated: false,
+      inventoryObservedAt: observationNow(),
+      generationId,
+      strictValidated: true,
+    };
+    return kidderCache;
+  }
   const first = await kidderPost(0, strict);
   const firstPage = assertKidderInventoryPage(first, 0, null, strict);
   const total: number = strict ? firstPage.total : first.totalResultCount ?? 0;
@@ -180,7 +293,7 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
       assertKidderInventoryPage(data, page, firstPage, strict);
       return data.results ?? [];
     } catch (err) {
-      if (strict) throw err;
+      if (strict || err instanceof NativeJsonFeedCaptureError) throw err;
       failed++;
       console.error(`  kidder: page ${page} failed: ${err}`);
       return [];
@@ -192,7 +305,7 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
     items,
     total,
     truncated: failed > 0 || wantPages < allPages,
-    inventoryObservedAt: new Date().toISOString(),
+    inventoryObservedAt: observationNow(),
     generationId,
     strictValidated: strict,
   };
@@ -265,18 +378,18 @@ export function mapKidderListing(
   const url = key != null ? `https://www.kidder.com/listings/${key}` : "https://www.kidder.com/properties/";
   const size = numeric(row.sf_avail);
 
-  return prune({
-    id: key != null ? String(key) : null,
+  const id = key != null ? String(key) : null;
+  const cacheDisposition = context.cacheDisposition ?? kidderDisposition(row);
+  const { raw, marker } = captureKidderRaw(row, id, url, context.inventoryObservedAt ?? null, context.inventoryObservedAt ? cacheDisposition : null);
+  const listing = prune({
+    id,
     inventoryObservedAt: context.inventoryObservedAt,
     freshnessProvenance: context.inventoryObservedAt
       ? {
           detailScope: "authoritative_inventory_feed",
           generationId: context.generationId ?? refreshGenerationId(),
           method: "kidder_public_inventory_feed",
-          cacheDisposition:
-            context.cacheDisposition ??
-            row.__creInventoryCacheDisposition ??
-            "live",
+          cacheDisposition,
         }
       : undefined,
     preserveChildCollections: true,
@@ -299,8 +412,8 @@ export function mapKidderListing(
     photos,
     url,
     canonicalUrl: url,
-    rawKidder: row,
   });
+  return preserveKidderRaw(listing, raw, marker);
 }
 
 export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
@@ -319,7 +432,7 @@ export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): 
         strict: requireFreshDetails(),
         inventoryObservedAt,
         generationId,
-        cacheDisposition: row.__creInventoryCacheDisposition ?? "live",
+        cacheDisposition: kidderDisposition(row),
       })
     );
   }

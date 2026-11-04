@@ -20,11 +20,12 @@ from typing import Any
 COLLECTOR_DIR = Path(__file__).resolve().parent
 DEFAULT_SERIES_ROOT = COLLECTOR_DIR / "out" / "checkpoint-series"
 SCHEMA_VERSION = 1
-HANDLED_STATES = {"complete", "failed_source"}
+HANDLED_STATES = {"complete", "failed_source", "qualified_partial_subset"}
 SOURCE_STATES = {
     "pending",
     "running",
     "complete",
+    "qualified_partial_subset",
     "failed_source",
     "failed_global",
     "interrupted",
@@ -34,6 +35,7 @@ SERIES_STATES = {
     "running",
     "cooling_down",
     "complete",
+    "qualified_partial_subset",
     "complete_with_source_failures",
     "failed",
     "interrupted",
@@ -59,8 +61,11 @@ CHILD_STATES = {
     "dry_run_passed",
     "ingesting",
     "ingest_recovery_required",
+    "pyramid_historical_guard_refused",
+    "transwestern_image_guard_refused",
     "ingested",
     "complete",
+    "qualified_partial_subset",
     "failed",
     "collect_infrastructure_failed",
     "collect_failed",
@@ -70,8 +75,9 @@ CHILD_STATES = {
     "baseline_seed_required",
     "dry_run_failed",
 }
-JLL_DETAIL_PROGRESS = re.compile(
-    r"^\s*jll/(sale|lease): detail enriched (\d{1,9})/(\d{1,9})\s*$"
+DETAIL_PROGRESS = re.compile(
+    r"^\s*([a-z0-9]+(?:-[a-z0-9]+)*)/(sale|lease): detail enriched "
+    r"(\d{1,9})/(\d{1,9})\s*$"
 )
 
 
@@ -132,7 +138,7 @@ def child_progress(
             return None
         progress = {"state": record["state"], "detail_pass": None}
         attempts = record.get("attempts")
-        if source != "jll" or not isinstance(attempts, list) or not attempts:
+        if not isinstance(attempts, list) or not attempts:
             return progress
         for attempt in reversed(attempts[-8:]):
             log = (
@@ -151,12 +157,12 @@ def child_progress(
             except OSError:
                 continue
             for line in reversed(lines):
-                match = JLL_DETAIL_PROGRESS.fullmatch(line)
-                if match:
-                    completed, total = int(match[2]), int(match[3])
+                match = DETAIL_PROGRESS.fullmatch(line)
+                if match and match[1] == source:
+                    completed, total = int(match[3]), int(match[4])
                     if 0 <= completed <= total and total > 0:
                         progress["detail_pass"] = {
-                            "transaction": match[1],
+                            "transaction": match[2],
                             "completed": completed,
                             "total": total,
                             "attempt": _finite_nonnegative(attempt.get("number")),
@@ -164,6 +170,89 @@ def child_progress(
                         return progress
         return progress
     except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+
+
+def pipeline_progress(manifest: Mapping[str, Any], path: Path) -> dict | None:
+    """Read one bounded original owner manifest for observational stage counts."""
+    config = manifest.get("config") or {}
+    if config.get("pipeline") is not True:
+        return None
+    references = {row.get("checkpoint_run") for row in manifest["sources"].values()}
+    if len(references) != 1:
+        return None
+    run = _contained_path(path.parent, next(iter(references)))
+    if run is None or not run.is_relative_to((path.parent / "runs").resolve()):
+        return None
+    try:
+        child = json.loads(
+            _read_regular_file(run / "manifest.json", limit=4 * 1024 * 1024)
+        )
+        if (
+            child.get("collector_git_sha") != manifest.get("collector_git_sha")
+            or child.get("run_id") != run.name
+            or child.get("config", {}).get("sources") != config.get("sources")
+            or child.get("config", {}).get("source_workers")
+            != config.get("source_workers")
+            or child.get("config", {}).get("pipeline") is not True
+            or set(child["sources"]) != set(config["sources"])
+        ):
+            return None
+        from cre_checkpoint_series import (
+            _exact_json_equal,
+            _expected_child_config,
+            pipeline_source_qualified,
+        )
+
+        if not _exact_json_equal(
+            child.get("config"),
+            _expected_child_config(",".join(config["sources"]), config),
+        ) or not _exact_json_equal(
+            child.get("preflight", {}).get("database_target"),
+            manifest.get("database_target"),
+        ):
+            return None
+        counts = dict.fromkeys(
+            ("fetching", "pending", "validating", "committing", "verified", "failed"), 0
+        )
+        unit_cache = {}
+        for key, checkpoint in child["sources"].items():
+            state = checkpoint.get("pipeline_stage") or checkpoint.get("state")
+            if pipeline_source_qualified(
+                child,
+                key,
+                run_dir=run,
+                parent_started_at=manifest["started_at"],
+                parent_finished_at=manifest.get("finished_at")
+                or datetime.now(timezone.utc).isoformat(),
+                unit_cache=unit_cache,
+                allow_running=True,
+                parent_attempts=manifest["sources"][key].get("attempts"),
+            ):
+                phase = "verified"
+            elif state in {"collecting", "fetching"}:
+                phase = "fetching"
+            elif state in {"ingesting", "committing", "ingest_recovery_required"}:
+                phase = "committing"
+            elif state in {"validating", "validating_artifact"}:
+                phase = "validating"
+            elif state in {
+                "failed",
+                "collect_failed",
+                "collect_infrastructure_failed",
+                "artifact_rejected",
+                "gate_failed",
+                "gate_blocked",
+                "dry_run_failed",
+                "pyramid_historical_guard_refused",
+                "transwestern_image_guard_refused",
+            }:
+                phase = "failed"
+            else:
+                phase = "pending"
+            counts[phase] += 1
+        return {"source_workers": config["source_workers"], **counts}
+    except (OSError, ValueError, TypeError, KeyError):
         return None
 
 
@@ -298,6 +387,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if series_state not in SERIES_STATES:
         raise TypeError(f"invalid series state in manifest: {path}")
     inconsistent = (
+        (series_state == "qualified_partial_subset" and ("qualified_partial_subset" not in states or any(state not in HANDLED_STATES for state in states))) or
         (series_state == "complete" and any(state != "complete" for state in states))
         or (
             series_state == "complete_with_source_failures"
@@ -306,7 +396,14 @@ def load_manifest(path: Path) -> dict[str, Any]:
                 or any(state not in HANDLED_STATES for state in states)
             )
         )
-        or (series_state == "failed" and "failed_global" not in states)
+        or (
+            series_state == "failed" and "failed_global" not in states
+            and not (
+                config.get("pipeline") is True
+                and bool(states)
+                and all(state in HANDLED_STATES | {"pending"} for state in states)
+            )
+        )
         or (series_state == "interrupted" and "interrupted" not in states)
         or (
             series_state == "resource_guard_interrupted"
@@ -341,6 +438,7 @@ def build_snapshot(
     )
     total = len(sources)
     complete = counts["complete"]
+    qualified_partial_subsets = counts["qualified_partial_subset"]
     handled = sum(counts[state] for state in HANDLED_STATES)
     running = [
         name
@@ -401,8 +499,20 @@ def build_snapshot(
         "series_path": str(manifest_path.parent.resolve()),
         "status": str(manifest.get("status", "unknown")),
         "collector_sha": manifest.get("collector_git_sha"),
+        "pipeline_progress": pipeline_progress(manifest, manifest_path),
         "total": total,
         "complete": complete,
+        "qualified_partial_subsets": qualified_partial_subsets,
+        "partial_subset_counts": [
+            {"source": name, **value["subset_counts"]}
+            for name, value in sources.items()
+            if isinstance(value, Mapping) and value.get("state") == "qualified_partial_subset"
+            and isinstance(value.get("subset_counts"), Mapping)
+            and set(value["subset_counts"]) == {"inventory", "emitted", "held"}
+            and all(type(value["subset_counts"][key]) is int and value["subset_counts"][key] >= 0
+                    for key in ("inventory", "emitted", "held"))
+            and value["subset_counts"]["inventory"] == value["subset_counts"]["emitted"] + value["subset_counts"]["held"]
+        ],
         "handled": handled,
         "failed": failed,
         "running": counts["running"],
@@ -447,29 +557,56 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
         status_color = "31"
     elif status == "cooling_down":
         status_color = "33"
+    pipeline = snapshot.get("pipeline_progress")
     lines = [
         f"CRE checkpoint series  {paint('1', snapshot['series_id'])}",
-        f"Recorded status        {paint(status_color, status)}",
+        f"{'Parent recorded status' if pipeline else 'Recorded status       '} {paint(status_color, status)}",
         "",
+    ]
+    if pipeline:
+        verified = int(pipeline["verified"])
+        total = int(snapshot["total"])
+        percent = verified / total * 100 if total else 0.0
+        lines.append(
+            f"{_bar(verified, total)} {verified}/{total} "
+            f"qualified by audit/readback ({percent:.1f}%)"
+        )
+    lines.extend([
         (
+            f"Parent complete        {snapshot['complete']}/{snapshot['total']} "
+            f"({snapshot['percent_complete']:.1f}%)"
+            if pipeline else
             f"{_bar(int(snapshot['complete']), int(snapshot['total']))} "
             f"{snapshot['complete']}/{snapshot['total']} complete "
             f"({snapshot['percent_complete']:.1f}%)"
         ),
         (
-            f"Handled                {snapshot['handled']}/{snapshot['total']} "
+            f"{'Parent handled        ' if pipeline else 'Handled               '} "
+            f"{snapshot['handled']}/{snapshot['total']} "
             f"({snapshot['percent_handled']:.1f}%)"
         ),
         (
-            f"Pending / running      {snapshot['pending']} / {snapshot['running']}"
+            f"{'Parent pending/running' if pipeline else 'Pending / running     '} "
+            f"{snapshot['pending']} / {snapshot['running']}"
             f"    Failed/interrupted {snapshot['failed']}"
         ),
-    ]
+    ])
+    for item in snapshot.get("partial_subset_counts", []):
+        lines.append(f"Partial source         {_safe_text(item['source'])}: {item['emitted']} refreshed, {item['held']} held (inventory {item['inventory']})")
+    if pipeline:
+        lines.append(f"Collection workers     {pipeline['source_workers']}")
+        lines.append("Pipeline stages        " + " / ".join(
+            f"{key} {pipeline[key]}" for key in
+            ("fetching", "pending", "validating", "committing", "verified", "failed")))
     if snapshot["elapsed_seconds"] is not None:
-        lines.append(f"Elapsed                {_duration(snapshot['elapsed_seconds'])}")
+        lines.append(
+            f"{'Parent elapsed        ' if pipeline else 'Elapsed               '} "
+            f"{_duration(snapshot['elapsed_seconds'])}"
+        )
     if snapshot["updated_age_seconds"] is not None:
         lines.append(
-            f"Manifest updated       {_duration(snapshot['updated_age_seconds'])} ago"
+            f"{'Parent manifest updated' if pipeline else 'Manifest updated      '} "
+            f"{_duration(snapshot['updated_age_seconds'])} ago"
         )
     lines.append(f"Collector SHA          {paint('0', snapshot['collector_sha'])}")
 
@@ -521,7 +658,7 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
                 f"Preserved details      {int(preserved):,}  (original observation times)"
             )
 
-    if snapshot["current_source"]:
+    if snapshot["current_source"] and not pipeline:
         lines.extend(
             [
                 "",
@@ -535,7 +672,7 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
             detail = progress.get("detail_pass")
             if isinstance(detail, Mapping):
                 lines.append(
-                    f"Last detail counter    {paint('0', detail['transaction'])}: "
+                    f"Reported detail pass   {paint('0', detail['transaction'])}: "
                     f"{detail['completed']:,}/{detail['total']:,} in this pass"
                 )
                 if detail.get("attempt") is not None:
@@ -543,7 +680,8 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
                         f"Detail attempt         {int(detail['attempt'])}  (last recorded counter)"
                     )
                 lines.append(
-                    "                       Includes cache/error outcomes; not listing completion"
+                    "                       May include cache/errors or item positions; "
+                    "not listing completion"
                 )
         if snapshot["attempt_log"]:
             lines.append(

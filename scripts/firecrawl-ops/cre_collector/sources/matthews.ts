@@ -1,189 +1,36 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
-import { Agent, fetch as undiciFetch } from "undici";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
-import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import { parseMoney } from "../lib/parse.js";
+import { clean, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
 import { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
+import { matthewsSpaceFacts } from "./pure/matthews-space-facts.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
+
+import { matthewsFetch } from "./matthews-transport.js";
+export {
+  MATTHEWS_FETCH_TIMEOUT_MS,
+  MATTHEWS_MAX_RESPONSE_BYTES,
+  MatthewsResponseLimitError,
+  matthewsFetch,
+  matthewsFetchOptions,
+  matthewsFetchResponse,
+  matthewsResponseText,
+  matthewsRetryableFetchFailure,
+} from "./matthews-transport.js";
 
 const MATTHEWS_HOST = "https://www.matthews.com";
 const MATTHEWS_SOURCE_URL = `${MATTHEWS_HOST}/listings`;
 const MATTHEWS_SITEMAP_URL = `${MATTHEWS_HOST}/sitemap.xml`;
 const MATTHEWS_NON_PHOTO = /headshot|web-use|brand-logo|logo|og-default|placeholder|favicon|sprite/i;
-export const MATTHEWS_FETCH_TIMEOUT_MS = 30_000;
-const NATIVE_FETCH = globalThis.fetch;
-
-let matthewsNextSlot = 0;
-let matthewsInterval = 1800;
-
-const matthewsSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function matthewsGate(): Promise<void> {
-  const now = Date.now();
-  const slot = Math.max(now, matthewsNextSlot);
-  matthewsNextSlot = slot + matthewsInterval;
-  const wait = slot - now;
-  if (wait > 0) await matthewsSleep(wait);
-}
-
-export function matthewsFetchOptions(
-  strict = requireFreshDetails(),
-  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS,
-  redirect: RequestRedirect = "follow",
-  signal: AbortSignal = AbortSignal.timeout(timeoutMs)
-): RequestInit {
-  const headers: Record<string, string> = {
-    "User-Agent":
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  };
-  if (strict) headers["Cache-Control"] = "no-cache";
-  return {
-    headers,
-    signal,
-    redirect,
-    ...(strict ? { cache: "no-store" as const } : {}),
-  };
-}
-
-/**
- * AbortSignal is necessary to close a request, but an upstream HTTP stack can
- * occasionally fail to settle the fetch promise after it observes that abort.
- * Race the header phase against an explicit rejecting deadline so one stalled
- * provider connection can never hold the full refresh indefinitely.
- */
-export async function matthewsFetchResponse(
-  url: string,
-  options: RequestInit,
-  controller: AbortController,
-  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS,
-  request: (url: string, options: RequestInit) => Promise<Response> = fetch
-): Promise<Response> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => {
-      controller.abort();
-      reject(new Error(`Matthews response headers timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([request(url, options), deadline]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-/**
- * Bound the body separately from fetch()'s header phase. Some provider HTTP/2
- * streams send headers and then leave a compressed response body open; relying
- * only on fetch's request signal makes that detail pass wait indefinitely.
- */
-export async function matthewsResponseText(
-  response: Pick<Response, "text">,
-  controller: AbortController,
-  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS
-): Promise<string> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => {
-      controller.abort();
-      reject(new Error(`Matthews response body timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([response.text(), deadline]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-type MatthewsFetchResult = {
-  html: string | null;
-  status: number;
-  location: string | null;
-};
-
-/**
- * A response body can time out after a successful HTTP status. Treat that as
- * a transport failure, not as a deterministic HTTP 200 validation failure.
- */
-export function matthewsRetryableFetchFailure(status: number, error: unknown): boolean {
-  return error != null || status === 0 || status === 429 || status === 403 || status === 503;
-}
-
-export async function matthewsFetch(
-  url: string,
-  manualRedirect = false
-): Promise<MatthewsFetchResult> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    await matthewsGate();
-    let status = 0;
-    let attemptError: unknown = null;
-    const controller = new AbortController();
-    // Own each transport so a provider socket that ignores abort cannot remain
-    // alive after a timed-out attempt and keep the collector process running.
-    const agent = globalThis.fetch === NATIVE_FETCH
-      ? new Agent({
-          connectTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
-          headersTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
-          bodyTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
-          keepAliveTimeout: 1,
-        })
-      : null;
-    try {
-      const res = await matthewsFetchResponse(
-        url,
-        matthewsFetchOptions(
-          requireFreshDetails(),
-          MATTHEWS_FETCH_TIMEOUT_MS,
-          manualRedirect ? "manual" : "follow",
-          controller.signal
-        ),
-        controller,
-        MATTHEWS_FETCH_TIMEOUT_MS,
-        (requestUrl, requestOptions) => {
-          if (!agent) return globalThis.fetch(requestUrl, requestOptions);
-          return undiciFetch(
-            requestUrl,
-            { ...requestOptions, dispatcher: agent } as unknown as Parameters<typeof undiciFetch>[1]
-          ) as unknown as Promise<Response>;
-        }
-      );
-      status = res.status;
-      if (res.ok) {
-        return {
-          html: await matthewsResponseText(res, controller),
-          status,
-          location: null,
-        };
-      }
-      if (manualRedirect && (status === 301 || status === 308)) {
-        return { html: null, status, location: res.headers.get("location") };
-      }
-    } catch (error) {
-      // This includes the separately bounded response-body timeout. `status`
-      // may already be 200 at this point, so retaining the error is essential
-      // to avoid converting a transient body stall into a hard HTTP failure.
-      attemptError = error;
-    } finally {
-      agent?.destroy();
-    }
-    if (matthewsRetryableFetchFailure(status, attemptError)) {
-      lastError = attemptError;
-      matthewsInterval = Math.min(matthewsInterval + 700, 7000);
-      await matthewsSleep(20000 + attempt * 15000 + Math.random() * 5000);
-      continue;
-    }
-    throw new Error(`Matthews HTTP ${status}`);
-  }
-  if (lastError instanceof Error) throw lastError;
-  throw new Error("Matthews: throttled after retries");
-}
 
 function matthewsImages(html: string): string[] {
   const urls: string[] = [];
@@ -587,10 +434,11 @@ export function parseMatthewsDetail(
     state: addr.state,
     postalCode: addr.postalCode,
     country: "US",
-    salePriceUsd: tx === "sale" && realPrice ? moneyToNumber(realPrice) : null,
+    salePriceUsd: tx === "sale" && realPrice ? parseMoney(realPrice) : null,
     salePriceText: tx === "sale" ? realPrice : null,
     capRatePct,
     leaseRateText: tx === "lease" ? realPrice ?? priceText ?? null : null,
+    extraFacts: matthewsSpaceFacts($),
     sizeText: leasableText ? `${leasableText} SF` : null,
     buildingSizeSqft,
     lotSizeAcres,
@@ -602,6 +450,241 @@ export function parseMatthewsDetail(
     canonicalUrl: url,
     highlights,
   });
+}
+
+/**
+ * Targeted detail is partial-source work. The queue supplies identity/URL,
+ * never inventory or generation proof. A refusal stays omitted for retry;
+ * permanent aliases must not be rekeyed or falsely marked complete by URL.
+ */
+export async function enrichMatthewsObservedListing(item: {
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}, inventoryObservedAt?: string, observe?: (value: { reason: string; html?: string; observedAt?: string; redirectTarget?: string; status?: number }) => void): Promise<any | null> {
+  try {
+    const requested = new URL(item.url);
+    if (
+      requested.protocol !== "https:"
+      || requested.username || requested.password || requested.port
+      || requested.search || requested.hash
+    ) return null;
+    const normalized = normalizedMatthewsPropertyUrl(item.url, MATTHEWS_HOST);
+    const comparison = matthewsPropertyComparisonUrl(item.url, MATTHEWS_HOST);
+    const tx = item.transaction ?? "sale";
+    if (
+      !normalized || !comparison
+      || comparison.split("/properties/")[1] !== item.externalId
+      || matthewsTenureFromUrl(normalized) !== tx
+    ) return null;
+
+    // Explicit freshness on the existing bounded transport does not depend on
+    // the full-generation CLI flag. Never follow redirects for queue completion.
+    const response = await matthewsFetch(normalized, true, true, !!observe);
+    if (response.status === 307 && observe && response.location) {
+      try {
+        const target = new URL(response.location, normalized);
+        const targetUrl = target.href;
+        if (target.protocol === "https:" && !target.username && !target.password && !target.port && !target.search && !target.hash
+          && normalizedMatthewsPropertyUrl(targetUrl, MATTHEWS_HOST)
+          && matthewsTenureFromUrl(targetUrl) === tx) {
+          observe({ reason: "temporary_redirect", redirectTarget: targetUrl, status: response.status });
+        } else if (target.protocol === "https:" && !target.username && !target.password && !target.port
+          && !target.search && !target.hash && ["matthews.com", "www.matthews.com"].includes(target.hostname.toLowerCase())
+          && /^\/listings\/?$/.test(target.pathname)) {
+          let observedAt: string | undefined;
+          try { observedAt = observationNow(); } catch { /* No clock is invented. */ }
+          observe({ reason: "native_redirect_not_listing", redirectTarget: targetUrl, status: response.status, observedAt });
+        }
+      } catch { /* Invalid location is never retried. */ }
+      return null;
+    }
+    if (!response.html || matthewsProviderNotFound(response.html, normalized, tx)) return null;
+    let listing: any = null;
+    try {
+      listing = parseMatthewsDetail(response.html, normalized, tx, {
+        strict: true,
+        inventoryObservedAt,
+        detailObservedAt: observationNow(),
+      });
+    } catch { /* The unqualified body may still be retained privately. */ }
+    if (!listing || listing.id !== item.externalId) {
+      if (observe && !isSourceChallengeShell(response.html)) {
+        observe({ reason: "native_detail_unqualified", html: response.html, observedAt: observationNow(), status: response.status });
+      }
+      return null;
+    }
+    return prune({ ...listing, url: item.url });
+  } catch {
+    return null;
+  }
+}
+
+export async function enrichMatthewsListing(item: {
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}): Promise<any | null> {
+  return enrichMatthewsObservedListing(item);
+}
+
+export type MatthewsTargetedRefresh = {
+  sourceKey: "matthews";
+  generationId: string;
+  generationStartedAt: string;
+};
+
+export function validateMatthewsTargetedRefresh(value: unknown): MatthewsTargetedRefresh {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Matthews targeted: missing batch context");
+  }
+  const context = value as MatthewsTargetedRefresh;
+  if (
+    Object.keys(context).sort().join(",") !== "generationId,generationStartedAt,sourceKey"
+    || context.sourceKey !== "matthews"
+    || typeof context.generationId !== "string"
+    || !/^matthews-targeted-[0-9a-f]{32}$/.test(context.generationId)
+    || typeof context.generationStartedAt !== "string"
+    || !/(?:Z|[+-]\d{2}:\d{2})$/.test(context.generationStartedAt)
+  ) throw new Error("Matthews targeted: invalid batch context");
+  const start = Date.parse(context.generationStartedAt);
+  const age = Date.now() - start;
+  if (!Number.isFinite(start) || age < 0 || age > 600_000) {
+    throw new Error("Matthews targeted: batch start must be within the preceding 600 seconds");
+  }
+  if (
+    !requireFreshDetails()
+    || refreshGenerationId() !== context.generationId
+    || refreshStartedAt() !== context.generationStartedAt
+  ) throw new Error("Matthews targeted: caller environment does not match batch context");
+  return Object.freeze({ ...context });
+}
+
+/** One actual sitemap response, shared by full/monitor and targeted callers. */
+export async function matthewsFreshInventory(targeted = false): Promise<{
+  detailUrls: string[];
+  inventoryObservedAt: string;
+  duplicateComparisons: Set<string>;
+}> {
+  const sitemap = await matthewsFetch(MATTHEWS_SITEMAP_URL, targeted, targeted || requireFreshDetails());
+  if (!sitemap.html) throw new Error("Matthews: sitemap did not return an XML response body");
+  const xml = sitemap.html;
+  // Legacy full/monitor keeps its existing receipt instant and URL projection.
+  const receivedAt = observationNow();
+  const duplicateComparisons = new Set<string>();
+  let detailUrls: string[];
+  if (targeted) {
+    const $ = cheerio.load(xml, { xml: { xmlMode: true, withStartIndices: true, withEndIndices: true } });
+    const roots = $.root().children();
+    const root = roots.get(0);
+    if (
+      roots.length !== 1 || !root || root.type !== "tag"
+      || root.name !== "urlset" || !xml.trim().endsWith("</urlset>")
+    ) throw new Error("Matthews targeted: invalid XML sitemap structure");
+    // Cheerio repairs mismatched XML closes; require each parsed element's
+    // original span to end with its own explicit close (or self-closing tag).
+    for (const element of $("*").toArray()) {
+      if (element.type !== "tag") throw new Error("Matthews targeted: unsupported XML element");
+      const span = xml.slice(element.startIndex ?? -1, (element.endIndex ?? -1) + 1);
+      const closed = span.endsWith(`</${element.name}>`) || /^<[^<>]*\/\s*>$/.test(span);
+      if (!closed) throw new Error("Matthews targeted: repaired XML element is not authoritative inventory");
+    }
+    if ($(root).contents().toArray().some(node =>
+      node.type === "tag" ? node.name !== "url" : node.type === "text" && !!node.data.trim()
+    )) throw new Error("Matthews targeted: unsupported sitemap root content");
+    const seen = new Set<string>();
+    detailUrls = [];
+    for (const entry of $(root).children().toArray()) {
+      if (entry.type !== "tag" || entry.name !== "url") continue;
+      if ($(entry).contents().toArray().some(node =>
+        node.type === "tag"
+          ? !["loc", "lastmod", "changefreq", "priority"].includes(node.name) || $(node).children().length > 0
+          : node.type === "text" && !!node.data.trim()
+      )) throw new Error("Matthews targeted: unsupported sitemap entry content");
+      const loc = $(entry).children("loc");
+      if (loc.length !== 1 || loc.children().length) {
+        throw new Error("Matthews targeted: ambiguous sitemap location");
+      }
+      const raw = clean(loc.text());
+      if (!raw || !raw.startsWith("https://")) continue;
+      const rawUrl = new URL(raw);
+      if (
+        rawUrl.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com"
+        || !/^\/properties\//i.test(rawUrl.pathname)
+      ) continue;
+      if (
+        rawUrl.protocol !== "https:"
+        || rawUrl.username || rawUrl.password || rawUrl.port || rawUrl.search || rawUrl.hash
+      ) throw new Error("Matthews targeted: invalid raw sitemap location authority");
+      const normalized = normalizedMatthewsPropertyUrl(raw, MATTHEWS_HOST);
+      const comparison = matthewsPropertyComparisonUrl(raw, MATTHEWS_HOST);
+      if (!normalized || !comparison) continue;
+      if (seen.has(comparison)) duplicateComparisons.add(comparison);
+      else { seen.add(comparison); detailUrls.push(normalized); }
+    }
+  } else detailUrls = matthewsDetailUrlsFromSitemap(xml);
+  if (!detailUrls.length) {
+    throw new Error("Matthews: no /properties/ URLs found in sitemap.xml (fetch may have been blocked or transformed)");
+  }
+  return {
+    detailUrls,
+    inventoryObservedAt: targeted ? observationNow() : receivedAt,
+    duplicateComparisons,
+  };
+}
+
+export async function enrichMatthewsTargetedBatch(items: Array<{
+  sourceKey: string;
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}>, suppliedContext: MatthewsTargetedRefresh): Promise<any[]> {
+  const context = validateMatthewsTargetedRefresh(suppliedContext);
+  if (items.length < 1 || items.length > 50) throw new Error("Matthews targeted: batch must contain 1–50 claims");
+  const seenIds = new Set<string>(), seenUrls = new Set<string>();
+  const claims = items.map(item => {
+    const requested = new URL(item.url);
+    const comparison = matthewsPropertyComparisonUrl(item.url, MATTHEWS_HOST);
+    if (
+      item.sourceKey !== "matthews" || requested.protocol !== "https:"
+      || requested.username || requested.password || requested.port || requested.search || requested.hash
+      || !comparison || comparison.split("/properties/")[1] !== item.externalId
+      || (item.transaction !== undefined && !["sale", "lease"].includes(item.transaction))
+      || seenIds.has(item.externalId) || seenUrls.has(comparison)
+    ) throw new Error("Matthews targeted: invalid or duplicate claimed identity");
+    seenIds.add(item.externalId); seenUrls.add(comparison);
+    return { item, comparison };
+  });
+  const inventory = await matthewsFreshInventory(true);
+  validateMatthewsTargetedRefresh(context);
+  if (Date.parse(inventory.inventoryObservedAt) < Date.parse(context.generationStartedAt)) {
+    throw new Error("Matthews targeted: inventory predates batch start");
+  }
+  const current = new Map(inventory.detailUrls.map(url => [matthewsPropertyComparisonUrl(url, MATTHEWS_HOST), url]));
+  const admitted = claims.flatMap(({ item, comparison }) => {
+    const currentUrl = current.get(comparison);
+    if (!currentUrl || inventory.duplicateComparisons.has(comparison)) {
+      return [];
+    }
+    const transaction = matthewsTenureFromUrl(currentUrl);
+    if (item.transaction !== undefined && item.transaction !== transaction) {
+      return [];
+    }
+    return [{ ...item, transaction }];
+  });
+  const rows = await pmap(admitted, Math.min(CONCURRENCY, 2), async item => {
+    validateMatthewsTargetedRefresh(context);
+    const listing = await enrichMatthewsObservedListing(item, inventory.inventoryObservedAt);
+    validateMatthewsTargetedRefresh(context);
+    if (!listing) return null;
+    if (
+      listing.freshnessProvenance?.generationId !== context.generationId
+      || Date.parse(listing.detailObservedAt) < Date.parse(inventory.inventoryObservedAt)
+      || Date.parse(listing.detailObservedAt) > Date.now() + 300_000
+    ) throw new Error("Matthews targeted: invalid detail observation binding");
+    return prune({ ...listing, transactionMode: item.transaction });
+  });
+  return rows.filter(Boolean);
 }
 
 export function matthewsParsedCoverage(
@@ -631,18 +714,7 @@ export function matthewsParsedCoverage(
 }
 
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
-  const sitemap = await matthewsFetch(MATTHEWS_SITEMAP_URL);
-  if (!sitemap.html) {
-    throw new Error("Matthews: sitemap did not return an XML response body");
-  }
-  const xml = sitemap.html;
-  const inventoryObservedAt = new Date().toISOString();
-  const detailUrls = matthewsDetailUrlsFromSitemap(xml);
-  if (!detailUrls.length) {
-    throw new Error(
-      "Matthews: no /properties/ URLs found in sitemap.xml (fetch may have been blocked or transformed)"
-    );
-  }
+  const { detailUrls, inventoryObservedAt } = await matthewsFreshInventory();
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
   const sitemapUrlSet = new Set(
@@ -676,7 +748,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     };
   }
 
-  const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url) => {
+  // Keep evidence outside the mapper so its strict rejection semantics stay
+  // unchanged. pmap settles already-started workers before rejecting.
+  const observations: unknown[] = new Array(take.length);
+  const parsedObservations: unknown[] = new Array(take.length);
+  const retain = (error: unknown): never => {
+    const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])
+      .filter((value) => value !== undefined);
+    if (completed.length && error instanceof Error) throw new RetainedSourceError(error, completed);
+    throw error;
+  };
+  const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url, index) => {
     try {
       const response = await matthewsFetch(url, true);
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
@@ -717,15 +799,48 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         console.warn(`  matthews/${tx}: ${url} excluded as provider 404`);
         return { listing: null, providerNotFound: true, permanentRedirectAlias: false };
       }
-      const listing = parseMatthewsDetail(html, url, tx, {
-        inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
-      });
+      const detailObservedAt = observationNow();
+      const retainPage = () => {
+        try { if (isSourceChallengeShell(html)) return; } catch { return; }
+        const metadata = {
+          schema: "matthews-detail-observation/v1",
+          sourceKey: "matthews",
+          requestedUrl: url,
+          requestedTransaction: tx,
+          inventoryObservedAt,
+          detailObservedAt,
+          httpStatus: response.status,
+          identity: "unverified",
+          coverage: "unverified",
+        };
+        try {
+          observations[index] = { ...metadata, contextStatus: "captured",
+            pageContext: captureSourcePageContext(html, { sourceUrl: url, detailObservedAt,
+              descriptionSelector: "section:has(#propertyTitle), .prose" }) };
+        } catch {
+          // An evidence capture failure cannot turn a canonical rejection into
+          // success, or discard an otherwise valid canonical parse.
+          observations[index] = { ...metadata, contextStatus: "failed",
+            reason: "page_context_capture_failed" };
+        }
+      };
+      let listing: any | null;
+      try {
+        listing = parseMatthewsDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
+      } catch (error) {
+        retainPage();
+        throw error;
+      }
       if (!listing) {
+        retainPage();
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
         if (requireFreshDetails()) {
           throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
         }
+      } else {
+        parsedObservations[index] = { schema: "matthews-completed-parse-observation/v1",
+          sourceKey: "matthews", reason: "source_run_failed_after_completed_parse",
+          observation: listing };
       }
       return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
@@ -735,7 +850,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       }
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
-  });
+  }).catch(retain);
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
     parsed.filter((result) => result.providerNotFound).length,
@@ -744,7 +859,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   const listings = coverage.listings;
   const failures = coverage.failures;
   if (!listings.length) {
-    throw new Error("Matthews: sitemap enumerated detail pages but none parsed");
+    retain(new Error("Matthews: sitemap enumerated detail pages but none parsed"));
   }
   const incompleteEnumeration = take.length !== urls.length;
   const truncated = coverage.truncated || incompleteEnumeration;
@@ -774,6 +889,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     method: "Public sitemap.xml enumeration to server-rendered detail pages, DOM parsed via throttled plain fetch",
     totalAvailable: verifiedActiveTotal,
     listings,
+    retainedObservations: observations.filter((value) => value !== undefined),
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

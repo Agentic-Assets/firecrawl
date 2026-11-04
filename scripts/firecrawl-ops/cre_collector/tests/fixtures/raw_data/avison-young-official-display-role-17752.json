@@ -1,0 +1,31 @@
+{
+  "schema": "avison-official-display-role-fixture-v1",
+  "feed_id": "17752",
+  "response_url": "https://www.avisonyoung.us/properties/800-corporate-way-westlake-lease",
+  "response_sha256": "2a40c0b2ceccfba1aa84eaa4037616b7d1b8a6cae7c6c49e1c1f75760ae077a8",
+  "captured_source_sha256": "71cdd9765f940f1940d9652b82846bf27ffedfa9e0799509ef9a4cec46f589c8",
+  "feed_identity": {
+    "name": "For Lease | 800 Corporate Way, Westlake",
+    "headline": "For Lease | 800 Corporate Way, Westlake",
+    "street": "800 Corporate Way",
+    "city": "Westlake",
+    "state": "OH",
+    "zip": "44145"
+  },
+  "candidate_roles": [
+    "exact_street_h1_locality_zip_hero"
+  ],
+  "capture_reference": "official-0451",
+  "feed_row": {
+    "id": 17752,
+    "name": "For Lease | 800 Corporate Way, Westlake",
+    "meta_title": "For Lease | 800 Corporate Way, Westlake",
+    "address": "800 Corporate Way",
+    "city": "Westlake",
+    "state": "OH",
+    "zip": "44145",
+    "country": "US",
+    "url": "https://ayusforleaseor800corporatewaywestlake.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/800-corporate-way-westlake-lease"
+  }
+}

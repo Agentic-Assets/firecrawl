@@ -162,7 +162,7 @@ Cursor is only one optional adapter:
 - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` explains the reusable MCP/CLI/API layer separately from Cursor Composer.
 - `scripts/firecrawl-ops/sync_agent_skills.sh` copies these repo skills into `~/.agents/skills` and symlinks them into user-level agent skill folders.
 
-Composer 2.5 is an agent runtime/model choice. It is not Firecrawl's internal LLM backend unless Cursor provides an OpenAI-compatible model endpoint. Cursor SDK local agents should pass the MCP server inline or opt into project settings with `local.settingSources`; cloud agents cannot reach this Mac's `localhost:3002` unless Firecrawl is exposed at a reachable URL.
+Composer 2.5 is an agent runtime/model choice. It is not Firecrawl's internal LLM backend unless Cursor provides an OpenAI-compatible model endpoint. Cursor SDK local agents should pass the MCP server inline or opt into project settings with `local.settingSources`; cloud agents cannot reach a workstation's `localhost:3002` without a separately reviewed reachable endpoint.
 
 For a bounded agent crawl, use the helper rather than CLI `--wait`:
 

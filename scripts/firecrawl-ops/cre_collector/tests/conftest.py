@@ -26,13 +26,18 @@ unchanged, and fails the test loudly if it is not.
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+
+# Keep the root safety helpers addressable when pytest loads scoped conftests.
+sys.modules["cre_collector_root_conftest"] = sys.modules[__name__]
 
 # Insert cre_collector/ at the front of sys.path so cre_ingest is importable
 # without any package install step.
@@ -41,26 +46,95 @@ _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-import cre_checkpoint_refresh as _refresh
+from cre_platform import UNSUPPORTED_MESSAGE
 
-# `canonical_shared_lock_dir()` resolves the real lock dir via
-# `git rev-parse --path-format=absolute --git-common-dir` (with `check=True`,
-# so it raises on any git failure). Captured once, at collection time, before
-# any test can monkeypatch it -- this is the one reference we trust to
-# compute what the REAL canonical lock path is; every module-local
+_SUPPORTED_PLATFORM = sys.platform in {"linux", "darwin"}
+
+
+def pytest_configure(config):
+    if not _SUPPORTED_PLATFORM:
+        # Initial conftest imports precede pytest's session exit handler.
+        # Exit here, before collection, without importing any POSIX runtime.
+        pytest.exit(UNSUPPORTED_MESSAGE, returncode=0)
+
+
+if _SUPPORTED_PLATFORM:
+    from _checkout_admission import CheckoutAdmissionError, admitted_lock_path
+
+    try:
+        _REAL_CANONICAL_LOCK_DIR = admitted_lock_path(Path(_PARENT))
+    except CheckoutAdmissionError as exc:
+        raise pytest.UsageError(
+            f"Collector test checkout refused: {exc}. "
+            "Use a separate `git clone --no-hardlinks` as documented in SETUP.md."
+        ) from exc
+
+    import cre_checkpoint_refresh as _refresh
+    import cre_checkpoint_series as _series
+    import cre_memory_guard as _memory_guard
+
+
+@pytest.fixture(scope="session")
+def collector_node_dependencies() -> None:
+    """Skip absent local prerequisites, but fail broken installed dependencies."""
+    collector = Path(_PARENT)
+    install = "cd scripts/firecrawl-ops/cre_collector && npm ci --ignore-scripts"
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(f"Node 24 is required; install Node 24, then run `{install}`")
+
+    def require_local_directory(path: Path) -> None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            pytest.skip(
+                f"Clone-local collector Node prerequisites (tsx/cheerio) are missing "
+                f"at {path}; run `{install}` in this standalone clone"
+            )
+        if not stat.S_ISDIR(path.stat().st_mode):
+            pytest.fail(f"Expected a clone-local Node directory at {path}", pytrace=False)
+
+    modules = collector / "node_modules"
+    require_local_directory(modules)
+    for dependency in ("tsx", "cheerio"):
+        require_local_directory(modules / dependency)
+
+    result = subprocess.run(
+        [node, "--import", "tsx", "--input-type=module", "--eval", 'await import("cheerio")'],
+        cwd=collector,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"Collector Node prerequisite check failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _offline_refresh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Main-path tests inject diagnostics; never inspect the operator's host."""
+    monkeypatch.setattr(_refresh, "observe_resource_usage", lambda *_a, **_kw: nullcontext())
+    monkeypatch.setattr(_refresh, "capture_runtime_configuration", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_refresh, "save_report", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_series, "save_report", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_memory_guard, "read_memory_pressure", lambda **_kw: 1)
+
+# Preserve the production resolver's function identity before any test can
+# monkeypatch it. Startup admission above has already proved its local lock
+# formula without a second, unbounded production Git query. Every module-local
 # `canonical_shared_lock_dir` binding discovered below is compared against
 # this exact function object by identity, and every resolution funnelled
 # back through it is checked against the real result.
-_REAL_CANONICAL_SHARED_LOCK_DIR = _refresh.canonical_shared_lock_dir
-try:
-    _REAL_CANONICAL_LOCK_DIR = _REAL_CANONICAL_SHARED_LOCK_DIR(Path(_PARENT)).resolve()
-except (OSError, subprocess.CalledProcessError):
-    # git is unavailable or this checkout has no `.git` (e.g. a tarball
-    # export); fall back to the path relative to the collector dir that
-    # `canonical_shared_lock_dir()` would derive from the primary checkout on
-    # an ordinary clone. A test-collection failure here would silently
-    # disable the real-lock safety net below for the whole session, which is
-    # worse than a best-effort fallback.
+_REAL_CANONICAL_SHARED_LOCK_DIR = (
+    _refresh.canonical_shared_lock_dir if _SUPPORTED_PLATFORM else None
+)
+if not _SUPPORTED_PLATFORM:
+    # pytest_configure exits before collection; no Git/runtime access here.
     _REAL_CANONICAL_LOCK_DIR = (Path(_PARENT) / "out" / "daily" / ".cre.lock").resolve()
 _REAL_AUTHORITY_PATH = _REAL_CANONICAL_LOCK_DIR.with_name(
     f"{_REAL_CANONICAL_LOCK_DIR.name}.authority"
@@ -322,3 +396,51 @@ def _c10_structural_fixture(
         monkeypatch.setattr(
             contracts, "_require_repository_plan_authority", lambda _plan: None
         )
+
+
+@pytest.fixture
+def owned_group_fixture(monkeypatch):
+    """Explicit process-double adapter; real group tests use actual kernel probes."""
+    import cre_checkpoint_refresh as refresh
+    import cre_checkpoint_series as series
+    import cre_owned_processes as owned
+
+    def install(processes, is_reaped=None):
+        monkeypatch.setattr(owned, "_leader_owned", lambda _group: True)
+        by_pid = {process.pid: process for process in processes}
+        previous = owned.os.killpg
+        killed = set()
+
+        def signal_group(pgid, sent):
+            previous(pgid, sent)
+            if sent == signal.SIGKILL:
+                killed.add(pgid)
+
+        import signal
+
+        monkeypatch.setattr(owned.os, "killpg", signal_group)
+        monkeypatch.setattr(
+            owned,
+            "_group_alive",
+            lambda pgid: (
+                not (
+                    is_reaped(by_pid[pgid])
+                    if is_reaped
+                    else getattr(by_pid[pgid], "reaped", False)
+                )
+            ),
+        )
+        monkeypatch.setattr(refresh, "COMMAND_INTERRUPT_GRACE_SECONDS", 0)
+        monkeypatch.setattr(refresh, "COHORT_INTERRUPT_GRACE_SECONDS", 0)
+        monkeypatch.setattr(series, "SERIES_INTERRUPT_GRACE_SECONDS", 0)
+        for process in processes:
+            original = process.wait
+
+            def wait(timeout=None, *, target=process, original_wait=original):
+                if target.pid in killed and hasattr(target, "stubborn"):
+                    target.stubborn = False
+                return original_wait(timeout=timeout)
+
+            monkeypatch.setattr(process, "wait", wait)
+
+    return install

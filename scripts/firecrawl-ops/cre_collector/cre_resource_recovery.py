@@ -8,7 +8,7 @@ visible to the operator in production.
 
 from __future__ import annotations
 
-import fcntl
+from cre_posix import fcntl
 import math
 import os
 from collections.abc import Callable, Mapping
@@ -387,6 +387,12 @@ class SeriesOwnershipLock:
                 handle.close()
             raise
         self._handle = handle
+
+    def fileno(self) -> int:
+        """The held private series flock descriptor, never canonical CRE authority."""
+        if self._handle is None:
+            raise RecoveryOwnershipError("series ownership lock is not held")
+        return self._handle.fileno()
 
     def release(self) -> None:
         handle = self._handle

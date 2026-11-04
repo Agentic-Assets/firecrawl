@@ -770,8 +770,8 @@ def test_build_sql_media_links_excludes_detail_error_via_child_refresh():
     assert '$.**.preserveChildCollections ? (@ == true || @ == "true")' in sql
     # the media/links INSERTs reference the same _child_refresh gate
     assert (
-        sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 5
-    )  # contacts, docs, images, media, links
+        sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 4
+    )  # contacts, docs, media, links (OM facts are no longer staged or written)
 
 
 def test_dual_pass_preserve_flag_remains_recursively_guarded():

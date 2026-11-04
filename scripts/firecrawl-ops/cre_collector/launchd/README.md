@@ -1,29 +1,37 @@
 # CRE Launchd Schedule
 
-Lock-serialized launchd tiers that automate the CRE listing pipeline. All tiers
-are authored here and gated: **do not load any plist until the prerequisite
-listed for that tier is satisfied.**
+Legacy launchd templates for the CRE listing pipeline. All tiers are gated:
+**do not load any plist until its prerequisites and current scheduler approval
+are satisfied.** This file describes templates, not an active schedule.
+Windows foreground trials use the
+[guarded incremental guide](../../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md);
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752) owns scheduler
+selection and activation. These Mac templates do not acquire the Windows
+trial protections automatically.
 
-> **CPU-safety gate:** These templates invoke the legacy daily backstop, not
-> the supervised checkpoint-series runner with its host-CPU watchdog and
-> resource profile. They are not eligible for loading until equivalent runtime
-> protection is deliberately designed, tested, and approved. Additive behavior
+> **CPU-safety gate:** These templates invoke legacy tier workers; weekly and
+> daily use the legacy full backstop. They do not invoke the supervised guarded
+> runners with their resource protections. They are not eligible for loading
+> until equivalent runtime protection is deliberately designed, tested, and
+> approved. Additive behavior
 > does not make an unguarded high-volume run resource-safe.
 
 Tier set (cadence restructure SHIPPED in code 2026-06-15):
 
-- **monitor** (2x/day, 06:10 / 18:10): cheap enumeration diff; enqueues
-  new/changed listings into `cre_enrichment_queue`.
+- **monitor** (2x/day, 06:10 / 18:10): enumeration diff; explicit apply can
+  enqueue eligible, already-ingested listing identities into
+  `cre_enrichment_queue`. A first source-index seed or an unmatched identity
+  does not enqueue detail work.
 - **enrich** (every 4h, 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30): drains
   that queue, scrapes ONLY the flagged listings' detail, re-ingests additively.
 - **weekly** (Sun 03:00): full collect + ingest backstop; additive by default
   (`--no-mark-missing`). It also refreshes detail and recovers dead-lettered
   queue rows. Additive semantics reduce data risk but do not authorize loading.
-- **daily**: RETIRED. monitor (2x/day) + enrich (every 4h) replace its freshness
-  role at a fraction of the cost. The template + dispatcher case are kept for
-  rollback only.
+- **daily**: RETIRED. The design uses monitor/enrich for incremental freshness
+  and weekly full acquisition for discovery and wider detail refresh. The
+  template + dispatcher case are kept for rollback only.
 
-Full design + the gated cutover runbook:
+Historical design and former cutover procedure:
 `../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Section 2 tier model, Section 9
 cutover).
 
@@ -61,11 +69,15 @@ monitor passes).
 
 What it does: invokes `cre_run_tier.sh monitor`, which runs the incremental
 enumeration-diff pipeline (`cre_monitor.py`). The monitor performs cheap
-source enumeration, diffs `(external_id, status, price, lastmod)` against
-`cre_source_index`, and enqueues only new or changed ids into
-`cre_enrichment_queue` for the enrich tier to drain (Tier-B sitemap sources) or
-records change events directly from the feed (Tier-A bulk-API sources). It does
-NOT run the full collect; it never calls `--mark-missing`.
+source enumeration and compares identity, observed status and price fingerprints
+against `cre_source_index`. With explicit apply, eligible already-ingested
+identities can produce events and enrichment queue entries. A first-ever index
+seed is silent; a newly enumerated identity without a `cre_listings` row is
+recorded in the index but not queued. Existing-listing status/price changes can
+enqueue detail; revision-only, text/image/document-only changes and reappearance
+alone do not. Full acquisition creates previously un-ingested listings and
+refreshes details outside those triggers. Monitor does not run the full collect
+or call `--mark-missing`.
 
 Gate: `cre_monitor.py` and `cre_gate.py` both exist and are unit-tested.
 `cre_run_tier.sh monitor` runs `collect.ts --monitor` (cheap enumeration) then
@@ -81,8 +93,8 @@ the dated execution-status audit before loading or changing any tier.**
 ### enrich - `ai.agentic.cre-enrich.plist` (NEW)
 
 Runs every 4h at 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30 local time
-(offset 30 min from the monitor so the two never collide; the shared lock is the
-backstop if they ever do).
+(scheduled starts are offset from monitor; long runs can still overlap, so the
+shared lifetime lock is required).
 
 What it does: invokes `cre_run_tier.sh enrich`, which runs
 `cre_enrich.py --batch ${CRE_ENRICH_BATCH:-200}`. The worker claims a batch from
@@ -90,8 +102,8 @@ What it does: invokes `cre_run_tier.sh enrich`, which runs
 `collect.ts --enrich-input` to render ONLY those listings' detail pages, then
 re-ingests the result additively via `cre_ingest.py --in` and deletes the rows it
 completed so a later change to the same listing can re-enqueue. This closes the
-loop the monitor's enqueue path always fed and replaces the nightly full
-re-render of every listing.
+loop for eligible queue entries. It does not replace full acquisition's new
+listing discovery or refresh details that did not produce a queue trigger.
 
 For a manual recovery of one backed-up broker, an operator may run
 `python3 cre_enrich.py --source SOURCE_KEY --batch N`. `SOURCE_KEY` is an exact

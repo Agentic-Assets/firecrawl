@@ -18,14 +18,16 @@ changes a shared object.
   The collector's deprecated `om_parse.py --apply` fallback remains prohibited
   until a future signed change explicitly enables it.
 - The canonical OM-facts conflict key is `(listing_id, fact_group, fact_key,
-  source_doc_url, parser_version) NULLS NOT DISTINCT`.
+  source_doc_url, parser_version) NULLS NOT DISTINCT` today; GetCREdata owns the
+  change to the six-column run-lineage key (AGENTIC-5136/5137).
 
 ## Shared-object matrix
 
 | Object | Schema owner and migration home | Approved writers | Known readers | Change rule |
 | --- | --- | --- | --- | --- |
 | `cre_listings` and listing child tables | Listing collector, `scripts/firecrawl-ops/sql/001-014` | Listing collector | GetCREdata documents pipeline, EQUIRE | Additive, reviewed collector migration only. |
-| `cre_listing_om_facts` | Listing collector, `013` and `015` | GetCREdata `documents/` is the current observed writer; collector parser is disabled | Listing collector, EQUIRE | Preserve the five-column key. Formal cross-repository approval remains required. |
+| `cre_listing_om_facts` and `cre_listing_om_facts_archive` | GetCREdata, `sql/migrations/20261101_om_fact_run_lineage*.sql` (AGENTIC-5136/5137). `013` created the tables; `015` is superseded | GetCREdata `documents/` is the sole writer (`write_cre_listing_om_facts_v1`); the collector parser and its ingest upsert are removed | Listing collector (archive snapshot of retired listings only), EQUIRE | Firecrawl acknowledges the move and keeps no DDL authority here. Live key is five columns until the GetCREdata run-lineage migration is applied, then six (adds `extraction_run_id`). |
+| `cre_document_objects`, `cre_document_archive_urls`, `cre_document_archive_listings` and the private R2 bucket `cre-listing-documents` | GetCREdata, `sql/migrations/20261101_listing_document_archive.sql` (applied 2026-11-01, AGENTIC-5147) | GetCREdata `documents/archive.py` is the sole writer; `service_role` insert, select and update only | None yet. The listing collector neither writes nor reads the archive | Listing collector has no part in it and must not alter or write these objects. Ownership family `listing_document_archive` in Context Engineering contract v8. |
 | `cre_zip_cbsa_crosswalk` | Listing collector, `014` | Listing collector refresh process | GetCREdata CMBS pipeline, EQUIRE | Treat the database table as the canonical shared crosswalk pending refresh-policy approval. |
 | `cre_market_index` | GetCREdata, `sql/cre_cmbs_schema.sql` | GetCREdata reviewed migration/export path | EQUIRE and market tooling | Listing collector is read-only. Do not alter without consumer compatibility review. |
 | `cbsa_market_data` and market-derived tables | GetCREdata, its reviewed migration/export path | GetCREdata | EQUIRE and future listing-market view | Listing collector must not alter or overwrite. |

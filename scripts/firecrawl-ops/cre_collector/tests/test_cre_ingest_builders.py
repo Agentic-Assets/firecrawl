@@ -2926,15 +2926,14 @@ def test_to_row_discards_legacy_om_facts_payload():
             ],
         }
     )
-    assert r["om_facts"] == []
+    assert "om_facts" not in r
 
     sql = ci.build_sql([r], [], _SCRAPED_AT, set())
-    copy_start = sql.index("COPY _stage")
-    copy_data_start = sql.index("\n", copy_start) + 1
-    copy_data_end = sql.index("\n\\.\n", copy_data_start)
-    fields = sql[copy_data_start:copy_data_end].split("\t")
     assert "legacy/1" in sql  # retained only inside raw_data provenance
-    assert fields[ci.STAGE_COLS.index("om_facts")] == "[]"
+    # No staging column exists for OM facts: nothing could write them.
+    assert "om_facts" not in ci.STAGE_COLS
+    stage_ddl = sql[sql.index("CREATE TEMP TABLE _stage") : sql.index("COPY _stage")]
+    assert "om_facts" not in stage_ddl
 
 
 def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():
@@ -3777,3 +3776,12 @@ def test_merge_dual_raw_data_when_payloads_differ():
     b = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1", "city": "B"})
     m = ci.merge_rows(a, b)
     assert set(m["raw_data"].keys()) == {"primary", "secondary_pass"}
+
+
+def test_full_ingest_sql_renders_lifecycle_queue_placeholder():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "{targeted_queue}" not in sql
+    assert "CREATE TEMP TABLE _matthews_targets" not in sql
+    assert sql.index("CREATE TEMP TABLE _present_source_locks") < sql.index("CREATE TEMP TABLE _present_listing_locks")
+    assert sql.index("CREATE TEMP TABLE _present_listing_locks") < sql.index("CREATE TEMP TABLE _essex_identity_claims")
+    assert "\nCOMMIT;\n" in sql

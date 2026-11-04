@@ -2,10 +2,32 @@
 
 This repo keeps the local Firecrawl tool layer separate from any one agent model or IDE.
 
+## Onboarding an app to the local service
+
+Use the repository's `firecrawl-local-api` and `firecrawl-ops` skills. Inspect
+the caller's existing dependencies, choose the narrowest supported endpoint,
+set the local base URL explicitly and prove one harmless request before
+building a larger workflow. In the Windows Ubuntu runtime, prefer
+`FIRECRAWL_API_URL=http://127.0.0.1:3002` for its IPv4 loopback publication.
+Auth-disabled direct calls require no hosted Firecrawl account or paid API
+key; SDK/MCP placeholders are not hosted credentials. Keep provider keys out
+of source and use the existing pinned CLI/MCP wrappers.
+
+The official
+[firecrawl-build-onboarding skill](https://github.com/firecrawl/skills/blob/5348e9ed68062cff515f741eb61de92eeb509d12/skills/build/firecrawl-build-onboarding/SKILL.md)
+was reviewed on2026-10-13. Its default hosted-key authentication and
+`firecrawl-cli@latest init --all --browser` flow do not match this deployment.
+Do not install that onboarding flow unchanged or run cloud login to configure
+our local API. Its general project inspection, endpoint selection and smoke
+testing advice is useful; its cloud capabilities and install commands are
+not a substitute for this fork's verified interfaces. Local API calls consume
+no hosted Firecrawl credits, while separately configured AI/search/proxy
+providers can still incur charges. The route limitations below still apply.
+
 ## Layers
 
 1. **Local Firecrawl runtime**
-   - OrbStack + Docker compose stack.
+   - Docker Compose: OrbStack on macOS, Docker Desktop WSL2 on Windows.
    - API at `http://localhost:3002`.
    - No Firecrawl cloud credits when agents call the local API.
 
@@ -48,6 +70,11 @@ python3 scripts/firecrawl-ops/firecrawl_compatibility_doctor.py
 ```
 
 The doctor `--run` form is opt-in, accepts only the local loopback API, disables proxies for its own preflight, and supplies child clients with a merged loopback `NO_PROXY` rule while preserving any package-resolution proxy. It uses a body-free bounded CLI map probe and verifies newline-delimited MCP initialize plus `tools/list`. `@latest` exists only in the explicitly acknowledged HUMAN-ONLY upgrade probe; a successful versioned result is evidence for a reviewed manifest update, not an automatic update.
+
+The `--run` stdio probe assumes POSIX pipe polling. On native Windows, use
+the static doctor and verify MCP initialize/tools-list separately with a
+Windows-compatible client and bounded timeouts. See
+[Windows onboarding](windows-docker-desktop-onboarding.md#verify-useful-work).
 
 ## CLI And Direct Helper
 
@@ -120,7 +147,12 @@ scripts/firecrawl-ops/sync_agent_skills.sh --dry-run
 
 ## Generic MCP Client Config
 
-Use this shape in MCP clients that support stdio command servers:
+The examples below use POSIX Bash on macOS/Linux. Native Windows must use the
+actual Git Bash executable rather than bare `bash`, which can resolve to the
+WSL launcher. Follow [Windows onboarding](windows-docker-desktop-onboarding.md)
+and use a verified absolute wrapper path when the client runs outside the repo.
+
+Use this shape in POSIX MCP clients that support stdio command servers:
 
 ```json
 {

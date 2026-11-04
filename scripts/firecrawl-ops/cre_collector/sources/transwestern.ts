@@ -1,8 +1,11 @@
+import { observationNow } from "../lib/observation-clock.js";
+import { publishTranswesternParsedPage } from "../lib/source-evidence/transwestern-page.js";
+import { createHash } from "node:crypto";
 // sources/transwestern.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { dedupeStrings, titleFromFilename } from "../lib/html.js";
+import { decodeHtmlEntities, dedupeStrings, titleFromFilename } from "../lib/html.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { detailObservation, refreshGenerationId } from "../lib/freshness.js";
@@ -10,6 +13,14 @@ import { ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 import { parseLeaseRate, normBuildingClass, acresToSf } from "../lib/parse.js";
 import { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } from "./pure/transwestern-identity.js";
+import { requireUniqueTranswesternPlaceholderIdentity, transwesternIdentityTuple, transwesternPrimaryIdentityMatches } from "./pure/transwestern-published-identity.js";
+import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublishedProof, TranswesternPublishedIdentityProof } from "./transwestern-published-identity.js";
+import { filterTranswesternImages } from "./pure/transwestern-images.js";
+import { transwesternFieldObservations } from "./pure/transwestern-field-observations.js";
+import { transwesternBuildingFacts } from "./pure/transwestern-building-facts.js";
+import { transwesternDocumentMediaObservations } from "./pure/transwestern-document-media-observations.js";
+import { transwesternConcealed, transwesternPropertyPanel } from "./pure/transwestern-property-panel.js";
+import TurndownService from "turndown";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -107,8 +118,7 @@ export function parseTranswesternAvailability($: cheerio.CheerioAPI): any[] {
   return rows;
 }
 
-export function extractTranswesternContacts(doc: ScrapedDoc): any[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternContacts($: cheerio.CheerioAPI): any[] {
   const contactsByKey = new Map<string, any>();
   $(".PropertyVcard .v-card, .v-card").each((_, el) => {
     const card = $(el);
@@ -158,12 +168,15 @@ export function extractTranswesternContacts(doc: ScrapedDoc): any[] {
   );
 }
 
-export function extractTranswesternDocuments(doc: ScrapedDoc): any[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternDocuments(doc: ScrapedDoc, $: cheerio.CheerioAPI): any[] {
   const candidates: string[] = [];
   $('#tblAttachments a[href], a.download-att-btn[href], a.download-flyer-btn[href], a[href$=".pdf"], a[href*=".pdf"], a[href*="twurls.com"]').each(
     (_, el) => {
-      const u = canonicalTranswesternUrl($(el).attr("href") ?? null);
+      const href = $(el).attr("href") ?? null;
+      // A same-page anchor (the "Download flyer" button's `#property-downloads`) points into
+      // this page, not at a file; resolving it against the site host would attach the home page.
+      if (href?.trim().startsWith("#")) return;
+      const u = canonicalTranswesternUrl(href);
       if (u) candidates.push(u);
     }
   );
@@ -173,24 +186,22 @@ export function extractTranswesternDocuments(doc: ScrapedDoc): any[] {
       if (u) candidates.push(u);
     }
   }
-  return dedupeStrings(candidates)
-    .filter((url) => !/\/Upload\/TREC\/|\/privacy-policy(?:\?|$)|health1\.aetna\.com/i.test(url))
-    .map((url) => ({ name: titleFromFilename(url), url }));
+  // Footer notices and service pages (TREC PDFs, privacy policy, /service/ pages) are not
+  // dropped here: harvestDetail() re-harvests the same links from doc.links, so the one
+  // filter is the shared lib/document-boilerplate.ts rule list, applied in its document sink.
+  return dedupeStrings(candidates).map((url) => ({ name: titleFromFilename(url), url }));
 }
 
-export function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | null): string[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternPhotos($: cheerio.CheerioAPI, feedImage: string | null): string[] {
   const candidates: Array<string | null> = [feedImage];
   $('.photos-list a.chocolat-image[href], a.chocolat-image[href], a[href*="/images/"], img[src*="/images/"]').each(
     (_, el) => {
       candidates.push(canonicalTranswesternUrl($(el).attr("href") ?? $(el).attr("src") ?? null));
     }
   );
-  return dedupeStrings(candidates).filter(
-    (url) =>
-      !/\.pdf(?:\?|$)/i.test(url) &&
-      !/\/assets\/images\/(?:mail|comment|connect-image|tw-logo|Transwestern_2023|tw_gl|transwestern-mapmarker)/i.test(url)
-  );
+  // Keep image candidates until the final source-role filter can record why a
+  // template resource is excluded, including when doc.images is present/empty.
+  return dedupeStrings(candidates).filter((url) => !/\.pdf(?:\?|$)/i.test(url));
 }
 
 // Lift structured fields out of the Transwestern property-facts label/value map
@@ -488,17 +499,33 @@ export function liftTranswesternScalars(
   return out;
 }
 
-export function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc): string | null {
-  const candidate =
-    clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
-    clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
-  if (
-    !candidate ||
-    /TREC Information About Brokerage Services|Privacy Policy|Copyright\s+Transwestern|Sitemap|Working-at-Transwestern/i.test(
-      candidate
-    )
-  ) {
-    return null;
+export function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc, sourceUrl?: string): string | null {
+  const association = transwesternPropertyPanel($, "description");
+  let candidate: string | null;
+  if (association.panel) {
+    const panel = association.panel.clone();
+    panel.find("script, style, template, noscript").remove();
+    panel.find("*").toArray().filter(node => transwesternConcealed($, node)).forEach(node => $(node).remove());
+    panel.find("a[href]").each((_, node) => {
+      const anchor = $(node);
+      try {
+        const url = new URL(anchor.attr("href")!, sourceUrl);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("unsafe link");
+        anchor.attr("href", url.href);
+      } catch {
+        anchor.removeAttr("href");
+      }
+    });
+    candidate = new TurndownService().turndown(panel.html() ?? "").trim() || null;
+  } else {
+    // Existing layouts without this tab widget retain their legacy fallbacks.
+    // A present but ambiguous widget must not borrow unrelated page content.
+    const sections = $("section.property-dtl");
+    if ($("#prpty-dscptn-tab").length || sections.find(".resp-tabs-list, .resp-tabs-container").length || sections.length > 1 ||
+        sections.toArray().some(node => [node, ...$(node).parents().toArray()].some(parent => transwesternConcealed($, parent)))) return null;
+    candidate = clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
+      clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
+    if (candidate && /TREC Information About Brokerage Services|Privacy Policy|Copyright\s+Transwestern|Sitemap|Working-at-Transwestern/i.test(candidate)) return null;
   }
   return candidate;
 }
@@ -513,8 +540,11 @@ export function transwesternDetailPageIsUsable(doc: ScrapedDoc, row: any): boole
     return false;
   }
   const $ = cheerio.load(doc.rawHtml);
+  // Public property pages without availability use this template instead of
+  // #tblAvailability. Require its property body as well as the outer shell.
   const structure =
-    $("#tblAvailability, .property-facts, .property-description, .property-detail").length > 0;
+    $("#tblAvailability, .property-facts, .property-description, .property-detail").length > 0 ||
+    $(".property-dtl .property-dscptn, .property-dtl #tblAttachments").length > 0;
   const heading = clean(
     $("h1").first().text() ||
       $('meta[property="og:title"]').attr("content") ||
@@ -527,6 +557,8 @@ export function transwesternDetailPageIsUsable(doc: ScrapedDoc, row: any): boole
     clean(row?.Address),
     clean(row?.StreetAddress),
   ]
+    .filter((value): value is string => !!value)
+    .map((value) => clean(decodeHtmlEntities(value)))
     .filter((value): value is string => !!value)
     .map((value) => value.toLowerCase());
   return Boolean(
@@ -542,9 +574,11 @@ export async function enrichTranswesternListing(
   bucket: string,
   tx: Tx,
   monitor: boolean,
-  inventoryObservedAt = new Date().toISOString()
+  inventoryObservedAt = observationNow(),
+  publishedProof?: TranswesternPublishedIdentityProof
 ): Promise<any> {
-  const detailUrl = transwesternDetailUrl(row.PageUrl);
+  if (publishedProof) requireCurrentTranswesternPublishedProof(publishedProof, row, inventoryObservedAt);
+  const detailUrl = publishedProof?.url ?? transwesternDetailUrl(row.PageUrl);
   const feedImage = canonicalTranswesternUrl(clean(row.PropertyImage));
   const base = {
     id: clean(String(row.PageUrl ?? "")),
@@ -574,6 +608,7 @@ export async function enrichTranswesternListing(
       method: "transwestern_ajax_feed",
       cacheDisposition: "live",
     },
+    ...(publishedProof ? { transwesternPublishedIdentity: publishedProof } : {}),
   };
   // Monitor mode: emit the freely-available feed fields only (id/url/price/size)
   // and skip the detail scrape. Status has no feed field, so it stays absent
@@ -582,14 +617,15 @@ export async function enrichTranswesternListing(
   if (!detailUrl) return prune({ ...base, detailError: "missing or invalid PageUrl" });
   try {
     const doc = await scrapeDoc(detailUrl, { waitFor: 1500, timeout: 60000, maxAge: 0 });
-    if (!transwesternDetailPageIsUsable(doc, row)) {
+    if (!transwesternDetailPageIsUsable(doc, row) ||
+      (publishedProof && !transwesternPrimaryIdentityMatches(doc.rawHtml, row))) {
       throw new Error("detail response did not contain the expected Transwestern property identity");
     }
     const observed = detailObservation("transwestern_detail_page", "live");
     const $ = cheerio.load(doc.rawHtml);
     const facts = parseTranswesternFacts($);
     const availability = parseTranswesternAvailability($);
-    const contactsDetailed = extractTranswesternContacts(doc);
+    const contactsDetailed = extractTranswesternContacts($);
     const brokerIds = contactsDetailed
       .map((c) =>
         brokerRef({
@@ -603,7 +639,7 @@ export async function enrichTranswesternListing(
       )
       .filter((id: number | null): id is number => id !== null);
     const coordMatch = doc.rawHtml.match(/myLatLng\s*=\s*\{\s*lat:\s*(-?[0-9.]+),\s*lng:\s*(-?[0-9.]+)/i);
-    const description = transwesternDescription($, doc);
+    const description = transwesternDescription($, doc, detailUrl);
     const leaseRateText =
       availability.map((a) => clean(a.rate)).find((rate) => rate && /\$|psf|sf|negotiable/i.test(rate)) ??
       null;
@@ -613,16 +649,38 @@ export async function enrichTranswesternListing(
     // iframes. Brochures fold into the unified `documents` channel (cre_ingest
     // reads both `brochures` and `documents`); we drop the legacy `brochures` key
     // so the same PDF is not inserted twice.
-    const nativeDocs = extractTranswesternDocuments(doc);
-    const nativePhotos = extractTranswesternPhotos(doc, feedImage);
+    const nativeDocs = extractTranswesternDocuments(doc, $);
+    const nativePhotos = extractTranswesternPhotos($, feedImage);
     const harvested = harvestDetail(doc, {
       baseUrl: detailUrl,
       extraDocs: nativeDocs.map((d: any) => clean(d?.url)).filter((u): u is string => !!u),
       extraImages: nativePhotos,
     });
+    const galleryImages = $('.photos-list a.chocolat-image[href]').toArray()
+      .map((node) => canonicalTranswesternUrl($(node).attr('href') ?? null))
+      .filter((url): url is string => url !== null);
+    const filteredImages = filterTranswesternImages(harvested.images, {
+      nativePropertyUrls: [...(feedImage ? [feedImage] : []), ...galleryImages],
+      brokerAvatarUrls: contactsDetailed
+        .filter((contact) => contact.name || contact.profileUrl || contact.email || contact.phone)
+        .map((contact) => contact.avatarUrl)
+        .filter((url): url is string => typeof url === "string" && url.length > 0),
+    });
+    const feedPrimary = feedImage && filteredImages.images.includes(feedImage) ? feedImage : null;
+    const firstGalleryImage = canonicalTranswesternUrl(
+      $('.photos-list a.chocolat-image[href]').first().attr('href') ?? null
+    );
+    const galleryPrimary =
+      !feedPrimary && firstGalleryImage && filteredImages.images.includes(firstGalleryImage)
+        ? firstGalleryImage
+        : null;
+    const primaryPhoto = feedPrimary ?? galleryPrimary;
+    const photos = primaryPhoto
+      ? [primaryPhoto, ...filteredImages.images.filter((image) => image !== primaryPhoto)]
+      : filteredImages.images;
     const structured = transwesternStructured(facts);
     const scalars = liftTranswesternScalars(facts, availability, detailUrl);
-    return prune({
+    const output = prune({
       ...base,
       name: clean($("h1").first().text()) ?? base.name,
       description,
@@ -633,7 +691,21 @@ export async function enrichTranswesternListing(
       contactsDetailed,
       brochures: undefined,
       documents: harvested.documents,
-      photos: harvested.images.length ? harvested.images : nativePhotos,
+      photos,
+      transwesternPhotoRoleVersion: "v1",
+      ...(filteredImages.excluded.length
+        ? { transwesternExcludedPhotoEvidence: {
+            schema: "transwestern-photo-role-v1", entries: filteredImages.excluded,
+          } }
+        : {}),
+      ...(primaryPhoto
+        ? {
+            transwesternPrimaryPhotoEvidence: {
+              url: primaryPhoto,
+              basis: feedPrimary ? 'provider_feed' : 'property_gallery',
+            },
+          }
+        : {}),
       media: harvested.media,
       links: harvested.links,
       markdown: doc.markdown,
@@ -661,6 +733,7 @@ export async function enrichTranswesternListing(
       canonicalUrl: scalars.canonicalUrl,
       extraFacts: scalars.extraFacts,
       transwesternFacts: facts,
+      transwesternFieldObservations: transwesternFieldObservations($),
       availability,
       detailScrape: {
         url: detailUrl,
@@ -676,6 +749,18 @@ export async function enrichTranswesternListing(
         cacheDisposition: observed.cacheDisposition,
       },
     });
+    output.transwesternDocumentMediaObservations = transwesternDocumentMediaObservations(
+      $, harvested.documents, harvested.media, harvested.links, detailUrl,
+      createHash("sha256").update(doc.rawHtml, "utf8").digest("hex"), observed.observedAt,
+    );
+    // The explicit count preserves an inspected empty observation set through outer pruning.
+    output.transwesternBuildingFacts = {
+      ...transwesternBuildingFacts($),
+      sourceUrl: detailUrl,
+      bodySha256: createHash("sha256").update(doc.rawHtml, "utf8").digest("hex"),
+      observedAt: observed.observedAt,
+    };
+    return output;
   } catch (err) {
     console.error(`  transwestern/${tx}: detail failed for ${detailUrl}: ${err}`);
     return prune({
@@ -685,31 +770,49 @@ export async function enrichTranswesternListing(
   }
 }
 
-export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcTranswestern(tx: Tx, max: number, monitor: boolean,
+  fetchFeed: typeof scrapeJson = scrapeJson): Promise<SourceResult> {
   const buckets = TRANSWESTERN_BUCKETS[tx];
   const rowsBySlug = new Map<string, { row: any; bucket: string; observedAt: string }>();
+  const acquired: Array<{ row: any; bucket: string; observedAt: string }> = [];
   const bucketCounts: Record<string, number> = {};
-  for (const bucket of buckets) {
-    const data = await scrapeJson(transwesternFeedUrl(bucket), {
+  for (const [occurrence, bucket] of buckets.entries()) {
+    const data = await fetchFeed(transwesternFeedUrl(bucket), {
       timeout: 60000,
       ...(monitor ? {} : { maxAge: 0 }),
     });
+    publishTranswesternParsedPage(data, tx, bucket, occurrence, !monitor);
     if (!Array.isArray(data)) {
       throw new Error(`Transwestern ${tx}/${bucket} feed returned a non-array payload`);
     }
     const rows = data;
-    const observedAt = new Date().toISOString();
+    const observedAt = observationNow();
     bucketCounts[bucket] = rows.length;
     console.error(`  transwestern/${tx}/${bucket}: ${rows.length} feed rows`);
     for (const row of rows) {
       const slug = clean(String(row.PageUrl ?? ""));
-      if (!slug || slug === "-" || !transwesternDetailUrl(slug)) {
+      if (!slug || (slug !== "-" && !transwesternDetailUrl(slug))) {
         throw new Error(
           `Transwestern ${tx}/${bucket} feed row lacks a valid PageUrl identity`
         );
       }
-      if (!rowsBySlug.has(slug)) rowsBySlug.set(slug, { row, bucket, observedAt });
+      if (slug === "-") {
+        try { transwesternIdentityTuple(row); } catch {
+          throw new Error(`Transwestern ${tx}/${bucket} feed row lacks a valid PageUrl identity`);
+        }
+      }
+      acquired.push({ row, bucket, observedAt });
     }
+  }
+  const placeholders = acquired.filter(({ row }) => clean(String(row.PageUrl ?? "")) === "-");
+  let publishedProof: TranswesternPublishedIdentityProof | undefined;
+  if (placeholders.length) {
+    requireUniqueTranswesternPlaceholderIdentity(placeholders.map(({ row }) => row));
+    publishedProof = await proveTranswesternPublishedIdentity(placeholders[0].row, transwesternDetailPageIsUsable);
+  }
+  for (const entry of acquired) {
+    const slug = clean(String(entry.row.PageUrl))!;
+    if (!rowsBySlug.has(slug)) rowsBySlug.set(slug, entry);
   }
   const selected = [...rowsBySlug.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   let done = 0;
@@ -718,7 +821,8 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
   // detail enrichment that only the full path performs.
   const progressVerb = monitor ? "enumerated" : "detail enriched";
   const listings = await pmap(selected, CONCURRENCY, async ({ row, bucket, observedAt }) => {
-    const listing = await enrichTranswesternListing(row, bucket, tx, monitor, observedAt);
+    const listing = await enrichTranswesternListing(row, bucket, tx, monitor, observedAt,
+      clean(String(row.PageUrl ?? "")) === "-" ? publishedProof : undefined);
     done++;
     if (done % 25 === 0 || done === selected.length) {
       console.error(`  transwestern/${tx}: ${progressVerb} ${done}/${selected.length}`);
@@ -735,6 +839,6 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
     truncated: transwesternCapTruncated(max, listings.length, total),
     note: `Bucket counts before slug de-dupe: ${Object.entries(bucketCounts)
       .map(([bucket, count]) => `${bucket}=${count}`)
-      .join(", ")}. Rows with invalid PageUrl are skipped.`,
+      .join(", ")}. Invalid PageUrl rows reject the source unless a unique provider-published URL and complete current identity are verified.`,
   };
 }

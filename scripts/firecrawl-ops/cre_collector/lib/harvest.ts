@@ -14,6 +14,11 @@
 //   * NEVER throws: every field access is guarded; malformed/garbage input
 //     yields empty arrays, not an exception.
 //   * Dedups EVERY output array by url (case-insensitive normalized key).
+//   * harvestDetail() output never carries host-scoped site boilerplate (lib/document-boilerplate.ts
+//     rules: Transwestern TREC notices and service pages, JLL services pages) as a document, from any
+//     of its input paths, and a dropped URL is not demoted to a link. This covers harvestDetail's
+//     result only: the `brochures` channel (cre_ingest.py to_row turns it into documents unchecked)
+//     and adapters that never call harvestDetail are not filtered here.
 //   * Images keep ALL gallery urls (never truncate); only obvious noise is
 //     dropped (google map tiles, data:/svg URIs, recaptcha/analytics assets).
 //   * ctx.extra* (promoted stranded raw_data fields) merge LAST so a source's
@@ -28,6 +33,7 @@
 //   5. rawHtml regex   (iframe/video-source/data-video-url) ONLY when
 //                       doc.attributes is undefined (fork omitted the format)
 
+import { isBoilerplateDocumentUrl } from "./document-boilerplate.js";
 import { clean } from "./util.js";
 import type { AttrBlock, DocItem, LinkItem, MediaItem, ScrapedDoc } from "../types.js";
 
@@ -292,6 +298,9 @@ function classifyLink(url: string, rel?: string | null): LinkItem | null {
 // hard rule); only drops map tiles, data:/svg URIs, and recaptcha/analytics
 // assets.
 function isImageNoise(url: string): boolean {
+  // addImage has already validated/resolved this as an HTTP(S) URL.
+  const imageUrl = new URL(url);
+  if (imageUrl.hostname === "mapsresources-pa.googleapis.com" && imageUrl.pathname === "/v1/tiles") return true;
   const l = lc(url);
   if (l.startsWith("data:")) return true;
   if (/\.svg(?:[?#]|$)/.test(l)) return true;
@@ -502,6 +511,14 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
     media.set(key, prev ? mergeMedia(prev, m) : m);
   };
 
+  // The one sink for harvestDetail's documents: first write wins, and site boilerplate is dropped
+  // here so no harvestDetail input path (page link, attribute, typed or bare ctx.extraDocs) can attach it.
+  const addDocument = (item: DocItem) => {
+    if (isBoilerplateDocumentUrl(item.url)) return;
+    const key = urlKey(item.url);
+    if (!documents.has(key)) documents.set(key, item);
+  };
+
   // Route a single (url, title?) candidate through media -> document -> link, in
   // that precedence (a video url is media, not a link; a pdf is a document).
   // embedUrl is set only when the value came from an iframe/embed-style selector.
@@ -515,7 +532,7 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
     }
     const doc2 = classifyDocument(u, opts.title);
     if (doc2) {
-      if (!documents.has(urlKey(doc2.url))) documents.set(urlKey(doc2.url), doc2);
+      addDocument(doc2);
       return;
     }
     const ln = classifyLink(u, null);
@@ -599,13 +616,10 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
       // documentary keyword/extension (the source asserted it is a doc), as the
       // default-typed 'other'. classifyDoc would otherwise reject a keyword-less,
       // extension-less url.
-      if (u) {
-        const dd = classifyDocument(u) ?? { url: u, title: null, docType: "other" as const };
-        if (!documents.has(urlKey(dd.url))) documents.set(urlKey(dd.url), dd);
-      }
+      if (u) addDocument(classifyDocument(u) ?? { url: u, title: null, docType: "other" as const });
     } else {
       const dd = normDoc(raw, baseUrl);
-      if (dd && !documents.has(urlKey(dd.url))) documents.set(urlKey(dd.url), dd);
+      if (dd) addDocument(dd);
     }
   }
   for (const raw of ctx?.extraLinks ?? []) {

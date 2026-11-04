@@ -3,6 +3,9 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   configuredScrapeMaxAttempts,
   createScrapeClient,
@@ -11,6 +14,7 @@ import {
   repairUnescapedJsonStringQuotes,
   scrapeRetryDelayMs,
   scrapeRaw,
+  scrapeJson,
   withRequestDeadline,
 } from "../../../lib/scrape.js";
 
@@ -46,30 +50,29 @@ describe("scrape retry controls", () => {
     ["default", {}, 3],
     ["benchmark", { CRE_SCRAPE_MAX_ATTEMPTS: "1" }, 1],
   ] as const) {
-    it(`bounds ${name} SDK HTTP attempts even when the gateway returns 502`, async () => {
-      const client = createScrapeClient(environment);
-      // Stub only the pinned SDK's HTTP boundary; its real retry loop still runs.
-      const transport = (client as unknown as {
-        http: {
-          instance: { request: () => Promise<never> };
-          sleep: () => Promise<void>;
-        };
-      }).http;
-      const failure = Object.assign(new Error("synthetic gateway failure"), {
-        response: { status: 502 },
-      });
+    it(`bounds ${name} HTTP attempts when the gateway returns 502`, async () => {
       let attempts = 0;
-      transport.instance.request = async () => {
+      const server = createServer((_req, res) => {
         attempts += 1;
-        throw failure;
-      };
-      transport.sleep = async () => undefined;
-
-      await assert.rejects(
-        () => client.scrape("https://example.com/sdk-attempt-bound"),
-        /synthetic gateway failure/
-      );
-      assert.equal(attempts, expectedAttempts);
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      const client = createScrapeClient({
+        ...environment,
+        FIRECRAWL_API_URL: `http://127.0.0.1:${port}`,
+      });
+      try {
+        await assert.rejects(
+          () => client.scrape("https://example.com/attempt-bound"),
+          { status: 502, name: "FirecrawlSdkError" }
+        );
+        assert.equal(attempts, expectedAttempts);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
   }
 });
@@ -126,6 +129,60 @@ describe("parseJsonBody", () => {
     assert.deepEqual(parseJsonBody(wrapped), { items: ["a", "b"] });
   });
 
+  it("prefers an entity-decoded enclosing object over its nested empty array", () => {
+    const wrapped = '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>';
+    assert.deepEqual(parseJsonBody(wrapped), { Documents: [], DocumentCount: 0 });
+  });
+
+  it("prefers an entity-decoded enclosing object over its nested nonempty arrays", () => {
+    const wrapped = '<html><pre>{&quot;Documents&quot;:[[1,2]],&quot;DocumentCount&quot;:2}</pre></html>';
+    assert.deepEqual(parseJsonBody(wrapped), {
+      Documents: [[1, 2]],
+      DocumentCount: 2,
+    });
+  });
+
+  it("does not salvage a parseable array from a malformed enclosing object", () => {
+    const malformed = '<html><pre>{&quot;Documents&quot;:[],broken}</pre></html>';
+    assert.equal(parseJsonBody(malformed), null);
+  });
+
+  it("does not salvage a parseable object from a malformed enclosing array", () => {
+    assert.equal(parseJsonBody('[{"native":1},broken]'), null);
+  });
+
+  it("does not salvage nested arrays when the enclosing object is incomplete", () => {
+    assert.equal(parseJsonBody('{"rows":[]'), null);
+  });
+
+  it("does not salvage a nested object when the enclosing array is incomplete", () => {
+    assert.equal(parseJsonBody('[{"native":1}'), null);
+  });
+
+  it("preserves literal PRE JSON string contents without HTML decoding", () => {
+    const value = {
+      html: "<b>Retail &amp; office</b>",
+      url: "https://example.test/listing?left=1&right=2",
+      text: 'literal &quot; plus {braces} [brackets] and "quoted" text',
+    };
+    const wrapped = `<html><pre>${JSON.stringify(value)}</pre></html>`;
+    assert.deepEqual(parseJsonBody(wrapped), value);
+  });
+
+  it("keeps a disjoint decoded root after balanced script and style prefix delimiters", () => {
+    const wrapped =
+      '<style>/* [style-prefix] */</style><script>const marker = [script-prefix];</script><pre>{&quot;ok&quot;:true}</pre>';
+    assert.deepEqual(parseJsonBody(wrapped), { ok: true });
+  });
+
+  it("preserves a parseable disjoint array after a complete malformed object", () => {
+    assert.deepEqual(parseJsonBody("{broken} [1,2]"), [1, 2]);
+  });
+
+  it("does not treat an unmatched wrapper prefix as an incomplete JSON root", () => {
+    assert.deepEqual(parseJsonBody('prefix [ marker <pre>{"native":1}</pre>'), { native: 1 });
+  });
+
   it("repairs unescaped inner quotes in string values", () => {
     const broken = '{"title":"12" Main St"}';
     assert.deepEqual(parseJsonBody(broken), { title: '12" Main St' });
@@ -154,5 +211,134 @@ describe("repairUnescapedJsonStringQuotes", () => {
   it("preserves already-escaped quotes", () => {
     const input = '{"msg":"already \\"fine\\""}';
     assert.equal(repairUnescapedJsonStringQuotes(input), input);
+  });
+});
+
+describe("JSON parse backoff", () => {
+  for (const attempts of [1, 3]) {
+    it(`rejects after ${attempts} invalid bodies without a terminal wait`, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      let settled = false;
+      let failure: unknown;
+      const logs: string[] = [];
+      t.mock.method(console, "error", (...parts: unknown[]) => logs.push(parts.join(" ")));
+      t.mock.method(firecrawl, "scrape", async () => {
+        calls++;
+        return { rawHtml: "not JSON" };
+      });
+      t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network"); });
+      const pending = scrapeJson("https://example.com/json-backoff", attempts === 1 ? { jsonAttempts: 1 } : {})
+        .catch(error => { settled = true; failure = error; });
+      await setImmediate();
+      assert.equal(calls, 1);
+      if (attempts === 3) {
+        assert.equal(settled, false);
+        t.mock.timers.tick(7999);
+        await setImmediate();
+        assert.equal(calls, 1);
+        t.mock.timers.tick(1);
+        await setImmediate();
+        assert.equal(calls, 2);
+        assert.equal(settled, false);
+        t.mock.timers.tick(15999);
+        await setImmediate();
+        assert.equal(calls, 2);
+        t.mock.timers.tick(1);
+        await setImmediate();
+        assert.equal(calls, 3);
+      }
+      assert.equal(settled, true, "no final JSON parse delay may remain pending");
+      assert.match(String(failure), /contained no parseable JSON object/);
+      assert.equal(logs.filter(line => line.includes("backing off")).length, attempts - 1);
+      await pending;
+    });
+  }
+
+  for (const successAttempt of [1, 2]) {
+    it(`preserves a valid JSON result on attempt ${successAttempt}`, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      t.mock.method(console, "error", () => undefined);
+      t.mock.method(firecrawl, "scrape", async () => ({
+        rawHtml: ++calls === successAttempt ? '{"ok":true}' : "not JSON",
+      }));
+      const pending = scrapeJson("https://example.com/json-success");
+      await setImmediate();
+      if (successAttempt === 2) {
+        assert.equal(calls, 1);
+        t.mock.timers.tick(8000);
+        await setImmediate();
+      }
+      assert.deepEqual(await pending, { ok: true });
+      assert.equal(calls, successAttempt);
+    });
+  }
+
+  for (const name of ["Error", "AbortError"]) {
+    it(`propagates ${name} without a JSON parse retry`, async t => {
+      const previous = process.env.CRE_SCRAPE_MAX_ATTEMPTS;
+      process.env.CRE_SCRAPE_MAX_ATTEMPTS = "1";
+      t.after(() => {
+        if (previous === undefined) delete process.env.CRE_SCRAPE_MAX_ATTEMPTS;
+        else process.env.CRE_SCRAPE_MAX_ATTEMPTS = previous;
+      });
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const failure = Object.assign(new Error("synthetic transport failure"), { name });
+      let calls = 0;
+      t.mock.method(console, "error", () => undefined);
+      t.mock.method(firecrawl, "scrape", async () => { calls++; throw failure; });
+      await assert.rejects(scrapeJson("https://example.com/json-error"), error => error === failure);
+      assert.equal(calls, 1);
+    });
+  }
+});
+
+describe("observed JSON scrape context", () => {
+  it("returns the Firecrawl rawHtml and metadata beside parsed plain or wrapped JSON", async t => {
+    const scrapeModule = await import("../../../lib/scrape.js");
+    const scrapeJsonWithObservation = (scrapeModule as any).scrapeJsonWithObservation;
+    assert.equal(typeof scrapeJsonWithObservation, "function");
+
+    const original = firecrawl.scrape;
+    const observations = [
+      {
+        rawHtml: '{"Documents":[],"DocumentCount":0}',
+        metadata: { statusCode: 200, sourceURL: "https://example.com/inventory", url: "https://example.com/final" },
+      },
+      {
+        rawHtml: '<html><pre>{"Documents":[],"DocumentCount":0}</pre></html>',
+        metadata: { statusCode: 206, sourceURL: "https://example.com/wrapped", url: "https://example.com/wrapped-final" },
+      },
+    ];
+    let calls = 0;
+    t.mock.method(firecrawl, "scrape", async () => observations[calls++]!);
+    t.after(() => { (firecrawl as any).scrape = original; });
+
+    for (const observation of observations) {
+      const result = await scrapeJsonWithObservation("https://example.com/inventory");
+      assert.deepEqual(result.data, { Documents: [], DocumentCount: 0 });
+      assert.equal(result.response.rawHtml, observation.rawHtml);
+      assert.deepEqual(result.response.metadata, observation.metadata);
+      assert.equal("sha256" in result.response, false, "ordinary observations omit diagnostic digests");
+    }
+    assert.equal(calls, observations.length);
+  });
+
+  it("preserves the enclosing entity-encoded object in plain and observed JSON", async t => {
+    const scrapeModule = await import("../../../lib/scrape.js");
+    const scrapeJsonWithObservation = (scrapeModule as any).scrapeJsonWithObservation;
+    const rawHtml = '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>';
+    const original = firecrawl.scrape;
+    let calls = 0;
+    t.mock.method(firecrawl, "scrape", async () => { calls++; return { rawHtml }; });
+    t.after(() => { (firecrawl as any).scrape = original; });
+
+    const expected = { Documents: [], DocumentCount: 0 };
+    assert.deepEqual(await scrapeJson("https://example.com/legacy-parse"), expected);
+    const observed = await scrapeJsonWithObservation("https://example.com/observed-parse");
+    assert.deepEqual(observed.data, expected);
+    assert.equal(observed.response.rawHtml, rawHtml);
+    assert.equal(calls, 2);
   });
 });

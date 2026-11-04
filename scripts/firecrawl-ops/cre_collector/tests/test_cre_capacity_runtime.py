@@ -561,6 +561,7 @@ def test_preflight_rejects_output_outside_controlled_root_without_chmod(
     (repo / "tasks" / "tmp").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir(mode=0o755)
+    outside.chmod(0o755)
     target = outside / "receipt.json"
     monkeypatch.setattr(runtime, "REPO_ROOT", repo)
     with pytest.raises(runtime.RuntimeAdmissionError, match="controller output"):

@@ -1,126 +1,27 @@
+import { createHash } from "node:crypto";
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
-import { detailObservation } from "../lib/freshness.js";
+import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx } from "../types.js";
-import { clean, moneyToNumber, prune } from "../lib/util.js";
-import { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
+import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow, type DaumDetail, type DaumEmptyTitleObservation } from "../types.js";
+import { daumProof } from "./pure/daum-proof.js";
+import { parseMoney } from "../lib/parse.js";
+import { clean, prune } from "../lib/util.js";
+import { canonicalDaumPropertyUrl, daumAbsoluteUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+import { DaumPoliteTransport } from "./daum-transport.js";
 
-export { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
+export { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+export { DAUM_MAX_RESPONSE_BYTES, DAUM_ROBOTS_DELAY_MS, DaumPoliteTransport } from "./daum-transport.js";
+export type { DaumInventoryRow, DaumDetail, DaumEmptyTitleObservation } from "../types.js";
 export const DAUM_PAGE_SIZE = 90;
-export const DAUM_ROBOTS_DELAY_MS = 3000;
-export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
-const DAUM_USER_AGENT = "Mozilla/5.0 (compatible; AgenticAssetsCRE/1.0)";
 
-type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit
-) => Promise<Response>;
-
-
-export type DaumInventoryRow = {
-  url: string;
-  title: string;
-  tenure: DaumTenure;
-  tenureText: string | null;
-  city: string | null;
-  state: string | null;
-  postalCode: string | null;
-  sizeText: string | null;
-  spaceCount: number | null;
-  assetType: string | null;
-  salePriceText: string | null;
-  leaseRateText: string | null;
-  brokerNames: string[];
-  imageUrl: string | null;
-  latitude: number | null;
-  longitude: number | null;
-};
 
 export type DaumPage = {
   reportedTotal: number;
   reportedPages: number;
   rows: DaumInventoryRow[];
 };
-
-export type DaumDetail = {
-  postId: number;
-  facts: Record<string, string>;
-  title: string;
-  tenure: DaumTenure;
-  tenureText: string | null;
-  city: string | null;
-  state: string | null;
-  postalCode: string | null;
-  salePriceText: string | null;
-  leaseRateText: string | null;
-  sizeText: string | null;
-  description: string | null;
-  highlights: string[];
-  brochures: Array<{ name: string | null; url: string }>;
-  photos: string[];
-  contacts: Array<{
-    name: string | null;
-    email: string | null;
-    phone: string | null;
-    office: string | null;
-    profileUrl: string | null;
-    avatarUrl: string | null;
-    license: string | null;
-  }>;
-};
-
-async function daumBoundedResponseText(
-  response: Response,
-  maxBytes: number
-): Promise<string> {
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new Error(`response Content-Length ${contentLength} exceeds ${maxBytes} bytes`);
-  }
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error(`response body exceeds ${maxBytes} bytes`);
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    return text;
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-
-function daumAbsoluteUrl(value: unknown): string | null {
-  const raw = clean(value);
-  if (!raw || /^(?:javascript|mailto|tel):/i.test(raw)) return null;
-  try {
-    const url = new URL(raw, DAUM_HOST);
-    if (
-      url.protocol !== "https:"
-      || url.hostname !== "daumcommercial.com"
-      || url.username
-      || url.password
-      || url.port
-    ) {
-      return null;
-    }
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
 
 
 function parseDaumMapData(html: string): any[] {
@@ -154,8 +55,8 @@ function signedNumber(value: unknown): number | null {
 
 function meaningfulMoney(value: unknown): string | null {
   const text = clean(value);
-  const amount = moneyToNumber(text);
-  return amount && amount > 0 ? text : null;
+  const amount = parseMoney(text);
+  return amount !== null ? text : null;
 }
 
 export function parseDaumSearchPage(html: string): DaumPage {
@@ -378,7 +279,9 @@ function daumCloudflareEmail(hex: string | undefined): string | null {
   return clean(value);
 }
 
-export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail {
+export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail;
+export function parseDaumDetail(html: string, expectedUrl: string, allowEmptyTitle: true): DaumDetail | DaumEmptyTitleObservation;
+export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTitle = false): DaumDetail | DaumEmptyTitleObservation {
   const shell = cheerio.load(html);
   const shellTitle = clean(shell("title").text());
   const shortBody = html.length < 2_000 ? clean(shell("body").text()) : null;
@@ -405,8 +308,14 @@ export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail 
     }
   }
   const title = clean($(".main-section .title-property").first().text());
-  if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const tenureText = clean($(".main-section .title-about").first().text());
+  if (!title && allowEmptyTitle && $(".main-section .title-property").length === 1) {
+    const canonical = canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href"));
+    if ($('link[rel="canonical"]').length !== 1 || $('link[rel="shortlink"]').length !== 1
+      || !canonical || canonical !== expectedUrl) throw new Error("DAUM empty-title observation has ambiguous identity");
+    return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true };
+  }
+  if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const locationParts = $(".main-section .state-city li")
     .map((_, element) => clean($(element).text()))
     .get()
@@ -485,6 +394,7 @@ export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail 
     .filter((contact) => contact.name || contact.email);
   return {
     postId,
+    observedCanonicalUrl: canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href")),
     facts,
     title,
     tenure: daumTenure(tenureText),
@@ -528,114 +438,57 @@ function daumShortlinkPostId(value: unknown): number | null {
   }
 }
 
-export class DaumPoliteTransport {
-  private lastStartedAt = 0;
-  private queue: Promise<unknown> = Promise.resolve();
-
-  constructor(
-    private readonly fetchImpl: FetchLike = fetch,
-    private readonly delayMs = DAUM_ROBOTS_DELAY_MS,
-    private readonly timeoutMs = 30_000,
-    private readonly maxResponseBytes = DAUM_MAX_RESPONSE_BYTES
-  ) {}
-
-  private request(url: string, method: "GET" | "POST"): Promise<string> {
-    const safeUrl = daumAbsoluteUrl(url);
-    if (!safeUrl) {
-      return Promise.reject(new Error(`DAUM refused unsafe URL ${url}`));
-    }
-    if (new URL(safeUrl).search) {
-      return Promise.reject(new Error(`DAUM robots policy forbids query URL ${url}`));
-    }
-    const task = this.queue.then(async () => {
-      const waitMs = Math.max(0, this.delayMs - (Date.now() - this.lastStartedAt));
-      if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
-      this.lastStartedAt = Date.now();
-      let lastError: unknown;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-        try {
-          const response = await this.fetchImpl(safeUrl, {
-            method,
-            headers: {
-              "User-Agent": DAUM_USER_AGENT,
-              Accept: "text/html",
-              ...(method === "POST"
-                ? { "Content-Type": "application/x-www-form-urlencoded" }
-                : {}),
-            },
-            ...(method === "POST" ? { body: "" } : {}),
-            redirect: "manual",
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return await daumBoundedResponseText(response, this.maxResponseBytes);
-        } catch (error) {
-          lastError = error;
-          if (attempt === 2) break;
-          const retryWait = Math.max(0, this.delayMs - (Date.now() - this.lastStartedAt));
-          if (retryWait) await new Promise((resolve) => setTimeout(resolve, retryWait));
-          this.lastStartedAt = Date.now();
-        } finally {
-          clearTimeout(timeout);
-        }
-      }
-      throw new Error(`DAUM request failed for ${safeUrl}: ${String(lastError)}`);
-    });
-    this.queue = task.catch(() => undefined);
-    return task as Promise<string>;
-  }
-
-  get(url: string): Promise<string> {
-    return this.request(url, "GET");
-  }
-
-  post(url: string): Promise<string> {
-    return this.request(url, "POST");
-  }
-}
-
 export function daumSnapshotIdentitySignature(rows: DaumInventoryRow[]): string {
-  return rows.map((row) => `${row.url}\t${row.tenure}`).join("\n");
+  return rows.map((row) => `${row.url}\t${row.tenure}`).sort().join("\n");
 }
 
-export function assertDaumUniqueProviderIds(listings: Array<{ id?: unknown }>): void {
+export function assertDaumUniqueProviderIds(listings: Array<{ id?: unknown; daumPostId?: unknown }>): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("DAUM emitted a listing without a provider ID");
+    const id = clean(String(listing?.daumPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("DAUM emitted a listing without a valid provider ID");
+    if (!key) throw new Error("DAUM emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`DAUM emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`DAUM emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
 type DaumSearchTransport = Pick<DaumPoliteTransport, "post">;
 
 async function fetchDaumSnapshotPass(
-  transport: DaumSearchTransport
+  transport: DaumSearchTransport, index: number
 ): Promise<{
-  total: number;
-  rows: DaumInventoryRow[];
-  reportedTotals: number[];
-  signature: string;
+  total: number; rows: DaumInventoryRow[]; reportedTotals: number[];
+  signature: string; proof: DaumInventoryPass;
 }> {
-  // DAUM's edge cache can serve adjacent path pages from different inventory
-  // generations. An empty form POST to the same clean, query-free public path
-  // bypasses that cache while preserving the site's normal server-rendered
-  // search behavior. Every request still goes through DaumPoliteTransport's
-  // global three-second crawl delay.
-  const first = parseDaumSearchPage(await transport.post(daumPageUrl(1)));
-  const pages = [first];
-  for (let page = 2; page <= first.reportedPages; page++) {
-    pages.push(parseDaumSearchPage(await transport.post(daumPageUrl(page))));
+  const receipts: DaumInventoryPass["pages"] = [];
+  async function load(pageNumber: number): Promise<DaumPage> {
+    const endpoint = daumPageUrl(pageNumber);
+    const html = await transport.post(endpoint);
+    const observedAt = observationNow();
+    const page = parseDaumSearchPage(html);
+    receipts.push({
+      endpoint, method: "POST", observedAt, responseTextSha256: textSha256(html),
+      reportedTotal: page.reportedTotal, reportedPages: page.reportedPages,
+      members: page.rows.map(row => [row.url, row.tenure, row.tenureText]),
+    });
+    return page;
   }
+  // Empty-form POST retains the public query-free route and existing pacing.
+  const first = await load(1);
+  const pages = [first];
+  for (let page = 2; page <= first.reportedPages; page++) pages.push(await load(page));
   const rows = assertDaumSnapshot(pages);
+  console.error(`  daum-commercial: inventory pass ${index} completed; pages=${pages.length}; members=${rows.length}`);
   return {
-    total: first.reportedTotal,
-    rows,
-    reportedTotals: pages.map((page) => page.reportedTotal),
+    total: first.reportedTotal, rows,
+    reportedTotals: pages.map(page => page.reportedTotal),
     signature: daumSnapshotIdentitySignature(rows),
+    proof: { index, total: first.reportedTotal, pages: receipts },
   };
 }
 
@@ -648,6 +501,7 @@ export async function fetchDaumSnapshot(
   rows: DaumInventoryRow[];
   lifecycleExact: boolean;
   reportedTotals: number[];
+  passes: DaumInventoryPass[];
 }> {
   if (!Number.isInteger(maxPasses) || maxPasses < 2 || maxPasses > 5) {
     throw new Error(`DAUM convergence passes must be an integer from 2 to 5`);
@@ -658,13 +512,14 @@ export async function fetchDaumSnapshot(
         rows: DaumInventoryRow[];
         reportedTotals: number[];
         signature: string;
+        proof: DaumInventoryPass;
       }
     | null = null;
   const failures: string[] = [];
   for (let pass = 1; pass <= maxPasses; pass++) {
     let current;
     try {
-      current = await fetchDaumSnapshotPass(transport);
+      current = await fetchDaumSnapshotPass(transport, pass);
     } catch (error) {
       failures.push(`pass ${pass}: ${String(error)}`);
       previous = null;
@@ -680,7 +535,8 @@ export async function fetchDaumSnapshot(
         rows: current.rows,
         lifecycleExact: true,
         reportedTotals: current.reportedTotals,
-        observedAt: new Date().toISOString(),
+        observedAt: observationNow(),
+        passes: [previous.proof, current.proof],
       };
     }
     if (previous) {
@@ -703,17 +559,48 @@ export function daumBelongsToTx(tenure: DaumTenure, tx: Tx): boolean {
   return tenure === tx;
 }
 
-export function resolveDaumTenure(
-  inventoryTenure: DaumTenure,
-  detailTenure: DaumTenure
-): DaumTenure {
-  if (inventoryTenure === "unknown") return detailTenure;
-  if (detailTenure === "unknown" || detailTenure === inventoryTenure) {
-    return inventoryTenure;
-  }
-  throw new Error(
-    `DAUM detail tenure ${detailTenure} disagrees with inventory tenure ${inventoryTenure}`
-  );
+
+function mapDaumVerifiedUnknown(
+  inventory: DaumInventoryRow,
+  detail: DaumDetail,
+  inventoryObservedAt: string,
+  detailObservedAt: string
+): any {
+  const resolvedTenure = resolveDaumTenure(inventory.tenure, detail.tenure);
+  if (resolvedTenure !== "unknown") throw new Error("DAUM retained unknown mapping requires unknown tenure");
+  const observed = detailObservation("daum_direct_detail_html", "live", detailObservedAt);
+  // Use only direct fields from the bound observations. In particular, do
+  // not infer a sale/lease price, numeric size, or primary child by position.
+  const contacts = detail.contacts.length ? detail.contacts : inventory.brokerNames.map(name => ({
+    name, email: null, phone: null, office: null, profileUrl: null, avatarUrl: null, license: null,
+  }));
+  return prune({
+    id: daumListingId(inventory.url), daumPostId: String(detail.postId),
+    name: detail.title, street: detail.title,
+    assetType: detail.facts["Property Type"] ?? inventory.assetType,
+    propertySubtype: detail.facts["Primary Use"],
+    description: detail.description, highlights: detail.highlights,
+    city: detail.city ?? inventory.city, state: detail.state ?? inventory.state,
+    postalCode: detail.postalCode ?? inventory.postalCode,
+    latitude: inventory.latitude, longitude: inventory.longitude,
+    sizeText: detail.sizeText ?? inventory.sizeText, zoning: detail.facts.Zoning,
+    contactsDetailed: contacts, brochures: detail.brochures,
+    photos: [...new Set([...detail.photos, inventory.imageUrl].filter(Boolean))],
+    url: inventory.url, canonicalUrl: inventory.url,
+    inventoryObservedAt, detailObservedAt,
+    freshnessProvenance: {
+      detailScope: "detail_page", generationId: observed.generationId,
+      method: observed.method, cacheDisposition: observed.cacheDisposition,
+      identityMethod: "wordpress_shortlink_post_id",
+    },
+    daumTenureEvidence: {
+      inventory: inventory.tenure, inventoryText: inventory.tenureText,
+      detail: detail.tenure, detailText: detail.tenureText, resolved: resolvedTenure,
+    },
+    daumObservedCanonicalUrl: detail.observedCanonicalUrl,
+    daumUnknownTenure: true, daumUnknownEvidence: JSON.stringify({ inventory, detail }),
+    preserveChildCollections: true, detailObservedWithChildPreservation: true,
+  });
 }
 
 export function mapDaumListing(
@@ -762,7 +649,8 @@ export function mapDaumListing(
         : "Lease";
   const salePriceText = detail.salePriceText ?? inventory.salePriceText;
   return prune({
-    id: String(detail.postId),
+    id: daumListingId(inventory.url),
+    daumPostId: String(detail.postId),
     name: detail.title ?? inventory.title,
     transactionType: tenure,
     assetType: detail.facts["Property Type"] ?? inventory.assetType,
@@ -775,7 +663,7 @@ export function mapDaumListing(
     postalCode: detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude,
     longitude: inventory.longitude,
-    salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
+    salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
     salePriceText: tx === "sale" ? salePriceText : null,
     leaseRateText: tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
     sizeText: detail.sizeText ?? inventory.sizeText,
@@ -807,17 +695,103 @@ export function mapDaumListing(
       cacheDisposition: observed.cacheDisposition,
       identityMethod: "wordpress_shortlink_post_id",
     },
+    daumTenureEvidence: {
+      inventory: inventory.tenure, inventoryText: inventory.tenureText,
+      detail: detail.tenure, detailText: detail.tenureText, resolved: resolvedTenure,
+    },
+    daumObservedCanonicalUrl: detail.observedCanonicalUrl,
     daumSearchCard: inventory,
     detailFacts: detail.facts,
   });
 }
+
+const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+export type DaumCompleteCohort = {
+  snapshot: Awaited<ReturnType<typeof fetchDaumSnapshot>>;
+  details: Array<{ inventory: DaumInventoryRow; detail: DaumDetail | DaumEmptyTitleObservation; observedAt: string; bodySha256: string }>;
+};
+type DaumProofMode = "complete" | "verified_subset" | "verified_subset_empty_title";
+const daumCohortAcquisitions: Partial<Record<DaumProofMode, { key: string; promise: Promise<DaumCompleteCohort> }>> = {};
+
+async function completeDaumCohort(key: string, transport: DaumPoliteTransport, mode: DaumProofMode): Promise<DaumCompleteCohort> {
+  let acquisition = daumCohortAcquisitions[mode];
+  if (acquisition?.key !== key) {
+    // Both transactions share even a rejection; each mode retains its own episode.
+    acquisition = { key, promise: Promise.resolve().then(() => fetchCompleteDaumCohort(transport, mode)) };
+    daumCohortAcquisitions[mode] = acquisition;
+  }
+  return structuredClone(await acquisition.promise);
+}
+
+async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: DaumProofMode): Promise<DaumCompleteCohort> {
+  const snapshot = await fetchDaumSnapshot(transport);
+  console.error(`  daum-commercial: inventory matched; starting detail acquisition; members=${snapshot.rows.length}`);
+  const work = snapshot.rows.map((inventory, index) => ({ inventory, index }))
+    .sort((a, b) => Number(b.inventory.tenure === "unknown") - Number(a.inventory.tenure === "unknown"));
+  const acquired: Array<{ index: number; row: DaumCompleteCohort["details"][number] }> = [];
+  for (const { inventory, index } of work) {
+    const html = await transport.get(inventory.url);
+    const observedAt = observationNow();
+    try {
+      const detail = mode === "verified_subset_empty_title" ? parseDaumDetail(html, inventory.url, true) : parseDaumDetail(html, inventory.url);
+      if (detail.observedCanonicalUrl !== inventory.url) throw new Error("DAUM strict proof requires observed canonical identity");
+      try {
+        if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown" && mode === "complete") throw new Error("DAUM strict proof has unresolved tenure");
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message += ` [postId=${detail.postId}; ordinal=${index + 1}/${snapshot.rows.length}; inventoryTenure=${inventory.tenure}; inventoryTextPresent=${Boolean(inventory.tenureText)}; detailTenure=${detail.tenure}; detailTextPresent=${Boolean(detail.tenureText)}]`;
+        }
+        throw error;
+      }
+      acquired.push({ index, row: { inventory, detail, observedAt, bodySha256: textSha256(html) } });
+      if (acquired.length % 100 === 0 && acquired.length < work.length) {
+        console.error(`  daum-commercial: detail acquisition checked=${acquired.length}/${work.length}`);
+      }
+    } catch (error) {
+      if (error instanceof Error) error.message += ` [inventoryUrl=${inventory.url}]`;
+      throw error;
+    }
+  }
+  const details = acquired.sort((a, b) => a.index - b.index).map(entry => entry.row);
+  assertDaumUniqueProviderIds(details.map(row => ({ id: daumListingId(row.inventory.url), daumPostId: row.detail.postId })));
+  console.error(`  daum-commercial: detail acquisition finished; checked=${details.length}/${snapshot.rows.length}`);
+  return { snapshot, details };
+}
+
 
 export async function srcDaumCommercial(
   tx: Tx,
   max: number,
   _monitor: boolean
 ): Promise<SourceResult> {
+  const subsetPolicy = process.env.DAUM_SUBSET_POLICY ?? "tenure-only-v1";
+  if (!["tenure-only-v1", "tenure-and-empty-title-v2"].includes(subsetPolicy)
+    || (subsetPolicy !== "tenure-only-v1" && process.env.DAUM_VERIFIED_SUBSET !== "1")) throw new Error("DAUM subset policy requires its exact explicit subset permission");
   const transport = new DaumPoliteTransport();
+  const generationId = refreshGenerationId();
+  const generationStartedAt = refreshStartedAt();
+  if (requireFreshDetails() && !_monitor && !Number.isFinite(max) && generationId && generationStartedAt) {
+    const mode: DaumProofMode = process.env.DAUM_VERIFIED_SUBSET === "1" ? subsetPolicy === "tenure-and-empty-title-v2" ? "verified_subset_empty_title" : "verified_subset" : "complete";
+    const cohort = await completeDaumCohort(JSON.stringify([mode, generationId, generationStartedAt, subsetPolicy]), transport, mode);
+    const proof = daumProof(cohort, tx, generationId, generationStartedAt, mode);
+    const held = new Set(proof.schema === "daum-strict-detail-v1" ? [] : proof.held.map(row => row[0]));
+    const retainedUnknown = new Set(proof.schema !== "daum-strict-detail-v1" ? proof.retainedUnknownTenure : []);
+    const listings = cohort.details.filter(row => (tx === "sale" && retainedUnknown.has(String(row.detail.postId))) || (!held.has(String(row.detail.postId)) && daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx)))
+      .map(row => {
+        if ("emptyRequiredTitle" in row.detail) throw new Error("DAUM empty-title observation cannot enter listing mapping");
+        const mapped = retainedUnknown.has(String(row.detail.postId))
+          ? mapDaumVerifiedUnknown(row.inventory, row.detail, cohort.snapshot.observedAt, row.observedAt)
+          : mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt);
+        return { ...mapped, daumDetailResponseSha256: row.bodySha256 };
+      });
+    return {
+      company: "DAUM Commercial Real Estate Services", sourceUrl: DAUM_SEARCH_URL,
+      method: "complete consecutive public POST snapshots plus every fresh canonical detail",
+      totalAvailable: listings.length, listings,
+      truncated: proof.schema !== "daum-strict-detail-v1" && proof.held.length > 0,
+      currentInventoryProof: proof,
+    };
+  }
   const snapshot = await fetchDaumSnapshot(transport);
   // Unknown inventory tenure is not assigned to a transaction pass. Fetch its
   // detail in both passes so a recognized current detail tenure can resolve it;
@@ -827,15 +801,22 @@ export async function srcDaumCommercial(
   );
   const selected = candidates.slice(0, Math.min(max, candidates.length));
   const listings = [];
+  const retainedObservations: unknown[] = [];
   let unresolvedTenureHolds = 0;
   let resolvedToOtherPass = 0;
   for (const row of selected) {
     const html = await transport.get(row.url);
-    const detailObservedAt = new Date().toISOString();
+    const detailObservedAt = observationNow();
     const detail = parseDaumDetail(html, row.url);
     const resolvedTenure = resolveDaumTenure(row.tenure, detail.tenure);
     if (resolvedTenure === "unknown") {
       unresolvedTenureHolds++;
+      retainedObservations.push({
+        schema: "daum-held-observation-v1", sourceKey: "daum-commercial",
+        reason: "unknown_inventory_and_detail_tenure", transaction: tx,
+        inventoryObservedAt: snapshot.observedAt, detailObservedAt,
+        inventory: structuredClone(row), detail: structuredClone(detail),
+      });
       continue;
     }
     if (!daumBelongsToTx(resolvedTenure, tx)) {
@@ -860,6 +841,7 @@ export async function srcDaumCommercial(
       unresolvedTenureHolds > 0 ||
       !snapshot.lifecycleExact,
     listings,
+    ...(retainedObservations.length ? { retainedObservations } : {}),
     note:
       `exact ${snapshot.total}-record/${Math.ceil(snapshot.total / DAUM_PAGE_SIZE)}-page snapshot; ` +
       `${unknownRows} blank-tenure row(s) detail-resolved or held; ` +

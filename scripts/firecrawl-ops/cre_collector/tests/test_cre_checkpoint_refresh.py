@@ -13,6 +13,7 @@ from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
 import pytest
+from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 
 ATTEMPT = "2026-07-29T12:00:00+00:00"
 
@@ -83,7 +84,17 @@ def lifecycle_schema_contract_validation(*, failed_item=None):
         }
         for item in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
     ]
-    return {"queries": {"lifecycle_schema_contract": rows}}
+    return {
+        "ok": True,
+        "validation_profile": refresh.CHECKPOINT_PREFLIGHT_PROFILE,
+        "audit_scope": refresh.VALIDATION_AUDIT_SCOPES[
+            refresh.CHECKPOINT_PREFLIGHT_PROFILE
+        ],
+        "queries": {
+            **{name: [] for name in CHECKPOINT_PREFLIGHT_QUERY_NAMES},
+            "lifecycle_schema_contract": rows,
+        },
+    }
 
 
 def test_preflight_accepts_complete_migration_016_contract():
@@ -627,7 +638,7 @@ def test_safe_process_env_maps_collector_endpoint_to_healthcheck_alias():
     assert env["API_URL"] == "http://localhost:3102"
 
 
-def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch):
+def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch, owned_group_fixture):
     spawned = {}
     signals = []
 
@@ -655,11 +666,12 @@ def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatc
         refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
 
+    owned_group_fixture([process], lambda p: p.wait_calls >= 2)
     with pytest.raises(KeyboardInterrupt):
         refresh.run_command(["node", "collect.ts"], tmp_path / "command.log", env={})
 
     assert spawned["kwargs"]["start_new_session"] is True
-    assert signals == [(4321, refresh.signal.SIGINT)]
+    assert signals == [(4321, refresh.signal.SIGINT), (4321, refresh.signal.SIGKILL)]
     assert process.wait_calls == 2
     assert "terminating process group 4321" in (tmp_path / "command.log").read_text()
 
@@ -3450,7 +3462,9 @@ def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
         refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
 
 
-def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
+def test_host_cpu_guard_requires_sustained_saturation(tmp_path, monkeypatch):
+    # Keep the original Darwin policy contract exact on every test host.
+    monkeypatch.setattr(refresh.sys, "platform", "darwin")
     guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
 
     assert guard.config() == {
@@ -3462,6 +3476,8 @@ def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
     }
 
     assert guard.observe(95.0, observed_monotonic=100.0) is None
+    for observed in range(102, 130, 2):
+        assert guard.observe(99.0, observed_monotonic=float(observed)) is None
     assert guard.observe(99.0, observed_monotonic=129.9) is None
     reason = guard.observe(91.0, observed_monotonic=130.0)
 
@@ -3539,17 +3555,21 @@ def test_host_cpu_guard_recovery_resets_saturation_window(tmp_path):
     guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
 
     assert guard.observe(95.0, observed_monotonic=100.0) is None
-    assert guard.observe(20.0, observed_monotonic=120.0) is None
-    assert guard.observe(95.0, observed_monotonic=140.0) is None
-    assert guard.observe(95.0, observed_monotonic=169.9) is None
-    assert guard.observe(90.0, observed_monotonic=170.0) is not None
+    assert guard.observe(20.0, observed_monotonic=102.0) is None
+    assert guard.observe(95.0, observed_monotonic=104.0) is None
+    for observed in range(106, 134, 2):
+        assert guard.observe(95.0, observed_monotonic=float(observed)) is None
+    assert guard.observe(95.0, observed_monotonic=133.9) is None
+    assert guard.observe(90.0, observed_monotonic=134.0) is not None
 
 
-def test_checkpoint_sigterm_handler_surfaces_cpu_guard_trip():
+def test_checkpoint_sigterm_handler_leaves_resource_classification_to_cleanup():
     refresh._set_cpu_guard_trip("host CPU stayed above the limit")
     try:
-        with pytest.raises(refresh.CpuGuardTrip, match="above the limit"):
+        with pytest.raises(KeyboardInterrupt) as caught:
             refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
+        assert type(caught.value) is KeyboardInterrupt
+        assert refresh._peek_cpu_guard_trip() == "host CPU stayed above the limit"
     finally:
         refresh._clear_cpu_guard_trip()
 
@@ -3670,10 +3690,13 @@ guard = refresh.HostCpuGuard(
     sample_seconds=0.01,
     sampler=lambda: 99.0,
 )
+memory = refresh.HostMemoryGuard(
+    log_path=Path(sys.argv[2]).with_name("memory.jsonl"), on_trip=lambda **_: None,
+)
 previous = signal.getsignal(signal.SIGTERM)
 signal.signal(signal.SIGTERM, refresh.checkpoint_sigterm_handler)
 try:
-    with lock:
+    with refresh.resource_guard_boundary(memory, guard), lock:
         guard.sample_once()
         guard.start()
         while True:
@@ -4418,7 +4441,7 @@ def test_advance_source_blocks_non_ok_gate_before_dry_run_or_ingest(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     def gate(*_args):
@@ -4467,7 +4490,7 @@ def test_advance_source_prepares_without_live_ingest(tmp_path, monkeypatch):
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     def gate(*_args):
@@ -4809,8 +4832,9 @@ def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
     ]
 
 
+@pytest.mark.parametrize("worker_exit", [refresh.COHORT_SETTLED_INTERRUPT_EXIT, -2, None])
 def test_cohort_interrupt_terminates_every_active_child_before_returning(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, owned_group_fixture, worker_exit
 ):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -4823,25 +4847,29 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         source_workers=2,
     )
     signals = []
+    processes = []
 
     class RunningProcess:
         def __init__(self, pid):
             self.pid = pid
             self.done = False
+            self.returncode = None
 
         def poll(self):
             return 0 if self.done else None
 
         def wait(self, timeout=None):
             self.done = True
-            return -2
+            self.returncode = worker_exit
+            return worker_exit
 
     def start(_run_dir, _manifest, source, **_kwargs):
+        process = RunningProcess(6000 + len(signals) + (1 if source == "cbre" else 0))
+        processes.append(process)
+        owned_group_fixture(processes, lambda p: p.done)
         return refresh.CohortCollectionProcess(
             source=source,
-            process=RunningProcess(
-                6000 + len(signals) + (1 if source == "cbre" else 0)
-            ),
+            process=process,
             log_handle=io.StringIO(),
             tmp_artifact=run_dir / "sources" / f"{source}.tmp",
             attempt={"number": 1},
@@ -4858,7 +4886,12 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
 
-    with pytest.raises(KeyboardInterrupt):
+    expected = (
+        KeyboardInterrupt
+        if worker_exit == refresh.COHORT_SETTLED_INTERRUPT_EXIT
+        else refresh.ProcessCleanupUnknown
+    )
+    with pytest.raises(expected):
         refresh.prepare_sources_cohort(
             run_dir,
             manifest,
@@ -4870,7 +4903,7 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
             source_workers=2,
         )
     assert {pid for pid, _signal in signals} == {6000, 6001}
-    assert {signal for _pid, signal in signals} == {refresh.signal.SIGINT}
+    assert {signal for _pid, signal in signals} == {refresh.signal.SIGINT, refresh.signal.SIGKILL}
 
 
 def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(
@@ -4898,7 +4931,7 @@ def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     verdicts = iter(["first_seen", "ok"])
@@ -4981,7 +5014,7 @@ def test_ingest_admitted_sources_ingests_prepared_artifact(tmp_path, monkeypatch
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
     calls = []
     monkeypatch.setattr(
@@ -5019,7 +5052,7 @@ def test_advance_source_recovers_ingesting_state_before_preparation(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     calls = []
@@ -5103,7 +5136,7 @@ def test_ingesting_with_invalid_artifact_never_recollects_or_replays(
             "state": "ingesting",
         }
     )
-    monkeypatch.setattr(refresh, "_checkpoint_artifact_valid", lambda *_args: None)
+    monkeypatch.setattr(refresh, "_checkpoint_artifact_valid", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         refresh,
         "collect_source",
@@ -5271,6 +5304,49 @@ def test_recover_interrupted_ingest_marks_exact_rollback_replayable(
     assert checkpoint["state"] == "dry_run_passed"
     assert checkpoint["ingest_recovery"]["outcome"] == "exact_rollback"
     assert checkpoint["ingest_recovery"]["replay_safe"] is True
+
+
+def test_pyramid_refusal_crash_after_exact_rollback_save_cannot_replay(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir, git_sha="abc", git_dirty=False, sources=("pyramid-brokerage",),
+        page_cap=400, concurrency=3,
+        database_target={"algorithm": "sha256", "value": "a" * 64},
+    )
+    checkpoint = manifest["sources"]["pyramid-brokerage"]
+    checkpoint.update({
+        "artifact": strict_artifact_info(),
+        "ingest": {"rc": 0, "attempt_id": "d" * 32},
+        "ingest_recovery": {"reason": "pyramid_historical_guard_refusal", "subprocess_rc": 0},
+        "state": "ingest_recovery_required",
+    })
+    validation = {"queries": {
+        "source_counts": [], "freshness_generations": [], "inventory_only_index": [],
+        "artifact_run_jobs": [{"matching_jobs": "0"}],
+    }}
+
+    def fake_run(argv, _log, **_kwargs):
+        refresh.atomic_write_json(Path(argv[argv.index("--out") + 1]), validation)
+        return 0
+
+    real_save = refresh.save_manifest
+
+    def save_then_crash(run, candidate):
+        real_save(run, candidate)
+        if candidate["sources"]["pyramid-brokerage"]["ingest_recovery"].get("outcome") == "exact_rollback":
+            raise SystemExit("simulated interruption after durable recovery save")
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    monkeypatch.setattr(refresh, "save_manifest", save_then_crash)
+    with pytest.raises(SystemExit, match="simulated interruption"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "pyramid-brokerage", None)
+
+    saved = json.loads((run_dir / "manifest.json").read_text())
+    assert saved["sources"]["pyramid-brokerage"]["state"] == "ingest_recovery_required"
+    monkeypatch.setattr(refresh, "run_command", lambda *a, **k: pytest.fail("must not replay"))
+    with pytest.raises(refresh.GlobalStageError, match="reviewed ingest recovery"):
+        refresh.advance_source(run_dir, saved, "pyramid-brokerage", page_cap=400,
+                               concurrency=3, attempts_this_run=1, env_file=None)
 
 
 def test_recover_interrupted_ingest_blocks_partial_job_footprint(tmp_path, monkeypatch):
@@ -6398,6 +6474,14 @@ def test_final_validation_persists_canonical_manifest_and_readbacks(
 
     refresh.run_final_validation(run_dir, manifest, None)
 
+    import cre_stop_guarded_tier as safe
+    import os
+    fd = os.open(run_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        raw, _ = safe._read_at(fd, "validation.json", limit=4 * 1024 * 1024)
+        assert json.loads(raw) == report
+    finally:
+        os.close(fd)
     assert len(saved) == 2
     _assert_all_saves_keep_canonical_identity(saved, manifest)
     assert saved[0]["sources"]["svn"]["readback"]["ok"] is True
@@ -6477,3 +6561,269 @@ def test_additive_coverage_hold_report_retains_lifecycle_warning(tmp_path):
     report = refresh.render_report(manifest)
     assert "retained historical coverage hold" in report
     assert "no lifecycle deletion or whole-source freshness claim" in report
+
+
+def test_historical_primary_conflicts_are_diagnostic_while_active_conflicts_block():
+    report = absolute_quality_report()
+    report["historical_primary_child_conflicts"] = [
+        {"child_type": "images", "listings": "3"}
+    ]
+    assert refresh.verify_absolute_validation_quality(report)["ok"] is True
+    report["queries"]["primary_child_conflicts"] = [
+        {"child_type": "images", "listings": "1"}
+    ]
+    result = refresh.verify_absolute_validation_quality(report)
+    assert result["ok"] is False
+    assert any("primary_child_conflicts" in failure for failure in result["failures"])
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_final_validation_refuses_aliased_report_before_publication(tmp_path, monkeypatch, alias):
+    import os
+    import stat
+
+    root = tmp_path / "run"
+    root.mkdir()
+    foreign = tmp_path / "original.json"
+    foreign.write_text("{}")
+    foreign.chmod(0o644)
+    manifest = refresh.new_manifest(
+        root, git_sha="abc", git_dirty=False, sources=("svn",), page_cap=400,
+        concurrency=1,
+    )
+
+    def command(argv, _log, **kwargs):
+        output = Path(argv[argv.index("--out") + 1])
+        if alias == "symlink":
+            output.symlink_to(foreign)
+        else:
+            os.link(foreign, output)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", command)
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh.run_final_validation(root, manifest, None)
+    assert stat.S_IMODE(foreign.stat().st_mode) == 0o644
+    assert foreign.read_text() == "{}"
+
+
+def test_avison_typed_terminal_404_stops_serial_attempts_and_resume(tmp_path, monkeypatch):
+    run_dir = tmp_path / "avison-terminal"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+    )
+    calls = []
+    monkeypatch.setattr(refresh, "run_command", lambda *args, **kwargs: calls.append(args) or 78)
+
+    result = refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=3,
+    )
+
+    checkpoint = manifest["sources"]["avison-young"]
+    assert result is None
+    assert len(calls) == 1
+    assert checkpoint["state"] == "collect_failed"
+    assert checkpoint["terminal_collection_failure"] == {
+        "code": refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE,
+        "http_status": 404,
+        "attempt_number": 1,
+    }
+    assert checkpoint["attempts"][0]["rc"] == refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
+    assert checkpoint["attempts"][0]["terminal_failure"] == checkpoint["terminal_collection_failure"]
+    assert "see private attempt log" in checkpoint["attempts"][0]["error"]
+    assert refresh._cohort_needs_collection(
+        run_dir, manifest, "avison-young", attempts_before=0, attempts_this_run=3
+    ) is False
+
+    calls.clear()
+    assert refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=3,
+    ) is None
+    assert calls == []
+
+
+def test_avison_untyped_nonzero_collection_keeps_existing_retry_behavior(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "avison-transient"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+    )
+    calls = []
+    monkeypatch.setattr(refresh, "run_command", lambda *args, **kwargs: calls.append(args) or 1)
+
+    assert refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=2,
+    ) is None
+
+    checkpoint = manifest["sources"]["avison-young"]
+    assert len(calls) == 2
+    assert checkpoint["state"] == "collect_failed"
+    assert "terminal_collection_failure" not in checkpoint
+    assert [attempt["rc"] for attempt in checkpoint["attempts"]] == [1, 1]
+
+
+def test_avison_worker_maps_only_reserved_typed_exit_to_settled_marker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(refresh, "fresh_source_env", lambda *_a, **_k: ({}, {}))
+    monkeypatch.setattr(refresh, "build_collect_argv", lambda *_a, **_k: ["collector"])
+    results = iter((78, 78))
+    monkeypatch.setattr(refresh, "run_command", lambda *_a, **_k: next(results))
+
+    avison = refresh.run_cohort_collection_worker(
+        "avison-young",
+        tmp_path / "avison.json",
+        run_dir=tmp_path,
+        attempt_log=tmp_path / "avison.log",
+        attempt_number=1,
+        generation_started_at=ATTEMPT,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+    )
+    other = refresh.run_cohort_collection_worker(
+        "cbre",
+        tmp_path / "cbre.json",
+        run_dir=tmp_path,
+        attempt_log=tmp_path / "cbre.log",
+        attempt_number=1,
+        generation_started_at=ATTEMPT,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+    )
+    assert avison == refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    assert other == 78
+    assert refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT in refresh.COHORT_SETTLED_EXIT_CODES
+    assert 75 not in refresh.COHORT_SETTLED_EXIT_CODES
+    assert 130 not in refresh.COHORT_SETTLED_EXIT_CODES
+
+
+def test_avison_pipeline_terminal_marker_is_failed_and_not_ingested(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "avison-cohort-terminal"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+        pipeline=True,
+    )
+    attempt = {
+        "number": 1,
+        "started_at": ATTEMPT,
+        "finished_at": None,
+        "rc": None,
+        "temporary_artifact": "sources/avison-young.attempt-1.json.tmp",
+    }
+    checkpoint = manifest["sources"]["avison-young"]
+    checkpoint["state"] = "collecting"
+    checkpoint["attempts"].append(attempt)
+    monkeypatch.setattr(refresh, "utc_now", lambda: ATTEMPT)
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", lambda _group: None)
+
+    class SettledProcess:
+        returncode = refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+
+        def poll(self):
+            return self.returncode
+
+    item = refresh.CohortCollectionProcess(
+        source="avison-young",
+        process=SettledProcess(),
+        log_handle=io.StringIO(),
+        tmp_artifact=run_dir / "sources/avison-young.attempt-1.json.tmp",
+        attempt=attempt,
+        attempt_started_at=ATTEMPT,
+        owned_group=object(),
+    )
+    assert refresh._finalize_cohort_collection(run_dir, manifest, item) is False
+    assert checkpoint["state"] == "collect_failed"
+    assert checkpoint["terminal_collection_failure"]["http_status"] == 404
+    assert checkpoint["attempts"][0]["rc"] == refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    assert checkpoint["artifact"] is None
+    assert refresh._cohort_needs_collection(
+        run_dir, manifest, "avison-young", attempts_before=0, attempts_this_run=3
+    ) is False
+
+
+def test_serial_resume_never_replays_held_immutable_artifact(tmp_path, monkeypatch):
+    manifest = {"config": {"transactions": ["sale", "lease"]},
+                "sources": {"pyramid-brokerage": {"state": "pyramid_historical_guard_refused"}}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    monkeypatch.setattr(refresh, "collect_source", lambda *a, **k: pytest.fail("recollection"))
+    monkeypatch.setattr(refresh, "ingest_source", lambda *a, **k: pytest.fail("replay"))
+    with pytest.raises(refresh.GlobalStageError, match="cannot be replayed"):
+        refresh.advance_source(tmp_path, manifest, "pyramid-brokerage", page_cap=1,
+                               concurrency=1, attempts_this_run=1, env_file=None)
+
+
+@pytest.mark.parametrize("singleton", [True, False])
+def test_serial_guard_only_certifies_single_source_child(tmp_path, monkeypatch, singleton):
+    import cre_pyramid_rollback_result as outcome
+
+    sources = ["pyramid-brokerage"] if singleton else ["pyramid-brokerage", "savills"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: True)
+    calls = []
+    def ingest(run, owner, source, artifact, env):
+        calls.append(source)
+        raise refresh.PyramidHistoricalGuardRefusal("typed")
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    error = refresh.PyramidHistoricalGuardRefusal if singleton else refresh.GlobalStageError
+    with pytest.raises(error):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: None)
+    assert calls == ["pyramid-brokerage"]
+    assert manifest.get("serial_guard_holds") == (["pyramid-brokerage"] if singleton else None)
+
+
+def test_serial_multi_source_guard_remains_global_after_an_earlier_commit(tmp_path, monkeypatch):
+    sources = ["savills", "pyramid-brokerage", "hanley"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    calls = []
+    def ingest(run, owner, source, artifact, env):
+        calls.append(source)
+        if source == "pyramid-brokerage":
+            raise refresh.PyramidHistoricalGuardRefusal("typed")
+        owner["sources"][source]["state"] = "ingested"
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    with pytest.raises(refresh.GlobalStageError, match="multi-source serial rollback"):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: None)
+    assert calls == ["savills", "pyramid-brokerage"]
+    assert manifest["sources"]["savills"]["state"] == "ingested"
+    assert "serial_guard_holds" not in manifest

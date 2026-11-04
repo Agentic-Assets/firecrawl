@@ -1,0 +1,27 @@
+{
+  "schema": "avison-named-association-fixture-v1",
+  "response_url": "https://www.avisonyoung.us/properties/1641-el-dorado-st-san-jose-sale",
+  "response_sha256": "2b80c812f2ecaa8d2eb32333e3ac6e83ec0cd9496757cfa299337df07da325d8",
+  "feed_sha256": "9d725fbf88310ae17ef4002750ad9f264be8981da8b604b4a718a938990e0e2c",
+  "sanitization": "Selected owned head/hero/building/download/map nodes; removed structured agent contacts and unrelated page chrome. Selected original feed fields only; no identity field rewritten.",
+  "feed_row": {
+    "id": 18071,
+    "name": "1563 - 1641 El Dorado St",
+    "address": "1563 - 1641 El Dorado St",
+    "city": "San Jose",
+    "state": "CA",
+    "zip": "95002",
+    "country": "US",
+    "url": "https://ayus1641eldoradost.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/1641-el-dorado-st-san-jose-sale",
+    "description": "<p>We are pleased to present the offering memoradum for the properties located at 1563-1641 El Dorado Street. Nestled in a</p><p>vibrant neighborhood that boasts a rich blend of culture, accessibility, and growth potential, these properties represent",
+    "type": [
+      "land.other"
+    ],
+    "transaction": [
+      "sale"
+    ],
+    "status": "active",
+    "total_surface_sqft": 0
+  }
+}

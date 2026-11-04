@@ -1,6 +1,11 @@
 # Firecrawl Local Development Guide
 
-This guide describes this fork's local self-hosted setup. It is intentionally focused on the current Mac workflow: OrbStack, Docker compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes.
+This guide describes this fork's local self-hosted setup: Docker Compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes. The Mac quickstart below uses OrbStack. For Windows, use the [Docker Desktop onboarding guide](docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md); its host settings and PowerShell commands are separate from the Mac workflow.
+
+For CRE PostgreSQL failures from Ubuntu/WSL, use the
+[Supabase connection troubleshooting guide](docs/firecrawl-ops/references/wsl-supabase-connection-troubleshooting.md):
+IPv6 routing, IPv4 session pooling, verified TLS and checkpoint target identity
+are separate from local Firecrawl health.
 
 ## Fresh Clone Quickstart
 
@@ -24,9 +29,9 @@ docker compose version
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 
-# Build and start the self-hosted stack.
-docker compose build
-docker compose up -d
+# Build and start the five-service core stack with the PostgreSQL queue.
+docker compose build api playwright-service nuq-postgres
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
@@ -48,15 +53,85 @@ The root `.env` is optional for the core stack, local-only, and gitignored. Non-
 Start from the repo root:
 
 ```bash
-docker compose up -d
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
 Expected baseline:
-- OrbStack is running and `docker context show` is `orbstack`.
+- On macOS, OrbStack is running and `docker context show` is `orbstack`. Native Windows uses Docker Desktop with Linux containers and `desktop-linux`; Ubuntu/WSL integration may report `default` for the same Desktop engine. Verify the daemon and existing containers before changing contexts.
 - API is reachable at `http://localhost:3002`.
 - Core services include `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
 - Local auth is usually disabled with `USE_DB_AUTHENTICATION=false`.
+
+Selecting `api` also starts its four core dependencies. Plain `docker compose up -d` starts all defined services, including the optional FoundationDB backend. Keep existing root `.env` values intact; a fresh non-AI setup does not require that file.
+
+### Optional loopback-only API publication
+
+The upstream Compose file publishes the API on every host interface by default,
+while local authentication is usually disabled. A successful localhost request
+does not establish isolation from the LAN. The fork-owned
+`docker-compose.loopback.yaml` replaces that publication with
+`127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}` and leaves the existing browser
+sidecar publication unchanged. `PORT` customizes the host port and
+`INTERNAL_PORT` customizes the container port, as in the base file.
+
+This overlay is **opt-in** and requires Docker Compose **2.24.4 or newer** for
+`!override`. An ordinary merged `ports` list can retain the wildcard binding;
+do not remove the tag or use this overlay with an older Compose version. The
+upstream `docker-compose.yaml` remains unchanged. See Docker's
+[merge rules](https://docs.docker.com/reference/compose-file/merge/) and
+[port publication guidance](https://docs.docker.com/engine/network/port-publishing/).
+
+For an existing runtime, [AGENTIC-2284](https://linear.app/agenticassets/issue/AGENTIC-2284)
+owns the founder ingress decision, application and rollback approval.
+Preparing or reviewing this file under
+[AGENTIC-3754](https://linear.app/agenticassets/issue/AGENTIC-3754) authorizes no
+container recreation, firewall change or writer cutover. Preserve any existing
+untracked `docker-compose.override.yaml`, including its resource settings and
+current loopback binding. Explicit `-f` flags do not automatically include it;
+review the intended file order and include the local overlay before the
+loopback overlay when applicable.
+
+Review the merged configuration without starting containers. Full resolved
+Compose output can contain secrets; print only API ports:
+
+```bash
+docker compose version
+docker compose -f docker-compose.yaml -f docker-compose.loopback.yaml config --format json \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["services"]["api"]["ports"], indent=2))'
+# If a local overlay exists, include it explicitly before the loopback overlay:
+# -f docker-compose.yaml -f docker-compose.override.yaml -f docker-compose.loopback.yaml
+```
+
+For a new or existing runtime **after the separate ingress approval**, use that
+same reviewed file list with `up -d api`. Keep the file list consistent on
+later `up`/recreate commands so a default invocation cannot restore the wildcard
+publication. Local clients still use `http://localhost:3002` at the default
+port; set `FIRECRAWL_API_URL` to match a custom host port. This overlay publishes
+IPv4 loopback only, so use `127.0.0.1` explicitly if a client insists on IPv6
+`::1` without IPv4 fallback.
+
+The full healthcheck now inspects actual API service publications from the
+selected Docker Compose project, even when its API URL is localhost. It warns
+on non-loopback IPv4/IPv6 bindings, a remote API endpoint, or unknown/malformed
+Docker inspection. These warnings are recorded in evidence and do not change
+the existing 4/4 functional-health result. The healthcheck still performs a
+network scrape; the standalone read-only publication diagnostic is:
+
+```bash
+python3 scripts/firecrawl-ops/firecrawl_ingress_check.py --api-url http://localhost:3002
+```
+
+Docker publication is only one part of ingress posture. After an approved
+application, verify the localhost request and inspect listeners (`ss -ltn` on
+Linux, or `Get-NetTCPConnection -LocalPort 3002 -State Listen` in PowerShell).
+On Windows, inspect active firewall profiles with
+`Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction`
+and have the responsible operator review applicable inbound rules; a profile
+listing alone does not prove isolation. Verify refusal from a separately
+authorized non-host network context as well. This guide changes no firewall
+rules. Docker documents a localhost-publication caveat for Engine versions
+older than 28.0.0, so record the engine version with reachability evidence.
 
 Useful commands:
 
@@ -64,15 +139,29 @@ Useful commands:
 docker compose ps
 docker compose logs api --tail 200
 docker compose logs playwright-service --tail 200
-docker compose up -d --force-recreate api
-docker compose down
+# Stop only after active work/queues have settled; preserves containers.
+docker compose stop
 ```
+
+The core queue/database containers have no durable data volumes. `down`
+removes containers, and recreation can discard their state. Existing live-stack
+rebuilds/recreation and model/OCR changes require their operator maintenance
+procedure; a docs-only pull does not require them.
 
 ## 2. Env Files
 
 - `./.env` is the primary local env file read by Docker compose. It is gitignored; never commit secrets.
 - `apps/api/.env.example` is upstream's reference list of available variables. It is not a drop-in Docker Compose contract.
 - `apps/api/.env.local` is tracked upstream scaffolding and is not the Docker compose env file.
+
+For local scrape capacity, `SELF_HOSTED_CONCURRENCY_LIMIT` optionally sets the
+shared no-auth team's simultaneous scrape limit to an integer from 1 through
+32. It requires explicit `USE_DB_AUTHENTICATION=false`; absent or invalid values
+retain the upstream limit of 2. Hosted and preview limits are unaffected.
+Compose passes this setting with a default of 2. Increasing it requires measured
+browser and worker capacity; `PLAYWRIGHT_MAX_CONCURRENT_PAGES` is a separate
+limit. The CRE checkpoint refresh accepts an opt-in `--source-workers 4` for
+supervised collection calibration, with provider lanes and serial ingest.
 
 For an AI-backed local setup, a human operator creates a minimal root `.env` with the provider key from the approved secret workflow and the three reversible model keys below. The handoff requires `OPENAI_BASE_URL`, `MODEL_NAME`, and `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` to each appear exactly once in the file, so include all three (empty values are fine). Do not copy `apps/api/.env.example` wholesale and do not commit this file:
 
@@ -322,7 +411,7 @@ Operational notes:
 
 Keep these layers separate:
 
-1. Firecrawl local runtime: OrbStack + Docker compose, API at `http://localhost:3002`.
+1. Firecrawl local runtime: OrbStack on macOS or Docker Desktop on Windows, with Docker Compose and API at `http://localhost:3002`.
 2. Reusable tool interfaces: direct HTTP API, `firecrawl_cli.sh`, `firecrawl_request.py`, and `firecrawl_mcp.sh`.
 3. Agent adapters: `.cursor/mcp.json`, `.agents/skills/` (Cursor reads the synced copy at `~/.cursor/skills`), or any MCP-capable client config.
 4. Agent model runtime: Cursor Composer, Codex, Claude, or another model.
@@ -333,7 +422,7 @@ For MCP-capable agents:
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-Cursor is one optional adapter. Cursor SDK code does not load project settings by default; pass `mcpServers` inline or use `local: { cwd: process.cwd(), settingSources: ["project"] }`. Cursor cloud agents cannot reach this Mac's `localhost:3002` unless the API is exposed at a reachable URL.
+Cursor is one optional adapter. Cursor SDK code does not load project settings by default; pass `mcpServers` inline or use `local: { cwd: process.cwd(), settingSources: ["project"] }`. Cursor cloud agents cannot reach a workstation's `localhost:3002` without a separately reviewed reachable endpoint.
 
 Firecrawl's own AI-backed formats still use `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MODEL_NAME`. Do not treat Cursor Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible endpoint.
 

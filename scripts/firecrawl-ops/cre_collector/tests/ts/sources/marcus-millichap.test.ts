@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   marcusUrl,
+  srcMarcusMillichap,
+  fetchMarcusMapRows,
   parseMarcusLocation,
   parseMarcusAddress,
   extractCssUrl,
@@ -22,6 +24,8 @@ import {
   prepareMarcusDetailCache,
   readMarcusDetailCache,
 } from "../../../sources/marcus-millichap.js";
+
+import { createPerformanceRecorder, resetPerformanceRecorderForTests, setPerformanceRecorderForTests } from "../../../lib/performance.js";
 
 // ---------------------------------------------------------------------------
 // Fixture loader
@@ -524,4 +528,208 @@ test("parseMarcusContactLicense returns null when contact has no license field",
   const lamoreaux = contacts.find((c: any) => c.name === "Luke D. Lamoreaux");
   assert.ok(lamoreaux, "Lamoreaux contact must exist in fixture");
   assert.equal(parseMarcusContactLicense(lamoreaux.license), null);
+});
+
+// Exact two-record projection of the saved public mapproperties response.
+// Primary body SHA25694928849b07d14f6ae319047bb55ebfe8bbd60cf47a03a8ee54deb7ebd222fb4.
+const nativeMapEnvelope = JSON.parse(readFileSync(join(__dirname, "../../fixtures/marcus-map-results-array.json"), "utf8"));
+
+test("strict Marcus map accepts native wrapped Results array without changing row fields", () => {
+  const rows = parseMarcusMapRowsResponse(nativeMapEnvelope, true);
+  assert.deepEqual(rows, nativeMapEnvelope.Results);
+  assert.doesNotThrow(() => assertMarcusInventoryCount(nativeMapEnvelope.Results.length, rows, true));
+});
+
+test("actual Marcus map caller accepts captured envelope and preserves request shape", async () => {
+  const original = globalThis.fetch, fresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  let calls = 0;
+  globalThis.fetch = (async (url: any, init: any) => {
+    calls++;
+    assert.equal(String(url), "https://www.marcusmillichap.com/api/contentsearch/mapproperties");
+    assert.equal(init.method, "POST");
+    assert.equal(JSON.parse(init.body).pageSize, 1);
+    return new Response(JSON.stringify(nativeMapEnvelope), {status: 200});
+  }) as typeof fetch;
+  try { assert.deepEqual(await fetchMarcusMapRows(), nativeMapEnvelope.Results); assert.equal(calls, 1); }
+  finally { globalThis.fetch = original; if (fresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = fresh; }
+});
+
+test("native map envelope retains unique-ID and independent total reconciliation", () => {
+  const first = nativeMapEnvelope.Results[0];
+  const rows = parseMarcusMapRowsResponse({Results: [first, {...first}, {ActivityId: " "}]}, true);
+  assert.deepEqual(rows, [first]);
+  assert.throws(() => assertMarcusInventoryCount(3, rows, true), /inventory mismatch/);
+  for (const count of [null, undefined, NaN, Infinity, -1, 1.5]) {
+    assert.throws(() => assertMarcusInventoryCount(count as any, rows, true), /finite nonnegative integer/);
+  }
+  assert.doesNotThrow(() => assertMarcusInventoryCount(1, rows, true));
+});
+
+test("strict native envelope recognition refuses malformed, error and unproven raw-array shapes", () => {
+  for (const malformed of [null, {}, {Results: null}, {Results: "error"}, {Results: {Error: "unavailable"}}, {Results: {Properties: {}}}, nativeMapEnvelope.Results]) {
+    assert.throws(() => parseMarcusMapRowsResponse(malformed, true), /mapproperties response has no Properties array/);
+  }
+  assert.deepEqual(parseMarcusMapRowsResponse({Results: []}, true), []);
+  assert.deepEqual(parseMarcusMapRowsResponse(nativeMapEnvelope.Results, false), nativeMapEnvelope.Results);
+});
+
+
+async function withMarcusInventoryPairs(
+  pairs: Array<{ total?: any; map?: any; status?: number; stall?: boolean }>,
+  check: (calls: string[]) => Promise<void>
+): Promise<void> {
+  const original = globalThis.fetch, fresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  const calls: string[] = [];
+  let pair = 0;
+  globalThis.fetch = (async (url: any, init: any) => {
+    assert.equal(init.method, "POST");
+    const endpoint = new URL(String(url)).pathname.split("/").pop()!;
+    calls.push(endpoint);
+    const entry = pairs[pair];
+    if (endpoint === "properties") {
+      assert.equal(JSON.parse(init.body).pageSize, 2);
+      assert.ok(entry, "no unbounded pair retry");
+      if (entry.stall) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ Results: {
+        Properties: [{ ActivityId: "sanity" }], TotalCount: entry.total,
+      } }), { status: entry.status ?? 200 });
+    }
+    if (endpoint === "mapproperties") {
+      assert.equal(JSON.parse(init.body).pageSize, 1);
+      assert.ok(entry, "no unbounded pair retry");
+      pair++;
+      return new Response(JSON.stringify(entry.map), { status: 200 });
+    }
+    if (endpoint === "mappropertydetail") {
+      const id = JSON.parse(init.body).activityId;
+      calls[calls.length - 1] += ":" + id;
+      return new Response(JSON.stringify({ Results: {
+        PropertyUrl: "/properties/" + id,
+        PropertyDetail: `<div class="mm-tile" data-dealid="deal-${id}"></div>`,
+      } }), { status: 200 });
+    }
+    throw new Error("unexpected endpoint; no live transport fallback");
+  }) as typeof fetch;
+  try { await check(calls); }
+  finally {
+    globalThis.fetch = original;
+    if (fresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = fresh;
+  }
+}
+
+const marcusMap = (...ids: string[]) => ({ Results: ids.map(ActivityId => ({ ActivityId })) });
+
+test("Marcus pair recovery discards first inventory before any detail", async () => {
+  await withMarcusInventoryPairs([
+    { total: 3, map: marcusMap("stale-a", "stale-b") },
+    { total: 2, map: marcusMap("fresh-c", "fresh-d") },
+  ], async calls => {
+    const result = await srcMarcusMillichap("sale", 1, true);
+    assert.equal(result.totalAvailable, 2);
+    assert.deepEqual(calls, ["properties", "mapproperties", "properties", "mapproperties", "mappropertydetail:fresh-c"]);
+    assert.equal(result.listings.length, 1);
+    assert.equal((result.listings[0] as any).activityId, "fresh-c");
+  });
+});
+
+test("Marcus matching inventory does not add pair requests", async () => {
+  await withMarcusInventoryPairs([{ total: 2, map: marcusMap("a", "b") }], async calls => {
+    assert.equal((await srcMarcusMillichap("sale", 0, true)).totalAvailable, 2);
+    assert.deepEqual(calls, ["properties", "mapproperties"]);
+  });
+});
+
+test("Marcus stable mismatch stops after exactly one whole-pair reread", async () => {
+  await withMarcusInventoryPairs([
+    { total: 3, map: marcusMap("a", "b") },
+    { total: 3, map: marcusMap("a", "b") },
+  ], async calls => {
+    await assert.rejects(srcMarcusMillichap("sale", 1, true), /inventory mismatch/);
+    assert.deepEqual(calls, ["properties", "mapproperties", "properties", "mapproperties"]);
+  });
+});
+
+for (const [name, total, map, statusCode, count] of [
+  ["string total", "2", marcusMap("a"), 200, 1],
+  ["negative total", -1, marcusMap("a"), 200, 1],
+  ["malformed envelope", 2, { Results: "error" }, 200, 2],
+  ["missing native ID", 2, { Results: [{ ActivityId: "a" }, {}] }, 200, 2],
+  ["nonstring native ID", 2, { Results: [{ ActivityId: "a" }, { ActivityId: 2 }] }, 200, 2],
+  ["bootstrap denial", 2, marcusMap("a"), 403, 1],
+  ["rate limit", 2, marcusMap("a"), 429, 1],
+] as const) {
+  test(`Marcus invalid pair has no semantic reread: ${name}`, async () => {
+    await withMarcusInventoryPairs([{ total, map, status: statusCode }], async calls => {
+      await assert.rejects(srcMarcusMillichap("sale", 1, true));
+      assert.equal(calls.length, count);
+      assert.equal(calls.some(x => x.startsWith("mappropertydetail")), false);
+    });
+  });
+}
+
+test("Marcus optional canonical native-ID check preserves legacy dedupe", () => {
+  const map = { Results: [{ ActivityId: "a" }, { ActivityId: "a" }, {}] };
+  assert.equal(parseMarcusMapRowsResponse(map, true).length, 1);
+  assert.throws(() => parseMarcusMapRowsResponse(map, true, true), /ActivityId/);
+  assert.equal(parseMarcusMapRowsResponse(marcusMap("a", "a"), true, true).length, 1);
+});
+
+
+test("Marcus pair recovery records actual wait rather than configured delay", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "marcus-pair-performance-"));
+  const path = join(dir, "performance.json");
+  const recorder = createPerformanceRecorder({ path,
+    runId: "2026-10-19T153231Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+  });
+  assert.ok(recorder);
+  const originalTimer = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: any, ms: any, ...args: any[]) =>
+    originalTimer(callback, ms === 3000 ? 15 : ms, ...args)) as typeof setTimeout;
+  setPerformanceRecorderForTests(recorder);
+  try {
+    await withMarcusInventoryPairs([
+      { total: 2, map: marcusMap("stale") },
+      { total: 1, map: marcusMap("fresh") },
+    ], async calls => {
+      await srcMarcusMillichap("sale", 0, true);
+      assert.equal(calls.length, 4);
+    });
+    recorder.flush(true);
+    const retry = JSON.parse(readFileSync(path, "utf8")).metrics.requests.retry.http_helper;
+    assert.equal(retry.retry_attempts, 1);
+    assert.ok(retry.backoff_ms > 0);
+    assert.notEqual(retry.backoff_ms, 3000);
+    assert.equal(retry.terminal_backoff_ms, 0);
+  } finally {
+    globalThis.setTimeout = originalTimer;
+    resetPerformanceRecorderForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("Marcus inventory header timeout has no semantic reread", async () => {
+  const originalTimer = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: any, ms: any, ...args: any[]) =>
+    originalTimer(callback, ms === 30000 ? 10 : ms, ...args)) as typeof setTimeout;
+  try {
+    await withMarcusInventoryPairs([{ stall: true }], async calls => {
+      await assert.rejects(srcMarcusMillichap("sale", 1, true), /timed out after 30000ms/);
+      assert.deepEqual(calls, ["properties"]);
+    });
+  } finally { globalThis.setTimeout = originalTimer; }
+});
+
+test("Marcus pair recovery never falls back after fresh-pair denial", async () => {
+  await withMarcusInventoryPairs([
+    { total: 2, map: marcusMap("old") },
+    { total: 1, map: marcusMap("new"), status: 403 },
+  ], async calls => {
+    await assert.rejects(srcMarcusMillichap("sale", 1, true), /HTTP 403/);
+    assert.deepEqual(calls, ["properties", "mapproperties", "properties"]);
+  });
 });

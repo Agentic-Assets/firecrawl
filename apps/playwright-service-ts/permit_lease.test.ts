@@ -255,3 +255,133 @@ test("a permit whose release throws does not strand the others", async (t) => {
   assert.deepEqual(returned, ["c", "b", "a"]);
   assert.ok(errors.mock.callCount() >= 2);
 });
+
+// AGENTIC-3767 public-API settlement regressions. Deferreds replace only browser teardown.
+const flushCleanup = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("AGENTIC3767 concurrent settlement invokes each owned close once", async () => {
+  const { lease, pages } = await batchLease();
+  const pending = deferred<void>();
+  let closes = 0;
+  const close = () => { closes++; return pending.promise; };
+  const first = lease.settleByRequest(null, close, 100);
+  const second = lease.settleByRequest(null, close, 100);
+  pending.resolve();
+  await Promise.all([first, second]);
+  assert.equal(closes, 1, "concurrent callers must share one context cleanup owner");
+  assert.equal(pages.getAvailablePermits(), 1);
+});
+
+test("AGENTIC3767 public release cannot free browser capacity during pending cleanup", async () => {
+  const { lease, pages } = await batchLease();
+  const pending = deferred<void>();
+  const settled = lease.settleByRequest(null, () => pending.promise, 100);
+  lease.release();
+  const whilePending = pages.getAvailablePermits();
+  pending.resolve();
+  await settled;
+  assert.equal(whilePending, 0, "live context must still own its browser permit");
+  assert.equal(pages.getAvailablePermits(), 1);
+});
+
+test("AGENTIC3767 timeout returns admission then exact late context success releases once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { lease, pages, slot } = await batchLease();
+  const pending = deferred<void>();
+  const settled = lease.settleByRequest(null, () => pending.promise, 10);
+  await flushCleanup();
+  t.mock.timers.tick(10);
+  assert.equal(await settled, false);
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 0);
+  pending.resolve();
+  await flushCleanup();
+  assert.equal(pages.getAvailablePermits(), 1, "the exact late close confirmation must return browser capacity");
+  lease.release();
+  pending.resolve();
+  await flushCleanup();
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 1, "capacity returns exactly once");
+});
+
+test("AGENTIC3767 eventual context rejection keeps browser held without unhandled rejection", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { lease, pages, slot } = await batchLease();
+  const pending = deferred<void>();
+  const settled = lease.settleByRequest(null, () => pending.promise, 10);
+  await flushCleanup();
+  t.mock.timers.tick(10);
+  assert.equal(await settled, false);
+  pending.reject(new Error("synthetic late close failure"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 0);
+});
+
+test("AGENTIC3767 successful context owns hanging page and settles without waiting for page", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { lease, pages } = await batchLease();
+  const pendingPage = deferred<void>();
+  let result: boolean | undefined;
+  const settled = lease.settleByRequest(() => pendingPage.promise, async () => {}, 10)
+    .then((value) => { result = value; return value; });
+  await flushCleanup();
+  const beforePageTimeout = { result, permits: pages.getAvailablePermits() };
+  pendingPage.resolve();
+  await settled;
+  assert.deepEqual(beforePageTimeout, { result: true, permits: 1 },
+    "confirmed context teardown owns its page without exhausting page timeout");
+});
+
+test("AGENTIC3767 page-only late success returns capacity exactly once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { lease, pages, slot } = await batchLease();
+  const pending = deferred<void>();
+  const settled = lease.settleByRequest(() => pending.promise, null, 10);
+  await flushCleanup();
+  t.mock.timers.tick(10);
+  assert.equal(await settled, false);
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 0);
+  pending.resolve();
+  await flushCleanup();
+  assert.equal(pages.getAvailablePermits(), 1, "late page-only cleanup confirms browser resource closure");
+  lease.release();
+  assert.equal(pages.getAvailablePermits(), 1);
+});
+
+test("AGENTIC3767 explicit quarantine during cleanup remains final despite eventual success", async () => {
+  const { lease, pages, slot } = await batchLease();
+  const pending = deferred<void>();
+  const settled = lease.settleByRequest(null, () => pending.promise, 100);
+  lease.quarantine("synthetic explicit leak veto");
+  pending.resolve();
+  await settled;
+  lease.release();
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 0);
+});
+
+test("AGENTIC3767 control confirmed close returns both capacity classes exactly once", async () => {
+  const { lease, pages, slot } = await batchLease();
+  assert.equal(await lease.settleByRequest(async () => {}, async () => {}, 10), true);
+  lease.release();
+  assert.equal(slot.getAvailablePermits(), 1);
+  assert.equal(pages.getAvailablePermits(), 1);
+});
+
+test("AGENTIC3767 control late allocation stays owned until its context closes", async () => {
+  const { lease, pages, slot } = await batchLease();
+  const allocation = deferred<string>();
+  const closed = deferred<void>();
+  await assert.rejects(awaitAllocation(lease, () => allocation.promise,
+    async () => { throw new Error("synthetic request deadline"); }, () => closed.promise),
+    /synthetic request deadline/);
+  allocation.resolve("late context");
+  await flushCleanup();
+  assert.equal(pages.getAvailablePermits(), 0);
+  closed.resolve();
+  await flushCleanup();
+  assert.equal(pages.getAvailablePermits(), 1);
+  assert.equal(slot.getAvailablePermits(), 1);
+});

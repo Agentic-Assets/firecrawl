@@ -880,6 +880,7 @@ def test_serial_interrupt_reaps_child_even_when_log_evidence_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cpu_interrupt: bool,
+    owned_group_fixture,
 ) -> None:
     log_path = tmp_path / "logs" / "command.log"
     signals: list[int] = []
@@ -926,6 +927,7 @@ def test_serial_interrupt_reaps_child_even_when_log_evidence_fails(
         "killpg",
         lambda _pid, sent_signal: signals.append(sent_signal),
     )
+    owned_group_fixture([proc], lambda p: p.wait_calls >= 3)
     refresh._clear_cpu_guard_trip()
     if cpu_interrupt:
         refresh._set_cpu_guard_trip(

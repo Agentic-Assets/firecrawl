@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from local_capability_matrix import extract_routes
+from ensure_skill_links import inspect_skill_links
 
 SCHEMA_VERSION = "1"
 DEFAULT_API_URL = "http://localhost:3002"
@@ -791,6 +792,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Perform static/evidence inspection only; make no HTTP request.",
     )
     parser.add_argument(
+        "--skill-links-only",
+        action="store_true",
+        help="Check repo skill symlinks only, without HTTP or credential access.",
+    )
+    parser.add_argument(
         "--cli-package-spec",
         help="Optional immutable firecrawl-cli@x.y.z declaration; never resolved.",
     )
@@ -811,6 +817,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.skill_links_only:
+        links = inspect_skill_links(REPO_ROOT)
+        ready = all(state == "ready" for state in links.values())
+        print(json.dumps({"ready": ready, "links": links}, sort_keys=True))
+        return 0 if ready else 1
     unknown = sorted(set(args.require) - set(CAPABILITIES))
     if unknown:
         parser.error(f"Unknown capability for --require: {', '.join(unknown)}")

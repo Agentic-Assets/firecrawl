@@ -1,0 +1,60 @@
+{
+  "schema": "document-input-experiment-proof/v1",
+  "executed_runner_commit": "d352e26caeace55f7134919998f565419e94ae19",
+  "run": {
+    "anydoc_lock_sha256": "2fca6f6c1f569483850fd7d0dd252247c322bec5918649c8d7f62e1ac61655ba",
+    "anydoc_version": "0.2.4",
+    "arms": [
+      "anydoc_text",
+      "native_pdf"
+    ],
+    "bridge_sha256": "62a8bd61318c0b53a5a3d269a162e5624ce9a6de5aec18e4ac91f16e84ae70f7",
+    "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+    "models": [
+      "anthropic/claude-haiku-5.5",
+      "openai/gpt-6.1-terra",
+      "alibaba/qwen3.8-flash"
+    ],
+    "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+    "runner_sha256": "e38889e58214897a374315e59ffdadee64429334def5215eb665cd37b13f5f5b",
+    "schema": "document-input-benchmark-run/v1"
+  },
+  "settings": {
+    "arms": [
+      "anydoc_text",
+      "native_pdf"
+    ],
+    "budget_usd": 50.0,
+    "effort": "medium",
+    "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+    "max_tokens": 65536,
+    "models": [
+      "anthropic/claude-haiku-5.5",
+      "openai/gpt-6.1-terra",
+      "alibaba/qwen3.8-flash"
+    ],
+    "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+    "reservation_usd": 3.5,
+    "runner_sha256": "e38889e58214897a374315e59ffdadee64429334def5215eb665cd37b13f5f5b",
+    "unsupported_native_evidence_sha256": "f81665b5c0c31d73cf15224a387f1dcbcab9308d31f3efc4a3593e2f3f1c34a4"
+  },
+  "reviewed_gold_sha256": "0f11938434dad29d0b4972d33386b18f3571e6071babc39e119173d9d9f2a497",
+  "result_count": 180,
+  "intent_count": 180,
+  "generation_cost_receipts": 146,
+  "qualification": [
+    {
+      "model": "openai/gpt-6.1-terra",
+      "provider_name": "openai",
+      "total_cost": 0.0031005,
+      "is_byok": false
+    },
+    {
+      "model": "anthropic/claude-haiku-5.5",
+      "provider_name": "anthropic",
+      "total_cost": 0.000204,
+      "is_byok": false
+    }
+  ],
+  "qwen_native_refusal_sha256": "f81665b5c0c31d73cf15224a387f1dcbcab9308d31f3efc4a3593e2f3f1c34a4"
+}

@@ -57,42 +57,91 @@ if [[ ! "$port" =~ ^[0-9]+$ ]]; then
 fi
 
 nice -n 10 python3 - "$COLLECTOR_DIR" "$PSQL_BIN" "$port" <<'PY'
+import contextlib
+import io
+import json
+import subprocess
 import sys
-from pathlib import Path
 
-collector_dir = Path(sys.argv[1])
-sys.path.insert(0, str(collector_dir))
+collector_dir = sys.argv[1]
+sys.path.insert(0, collector_dir)
 
-from cre_validate import run_queries_with_timings
+import cre_validate
 
-rows, timings, stderr = run_queries_with_timings(
-    sys.argv[2],
-    f"postgresql://postgres@127.0.0.1:{sys.argv[3]}/postgres",
-    {
-        "under_one_second": (
-            "SELECT 'Time: 1234.567 ms (00:01.235)'::text "
-            "AS result_like_timing_text;"
-        ),
-        "over_one_second": (
-            "SELECT 'slow'::text AS label "
-            "FROM (SELECT pg_sleep(1.1)) AS slept;"
-        ),
-    },
+psql = sys.argv[2]
+db_url = f"postgresql://postgres@127.0.0.1:{sys.argv[3]}/postgres"
+setup_sql = r'''
+CREATE SCHEMA credeals;
+CREATE TABLE credeals.cre_brokerages (id text PRIMARY KEY, slug text NOT NULL);
+CREATE TABLE credeals.cre_listings (
+  id text PRIMARY KEY, brokerage_id text NOT NULL REFERENCES credeals.cre_brokerages(id),
+  deleted_at timestamptz
+);
+CREATE TABLE credeals.cre_listing_images (
+  id bigint PRIMARY KEY, listing_id text NOT NULL REFERENCES credeals.cre_listings(id),
+  url text NOT NULL, is_primary boolean, display_order integer, alt_text text
+);
+INSERT INTO credeals.cre_brokerages VALUES ('tw', 'transwestern'), ('other', 'other');
+INSERT INTO credeals.cre_listings VALUES
+  ('tw-active', 'tw', NULL), ('other-active', 'other', NULL),
+  ('tw-deleted', 'tw', now());
+INSERT INTO credeals.cre_listing_images VALUES
+  (1, 'tw-active', 'https://images.example.test/property.jpg', true, 0, 'Property'),
+  (2, 'other-active', 'https://images.example.test/other.jpg', true, 0, 'Other'),
+  (3, 'tw-deleted', 'https://images.example.test/deleted.jpg', true, 0, 'Deleted');
+'''
+subprocess.run(
+    [psql, "-X", "-v", "ON_ERROR_STOP=1", db_url, "-c", setup_sql],
+    check=True,
+    capture_output=True,
+    text=True,
 )
 
-assert stderr == ""
-assert rows == {
-    "under_one_second": [
-        {"result_like_timing_text": "Time: 1234.567 ms (00:01.235)"}
-    ],
-    "over_one_second": [{"label": "slow"}],
+cre_validate.load_db_url = lambda _env_file: (db_url, "<disposable-local-postgres>")
+cre_validate.assert_expected_database_target = lambda *_args: None
+cre_validate.find_psql = lambda: psql
+cre_validate.queries_for_profile = lambda *_args, **_kwargs: {
+    "under_one_second": (
+        "SELECT 'Time: 1234.567 ms (00:01.235)'::text "
+        "AS result_like_timing_text;"
+    ),
+    "over_one_second": (
+        "SELECT 'slow'::text AS label FROM (SELECT pg_sleep(1.1)) AS slept;"
+    ),
+    "historical_primary_child_conflicts": (
+        "SELECT 0::bigint AS conflict_count;"
+    ),
 }
-assert timings["under_one_second"]["status"] == "available"
-assert 0 <= timings["under_one_second"]["elapsed_ms"] < 1000
-assert timings["over_one_second"]["status"] == "available"
-assert timings["over_one_second"]["elapsed_ms"] >= 1000
+sys.argv = [
+    "cre_validate.py",
+    "--format",
+    "json",
+    "--transwestern-image-state",
+    "--expected-artifact-run-key",
+    f"ingest:v1:{'a' * 64}",
+    "--expected-db-target-sha256",
+    "b" * 64,
+]
+
+with contextlib.redirect_stdout(io.StringIO()) as output:
+    cre_validate.main()
+report = json.loads(output.getvalue())
+assert report["queries"]["under_one_second"] == [
+    {"result_like_timing_text": "Time: 1234.567 ms (00:01.235)"}
+]
+assert report["queries"]["over_one_second"] == [{"label": "slow"}]
+assert report["historical_primary_child_conflicts"] == [{"conflict_count": "0"}]
+assert report["transwestern_image_state"][0]["image_count"] == "1"
+digest = report["transwestern_image_state"][0]["image_state_sha256"]
+assert len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest)
+assert report["query_timings"]["under_one_second"]["status"] == "available"
+assert 0 <= report["query_timings"]["under_one_second"]["elapsed_ms"] < 1000
+assert report["query_timings"]["over_one_second"]["status"] == "available"
+assert report["query_timings"]["over_one_second"]["elapsed_ms"] >= 1000
+assert report["query_timings"]["transwestern_image_state"]["status"] == "available"
 assert all(
-    timing["scope"] == "psql_client_elapsed" for timing in timings.values()
+    timing["scope"] == "psql_client_elapsed"
+    for timing in report["query_timings"].values()
 )
-print("CRE validation native psql timing contract passed")
+print("CRE validation timed Transwestern optional-query and rollback contract passed")
 PY

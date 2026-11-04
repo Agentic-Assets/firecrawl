@@ -23,7 +23,7 @@ AGENT_FACING_DOCS = (
     ".agents/skills/firecrawl-ops/SKILL.md",
     ".agents/skills/firecrawl-local-api/SKILL.md",
     "scripts/firecrawl-ops/README.md",
-    "scripts/firecrawl-ops/CLAUDE.md",
+    "scripts/firecrawl-ops/AGENTS.md",
     "docs/firecrawl-ops/references/local-pdf-ocr-plan.md",
     "docs/firecrawl-ops/references/local-pdf-ocr-research-agent-plan.md",
     "docs/firecrawl-ops/references/tools-capabilities.md",
@@ -248,7 +248,7 @@ class OperatorMutationBoundaryTests(unittest.TestCase):
         )
         compose_contract_warning = re.compile(
             r"(?:not a (?:drop-in )?(?:Docker\s+)?Compose contract|"
-            r"do not\s+use\s+`apps/api/\.env\.example`\s+as a "
+            r"do\s+not\s+use\s+`apps/api/\.env\.example`\s+as a "
             r"(?:Docker\s+)?Compose contract)",
             re.IGNORECASE,
         )

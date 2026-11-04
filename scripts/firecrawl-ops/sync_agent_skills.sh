@@ -60,6 +60,7 @@ usage() {
     '' \
     'Notes:' \
     '  - Repo skill symlinks are dereferenced during copy so ~/.agents/skills is standalone.' \
+    '  - Without rsync, a staged cp -RL replacement removes stale managed files.' \
     '  - Existing non-symlink destinations are skipped unless --force is passed.'
 }
 
@@ -103,12 +104,62 @@ run() {
   fi
 }
 
+copy_without_rsync() {
+  local src="$1" dst="$2" skill="$3"
+  local managed_root stage
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '+ stage cp -RL %q then replace managed directory %q\n' "$src/." "$dst"
+    return
+  fi
+
+  managed_root="$(cd "$TARGET_ROOT" && pwd -P)"
+  [[ "$managed_root" != "/" && -n "$managed_root" ]] || {
+    echo "Refusing unsafe skill installation root: $managed_root" >&2
+    return 1
+  }
+  dst="$managed_root/$skill"
+  if [[ -e "$dst" && ! -d "$dst" && ! -L "$dst" ]]; then
+    echo "Skill destination is not a directory: $dst" >&2
+    return 1
+  fi
+  stage="$(mktemp -d "$managed_root/.firecrawl-skill.XXXXXX")"
+  # Recursive cleanup is confined to this newly created private staging
+  # directory. Never resolve or traverse a pre-existing destination symlink.
+  [[ "$(cd "$(dirname "$stage")" && pwd -P)" == "$managed_root" \
+     && "$stage" == "$managed_root"/.firecrawl-skill.* && ! -L "$stage" ]] || {
+    echo "Refusing unsafe skill staging path: $stage" >&2
+    return 1
+  }
+  if ! mkdir "$stage/new" || ! cp -RL "$src/." "$stage/new/"; then
+    rm -rf -- "$stage"
+    echo "Skill copy failed; existing installation preserved: $dst" >&2
+    return 1
+  fi
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    if ! mv "$dst" "$stage/previous"; then
+      rm -rf -- "$stage"
+      return 1
+    fi
+  fi
+  if ! mv "$stage/new" "$dst"; then
+    if [[ -e "$stage/previous" || -L "$stage/previous" ]]; then
+      mv "$stage/previous" "$dst" || {
+        echo "Restore failed; preserved previous skill at $stage/previous" >&2
+        return 1
+      }
+    fi
+    rm -rf -- "$stage"
+    return 1
+  fi
+  rm -rf -- "$stage"
+}
+
 copy_skill() {
   local skill="$1"
   local src="$SOURCE_ROOT/$skill"
   local dst="$TARGET_ROOT/$skill"
 
-  if [[ "$skill" == *"/"* || "$skill" == "." || "$skill" == ".." ]]; then
+  if [[ ! "$skill" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "Invalid skill name: $skill" >&2
     exit 2
   fi
@@ -118,6 +169,11 @@ copy_skill() {
   fi
 
   run mkdir -p "$TARGET_ROOT"
+  if ! command -v rsync >/dev/null 2>&1; then
+    copy_without_rsync "$src" "$dst" "$skill"
+    echo "Copied $skill -> $dst (cp fallback)"
+    return
+  fi
   # The installed copy must be a real directory. Otherwise rsync --delete
   # follows a pre-existing destination symlink and can modify its target.
   if [[ -L "$dst" ]]; then

@@ -1,3 +1,13 @@
+import {
+  cancelResponseBody,
+  readBoundedUtf8,
+  ResponseBodyDeadlineError,
+  ResponseBodyLimitError,
+  settleResponseBodyRead,
+} from "../lib/response-body.js";
+import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
@@ -11,6 +21,15 @@ export const LYON_STAHL_SOURCE_URL = `${LYON_STAHL_HOST}/properties/`;
 export const LYON_STAHL_SITEMAP_URL = `${LYON_STAHL_HOST}/sitemap.xml`;
 export const LYON_STAHL_FETCH_TIMEOUT_MS = 60_000;
 export const LYON_STAHL_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const LYON_STAHL_REQUEST_INTERVAL_MS = 10_000;
+const LYON_STAHL_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
 
 const LYON_STAHL_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 const LYON_STAHL_NON_PHOTO = /avatar|headshot|logo|favicon|placeholder|sprite|cropped-/i;
@@ -34,6 +53,10 @@ export type LyonStahlParseOutcome =
   | { kind: "terminal"; availability: string; reason: string }
   | { kind: "held"; availability: string | null; reason: string }
   | { kind: "rejected"; reason: string };
+
+type LyonStahlDetailOutcome =
+  | (LyonStahlParseOutcome & { retainedObservation?: unknown })
+  | { kind: "fetch_failed"; reason: string; retainedObservation?: never };
 
 type FetchLike = (
   input: string | URL | Request,
@@ -138,6 +161,12 @@ function samePage(left: string, right: string): boolean {
   }
 }
 
+export function lyonStahlListingId(value: string): string {
+  const url = lyonStahlUrl(value, "detail");
+  if (!url) throw new Error("Lyon Stahl listing key requires an owned property URL");
+  return new URL(url).pathname.replace(/\/$/, "").split("/").at(-1)!;
+}
+
 export function lyonStahlPropertySitemaps(indexXml: string): string[] {
   const locations = sitemapLocations(indexXml, "sitemapindex", "sitemap", "Lyon Stahl sitemap index");
   const urls = dedupeStrings(
@@ -163,12 +192,14 @@ export function lyonStahlPropertySitemaps(indexXml: string): string[] {
 export function lyonStahlPropertyUrls(propertyXml: string): string[] {
   const locations = sitemapLocations(propertyXml, "urlset", "url", "Lyon Stahl property sitemap");
   const urls = dedupeStrings(
-    locations.map((value, index) => {
+    locations.flatMap((value, index) => {
+      if (value === LYON_STAHL_SOURCE_URL) return [];
       const url = lyonStahlUrl(value, "detail");
       if (!url) throw new Error(`Lyon Stahl property sitemap URL ${index} is invalid`);
-      return url;
+      return [url];
     })
   );
+  if (!urls.length) throw new Error("Lyon Stahl property sitemap has no valid detail URL");
   return urls;
 }
 
@@ -228,14 +259,19 @@ export function lyonStahlAssetUrl(value: unknown): string | null {
 }
 
 export function assertLyonStahlUniqueProviderIds(
-  listings: Array<{ id?: unknown }>
+  listings: Array<{ id?: unknown; lyonStahlPostId?: unknown }>
 ): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("Lyon Stahl emitted a listing without a provider ID");
+    const id = clean(String(listing?.lyonStahlPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("Lyon Stahl emitted a listing without a valid provider ID");
+    if (!key) throw new Error("Lyon Stahl emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`Lyon Stahl emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`Lyon Stahl emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
@@ -306,9 +342,99 @@ function firstValue(objects: any[], namePattern: RegExp): string | null {
   return null;
 }
 
-function offerFromListing(listing: any): any | null {
+function offerFromListing(
+  listing: any,
+  nodes: any[],
+  requestedUrl: string,
+  canonicalUrl: string | undefined,
+  tx: Tx
+): { offer: any | null; ownOffers?: any[]; problem?: string } {
   const offers = listing?.offers;
-  return Array.isArray(offers) ? offers[0] ?? null : offers ?? null;
+  const original = Array.isArray(offers) ? offers[0] ?? null : offers ?? null;
+  const products = nodes.filter((node) => ldTypes(node).includes("Product") && (
+    node?.["@id"] === `${requestedUrl}#product`
+    || (Array.isArray(node?.offers) ? node.offers : [node?.offers])
+      .some((offer: any) => offer?.url === requestedUrl)
+  ));
+  const fail = (problem: string) => ({ offer: null, problem });
+  let selected = original;
+  if (products.length) {
+    if (
+      products.length !== 1
+      || nodes.filter((node) => ldTypes(node).includes("RealEstateListing")).length !== 1
+      || listing?.url !== requestedUrl
+      || canonicalUrl !== requestedUrl
+      || products[0]?.["@id"] !== `${requestedUrl}#product`
+    ) return fail("ambiguous or mismatched same-page Product Offer identity");
+    const productOffers = Array.isArray(products[0].offers)
+      ? products[0].offers : [products[0].offers];
+    const productOffer = productOffers[0];
+    if (
+      productOffers.length !== 1
+      || !ldTypes(productOffer).includes("Offer")
+      || productOffer?.url !== requestedUrl
+    ) return fail("ambiguous or mismatched same-page Product Offer");
+    if (Object.hasOwn(listing, "offers")) {
+      if (Array.isArray(offers) && offers.length !== 1) {
+        return fail("ambiguous listing Offers with Product availability");
+      }
+      const primary = classifyLyonStahlAvailability(original?.availability);
+      const secondary = classifyLyonStahlAvailability(productOffer?.availability);
+      if (
+        primary.disposition === "held"
+        || secondary.disposition === "held"
+        || primary.availability !== secondary.availability
+      ) return fail("blank, unknown or conflicting listing and Product availability");
+      selected = original;
+    } else {
+      selected = productOffer;
+    }
+  }
+  const candidates = Object.hasOwn(listing, "offers")
+    ? (Array.isArray(offers) ? offers : [offers]) : [selected];
+  if (candidates.some((offer) => offer?.name != null && typeof offer.name !== "string")) {
+    return fail("malformed transaction Offer name");
+  }
+  const named = candidates.some((offer) => clean(offer?.name));
+  if (named) {
+    const wanted = tx === "sale" ? "for sale" : "for lease";
+    const matches = candidates.filter((offer) => clean(offer?.name)?.toLowerCase() === wanted);
+    if (matches.length !== 1) return fail("missing or ambiguous requested transaction Offer");
+    selected = matches[0];
+    if (!ldTypes(selected).includes("Offer") || selected.url !== requestedUrl) {
+      return fail("requested transaction Offer identity mismatch");
+    }
+  } else if (tx !== "sale" || candidates.length !== 1) {
+    return fail("missing explicit requested transaction Offer");
+  }
+  if (["url", "businessFunction"].some((field) =>
+    selected?.[field] != null && typeof selected[field] !== "string")) {
+    return fail("malformed requested Offer authority");
+  }
+  if (clean(selected?.businessFunction)) {
+    return fail("unverified requested Offer business function");
+  }
+  if ((clean(selected?.url) && selected.url !== requestedUrl)
+      || (selected && Object.hasOwn(selected, "@type") && !ldTypes(selected).includes("Offer"))) {
+    return fail("requested Offer identity or type mismatch");
+  }
+  // Opposite-tenure availability is not the requested Offer's status.
+  // Preserve every own-property Offer verbatim for future field mapping.
+  const ownOffers = [...(Object.hasOwn(listing, "offers") ? candidates : []), ...products.flatMap((product) =>
+    Array.isArray(product.offers) ? product.offers : [product.offers])].filter((offer) =>
+    offer && typeof offer === "object"
+    && (offer.url == null || (typeof offer.url === "string"
+      && (!clean(offer.url) || offer.url === requestedUrl))));
+  return { offer: selected, ownOffers };
+}
+
+// Source-owned raw Offer preservation after parser and outer collector prune.
+export function preserveLyonStahlOffers(listing: any, offers: unknown): any {
+  if (Array.isArray(offers) && offers.length) {
+    listing.extraFacts ??= {};
+    listing.extraFacts.providerOffers = structuredClone(offers);
+  }
+  return listing;
 }
 
 function lyonStahlPropertyNode(nodes: any[], listing: any): any {
@@ -335,9 +461,6 @@ export function parseLyonStahlDetail(
   tx: Tx,
   context: LyonStahlParseContext = {}
 ): LyonStahlParseOutcome {
-  if (tx !== "sale") {
-    return { kind: "rejected", reason: "Lyon Stahl is an investment-sales source" };
-  }
   const strict = context.strict ?? requireFreshDetails();
   const identity = lyonStahlProviderIdentity(html, requestedUrl);
   if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch" };
@@ -362,7 +485,11 @@ export function parseLyonStahlDetail(
   if (strict && (!clean(listing.url) || !samePage(String(listing.url), requestedUrl))) {
     return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
   }
-  const offer = offerFromListing(listing);
+  const resolved = offerFromListing(listing, nodes, requestedUrl, $("link[rel='canonical']").attr("href"), tx);
+  if (resolved.problem) {
+    return { kind: "held", availability: null, reason: resolved.problem };
+  }
+  const offer = resolved.offer;
   const availability = classifyLyonStahlAvailability(offer?.availability);
   if (availability.disposition === "terminal") {
     return {
@@ -446,7 +573,8 @@ export function parseLyonStahlDetail(
     .filter((value): value is number => value !== null);
 
   const row = prune({
-    id: identity,
+    id: lyonStahlListingId(requestedUrl),
+    lyonStahlPostId: identity,
     inventoryObservedAt: context.inventoryObservedAt,
     detailObservedAt: context.detailObservedAt,
     freshnessProvenance:
@@ -460,7 +588,7 @@ export function parseLyonStahlDetail(
           }
         : undefined,
     name,
-    transactionType: "Sale",
+    transactionType: tx === "sale" ? "Sale" : "Lease",
     assetType:
       clean(property?.accommodationCategory)
       ?? (ldTypes(property).some((type) => /Apartment|Residence/i.test(type))
@@ -474,8 +602,8 @@ export function parseLyonStahlDetail(
     country: clean(address?.addressCountry) ?? "US",
     latitude: finiteNumber(property?.geo?.latitude),
     longitude: finiteNumber(property?.geo?.longitude),
-    salePriceUsd: price,
-    salePriceText: price ? `$${price.toLocaleString("en-US")}` : null,
+    salePriceUsd: tx === "sale" ? price : null,
+    salePriceText: tx === "sale" && price ? `$${price.toLocaleString("en-US")}` : null,
     capRatePct,
     buildingSizeSqft,
     yearBuilt,
@@ -488,6 +616,7 @@ export function parseLyonStahlDetail(
     canonicalUrl: lyonStahlUrl(requestedUrl, "detail"),
     lastUpdated: metaContent($, "og:updated_time"),
   });
+  preserveLyonStahlOffers(row, resolved.ownOffers);
   return {
     kind: "accepted",
     listing: row,
@@ -497,34 +626,103 @@ export function parseLyonStahlDetail(
 
 type FetchKind = "html" | "xml";
 
+class LyonStahlRetryableFetchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "LyonStahlRetryableFetchError";
+  }
+}
+
+function lyonStahlIsTransientTransportFailure(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && LYON_STAHL_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+/** A failed or stalled cancel must never authorize another request. */
+async function lyonStahlCancelBody(
+  body: { cancel(): Promise<unknown> } | null,
+  timeoutMs = 1_000
+): Promise<boolean> {
+  return cancelResponseBody(body, Math.min(timeoutMs, 1_000));
+}
+
+/** One invocation's physical request starts, including redirects and retries. */
+export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
+  let lastStartedAt: number | null = null;
+  let queue: Promise<void> = Promise.resolve();
+  return (input, init) => {
+    const start = queue.then(async () => {
+      const signal = init?.signal;
+      signal?.throwIfAborted();
+      const waitMs = lastStartedAt === null
+        ? 0 : Math.max(0, LYON_STAHL_REQUEST_INTERVAL_MS - (performance.now() - lastStartedAt));
+      if (waitMs) {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal?.reason);
+          };
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, waitMs);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      signal?.throwIfAborted();
+      lastStartedAt = performance.now();
+      // Release the start queue without waiting for headers or the response body.
+      return { response: fetchImpl(input, init) };
+    });
+    queue = start.then(() => undefined, () => undefined);
+    return start.then(({ response }) => response);
+  };
+}
+
 async function lyonStahlBoundedResponseText(
   response: Response,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs: number,
+  controller: AbortController,
+  deadlineAt: number
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await lyonStahlCancelBody(response.body, timeoutMs);
     throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`);
+    return await readBoundedUtf8(reader, { maxBytes, signal: controller.signal, deadlineAt });
+  } catch (error) {
+    // A deterministic size refusal remains terminal even if cleanup aborts.
+    if (error instanceof ResponseBodyLimitError) {
+      if (!await lyonStahlCancelBody(reader, timeoutMs)) {
+        throw new Error("Lyon Stahl response body did not settle after exceeding its size limit", { cause: error });
       }
-      text += decoder.decode(value, { stream: true });
+      throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`, { cause: error });
     }
-    text += decoder.decode();
-    return text;
+    const timedOut = error instanceof ResponseBodyDeadlineError || controller.signal.aborted;
+    const cause = timedOut
+      ? new Error(`Lyon Stahl response body timed out after ${timeoutMs}ms`, { cause: error }) : error;
+    if (error instanceof ResponseBodyDeadlineError) controller.abort(cause);
+    if (!await settleResponseBodyRead(reader, error, Math.min(timeoutMs, 1_000))) {
+      throw new Error(timedOut
+        ? `Lyon Stahl response body timed out after ${timeoutMs}ms and did not cancel`
+        : "Lyon Stahl response body read failed and did not cancel", { cause });
+    }
+    if (!lyonStahlIsTransientTransportFailure(error, timedOut)) throw cause;
+    throw new LyonStahlRetryableFetchError(timedOut
+      ? `Lyon Stahl response body timed out after ${timeoutMs}ms`
+      : "Lyon Stahl response body read failed", { cause });
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* preserve the primary outcome */ }
   }
 }
 
@@ -538,33 +736,70 @@ export async function lyonStahlFetchText(
 ): Promise<string> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const deadlineAt = performance.now() + timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let retry = false;
     try {
       let current = url;
       for (let redirect = 0; redirect <= 3; redirect++) {
         const allowed = lyonStahlUrl(current, kind === "html" ? "detail" : "sitemap");
         if (!allowed) throw new Error(`Lyon Stahl refused unsafe ${kind} URL`);
         const strict = requireFreshDetails();
-        const response = await fetchImpl(allowed, {
-          redirect: "manual",
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 CRE collector",
-            Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
-            ...(strict ? { "Cache-Control": "no-cache" } : {}),
-          },
-          ...(strict ? { cache: "no-store" as const } : {}),
-        });
+        let response: Response;
+        try {
+          response = await fetchImpl(allowed, {
+            redirect: "manual",
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "Mozilla/5.0 CRE collector",
+              Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
+              ...(strict ? { "Cache-Control": "no-cache" } : {}),
+            },
+            ...(strict ? { cache: "no-store" as const } : {}),
+          });
+        } catch (error) {
+          if (lyonStahlIsTransientTransportFailure(error, controller.signal.aborted)) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new LyonStahlRetryableFetchError(`Lyon Stahl fetch failed: ${message}`, { cause: error });
+          }
+          throw error;
+        }
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          if (!location) throw new Error(`Lyon Stahl redirect ${response.status} lacks Location`);
-          current = new URL(location, allowed).toString();
+          if (!location) {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl redirect ${response.status} lacks Location`);
+          }
+          let next: string;
+          try {
+            next = new URL(location, allowed).toString();
+          } catch {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl redirect ${response.status} has invalid Location`);
+          }
+          if (!lyonStahlUrl(next, kind === "html" ? "detail" : "sitemap")) {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl refused unsafe ${kind} URL`);
+          }
+          if (!await lyonStahlCancelBody(response.body, timeoutMs)) {
+            throw new Error("Lyon Stahl redirect body did not settle before the next request");
+          }
+          current = next;
           continue;
         }
-        if (!response.ok) throw new Error(`Lyon Stahl HTTP ${response.status}`);
+        if (!response.ok) {
+          const status = response.status;
+          const hasRetryAfter = response.headers.has("retry-after");
+          const cancelled = await lyonStahlCancelBody(response.body, timeoutMs);
+          if ([429, 500, 502, 503, 504].includes(status) && !hasRetryAfter && cancelled) {
+            throw new LyonStahlRetryableFetchError(`Lyon Stahl HTTP ${status}`);
+          }
+          throw new Error(`Lyon Stahl HTTP ${status}`);
+        }
         const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
         if (contentType.includes("application/pdf")) {
+          await lyonStahlCancelBody(response.body, timeoutMs);
           throw new Error("Lyon Stahl refused PDF response");
         }
         if (
@@ -573,19 +808,22 @@ export async function lyonStahlFetchText(
           && !contentType.includes("text/html")
           && !contentType.includes("application/xhtml+xml")
         ) {
+          await lyonStahlCancelBody(response.body, timeoutMs);
           throw new Error(`Lyon Stahl detail returned ${contentType}`);
         }
-        const body = await lyonStahlBoundedResponseText(response, maxBytes);
+        const body = await lyonStahlBoundedResponseText(response, maxBytes, timeoutMs, controller, deadlineAt);
         if (!body.trim()) throw new Error(`Lyon Stahl returned empty ${kind}`);
         return body;
       }
       throw new Error("Lyon Stahl exceeded redirect cap");
     } catch (error) {
       lastError = error;
-      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      retry = error instanceof LyonStahlRetryableFetchError;
     } finally {
       clearTimeout(timer);
     }
+    if (!retry || attempt >= attempts) break;
+    await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
   }
   throw lastError;
 }
@@ -599,14 +837,16 @@ export async function srcLyonStahl(
     return {
       company: "Lyon Stahl",
       sourceUrl: LYON_STAHL_SOURCE_URL,
-      method: "Investment-sales only; no public lease inventory",
-      totalAvailable: 0,
+      method: "Complete current lease acquisition not implemented",
+      totalAvailable: null,
       listings: [],
-      note: "Lyon Stahl publishes sale listings only.",
+      truncated: true,
+      note: "Complete current lease acquisition is not implemented; explicit lease detail parsing does not prove inventory coverage (AGENTIC-4308).",
     };
   }
 
-  const indexXml = await lyonStahlFetchText(LYON_STAHL_SITEMAP_URL, "xml");
+  const pacedFetch = lyonStahlPacedFetch();
+  const indexXml = await lyonStahlFetchText(LYON_STAHL_SITEMAP_URL, "xml", pacedFetch);
   const propertySitemaps = lyonStahlPropertySitemaps(indexXml);
   if (!propertySitemaps.length) {
     throw new Error("Lyon Stahl: sitemap index has no same-host properties-sitemapN.xml");
@@ -614,7 +854,7 @@ export async function srcLyonStahl(
   const propertyXml = await pmap(
     propertySitemaps,
     Math.min(propertySitemaps.length, 2),
-    (url) => lyonStahlFetchText(url, "xml")
+    (url) => lyonStahlFetchText(url, "xml", pacedFetch)
   );
   const propertySnapshots = propertyXml.map((xml, index) => {
     try {
@@ -625,34 +865,71 @@ export async function srcLyonStahl(
   });
   const urls = dedupeStrings(propertySnapshots.flat());
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
-  const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url) => {
+  const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url): Promise<LyonStahlDetailOutcome> => {
+    let html: string;
     try {
-      const html = await lyonStahlFetchText(url, "html");
-      return parseLyonStahlDetail(html, url, tx, {
-        inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
-      });
+      html = await lyonStahlFetchText(url, "html", pacedFetch);
     } catch (error) {
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
-      return { kind: "rejected", reason: String(error) } as LyonStahlParseOutcome;
+      return { kind: "fetch_failed", reason: String(error) } as LyonStahlDetailOutcome;
     }
+    const detailObservedAt = observationNow();
+    let outcome: LyonStahlParseOutcome;
+    try {
+      outcome = parseLyonStahlDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
+    } catch (error) {
+      console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
+      outcome = { kind: "rejected", reason: String(error) };
+    }
+    if (outcome.kind !== "held" && outcome.kind !== "rejected") return outcome;
+    let shell: boolean;
+    try { shell = isSourceChallengeShell(html); } catch { return outcome; }
+    if (shell) return outcome;
+    let pageContext: unknown;
+    let pageContextStatus: "observed" | "failed" = "observed";
+    try { pageContext = captureSourcePageContext(html, { sourceUrl: url, detailObservedAt }); }
+    catch { pageContextStatus = "failed"; }
+    return { ...outcome, retainedObservation: {
+      event: "lyon_stahl_unqualified_observation", schema: "lyon-stahl-unqualified-observation-v1",
+      sourceUrl: url, requestedTransaction: tx, inventoryObservedAt, detailObservedAt,
+      disposition: outcome.kind, reason: outcome.reason,
+      ...(outcome.kind === "held" ? { normalizedAvailability: outcome.availability } : {}),
+      pageContextStatus, ...(pageContextStatus === "observed" ? { pageContext } : {}),
+    } } as LyonStahlDetailOutcome;
   });
   const listings = outcomes
     .filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
     .map((outcome) => outcome.listing);
-  assertLyonStahlUniqueProviderIds(listings);
+  const retainedObservations = outcomes.flatMap((outcome) =>
+    outcome.retainedObservation === undefined ? [] : [outcome.retainedObservation]
+  );
+  try {
+    assertLyonStahlUniqueProviderIds(listings);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new RetainedSourceError(error, [
+      ...retainedObservations,
+      ...outcomes.filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
+        .map((outcome) => ({
+          event: "lyon_stahl_identity_conflict_observation", schema: "lyon-stahl-identity-conflict-observation-v1",
+          reason: "source_identity_validation_failed", availability: outcome.availability, observation: outcome.listing,
+        })),
+    ]);
+  }
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
+  const fetchFailures = outcomes.filter((outcome) => outcome.kind === "fetch_failed").length;
   const finiteCap = take.length !== urls.length;
-  const truncated = finiteCap || held > 0 || rejected > 0;
+  const truncated = finiteCap || held > 0 || rejected > 0 || fetchFailures > 0;
   const notes = [
     finiteCap ? `Selected ${take.length}/${urls.length} property sitemap URL(s)` : null,
     held ? `${held} detail page(s) held for unknown availability` : null,
     terminal ? `${terminal} terminal detail page(s) excluded` : null,
     rejected ? `${rejected} detail page(s) failed identity or structure validation` : null,
+    fetchFailures ? `${fetchFailures} detail page(s) failed acquisition` : null,
   ].filter((value): value is string => Boolean(value));
 
   return {
@@ -662,6 +939,7 @@ export async function srcLyonStahl(
       "WordPress properties-sitemapN.xml enumeration to same-host HTML details; stable shortlink identity plus RealEstateListing JSON-LD; explicit Offer.availability admission",
     totalAvailable: urls.length,
     listings,
+    retainedObservations,
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

@@ -105,7 +105,7 @@ read_alert_webhook_url() {
         echo "[cre_run_tier] ALERT not configured: CRE_ALERT_WEBHOOK_FILE must be an owned, readable regular file" >&2
         return 0
     fi
-    mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null || stat -c '%a' "${secret_file}" 2>/dev/null || true)"
+    mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null)" || mode="$(stat -c '%a' "${secret_file}" 2>/dev/null)" || mode=""
     case "${mode}" in
         400|600) ;;
         *)

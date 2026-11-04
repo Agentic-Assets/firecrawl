@@ -124,7 +124,7 @@ def test_update_keeps_status_sticky_resetting_only_resurrected():
     # M5 (2026-06-15): revival resets to 'active' only when the prior status was
     # 'inactive' (the mark-missing soft-delete marker), so a real terminal that
     # flickers back into the feed keeps its terminal label.
-    assert "status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql
+    assert "WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql
     # The old unconditional revival form must be gone.
     assert "status            = CASE WHEN t.deleted_at IS NOT NULL THEN 'active' ELSE t.status END" not in sql
     # The old unconditional downgrade must be gone.

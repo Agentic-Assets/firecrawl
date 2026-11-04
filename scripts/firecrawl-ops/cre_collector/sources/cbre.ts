@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/cbre.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { createHash, randomUUID } from "node:crypto";
 
@@ -5,7 +6,9 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseLeaseRate } from "../lib/parse.js";
-import { scrapeJson } from "../lib/scrape.js";
+import { scrapeJson, scrapeJsonWithObservation } from "../lib/scrape.js";
+import type { ScrapeResponseObservation } from "../lib/scrape.js";
+import { logCbreValidationDiagnostic } from "./cbre-diagnostics.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 import {
@@ -177,9 +180,32 @@ export type CbreSnapshotOptions = {
   maxPasses?: number;
   maxPages?: number;
   concurrency?: number;
+  onPage?: (page: number, pass: number, documents: any[]) => void;
 };
 
-type CbrePageFetcher = (page: number, pass: number) => Promise<any>;
+type CbrePageFetcher = (
+  page: number,
+  pass: number,
+  observe?: (response: ScrapeResponseObservation) => void,
+) => Promise<any>;
+
+async function fetchValidatedCbrePage(
+  fetchPage: CbrePageFetcher,
+  page: number,
+  pass: number,
+  pageSize: number,
+  expectedTotal: number | null,
+  strict: boolean,
+): Promise<CbreValidatedPage> {
+  let observation: ScrapeResponseObservation | undefined;
+  const response = await fetchPage(page, pass, (value) => { observation = value; });
+  try {
+    return assertCbrePage(response, page, pageSize, expectedTotal, strict);
+  } catch (error) {
+    if (observation) logCbreValidationDiagnostic(response, page, pass, observation);
+    throw error;
+  }
+}
 
 // The public API accepts 500-row pages, including exact short terminal pages
 // and an empty sentinel. The smaller request count keeps two membership passes
@@ -481,18 +507,16 @@ async function fetchCbreSnapshotPass(
   pageSize: number,
   maxPages: number,
   concurrency: number,
+  onPage?: CbreSnapshotOptions["onPage"],
 ): Promise<
   CbreSnapshot & { fingerprint: string; identityFingerprint: string }
 > {
   const pages = new Map<number, CbreValidatedPage>();
-  const first = assertCbrePage(
-    await fetchPage(1, pass),
-    1,
-    pageSize,
-    null,
-    true,
+  const first = await fetchValidatedCbrePage(
+    fetchPage, 1, pass, pageSize, null, true,
   );
   pages.set(1, first);
+  onPage?.(1, pass, first.documents);
   console.error(
     `  cbre: convergence pass ${pass} page 1 ` +
       `(${first.documents.length} docs, reported total ${first.total})`,
@@ -512,13 +536,10 @@ async function fetchCbreSnapshotPass(
     ).filter((page) => !pages.has(page));
     if (missingPages.length === 0) break;
     const fetched = await pmap(missingPages, concurrency, async (page) => {
-      const value = assertCbrePage(
-        await fetchPage(page, pass),
-        page,
-        pageSize,
-        null,
-        true,
+      const value = await fetchValidatedCbrePage(
+        fetchPage, page, pass, pageSize, null, true,
       );
+      onPage?.(page, pass, value.documents);
       console.error(
         `  cbre: convergence pass ${pass} page ${page} ` +
           `(${value.documents.length} docs, reported total ${value.total})`,
@@ -580,7 +601,7 @@ async function fetchCbreSnapshotPass(
       );
     }
     if (seen.has(primaryKey)) {
-      throw new Error(
+      throw new CbreSnapshotChurnError(
         `CBRE listings API snapshot has duplicate Common.PrimaryKey ${primaryKey}`,
       );
     }
@@ -594,7 +615,7 @@ async function fetchCbreSnapshotPass(
   if (
     reportedTotals.some((reportedTotal) => reportedTotal !== documents.length)
   ) {
-    throw new Error(
+    throw new CbreSnapshotChurnError(
       `CBRE listings API snapshot collected ${documents.length} unique documents, ` +
         `but its pages did not all report that total (${[...new Set(reportedTotals)].join(",")})`,
     );
@@ -607,11 +628,13 @@ async function fetchCbreSnapshotPass(
     total: documents.length,
     documents,
     reportedTotals,
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     fingerprint: cbreSnapshotFingerprint(documents),
     identityFingerprint: cbreIdentityFingerprint(documents),
   };
 }
+
+class CbreSnapshotChurnError extends Error {}
 
 export async function fetchCbreSnapshot(
   fetchPage: CbrePageFetcher,
@@ -651,8 +674,10 @@ export async function fetchCbreSnapshot(
         pageSize,
         maxPages,
         concurrency,
+        options.onPage,
       );
     } catch (error) {
+      if (!(error instanceof CbreSnapshotChurnError)) throw error;
       failures.push(`pass ${pass}: ${String(error)}`);
       previous = null;
       continue;
@@ -707,6 +732,7 @@ export async function srcCbre(
   tx: Tx,
   max: number,
   _monitor: boolean,
+  onPage?: CbreSnapshotOptions["onPage"],
 ): Promise<SourceResult> {
   // Enumeration-only source: the listings-api JSON already returns fully mapped
   // rows with no per-listing detail render, so monitor output == full output.
@@ -728,12 +754,15 @@ export async function srcCbre(
   if (strict && !Number.isFinite(max)) {
     const cacheSeed = `${refreshGenerationId()}:${Date.now()}:${randomUUID()}`;
     const snapshot = await fetchCbreSnapshot(
-      (page, pass) =>
-        scrapeJson(
+      async (page, pass, observe) => {
+        const result = await scrapeJsonWithObservation(
           cbreInventoryUrl(aspect, page, CBRE_PAGE_SIZE, cacheSeed, pass),
           opts,
-        ),
-      { concurrency: CBRE_SNAPSHOT_CONCURRENCY },
+        );
+        observe?.(result.response);
+        return result.data;
+      },
+      { concurrency: CBRE_SNAPSHOT_CONCURRENCY, maxPasses: 4, onPage },
     );
     total = snapshot.total;
     collectedDocs = snapshot.documents;
@@ -791,7 +820,7 @@ export async function srcCbre(
   const observed = detailObservation(
     "cbre_listings_api",
     strict ? "live" : "generation_cache",
-    snapshotObservedAt ?? new Date().toISOString(),
+    snapshotObservedAt ?? observationNow(),
   );
   const text = (loc: any) =>
     Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;

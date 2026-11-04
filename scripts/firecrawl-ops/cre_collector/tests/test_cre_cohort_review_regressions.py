@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import io
-import os
+import json
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -156,7 +157,7 @@ class OwnedProcess:
 @pytest.mark.parametrize("failing_operation", ["write", "flush", "close"])
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_cohort_cleanup_reaps_every_child_despite_log_failure(
-    tmp_path, monkeypatch, failing_operation, stubborn
+    tmp_path, monkeypatch, failing_operation, stubborn, owned_group_fixture
 ):
     processes = [OwnedProcess(99101 + index, stubborn=stubborn) for index in range(2)]
     logs = [FailingLog(failing_operation), io.StringIO()]
@@ -178,6 +179,7 @@ def test_cohort_cleanup_reaps_every_child_despite_log_failure(
         refresh.os, "killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
     )
 
+    owned_group_fixture(processes)
     # Failing evidence may remain fatal, but only after every owned child has
     # been signaled and reaped. The canonical lock must remain held until then.
     try:
@@ -196,7 +198,7 @@ def test_cohort_cleanup_reaps_every_child_despite_log_failure(
 @pytest.mark.parametrize("failing_operation", [None, "write", "flush", "close"])
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_serial_cleanup_reaps_child_before_reporting_evidence_failure(
-    tmp_path, monkeypatch, stop_type, failing_operation, stubborn
+    tmp_path, monkeypatch, stop_type, failing_operation, stubborn, owned_group_fixture
 ):
     class ArmedLog(FailingLog):
         def __init__(self):
@@ -223,6 +225,7 @@ def test_serial_cleanup_reaps_child_before_reporting_evidence_failure(
     monkeypatch.setattr(
         refresh.os, "killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
     )
+    owned_group_fixture([process])
     refresh._clear_cpu_guard_trip()
     if stop_type is refresh.CpuGuardTrip:
         refresh._set_cpu_guard_trip(
@@ -255,37 +258,103 @@ def test_nested_shutdown_graces_leave_time_for_inner_cleanup():
 
 
 def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, monkeypatch):
-    """Exercise actual nested groups with scaled shutdown grace and no I/O services."""
-    monkeypatch.setattr(refresh, "COHORT_INTERRUPT_GRACE_SECONDS", 0.8)
-    child_code = (
-        "import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); "
-        'print("DUMMY_PID="+str(os.getpid()),flush=True); time.sleep(5)'
+    """Require owned readiness, then reap the nested group before worker exit."""
+    child_ready = tmp_path / "child-ready.json"
+    worker_ready = tmp_path / "worker-ready.json"
+    release = tmp_path / "release"
+    expired = tmp_path / "expired"
+    readiness_delay = 0.0
+    readiness_ceiling = 15.0
+    child_code = textwrap.dedent(
+        """\
+        import json, os, signal, sys, time
+        from pathlib import Path
+        ready, release, expired = map(Path, sys.argv[1:4])
+        delay = float(sys.argv[4])
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        started = time.monotonic()
+        published = False
+        while not release.exists():
+            elapsed = time.monotonic() - started
+            if elapsed >= 120:
+                expired.write_text("emergency watchdog expired\\n")
+                sys.exit(91)
+            if not published and elapsed >= delay:
+                temporary = ready.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"pid": os.getpid()}))
+                temporary.replace(ready)
+                published = True
+            time.sleep(0.01)
+        """
     )
-    worker_code = (
-        "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
-        "import cre_checkpoint_refresh as r; r.COMMAND_INTERRUPT_GRACE_SECONDS=0.2; "
-        "r.run_command([sys.executable,'-u','-c',sys.argv[2]],Path(sys.argv[3]),env={})"
+    worker_code = textwrap.dedent(
+        """\
+        import json, sys, time
+        from pathlib import Path
+        started = time.monotonic()
+        sys.path.insert(0, sys.argv[1])
+        import cre_checkpoint_refresh as r
+        ready = Path(sys.argv[3])
+        original_wait = r.wait_with_poll_hook
+        def owned_wait(process):
+            bootstrap = time.monotonic() - started
+            inner_grace = max(0.2, min(2.0, 2 * bootstrap))
+            r.COMMAND_INTERRUPT_GRACE_SECONDS = inner_grace
+            temporary = ready.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "pid": process.pid, "bootstrap": bootstrap,
+                "inner_grace": inner_grace,
+            }))
+            temporary.replace(ready)
+            return original_wait(process)
+        r.wait_with_poll_hook = owned_wait
+        try:
+            r.run_command([sys.executable, '-u', '-c', sys.argv[2], *sys.argv[5:]],
+                          Path(sys.argv[4]), env={})
+        except KeyboardInterrupt as exc:
+            if r._cleanup_unknown_in_chain(exc):
+                raise
+            sys.exit(r.COHORT_SETTLED_INTERRUPT_EXIT)
+        """
     )
     worker = None
     inner_pid = None
+    spawned = time.monotonic()
     try:
         worker = subprocess.Popen(
             [sys.executable, "-u", "-c", worker_code, str(refresh.COLLECTOR_DIR),
-             child_code, str(tmp_path / "child.log")],
+             child_code, str(worker_ready), str(tmp_path / "child.log"),
+             str(child_ready), str(release), str(expired), str(readiness_delay)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        deadline = time.monotonic() + 2.0
+        deadline = spawned + readiness_ceiling
         while time.monotonic() < deadline:
-            if (tmp_path / "child.log").exists():
-                for line in (tmp_path / "child.log").read_text().splitlines():
-                    if line.startswith("DUMMY_PID="):
-                        inner_pid = int(line.partition("=")[2])
-            if inner_pid is not None:
+            if worker_ready.exists() and child_ready.exists():
+                ownership = json.loads(worker_ready.read_text())
+                child = json.loads(child_ready.read_text())
+                assert ownership["pid"] == child["pid"], "nested readiness PID mismatch"
+                inner_pid = child["pid"]
                 break
+            assert worker.poll() is None, "cohort worker exited before nested startup readiness"
             time.sleep(0.01)
-        assert inner_pid is not None, "inert nested child did not start"
+        assert inner_pid is not None, "nested startup readiness deadline exceeded"
+        startup = time.monotonic() - spawned
+        # Reserve the production inner kill/reap budget as well as startup margin.
+        monkeypatch.setattr(
+            refresh, "COHORT_INTERRUPT_GRACE_SECONDS",
+            ownership["inner_grace"] + 5.0 + max(1.0, 2 * startup),
+        )
+        probe = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(inner_pid)],
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        assert probe.returncode == 0 and not probe.stderr, "nested liveness probe failed"
+        status = probe.stdout.strip()
+        assert status and not status.startswith("Z"), "nested child must be live before cleanup"
+        assert not release.exists(), "release must not precede cleanup assertions"
+        assert not expired.exists(), "nested child emergency watchdog expired"
         item = refresh.CohortCollectionProcess(
             "transwestern", worker, io.StringIO(), tmp_path / "unused",
             {"number": 1}, "2026-09-13T12:00:00+00:00",
@@ -293,26 +362,31 @@ def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, 
 
         refresh._terminate_cohort_processes([item])
 
-        status = subprocess.run(
+        # This is an immediate observation: zombies and delayed disappearance fail.
+        probe = subprocess.run(
             ["ps", "-o", "stat=", "-p", str(inner_pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
-        assert worker.poll() != -signal.SIGKILL, "outer grace cut off worker cleanup"
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        assert probe.returncode in (0, 1) and not probe.stderr, "nested reaping probe failed"
+        status = probe.stdout.strip()
+        assert worker.poll() == refresh.COHORT_SETTLED_INTERRUPT_EXIT
         assert not status, "nested child must be reaped, including any zombie"
+        assert not expired.exists(), "nested child emergency watchdog expired"
+        assert not release.exists(), "release must not precede cleanup assertions"
     finally:
-        if inner_pid is not None:
-            try:
-                os.killpg(inner_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if worker is not None and worker.poll() is None:
-            try:
-                os.killpg(worker.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            worker.wait()
+        original_error = sys.exception()
+        try:
+            release.write_text("release\n")
+            if worker is not None and worker.poll() is None:
+                try:
+                    worker.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=5)
+        except Exception as cleanup_error:
+            if original_error is None:
+                raise
+            original_error.add_note(f"nested fixture cleanup failed: {cleanup_error!r}")
 
 
 def test_series_reaps_child_that_exits_between_poll_and_signal(monkeypatch):
@@ -321,6 +395,6 @@ def test_series_reaps_child_that_exits_between_poll_and_signal(monkeypatch):
     def vanished(*_args):
         raise ProcessLookupError
 
-    monkeypatch.setattr(series.os, "killpg", vanished)
+    monkeypatch.setattr(refresh.os, "killpg", vanished)
     series._terminate_child(process)
     assert process.reaped

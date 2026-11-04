@@ -1,3 +1,5 @@
+import { recordRetry } from "../lib/performance.js";
+import { observationNow } from "../lib/observation-clock.js";
 // sources/marcus-millichap.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { createHash, randomUUID } from "node:crypto";
@@ -19,7 +21,7 @@ import {
   parseSizeText,
 } from "../lib/parse.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import { clean, num, pmap, prune } from "../lib/util.js";
 import {
   marcusHeaders as pureMarcusHeaders,
   marcusMapDetailBody as pureMarcusMapDetailBody,
@@ -47,14 +49,94 @@ export function marcusMapDetailBody(activityId: string): Record<string, any> {
   return pureMarcusMapDetailBody(activityId);
 }
 
-export async function marcusPost(path: string, body: Record<string, any>): Promise<any> {
-  const res = await fetch(`${MARCUS_BASE}${path}`, {
+export const MARCUS_FETCH_TIMEOUT_MS = 30_000;
+
+class MarcusRequestTimeoutError extends Error {
+  constructor(message: string, readonly retryReady: Promise<boolean>) {
+    super(message);
+  }
+}
+
+// A deadline alone does not prove that an abort-ignoring transport stopped.
+// Recovery may wait briefly for local settlement, but never wait indefinitely.
+async function marcusRequestSettled(settled: Promise<boolean>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      settled,
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 1_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One deadline covers headers AND body. Race explicitly even if a transport
+// ignores abort; cancel unread/late bodies without waiting on a stuck cancel.
+async function marcusResponse<T>(
+  url: string, init: RequestInit, errorPrefix: string,
+  consume: (response: Response) => Promise<T>, timeoutMs: number
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("Invalid Marcus request timeout");
+  const controller = new AbortController();
+  let response: Response | undefined;
+  let complete = false;
+  let lateResponse = false;
+  let bodyCancellation: Promise<void> | undefined;
+  let markSettled!: () => void;
+  const operationSettled = new Promise<void>(resolve => { markSettled = resolve; });
+  const retryReady = operationSettled.then(async () => {
+    await bodyCancellation;
+    return !lateResponse;
+  });
+  const cancelBody = () => {
+    // Native fetch abort closes a locked body; cancel also handles unread and
+    // late responses. Neither a locked nor a stuck cancel may extend deadline.
+    // Cache only an actual cancellation: absent headers must not hide a later body.
+    bodyCancellation ??= response?.body?.cancel().catch(() => {});
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new MarcusRequestTimeoutError(`${errorPrefix} timed out after ${timeoutMs}ms`, retryReady));
+      controller.abort();
+      cancelBody();
+    }, timeoutMs);
+  });
+  try {
+    const operation = (async () => {
+      try {
+        response = await fetch(url, { ...init, signal: controller.signal });
+        if (controller.signal.aborted) {
+          lateResponse = true;
+          cancelBody();
+          throw new Error(`${errorPrefix} response arrived after its deadline`);
+        }
+        if (!response.ok) throw new Error(`${errorPrefix} HTTP ${response.status}`);
+        // Keep the existing response methods: matched-capacity observers wrap
+        // json()/text() to bind raw evidence and release request permits.
+        const value = await consume(response);
+        complete = true;
+        return value;
+      } finally {
+        markSettled();
+      }
+    })();
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (!complete) { controller.abort(); cancelBody(); }
+  }
+}
+
+export async function marcusPost(
+  path: string, body: Record<string, any>, timeoutMs = MARCUS_FETCH_TIMEOUT_MS
+): Promise<any> {
+  return marcusResponse(`${MARCUS_BASE}${path}`, {
     method: "POST",
     headers: marcusHeaders(),
     body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Marcus & Millichap ${path} HTTP ${res.status}`);
-  return res.json();
+  }, `Marcus & Millichap ${path}`, response => response.json(), timeoutMs);
 }
 
 export function marcusUrl(href: string | null | undefined): string | null {
@@ -126,7 +208,7 @@ export function parseMarcusTileHtml(tileHtml: string | null | undefined, row: an
     country: "US",
     latitude: num(Number(row.Latitude)),
     longitude: num(Number(row.Longitude)),
-    salePriceUsd: moneyToNumber(priceText),
+    salePriceUsd: parseMoney(priceText),
     salePriceText: priceText,
     capRatePct: capRate ? Number(capRate) : null,
     brokerIds: [],
@@ -156,14 +238,15 @@ export function parseMarcusPropertiesResponse(
 
 export function parseMarcusMapRowsResponse(
   map: any,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
+  requireNativeIds = false
 ): any[] {
-  return parsePureMarcusMapRowsResponse(map, strict);
+  return parsePureMarcusMapRowsResponse(map, strict, requireNativeIds);
 }
 
-export async function fetchMarcusMapRows(): Promise<any[]> {
+export async function fetchMarcusMapRows(requireNativeIds = false): Promise<any[]> {
   const map = await marcusPost("/api/contentsearch/mapproperties", marcusSearchBody(1));
-  return parseMarcusMapRowsResponse(map);
+  return parseMarcusMapRowsResponse(map, requireFreshDetails(), requireNativeIds);
 }
 
 export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
@@ -204,6 +287,8 @@ export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
   }
 }
 
+class MarcusInventoryCountMismatchError extends Error {}
+
 export function assertMarcusInventoryCount(
   total: number | null,
   mapRows: any[],
@@ -222,7 +307,7 @@ export function assertMarcusInventoryCount(
     );
   }
   if (strict && mapRows.length !== total) {
-    throw new Error(
+    throw new MarcusInventoryCountMismatchError(
       `Marcus & Millichap inventory mismatch: properties API reported ${total}, map API returned ${mapRows.length} unique ActivityIds`
     );
   }
@@ -248,16 +333,26 @@ export function marcusCapTruncated(
   return Number.isFinite(max) && selected < knownInventory;
 }
 
-export async function fetchMarcusDetailHtml(url: string): Promise<string> {
-  const res = await fetch(url, {
+export async function fetchMarcusDetailHtml(
+  url: string, timeoutMs = MARCUS_FETCH_TIMEOUT_MS
+): Promise<string> {
+  const request = () => marcusResponse(url, {
     headers: {
       accept: "text/html,*/*",
       referer: MARCUS_PROPERTIES_URL,
       "user-agent": "Mozilla/5.0 CRE collector",
     },
-  });
-  if (!res.ok) throw new Error(`Marcus & Millichap detail HTTP ${res.status}`);
-  return res.text();
+  }, "Marcus & Millichap detail", response => response.text(), timeoutMs);
+  try {
+    return await request();
+  } catch (error) {
+    if (!(error instanceof MarcusRequestTimeoutError) ||
+        !await marcusRequestSettled(error.retryReady)) throw error;
+    // Only one replacement, after fetch, body and known cancellation settled.
+    // Settlement wait is cleanup, not deliberate backoff. POSTs never use this.
+    recordRetry("http_helper", 0, true);
+    return request();
+  }
 }
 
 export function marcusDetailHtmlIsUsable(html: string): boolean {
@@ -561,7 +656,7 @@ export function prepareMarcusDetailCache(path: string, attemptId: string): void 
     kind: "marcus-detail-cache",
     schemaVersion: MARCUS_DETAIL_CACHE_SCHEMA_VERSION,
     attemptId,
-    createdAt: new Date().toISOString(),
+    createdAt: observationNow(),
   };
   // Every collector process is a distinct freshness attempt. Reusing a sidecar
   // from a prior retry would make a newly timestamped artifact stale, so reset
@@ -646,7 +741,7 @@ export function appendMarcusDetailCache(
       attemptId,
       key,
       baseIdentity,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt: observationNow(),
       listing,
     })}\n`
   );
@@ -730,7 +825,7 @@ export async function enrichMarcusListing(base: any): Promise<any> {
       city: address.city ?? base.city,
       state: address.state ?? base.state,
       postalCode: address.postalCode ?? base.postalCode,
-      salePriceUsd: moneyToNumber(priceText) ?? base.salePriceUsd,
+      salePriceUsd: parseMoney(priceText) ?? base.salePriceUsd,
       salePriceText: priceText,
       // capRatePct from detail spec wins; scalars.capRatePct is already the best available.
       capRatePct: capRate ? Number(capRate) : scalars.capRatePct ?? base.capRatePct,
@@ -798,18 +893,31 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
         "Sale-only in the public property UI. The documented public bundle exposes property and auction endpoints, but no public lease search mode or lease endpoint was found.",
     };
   }
-  const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
-  const { rows, total } = parseMarcusPropertiesResponse(search);
-  if (!rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
-  console.error(
-    `  marcus-millichap/sale: public properties API sanity check returned ${rows.length} row(s), total ${
-      total ?? "?"
-    }`
-  );
-  const mapRows = await fetchMarcusMapRows();
-  if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
-  assertMarcusInventoryCount(total, mapRows);
-  const inventoryObservedAt = new Date().toISOString();
+  let total: number | null = null;
+  let mapRows: any[] = [];
+  for (let pair = 1; pair <= 2; pair++) {
+    const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
+    const parsed = parseMarcusPropertiesResponse(search);
+    total = parsed.total;
+    if (!parsed.rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
+    console.error(
+      `  marcus-millichap/sale: public properties API sanity check returned ${parsed.rows.length} row(s), total ${total ?? "?"}`
+    );
+    mapRows = await fetchMarcusMapRows(true);
+    if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
+    try {
+      assertMarcusInventoryCount(total, mapRows);
+      break;
+    } catch (err) {
+      if (!(err instanceof MarcusInventoryCountMismatchError) || pair === 2) throw err;
+      // Discard both observations; only a fresh complete pair can feed details.
+      console.error(`  marcus-millichap/sale: inventory count mismatch ${total}/${mapRows.length}; pair retry 2/2 after 3000ms`);
+      const waitStarted = performance.now();
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      recordRetry("http_helper", performance.now() - waitStarted, true);
+    }
+  }
+  const inventoryObservedAt = observationNow();
   const observedMapRows = mapRows.map((row) => ({
     ...row,
     __creInventoryObservedAt: inventoryObservedAt,

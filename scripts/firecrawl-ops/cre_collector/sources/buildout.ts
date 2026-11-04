@@ -1,13 +1,22 @@
+import { buildoutRawScope, captureBuildoutRaw, preserveBuildoutRaw } from "./pure/buildout-raw-retention.js";
+import { buildoutCanonicalAttributeMap, buildoutFieldObservations, MAX_BUILDOUT_FIELD_ATTRIBUTES, safeBuildoutSpaceLiteral } from "./buildout-field-observations.js";
+import { observationNow } from "../lib/observation-clock.js";
 // sources/buildout.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import * as cheerio from "cheerio";
+import { Marked } from "marked";
 import { brokerRef } from "../lib/broker.js";
+import { allBuildoutFeeds } from "./buildout-feeds/index.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
-import { SourceResult, Tx } from "../types.js";
+import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
-import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
+import { captureDetailTables } from "../lib/detail-tables/index.js";
+import { assertBuildoutCaptureScope, BuildoutNativeCaptureError, BuildoutRepresentationError, publishBuildoutParsedPage, requireBuildoutJsonValue } from "../lib/source-evidence/buildout-page.js";
+import { clean, isPerSfPriceText, num, pmap } from "../lib/util.js";
+import { isPerSfText, parseLeaseRate, parseMoney, parseSizeText } from "../lib/parse.js";
 import {
   generationMatches,
   refreshGenerationId,
@@ -25,8 +34,10 @@ export const BUILDOUT_STABLE_INVENTORY_SORT = "created_at asc, id asc";
 type BuildoutInventoryResult = {
   items: any[];
   total: number | null;
+  incomplete?: boolean;
   strictValidated?: boolean;
   generationId?: string | null;
+  proofPages?: BuildoutInventoryProofPage[];
 };
 
 export const buildoutCache = new Map<string, BuildoutInventoryResult>();
@@ -276,24 +287,67 @@ type BuildoutPageObservation = {
   observedAt: string;
   generationId: string | null;
   cacheDisposition: "live" | "generation_cache";
+  endpoint?: string;
+  transport?: "direct_json" | "firecrawl_json";
+  parsedJsonSha256?: string;
 };
 
-function annotateBuildoutPage(data: any, observation: BuildoutPageObservation): any {
-  if (!data || typeof data !== "object") return data;
-  Object.defineProperty(data, "__creFreshness", {
-    value: observation,
-    enumerable: false,
-    configurable: true,
+function observeBuildoutPage(data: any, endpoint: string, transport: "direct_json" | "firecrawl_json"): any {
+  requireBuildoutJsonValue(data);
+  return annotateBuildoutPage(data, {
+    observedAt: observationNow(),
+    generationId: refreshGenerationId(),
+    cacheDisposition: "live",
+    endpoint,
+    transport,
+    parsedJsonSha256: createHash("sha256").update(JSON.stringify(data), "utf8").digest("hex"),
   });
+}
+
+// An unusable receipt never changes ordinary collection semantics. The explicit
+// opt-in consumer requires this proof and refuses unknown lifecycle/URL facts.
+function buildoutProofPage(data: any, index: number): BuildoutInventoryProofPage | null {
+  const observation = buildoutPageObservation(data);
+  if (!observation?.generationId || !generationMatches(observation.generationId) ||
+      !observation.endpoint || !observation.transport || !observation.parsedJsonSha256 ||
+      !Array.isArray(data?.inventory)) return null;
+  const rows = [];
+  for (const row of data.inventory) {
+    if (!["sale", "closed", "under_contract", "also_for_sale_or_lease"].every(
+      (key) => typeof row?.[key] === "boolean"
+    ) || !["string", "number"].includes(typeof row?.id) || !clean(String(row.id)) ||
+      typeof row?.show_link !== "string" || !clean(row.show_link)) return null;
+    rows.push({
+      id: String(row.id), showLink: row.show_link, sale: row.sale, closed: row.closed,
+      underContract: row.under_contract, alsoForSaleOrLease: row.also_for_sale_or_lease,
+    });
+  }
+  return {
+    index, endpoint: observation.endpoint, observedAt: observation.observedAt,
+    generationId: observation.generationId, cacheDisposition: observation.cacheDisposition,
+    transport: observation.transport, parsedJsonSha256: observation.parsedJsonSha256,
+    total: data.meta.total, limit: data.meta.limit, rows,
+  };
+}
+
+const buildoutObservations = new WeakMap<object, BuildoutPageObservation>();
+
+function buildoutPageObservation(data: unknown): BuildoutPageObservation | undefined {
+  return data !== null && typeof data === "object" ? buildoutObservations.get(data) : undefined;
+}
+
+function annotateBuildoutPage(data: any, observation: BuildoutPageObservation): any {
+  if (data && typeof data === "object") buildoutObservations.set(data, observation);
   return data;
 }
 
 function buildoutInventoryRows(data: any): any[] {
-  const observation = data?.__creFreshness as BuildoutPageObservation | undefined;
-  return (Array.isArray(data?.inventory) ? data.inventory : []).map((item: any) => ({
-    ...item,
-    __creFreshness: observation,
-  }));
+  const observation = buildoutPageObservation(data);
+  return (Array.isArray(data?.inventory) ? data.inventory : []).map((item: any) => {
+    const row = { ...item };
+    if (observation) annotateBuildoutPage(row, observation);
+    return row;
+  });
 }
 
 export function readBuildoutPageCache(
@@ -311,15 +365,26 @@ export function readBuildoutPageCache(
     if (!generationMatches(cached.generationId)) return null;
     const data = cached.data;
     if (!data || !Array.isArray(data.inventory)) return null;
+    requireBuildoutJsonValue(data);
     if (typeof cached.cachedAt !== "string" || !Number.isFinite(Date.parse(cached.cachedAt))) {
       return null;
     }
+    // Old cache files retain their original freshness behavior but cannot acquire
+    // proof retroactively. Verify new provenance against the retained parsed page.
+    const evidence = cached.observation;
+    const validEvidence = evidence && evidence.observedAt === cached.cachedAt &&
+      evidence.generationId === cached.generationId &&
+      evidence.endpoint === buildoutInventoryUrl(pluginKey, page, opts.inventorySort) &&
+      ["direct_json", "firecrawl_json"].includes(evidence.transport) &&
+      evidence.parsedJsonSha256 === createHash("sha256").update(JSON.stringify(data), "utf8").digest("hex");
     return annotateBuildoutPage(data, {
+      ...(validEvidence ? evidence : {}),
       observedAt: cached.cachedAt,
       generationId: cached.generationId ?? null,
       cacheDisposition: "generation_cache",
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof BuildoutRepresentationError) throw error;
     return null;
   }
 }
@@ -332,11 +397,12 @@ export function writeBuildoutPageCache(
   data: any
 ): void {
   if (!data || !Array.isArray(data.inventory)) return;
+  requireBuildoutJsonValue(data);
   const path = buildoutPageCachePath(company, pluginKey, page, opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  const observation = data.__creFreshness as BuildoutPageObservation | undefined;
-  const cachedAt = observation?.observedAt ?? new Date().toISOString();
+  const observation = buildoutPageObservation(data);
+  const cachedAt = observation?.observedAt ?? observationNow();
   writeFileSync(
     tmp,
     JSON.stringify(
@@ -346,6 +412,7 @@ export function writeBuildoutPageCache(
         queryFingerprint: buildoutQueryFingerprint(opts),
         cachedAt,
         generationId: observation?.generationId ?? refreshGenerationId(),
+        observation,
         data,
       },
       null,
@@ -398,7 +465,7 @@ export async function directBuildoutJson(url: string, referer: string, timeoutMs
     });
     const body = await res.text();
     const parsed = parseJsonBody(body);
-    if (res.ok && parsed !== null) return parsed;
+    if (res.ok && parsed !== null) return observeBuildoutPage(parsed, res.url || url, "direct_json");
     const contentType = res.headers.get("content-type") ?? "unknown";
     const shape = parsed === null ? "non-json" : "json-error-status";
     throw new Error(`direct GET ${res.status} ${contentType} (${shape})`);
@@ -414,49 +481,71 @@ export async function fetchBuildoutInventoryPage(
   opts: BuildoutInventoryOpts,
   expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
+  assertBuildoutCaptureScope(pluginKey, opts.cacheSlug);
   const url = buildoutInventoryUrl(pluginKey, page, opts.inventorySort);
   const requireComplete = requireCompleteBuildoutInventory(opts);
   const cachePolicy = buildoutPageCachePolicy(opts);
   if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
-    if (cached) return cached;
+    if (cached) {
+      captureBuildoutParsedPage(pluginKey, page, opts, cached, "generation_cache", null);
+      return cached;
+    }
     if (envBool("BUILDOUT_ASSEMBLE_FROM_CACHE")) {
       throw new Error(`missing Buildout cache page ${page} for ${buildoutCacheSlug(company, pluginKey, opts)}`);
     }
   }
   await sleepBuildoutJitter();
   let data: any;
+  let directSucceeded = false;
   if (opts.preferDirectJson) {
     try {
       data = await directBuildoutJson(url, opts.directReferer ?? "https://buildout.com/");
+      directSucceeded = true;
       if (page === 0) console.error(`  ${company}: direct Buildout JSON available`);
     } catch (err) {
+      if (err instanceof BuildoutRepresentationError) throw err;
       console.error(`  ${company}: direct Buildout JSON failed for page ${page} (${err}); falling back to Firecrawl`);
     }
   }
+  const directObservation = buildoutPageObservation(data);
   data ??= await scrapeJson(url, {
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
+    onNonJson: (attempt: number, status: number | null) => {
+      const feed = allBuildoutFeeds.find((item) => item.pluginKey === pluginKey)?.feedKey ?? "unknown";
+      console.error(`  ${feed}: Firecrawl non-JSON page ${page} attempt ${attempt} status ${status ?? "unknown"}`);
+    },
     ...(requireFreshDetails() ? { maxAge: 0 } : {}),
   });
+  requireBuildoutJsonValue(data);
+  captureBuildoutParsedPage(pluginKey, page, opts, data, "live", directSucceeded ? "direct_json" : "firecrawl_json");
   // Reject malformed, partial, or cross-page-incoherent strict pages before
   // they can poison the generation-scoped recovery cache.
   assertBuildoutInventoryPage(data, page, expected, requireComplete);
-  annotateBuildoutPage(data, {
-    observedAt: new Date().toISOString(),
-    generationId: refreshGenerationId(),
-    cacheDisposition: "live",
-  });
+  if (!directObservation) observeBuildoutPage(data, url, "firecrawl_json");
   if (cachePolicy.write) writeBuildoutPageCache(company, pluginKey, page, opts, data);
   return data;
+}
+
+function captureBuildoutParsedPage(pluginKey: string, page: number, opts: BuildoutInventoryOpts, data: any,
+  disposition: "generation_cache" | "live", liveTransport: "direct_json" | "firecrawl_json" | null): void {
+  const observed = buildoutPageObservation(data);
+  const sourceObservedAt = typeof observed?.observedAt === "string" ? observed.observedAt : null;
+  const transport = disposition === "generation_cache"
+    ? (observed?.transport === "direct_json" || observed?.transport === "firecrawl_json" ? observed.transport : null)
+    : liveTransport;
+  publishBuildoutParsedPage({ pluginKey, cacheSlug: opts.cacheSlug, page, inventorySort: opts.inventorySort,
+    data, sourceObservedAt, cacheDisposition: disposition, transport });
 }
 
 export async function buildoutInventory(
   company: string,
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
-): Promise<{ items: any[]; total: number | null }> {
+): Promise<BuildoutInventoryResult> {
+  assertBuildoutCaptureScope(pluginKey, opts.cacheSlug);
   const requireComplete = requireCompleteBuildoutInventory(opts);
   const memoryCacheKey = buildoutMemoryCacheKey(pluginKey, opts);
   const cached = buildoutCache.get(memoryCacheKey);
@@ -472,8 +561,10 @@ export async function buildoutInventory(
   if (cachedFailure) throw cachedFailure;
   const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
   const firstPage = assertBuildoutInventoryPage(first, 0, null, requireComplete);
-  const total: number | null = requireComplete ? firstPage.total : first.meta?.total ?? null;
-  const limit: number = requireComplete ? firstPage.limit : first.meta?.limit ?? 30;
+  const total: number | null = requireComplete ? firstPage.total :
+    Number.isInteger(first?.meta?.total) && first.meta.total >= 0 ? first.meta.total : null;
+  const limit: number = requireComplete ? firstPage.limit :
+    Number.isInteger(first?.meta?.limit) && first.meta.limit > 0 ? first.meta.limit : 30;
   const declaredPages = total && total > limit ? Math.ceil(total / limit) : 1;
   if (requireComplete && declaredPages > 1200) {
     throw new Error(
@@ -492,6 +583,7 @@ export async function buildoutInventory(
     );
   }
   const inventoryByPage = new Map<number, any[]>();
+  const observedPages = new Map<number, any>([[0, first]]);
   inventoryByPage.set(0, buildoutInventoryRows(first));
   const failedPages = new Set<number>();
   const attemptedPages = new Set<number>([0]);
@@ -526,10 +618,12 @@ export async function buildoutInventory(
           requireComplete ? firstPage : null
         );
         assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
+        observedPages.set(p, d);
         inventoryByPage.set(p, buildoutInventoryRows(d));
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
       } catch (err) {
+        if (err instanceof BuildoutNativeCaptureError || err instanceof BuildoutRepresentationError) throw err;
         failedPages.add(p);
         console.error(`  ${company}: inventory page ${p} FAILED after retries: ${err}`);
         if (failedPages.size > failureLimit) {
@@ -550,13 +644,16 @@ export async function buildoutInventory(
       for (const p of retryPages) {
         try {
           let d: any;
+          let directRecovered = false;
           if (opts.preferDirectJson) {
             try {
               d = await directBuildoutJson(
                 buildoutInventoryUrl(pluginKey, p, opts.inventorySort),
                 opts.directReferer ?? "https://buildout.com/"
               );
-            } catch {
+              directRecovered = true;
+            } catch (err) {
+              if (err instanceof BuildoutRepresentationError) throw err;
               d = await fetchBuildoutInventoryPage(
                 company,
                 pluginKey,
@@ -582,14 +679,16 @@ export async function buildoutInventory(
               requireComplete ? firstPage : null
             );
           }
+          if (directRecovered) captureBuildoutParsedPage(pluginKey, p, opts, d, "live", "direct_json");
           assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
-          if (!d?.__creFreshness) {
+          if (!buildoutPageObservation(d)) {
             annotateBuildoutPage(d, {
-              observedAt: new Date().toISOString(),
+              observedAt: observationNow(),
               generationId: refreshGenerationId(),
               cacheDisposition: "live",
             });
           }
+          observedPages.set(p, d);
           inventoryByPage.set(p, buildoutInventoryRows(d));
           if (buildoutPageCachePolicy(opts).write) {
             writeBuildoutPageCache(company, pluginKey, p, opts, d);
@@ -597,6 +696,7 @@ export async function buildoutInventory(
           failedPages.delete(p);
           console.error(`  ${company}: recovered Buildout inventory page ${p}`);
         } catch (err) {
+          if (err instanceof BuildoutNativeCaptureError || err instanceof BuildoutRepresentationError) throw err;
           console.error(`  ${company}: inventory page ${p} still failed on recovery pass ${pass}: ${err}`);
         }
       }
@@ -644,9 +744,29 @@ export async function buildoutInventory(
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
   assertBuildoutInventoryReconciled(items, total, requireComplete);
+  // In non-strict mode retain readable rows, but do not imply complete
+  // coverage when the same page and identity checks used by strict mode fail.
+  let incompleteShape = false;
+  if (!requireComplete) {
+    try {
+      const expected = assertBuildoutInventoryPage(first, 0, null, true);
+      for (const [page, data] of observedPages) {
+        assertBuildoutInventoryPage(data, page, expected, true);
+      }
+      assertBuildoutInventoryReconciled(items, total, true);
+    } catch {
+      incompleteShape = true;
+    }
+  }
+  const proofPages = Array.from({ length: pages }, (_, index) =>
+    observedPages.has(index) ? buildoutProofPage(observedPages.get(index), index) : null
+  );
   const result: BuildoutInventoryResult = {
+    ...(requireComplete && proofPages.every((page) => page !== null)
+      ? { proofPages: proofPages as BuildoutInventoryProofPage[] } : {}),
     items,
     total,
+    incomplete: incompleteShape || failedPages.size > 0 || unattemptedPages.size > 0 || declaredPages > pages,
     strictValidated: requireComplete,
     generationId: refreshGenerationId(),
   };
@@ -673,9 +793,11 @@ export async function buildoutInventory(
 export type BuildoutDetailConfig = {
   pluginKey: string;
   host: string;
+  /** Permit a source-provided HTTP listing URL as local route input only. */
+  allowHttpListingInput?: boolean;
   /**
-   * Exact public listing hosts allowed to supply `propertyId` values for this
-   * plugin. Keep aliases explicit: a queue row must prove source ownership
+   * Public listing hosts allowed to supply `propertyId` values for this
+   * plugin, with central bare/www equivalence. A queue row must prove ownership
    * before its slug is used to fetch and complete a Buildout detail claim.
    */
   listingHosts: readonly string[];
@@ -698,37 +820,33 @@ export const BUILDOUT_ENRICH_CONFIG: Record<string, BuildoutDetailConfig> = {
 };
 
 // Pull the Buildout property slug (the show_link `?propertyId=` value) off a
-// listing url, dropping the dual-mode `-sale` / `-lease` suffix so a sale and a
-// lease url resolve to the same iframe. Returns null when no propertyId is
-// present. Pure; never throws.
+// listing url, dropping the dual-mode `-sale` / `-lease` suffix for the shared
+// canonical identity using the same case-sensitive rule as cre_ingest.to_row.
+// Detail requests retain the literal propertyId. Returns
+// null when no propertyId is present. Pure; never throws.
 export function buildoutSlugFromUrl(url: string | null): string | null {
   const u = clean(url);
   if (!u) return null;
   try {
     const parsed = new URL(u);
     const pid = parsed.searchParams.get("propertyId");
-    if (pid) return pid.replace(/-(?:sale|lease)$/i, "") || null;
+    if (pid) return pid.replace(/-(?:sale|lease)$/, "") || null;
   } catch {
     const m = u.match(/[?&]propertyId=([^&#]+)/i);
-    if (m) return decodeURIComponent(m[1]).replace(/-(?:sale|lease)$/i, "") || null;
+    if (m) return decodeURIComponent(m[1]).replace(/-(?:sale|lease)$/, "") || null;
   }
   return null;
 }
 
-// Compose the Buildout detail iframe content URL for a source. Returns null when
-// the input URL is not a clean HTTPS URL owned by an explicitly admitted
-// listing host, or when the slug cannot be derived. Rejection leaves the claim
-// queued for the weekly additive backstop. Pure; never throws.
-//   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
-export function buildoutDetailIframeUrl(
-  sourceKey: string,
+// Listing ownership permits only the same DNS host with one optional leading
+// www. label. Keep the configured iframe host and the original listing URL intact.
+function buildoutOwnedListingUrl(
   listingUrl: string | null,
-  detailConfig?: BuildoutDetailConfig
-): string | null {
-  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
-  if (!cfg) return null;
+  listingHosts: readonly string[],
+  allowHttp = false
+): URL | null {
   const rawUrl = clean(listingUrl);
-  if (!rawUrl) return null;
+  if (!rawUrl || rawUrl !== listingUrl || /[\s\x00-\x1f\x7f]/.test(rawUrl)) return null;
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -737,25 +855,79 @@ export function buildoutDetailIframeUrl(
   }
   // URL normalizes an explicit default `:443` away, so inspect the original
   // authority too. These listing hosts are DNS names, not IPv6 literals.
-  const authority = rawUrl.match(/^https:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
+  const authority = rawUrl.match(/^https?:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
   const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
   if (
-    parsed.protocol !== "https:" ||
+    !(parsed.protocol === "https:" || (allowHttp && parsed.protocol === "http:")) ||
+    !authority ||
+    authority.toLowerCase() !== parsed.hostname ||
     authority.includes("@") ||
     parsed.username ||
     parsed.password ||
     parsed.port ||
     hostPort.includes(":") ||
     rawUrl.includes("#") ||
-    !cfg.listingHosts.some(
-      (host) => parsed.hostname.toLowerCase() === host.toLowerCase()
+    !listingHosts.some(
+      (host) => parsed.hostname.toLowerCase().replace(/^www\./, "") ===
+        host.toLowerCase().replace(/^www\./, "")
     )
   ) {
     return null;
   }
-  const propertyId = parsed.searchParams.get("propertyId");
-  const slug = propertyId?.replace(/-(?:sale|lease)$/i, "") || null;
-  if (!slug) return null;
+  return parsed;
+}
+
+// Inventory metadata can publish HTTP or path-routed listing URLs. Keep the
+// provider's literal URL and the existing ingest identity; this does not prove
+// HTTP redirects/TLS or make path URLs resolvable by the detail iframe helper.
+function buildoutLiteralPropertyId(parsed: URL, listingUrl: string): string | null {
+  if (parsed.search.slice(1).split("&").some(part => {
+    const key = part.split("=", 1)[0];
+    return key !== "propertyId" && new URLSearchParams(part).has("propertyId");
+  })) return null;
+  const values = parsed.searchParams.getAll("propertyId").filter(Boolean);
+  const literals = [...listingUrl.matchAll(/[?&]propertyId=([^&#]+)/g)].map(match => match[1]);
+  if (values.length !== 1 || literals.length !== 1 || literals[0] !== values[0] ||
+      !/^[A-Za-z0-9_-]+$/.test(values[0]) || !values[0].replace(/-(sale|lease)$/, "")) return null;
+  return values[0];
+}
+
+function buildoutInventoryListingUrl(listingUrl: string, host: string): URL | null {
+  const parsed = buildoutOwnedListingUrl(listingUrl, [host], true);
+  if (!parsed) return null;
+  const rawPath = listingUrl.match(/^https?:\/\/[^/?#]+([^?#]*)/i)?.[1] ?? "";
+  if ((rawPath || "/") !== parsed.pathname) return null;
+  if (parsed.searchParams.has("propertyId")) {
+    if (!buildoutLiteralPropertyId(parsed, listingUrl)) return null;
+  } else {
+    const leaf = parsed.pathname.replace(/\/$/, "").split("/").at(-1)?.toLowerCase();
+    if (parsed.search || !/^\/(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_-]+\/?$/.test(parsed.pathname) ||
+        ["properties", "listings", "inventory", "search", "property-search", "available-properties"].includes(leaf ?? "")) return null;
+  }
+  return parsed;
+}
+
+// Compose the Buildout detail iframe content URL for a source. Returns null when
+// the input URL is not a clean admitted listing URL (HTTPS by default)
+// (with one optional leading www. label), or when the slug cannot be derived.
+// Rejection leaves the claim queued for the weekly additive backstop. Pure;
+// never throws.
+//   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
+export function buildoutDetailIframeUrl(
+  sourceKey: string,
+  listingUrl: string | null,
+  detailConfig?: BuildoutDetailConfig
+): string | null {
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
+  if (!cfg) return null;
+  const parsed = buildoutOwnedListingUrl(listingUrl, cfg.listingHosts,
+    sourceKey === "leibsohn" && cfg.allowHttpListingInput === true);
+  if (!parsed) return null;
+  const propertyId = buildoutLiteralPropertyId(parsed, listingUrl!);
+  if (!propertyId?.replace(/-(?:sale|lease)$/i, "")) return null;
+  // Publisher api.js appends the selected propertyId to its detail route.
+  // Canonical identity normalization is separate in buildoutSlugFromUrl.
+  const slug = propertyId;
   return (
     `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
     `${encodeURIComponent(slug)}?pluginId=0&iframe=true&embedded=true`
@@ -766,17 +938,41 @@ export function buildoutDetailIframeUrl(
 // detail page. Treat that as unavailable detail evidence, not as fresh Markdown:
 // ingesting the shell would overwrite the last useful description and falsely
 // complete the enrichment packet.
-export function buildoutDetailDocIsUsable(
+function buildoutDetailQualification(
   doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
-): boolean {
+): "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail" {
+  if ((doc?.rawHtml != null && typeof doc.rawHtml !== "string") ||
+      (doc?.markdown != null && typeof doc.markdown !== "string")) {
+    return "rejected_unqualified_detail";
+  }
   const body = `${doc?.markdown ?? ""}\n${doc?.rawHtml ?? ""}`.toLowerCase();
-  if (!body.trim()) return false;
-  return !(
+  if (
     body.includes("listing_not_found") ||
     body.includes("listing not found") ||
     body.includes("sorry, we can't find the listing") ||
     body.includes("sorry, we can&#39;t find the listing")
-  );
+  ) return "rejected_missing_detail_shell";
+  const $ = cheerio.load(doc?.rawHtml ?? "");
+  $("head, script, style, template, noscript, svg, a").remove();
+  const htmlText = $("body").text().replace(/\s+/g, " ").trim();
+  let renderedMarkdown: string;
+  try {
+    renderedMarkdown = new Marked().parse(doc?.markdown ?? "", { async: false });
+  } catch {
+    return "rejected_unqualified_detail";
+  }
+  const markdownHtml = cheerio.load(renderedMarkdown);
+  markdownHtml("head, script, style, template, noscript, svg, a").remove();
+  const markdownText = markdownHtml("body").text().replace(/[#*_`~>\s-]+/g, " ").trim();
+  const hasContent = (value: string) => /[\p{L}\p{N}]/u.test(value) &&
+    !/^(?:loading|please wait|loading\.\.\.)[.!…\s]*$/i.test(value);
+  return hasContent(htmlText) || hasContent(markdownText) ? "usable_detail" : "rejected_unqualified_detail";
+}
+
+export function buildoutDetailDocIsUsable(
+  doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
+): boolean {
+  return buildoutDetailQualification(doc) === "usable_detail";
 }
 
 // Tier-B detail enricher for a single Buildout (svn / lee-associates) listing.
@@ -785,10 +981,12 @@ export function buildoutDetailDocIsUsable(
 // the input url (URL-keyed completion) plus the harvested media/links/documents/
 // images and full-page markdown. Returns null on a derivation or scrape failure
 // so the worker leaves the claim queued. NOT used by the bulk collect path.
-export async function enrichBuildoutDetail(
+export async function enrichBuildoutDetailObserved(
   sourceKey: string,
   listingUrl: string,
-  detailConfig?: BuildoutDetailConfig
+  detailConfig?: BuildoutDetailConfig,
+  onDocument?: (doc: Awaited<ReturnType<typeof scrapeDoc>>, pageUrl: string,
+    qualification: "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail") => void
 ): Promise<any | null> {
   const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
@@ -806,13 +1004,29 @@ export async function enrichBuildoutDetail(
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
     return null;
   }
-  if (!buildoutDetailDocIsUsable(doc)) {
+  const qualification = buildoutDetailQualification(doc);
+  // Retain the returned response separately from canonical qualification.
+  if (onDocument) {
+    try { onDocument(doc, iframeUrl, qualification); }
+    catch { /* Canonical mapping remains independent. */ }
+  }
+  if (qualification !== "usable_detail") {
     console.error(
-      `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
+      `  enrich/buildout(${sourceKey}): ${qualification} for ${listingUrl}`
     );
     return null;
   }
   const harvested = harvestDetail(doc, { baseUrl: iframeUrl });
+  const detailTables = captureDetailTables(doc.rawHtml || undefined, {
+    sourceUrl: iframeUrl,
+    observedAt: doc.detailObservation?.observedAt ?? observationNow(),
+  });
+  // An incomplete attempt remains useful evidence, but must not replace the
+  // prior complete table snapshot during extra_facts' top-level JSON merge.
+  const tableKey = detailTables.status === "observed" &&
+    !detailTables.omissions.unknown &&
+    Object.values(detailTables.omissions).every(value => value === 0 || value === false)
+    ? "detail_tables" : "detail_tables_attempt";
   // Echo the ORIGINAL listing url (not the iframe url) so cre_ingest.to_row
   // recomputes the same Buildout external_id (?propertyId=...) and the worker
   // marks the claim done by url. The artifact is additive: only the harvested
@@ -829,7 +1043,20 @@ export async function enrichBuildoutDetail(
     photos: harvested.images,
     markdown: typeof doc.markdown === "string" && doc.markdown ? doc.markdown : undefined,
     buildoutDetailIframeUrl: iframeUrl,
+    extraFacts: {
+      [tableKey]: detailTables,
+      [`${tableKey}_observation_origin`]: doc.detailObservation
+        ? "recorded_detail_observation" : "collector_result_read_time",
+    },
   };
+}
+
+export async function enrichBuildoutDetail(
+  sourceKey: string,
+  listingUrl: string,
+  detailConfig?: BuildoutDetailConfig
+): Promise<any | null> {
+  return enrichBuildoutDetailObserved(sourceKey, listingUrl, detailConfig);
 }
 
 // --- Pure listing builder (exported for unit testing) ---
@@ -885,6 +1112,20 @@ export function buildoutScalarFields(raw: {
   };
 }
 
+// Availability-space text is a literal long-tail fact, not units or parking.
+function buildoutSpaceFacts(attributes: unknown): Record<string, string> | undefined {
+  if (!Array.isArray(attributes) || attributes.length > MAX_BUILDOUT_FIELD_ATTRIBUTES) return undefined;
+  const values = new Set<string>();
+  for (const pair of attributes) {
+    if (!Array.isArray(pair) || pair[0] !== "# of Spaces") continue;
+    if (pair.length !== 2 || !safeBuildoutSpaceLiteral(pair[1])) return undefined;
+    const value = clean(pair[1]);
+    if (!value) return undefined;
+    values.add(value);
+  }
+  return values.size === 1 ? { number_of_spaces: [...values][0] } : undefined;
+}
+
 export async function srcBuildout(
   company: string,
   pluginKey: string,
@@ -896,29 +1137,35 @@ export async function srcBuildout(
 ): Promise<SourceResult> {
   // Enumeration-only source: the Buildout inventory API has no per-listing detail
   // render, so monitor output == full output (status/price/id are all in-feed).
-  const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
+  const { items, total, proofPages, incomplete } = await buildoutInventory(company, pluginKey, inventoryOpts);
   const eligibleItems = items.filter((x) => {
     if (x.closed === true) return false;
     const isSale = x.sale === true;
     return tx === "sale" ? isSale : !isSale;
   });
   const listings: any[] = [];
+  const sourceScope = buildoutRawScope(company, pluginKey, listingsPage, inventoryOpts.cacheSlug);
   for (const x of eligibleItems) {
     if (listings.length >= max) break;
     const isSale = x.sale === true;
     const isLease = x.sale !== true; // inventory rows are active availabilities: not-for-sale = for-lease
     {
-      const attrs = new Map<string, string>(
-        (x.index_attributes ?? []).map((p: any) => [String(p[0]), String(p[1])])
-      );
+      const id = x.id != null ? String(x.id) : null;
+      const observedAt = buildoutPageObservation(x)?.observedAt ?? null;
+      const { raw, marker } = captureBuildoutRaw(x, id, clean(x.show_link), observedAt, sourceScope);
+      const mappedAttributes = buildoutCanonicalAttributeMap(x.index_attributes);
+      const attrs = mappedAttributes.values;
       const priceText = attrs.get("Price") ?? null;
-      const leaseRateText = attrs.get("Lease Rate") ?? attrs.get("Rate") ?? null;
-      const sizeText =
+      const leaseRateText = mappedAttributes.omittedAttributeCount || mappedAttributes.blockedLabels.has("Lease Rate") ||
+        mappedAttributes.blockedLabels.has("Rate") ? null : attrs.get("Lease Rate") ?? attrs.get("Rate") ?? null;
+      const sizeText = mappedAttributes.omittedAttributeCount || mappedAttributes.blockedLabels.has("Building Size") ||
+        mappedAttributes.blockedLabels.has("Lot Size") ? null :
         attrs.get("Building Size") ?? attrs.get("Lot Size") ?? clean(x.size_summary);
       // Stranded structured-field lift: the inventory "Available" attribute is a
       // dropped available / divisible square-foot signal. Only non-null parsed
       // values are spread in, so a row without an Available attr is unchanged.
       const availSf = buildoutAvailableSf(attrs.get("Available"));
+      const spaceFacts = buildoutSpaceFacts(x.index_attributes);
       const brokerIds = (x.broker_contacts ?? [])
         .map((b: any) =>
           brokerRef({
@@ -962,9 +1209,10 @@ export async function srcBuildout(
       // the contract-specified helper) on the top-level salePriceText field.
       const rawSalePriceText = tx === "sale" ? priceText : null;
       const isSalePsf = isPerSfText(rawSalePriceText);
+      const fieldObservations = buildoutFieldObservations(x.index_attributes);
 
-      listings.push({
-        id: x.id != null ? String(x.id) : null,
+      const listing = {
+        id,
         name: clean(x.display_name) ?? clean(x.name),
         transactionType: x.also_for_sale_or_lease ? "Sale/Lease" : isLease ? "Lease" : "Sale",
         assetType: clean(x.property_sub_type_name) ?? attrs.get("Property Type") ?? null,
@@ -978,8 +1226,8 @@ export async function srcBuildout(
         // Apply the isPerSfText DQ guard: if salePriceText is a per-SF value,
         // suppress salePriceUsd (do not emit a false absolute price) and place
         // the value in salePricePerSf instead.
-        salePriceUsd: tx === "sale" && !isSalePsf && !isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
-        salePricePerSf: tx === "sale" && (isSalePsf || isPerSfPriceText(priceText)) ? moneyToNumber(priceText) : null,
+        salePriceUsd: tx === "sale" && !isSalePsf && !isPerSfPriceText(priceText) ? parseMoney(priceText) : null,
+        salePricePerSf: tx === "sale" && (isSalePsf || isPerSfPriceText(priceText)) ? parseMoney(priceText) : null,
         salePriceText: rawSalePriceText,
         leaseRateText,
         leaseRateMin: leaseRateMin,
@@ -990,12 +1238,18 @@ export async function srcBuildout(
         canonicalUrl,
         statusBadge,
         ...availSf,
+        ...(fieldObservations ? { buildoutFieldObservations: fieldObservations } : {}),
+        ...(mappedAttributes.duplicateAttributeCount || mappedAttributes.malformedAttributeCount || mappedAttributes.omittedAttributeCount
+          ? { buildoutAttributeMapping: { duplicateAttributeCount: mappedAttributes.duplicateAttributeCount,
+              malformedAttributeCount: mappedAttributes.malformedAttributeCount,
+              omittedAttributeCount: mappedAttributes.omittedAttributeCount } } : {}),
+        ...(spaceFacts ? { extraFacts: spaceFacts } : {}),
         brokerIds,
         brochures: x.pdf_url ? [{ name: "Listing brochure (PDF)", url: x.pdf_url }] : [],
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),
         url: clean(x.show_link),
         underContract: x.under_contract === true,
-        inventoryObservedAt: x.__creFreshness?.observedAt,
+        inventoryObservedAt: observedAt ?? undefined,
         // The bulk Buildout endpoint is an authoritative inventory feed, not a
         // rendered property-detail page. Keep the last-good detail children
         // (contacts, documents, images, media, and links) and add the current
@@ -1003,20 +1257,38 @@ export async function srcBuildout(
         preserveChildCollections: true,
         freshnessProvenance: {
           detailScope: "authoritative_inventory_feed",
-          generationId: x.__creFreshness?.generationId ?? refreshGenerationId(),
+          generationId: buildoutPageObservation(x)?.generationId ?? refreshGenerationId(),
           method: "buildout_inventory_feed",
-          cacheDisposition: x.__creFreshness?.cacheDisposition ?? "live",
+          cacheDisposition: buildoutPageObservation(x)?.cacheDisposition ?? "live",
         },
-      });
+      };
+      listings.push(preserveBuildoutRaw(listing, raw, marker));
     }
   }
+  const generationId = refreshGenerationId();
+  const currentInventoryProof: BuildoutCurrentInventoryProof | undefined =
+    requireFreshDetails() && proofPages && generationId && inventoryOpts.cacheSlug &&
+    inventoryOpts.inventorySort === BUILDOUT_STABLE_INVENTORY_SORT &&
+    !buildoutCapTruncated(max, listings.length, eligibleItems.length) &&
+    proofPages.every((page) => page.rows.every((row) => {
+      try {
+        return buildoutInventoryListingUrl(row.showLink, new URL(listingsPage).hostname) !== null;
+      } catch { return false; }
+    }))
+      ? {
+          schema: "buildout-current-inventory-v1", kind: "complete_paginated_feed",
+          sourceKey: inventoryOpts.cacheSlug, transaction: tx, generationId,
+          pluginKey, listingsPage, sort: inventoryOpts.inventorySort,
+          total: total as number, limit: proofPages[0].limit, pages: proofPages,
+        } : undefined;
   return {
+    ...(currentInventoryProof ? { currentInventoryProof } : {}),
     company,
     sourceUrl: listingsPage,
     method: "Buildout plugin inventory API (JSON, paginated)",
     totalAvailable: total,
     listings,
-    truncated: buildoutCapTruncated(max, listings.length, eligibleItems.length),
+    truncated: incomplete === true || buildoutCapTruncated(max, listings.length, eligibleItems.length),
   };
 }
 

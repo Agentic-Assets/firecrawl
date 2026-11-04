@@ -501,9 +501,10 @@ doctor() {
   env_path="${ENV_PATH:-$fc_dir/.env}"
   echo "== docker context =="
   docker context show
-  if [[ "$(docker context show 2>/dev/null || true)" != "orbstack" ]]; then
-    echo "Warning: expected docker context 'orbstack' for this Mac."
-  fi
+  case "$(docker context show 2>/dev/null || true)" in
+    orbstack|desktop-linux|default) ;;
+    *) echo "Warning: verify that the selected Docker context is the intended local engine." ;;
+  esac
   echo
   echo "== containers =="
   status

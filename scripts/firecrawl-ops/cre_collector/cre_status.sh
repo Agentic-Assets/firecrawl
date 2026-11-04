@@ -23,6 +23,8 @@
 #   bash cre_status.sh                 # local artifacts + API readiness GET
 #   bash cre_status.sh --full-health   # also run the full firecrawl healthcheck
 #   bash cre_status.sh --expected-sha <commit>  # require exact clean checkout
+#   bash cre_status.sh --scheduler external    # Linux/WSL visible-surface status
+# Exit: 0 healthy, 1 observed problems, 2 invalid arguments. No scheduler is created.
 #
 # Deliberately `set -uo pipefail` (no -e): every check runs and the script
 # aggregates a single PASS/PROBLEM verdict at the end.
@@ -39,11 +41,22 @@ FC_DIR="${FC_DIR:-$DIR/../../..}"
 # API_URL. Honor both, with the collector-specific setting taking precedence.
 API_URL="${FIRECRAWL_API_URL:-${API_URL:-http://localhost:3002}}"
 
+python3 "$DIR/cre_platform.py" || exit $?
+
 FULL_HEALTH=0
 EXPECTED_SHA="${CRE_EXPECTED_SHA:-}"
+SCHEDULER_MODE=launchd
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --full-health) FULL_HEALTH=1 ;;
+    --scheduler)
+      shift
+      [ "$#" -gt 0 ] || { echo "--scheduler requires launchd or external" >&2; exit 2; }
+      case "$1" in
+        launchd|external) SCHEDULER_MODE="$1" ;;
+        *) echo "--scheduler requires launchd or external" >&2; exit 2 ;;
+      esac
+      ;;
     --expected-sha)
       shift
       [ "$#" -gt 0 ] || { echo "--expected-sha requires a commit" >&2; exit 2; }
@@ -87,7 +100,11 @@ newest_artifact() {
   esac
 }
 
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+file_mtime() {
+  local mtime
+  mtime="$(stat -f %m "$1" 2>/dev/null)" || mtime="$(stat -c %Y "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "$mtime"
+}
 
 human_age() {
   local s="$1"
@@ -115,13 +132,28 @@ marker_field() {  # marker_field <file> <key>  (numbers, bare words, and quoted 
 dir_size_kb() { du -sk "$1" 2>/dev/null | awk '{print $1}'; }
 
 # ---------------------------------------------------------------------------
+if [ "$SCHEDULER_MODE" = "launchd" ]; then
 section "launchd schedules"
 # ---------------------------------------------------------------------------
 LCTL="$(launchctl list 2>/dev/null | grep 'ai.agentic.cre' || true)"
+else
+  section "external scheduler"
+  note "activation and last scheduler exit are owned by the approved visible surface"
+  note "monitor, enrich and weekly artifact freshness is checked; daily remains retired"
+  LCTL=""
+fi
 tier_loaded() {
   local label="ai.agentic.cre-$1"
   printf '%s\n' "$LCTL" | awk -v l="$label" '$3==l {found=1} END {exit found ? 0 : 1}'
 }
+tier_expected() {
+  if [ "$SCHEDULER_MODE" = "external" ]; then
+    [ "$1" != "daily" ]
+  else
+    tier_loaded "$1"
+  fi
+}
+if [ "$SCHEDULER_MODE" = "launchd" ]; then
 for tier in monitor enrich daily weekly; do
   label="ai.agentic.cre-$tier"
   line="$(printf '%s\n' "$LCTL" | awk -v l="$label" '$3==l {print; exit}')"
@@ -147,6 +179,7 @@ for tier in monitor enrich daily weekly; do
     bad "$tier: loaded, last exit $status"
   fi
 done
+fi
 
 # ---------------------------------------------------------------------------
 section "last run per tier"
@@ -190,9 +223,9 @@ for tier in monitor enrich daily weekly; do
       bad "$tier: ${marker_problem} (artifact ${agestr} ago)"
     fi
   elif [ "$age" -gt "$thr" ]; then
-    if ! tier_loaded "$tier"; then
+    if ! tier_expected "$tier"; then
       note "$tier: last artifact ${agestr} ago (tier is not loaded) [${verdict:-no marker}]"
-    elif [ "$tier" = "weekly" ]; then
+    elif [ "$tier" = "weekly" ] && [ "$SCHEDULER_MODE" = "launchd" ]; then
       note "$tier: last artifact ${agestr} ago (weekly may be intentionally unloaded) [${verdict:-no marker}]"
     else
       warn "$tier: STALE, last artifact ${agestr} ago (expected < $(human_age "$thr")) [${verdict:-no marker}]"
@@ -327,6 +360,7 @@ check_firecrawl_stack
 # ---------------------------------------------------------------------------
 section "environment"
 # ---------------------------------------------------------------------------
+if [ "$SCHEDULER_MODE" = "launchd" ]; then
 case "$DIR" in
   "$HOME"/Documents/*)
     warn "clone under ~/Documents (macOS TCC): scheduled launchd runs exit 126 until fixed"
@@ -334,6 +368,7 @@ case "$DIR" in
   *)
     ok "clone outside ~/Documents (no TCC blocker for launchd)" ;;
 esac
+fi
 
 check_checkout_identity() {
 if git -C "$FC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -371,7 +406,7 @@ check_checkout_identity
 # misreport the source. Pull CRE_ENV_FILE from the installed plist (read-only)
 # so the heartbeat reflects the same non-TCC env file the launchd runs resolve.
 env_src="interactive default"
-if [ -z "${CRE_ENV_FILE:-}" ]; then
+if [ -z "${CRE_ENV_FILE:-}" ] && [ "$SCHEDULER_MODE" = "launchd" ]; then
   for _plist in "$HOME/Library/LaunchAgents/ai.agentic.cre-monitor.plist" \
                 "$HOME/Library/LaunchAgents/ai.agentic.cre-enrich.plist" \
                 "$HOME/Library/LaunchAgents/ai.agentic.cre-weekly.plist" \
@@ -384,7 +419,7 @@ if [ -z "${CRE_ENV_FILE:-}" ]; then
       break
     fi
   done
-else
+elif [ -n "${CRE_ENV_FILE:-}" ]; then
   env_src="shell CRE_ENV_FILE"
 fi
 ENVP="$(python3 - <<'PY' 2>/dev/null
@@ -406,6 +441,7 @@ case "$ENVP" in
   *)       warn "env discovery error: $ENVP" ;;
 esac
 
+if [ "$SCHEDULER_MODE" = "launchd" ]; then
 section "installed launchd template drift"
 INSTALLER="$DIR/launchd/install_launchd.sh"
 for tier in monitor enrich weekly daily; do
@@ -426,10 +462,13 @@ for tier in monitor enrich weekly daily; do
     warn "$tier: installed plist differs from checked-in template (rerender with install_launchd.sh; do not load automatically)"
   fi
 done
+fi
 
 # ---------------------------------------------------------------------------
+if [ "$SCHEDULER_MODE" = "launchd" ]; then
 section "recent launchd stderr (redacted summary)"
 # ---------------------------------------------------------------------------
+# BEGIN launchd stderr summary
 shown=0
 for tier in monitor enrich daily weekly; do
   errlog="$OUT_DAILY/cre-$tier.err.log"
@@ -444,6 +483,8 @@ for tier in monitor enrich daily weekly; do
   printf '        artifact: %s\n' "$errlog"
 done
 [ "$shown" -eq 0 ] && note "no non-empty launchd stderr logs"
+# END launchd stderr summary
+fi
 
 # ---------------------------------------------------------------------------
 section "disappearance-only signal staleness"

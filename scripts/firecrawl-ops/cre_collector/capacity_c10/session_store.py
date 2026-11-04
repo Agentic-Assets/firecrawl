@@ -7,7 +7,7 @@ operator cannot accidentally replay an arm from a stale in-memory session.
 
 from __future__ import annotations
 
-import fcntl
+from cre_posix import fcntl
 import json
 import os
 import stat

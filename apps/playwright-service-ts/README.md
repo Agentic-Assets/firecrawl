@@ -83,6 +83,15 @@ fetched by the route guard or the SSRF proxy. `/browser-batch-fetch` also
 returns `503` `TARGET_DNS_UNAVAILABLE` (instead of `400`) when its bootstrap
 host cannot be resolved.
 
+A caller disconnect removes its queued waiter or interrupts the active phase
+wait and closes the owning browser context. A late context allocation keeps
+its permit until closure is confirmed; uncertain closure stays quarantined.
+Completed HTTP responses are not cancellation. The synchronous API forwards
+client disconnects through its in-process `externalAbort` to the Playwright
+HTTP engine. HTTP abort is cooperative and does not establish remote
+settlement; the collector records a client deadline as settlement unknown
+and does not automatically retry that logical scrape.
+
 ## Page permit accounting
 
 Every browser context this service opens counts against
@@ -94,9 +103,12 @@ for `/scrape`, `/browser-batch-fetch`, `/health`, and the C10 listener:
 - A context that finishes allocating after the request gave up keeps the
   permit until it is closed. One that fails after the request gave up releases
   it.
-- A context whose close cannot be confirmed (including a half-configured one
-  from setup) keeps its page permit until the process restarts. The batch
-  admission slot is released, because it is not browser capacity.
+- Page and context teardown start together within one cleanup response budget.
+  A successful context close confirms teardown even if page close is pending.
+  If the budget expires, the batch admission slot returns while browser capacity
+  stays held. That same close can release capacity later when it confirms success.
+  Rejected closes and unconfirmed half-configured contexts from setup remain
+  quarantined until the process restarts.
 - `/health` probes with a context only when a page permit is free right now.
   When every permit is busy it opens nothing and reports the busy count, still
   returning `503` if the browser is disconnected. A probe that fails, times
@@ -104,7 +116,11 @@ for `/scrape`, `/browser-batch-fetch`, `/health`, and the C10 listener:
   `503` `unhealthy`. The `200` response shape is unchanged.
 - The C10 listener stops browser work early enough to keep part of the card
   window (a quarter, at most 2 s) for cleanup, so a navigation that times out
-  still closes its context and returns its permit and page slot.
+  still closes its context and returns its permit and page slot. Its response
+  waits for at most one cleanup budget. It prepares the signed response before
+  its final deadline check and emits success only while still within the card
+  window. Late confirmed teardown restores capacity without changing a failed
+  response.
 
 An unhandled rejection with Playwright's closed-target message ("Target page,
 context or browser has been closed"), which the stealth plugin can raise when

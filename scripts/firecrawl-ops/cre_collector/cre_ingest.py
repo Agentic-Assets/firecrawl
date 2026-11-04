@@ -31,9 +31,11 @@ requires the savills seed row in credeals.cre_brokerages
 
 import argparse
 import csv
+import glob
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -53,6 +55,13 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 # below (parse_lease_rates, parse_money, parse_size_text, is_sale_psf_text)
 # delegate to it without changing their observable to_row()-level behavior.
 import cre_parse
+import cre_geo
+import cre_avison_price_visibility as avison_prices
+import cre_avison_lease_facts as avison_leases
+from cre_document_boilerplate import document_boilerplate_sql
+from cre_artifact_scope import require_canonical_artifact
+from source_fields import rcm as rcm_fields
+from source_fields.sql import RESERVED_KEY, build_field_updates
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -71,10 +80,14 @@ PSQL_CANDIDATES = [
     os.environ.get("PSQL_BIN") or "",
     "/opt/homebrew/opt/libpq/bin/psql",
     "/usr/local/opt/libpq/bin/psql",
+    "/usr/bin/psql",
+    *sorted(glob.glob("/usr/lib/postgresql/*/bin/psql"), reverse=True),
 ]
 
 _RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
 LIFECYCLE_TRANSACTION_LOCK_NAME = "credeals:listing-lifecycle:v1"
+# Limit normalized storage to hard validation acceptance; retain raw source prices.
+MAX_NORMALIZED_SALE_PRICE_USD = 20_000_000_000
 
 
 def lifecycle_transaction_lock_sql():
@@ -397,6 +410,21 @@ def source_key_sql(listing_alias="l", brokerage_alias="b"):
         f"    AND {listing_alias}.external_id LIKE '{prefix}%' THEN '{source_key}'"
         for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES
     )
+    # A singleton's admissible raw candidates and legacy fallback are identical.
+    # Avoid detoasting raw_data just to rediscover that one canonical source.
+    folded_slugs = {slug for slug, _prefix, _source_key in FOLDED_SOURCE_PREFIXES}
+    singleton_slugs = sorted(
+        slug
+        for slug, keys in SOURCE_KEYS_BY_SLUG.items()
+        if keys == {slug} and slug not in folded_slugs
+    )
+    singleton_slugs_sql = ", ".join(f"'{slug}'" for slug in singleton_slugs)
+    singleton = (
+        f"  WHEN {brokerage_alias}.slug IN ({singleton_slugs_sql}) "
+        f"THEN {brokerage_alias}.slug\n"
+        if singleton_slugs
+        else ""
+    )
     governed_slugs = sorted({slug for slug, _prefix in SOURCE_TO_BROKERAGE.values()})
     governed_slugs_sql = ", ".join(f"'{slug}'" for slug in governed_slugs)
     folded_pairs = "\n".join(
@@ -425,6 +453,7 @@ def source_key_sql(listing_alias="l", brokerage_alias="b"):
     return (
         "\nCASE\n"
         f"{folded}\n"
+        f"{singleton}"
         "  ELSE COALESCE(\n"
         f"    {raw_source},\n"
         f"    CASE WHEN {brokerage_alias}.slug IN ({governed_slugs_sql}) "
@@ -599,8 +628,15 @@ def norm_property_type(asset_type):
     return "other"
 
 
+# A listed cap rate under 2% is a placeholder or a parse slip (68 Marcus &
+# Millichap rows stored 0.01 from a raw "1%"), not a yield.
+MIN_PLAUSIBLE_CAP_RATE = 0.02
+
+
 def norm_cap_rate(v):
-    """capRatePct is usually a percent (6.5); occasionally already a fraction."""
+    """capRatePct is usually a percent (6.5); occasionally already a fraction.
+
+    Returns a fraction in [MIN_PLAUSIBLE_CAP_RATE, 0.5), else None."""
     if not isinstance(v, (int, float)) or v <= 0:
         return None
     if v <= 1:
@@ -609,7 +645,7 @@ def norm_cap_rate(v):
         frac = v / 100.0
     else:
         return None
-    return round(frac, 6) if 0 < frac < 0.5 else None
+    return round(frac, 6) if MIN_PLAUSIBLE_CAP_RATE <= frac < 0.5 else None
 
 
 def parse_lease_rates(text):
@@ -641,6 +677,29 @@ def parse_size_text(text):
     return cre_parse.parse_size_text(text)
 
 
+# Sources whose generic area field holds land area on a land listing (CBRE
+# Dynamic.TotalArea, JLL surfaceArea).
+LAND_AREA_SIZE_SOURCE_KEYS = frozenset({"cbre", "jll"})
+# A building size this close to the lot is the same land area stated twice.
+LAND_AREA_DUPLICATE_TOLERANCE = 0.01
+
+
+def land_area_to_lot(source_key, property_type, size_sf, lot_size_sf):
+    """(size_sf, lot_size_sf) with land area moved out of building size.
+
+    On a land listing from a LAND_AREA_SIZE_SOURCE_KEYS source the stated area
+    is land area: it fills lot_size_sf when that is empty, and size_sf is never
+    left equal to it. Every other row passes through unchanged.
+    """
+    if size_sf is None or property_type != "land" or source_key not in LAND_AREA_SIZE_SOURCE_KEYS:
+        return size_sf, lot_size_sf
+    if lot_size_sf is None:
+        return None, round(size_sf, 2)
+    if abs(size_sf - lot_size_sf) <= LAND_AREA_DUPLICATE_TOLERANCE * lot_size_sf:
+        return None, lot_size_sf
+    return size_sf, lot_size_sf
+
+
 def num_or_none(v, lo=0, hi=None):
     if not isinstance(v, (int, float)):
         return None
@@ -649,6 +708,18 @@ def num_or_none(v, lo=0, hi=None):
     if hi is not None and v > hi:
         return None
     return float(v)
+
+
+def coordinate_or_none(v, limit):
+    """Accept only finite numeric coordinates within inclusive geographic bounds."""
+    if isinstance(v, str):
+        value = v.strip()
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+            return None
+        v = float(value)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if -limit <= v <= limit else None
 
 
 def iso_date_or_none(v):
@@ -727,6 +798,101 @@ def norm_lease_rate_type(v):
     return None
 
 
+# Forward geo derivation (AGENTIC-5133). cre_geo.derive_geo is the one
+# resolver shared with cre_geo_backfill.py; the committed crosswalk loads once
+# per process, on the first row that needs it.
+GEO_COLS = ("county", "cbsa_code", "cbsa_name", "geo_source")
+# Private row keys carrying the source's own county/country into merge_rows,
+# which re-derives geo on the merged row; main() drops them before staging.
+GEO_INPUT_KEYS = ("_geo_source_county", "_geo_country")
+# Country spellings treated as the crosswalk's coverage (US ZCTAs incl. PR).
+_GEO_US_COUNTRIES = {"US", "USA", "UNITEDSTATES", "UNITEDSTATESOFAMERICA", "PR", "PUERTORICO"}
+_GEO_CROSSWALK = None
+
+
+def _geo_crosswalk():
+    global _GEO_CROSSWALK
+    if _GEO_CROSSWALK is None:
+        _GEO_CROSSWALK = cre_geo.ZipCbsaCrosswalk()
+        if not len(_GEO_CROSSWALK):
+            # Ingest still runs (geo is additive), but say so: an empty
+            # crosswalk stages no county/CBSA for any row.
+            print(
+                "[cre geo] WARNING: data/zip_cbsa_crosswalk.csv is missing or "
+                "empty; rows will be staged without county/CBSA.",
+                file=sys.stderr,
+            )
+    return _GEO_CROSSWALK
+
+
+def guard_row_coordinates(row):
+    """Drop lat/lng that place the listing in another state or on a provider
+    default pin (AGENTIC-5133).
+
+    The upsert writes lat/lng with the new value winning, and the map and
+    lat/lng-derived county/CBSA trust them, so a coordinate the source attached
+    to the wrong listing must not be staged. cre_geo decides the conflict from
+    the crosswalk centroids (positive evidence only; a border point, a non-US
+    state or a ZIP agreeing with the point keeps it). The rejected pair and the
+    reason ride extra_facts.coordinates_rejected; raw_data keeps the source
+    values. Call before derive_row_geo so geo never derives from the dropped
+    point.
+    """
+    lat, lng, state = row.get("lat"), row.get("lng"), row.get("state")
+    if lat is None or lng is None:
+        return
+    rejected = None
+    if cre_geo.is_placeholder_point(lat, lng):
+        rejected = {"reason": "placeholder_point"}
+    elif state:
+        other = _geo_crosswalk().coordinate_state_conflict(lat, lng, state, postal=row.get("zip"))
+        if other:
+            rejected = {
+                "reason": "outside_listing_state",
+                "listing_state": state,
+                "coordinates_state": other,
+            }
+    if not rejected:
+        return
+    row["lat"] = None
+    row["lng"] = None
+    row["extra_facts"] = {
+        **(row.get("extra_facts") or {}),
+        "coordinates_rejected": {"latitude": lat, "longitude": lng, **rejected},
+    }
+
+
+def derive_row_geo(row):
+    """Return the staged geo bundle for one row: county, CBSA and geo_source.
+
+    Inputs are the row's normalized zip/lat/lng/state plus the source-verbatim
+    county (Newmark, Pyramid) kept in a private key. derive_geo keeps its
+    precedence: source county, then ZIP crosswalk, then lat/lng nearest
+    centroid; all None when none apply, or when the source names a country
+    outside the crosswalk's US coverage. The upsert writes these keep-wins, so a
+    value already stored is never overwritten.
+    """
+    country = row.get("_geo_country")
+    if country and re.sub(r"[^A-Z]", "", country.upper()) not in _GEO_US_COUNTRIES:
+        return dict.fromkeys(GEO_COLS)
+    county, cbsa_code, cbsa_name, _submarket, geo_source = cre_geo.derive_geo(
+        {
+            "county": row.get("_geo_source_county"),
+            "state": row.get("state"),
+            "postal_code": row.get("zip"),
+            "latitude": row.get("lat"),
+            "longitude": row.get("lng"),
+        },
+        _geo_crosswalk(),
+    )
+    return {
+        "county": county,
+        "cbsa_code": cbsa_code,
+        "cbsa_name": cbsa_name,
+        "geo_source": geo_source,
+    }
+
+
 # Phase-2 data-lift institutional-field normalizers (contract Section B). Each
 # clamps to None on anything unparseable so the COALESCE-keep upsert never
 # clobbers a prior good value and the DB CHECKs (sql/012) never trip.
@@ -767,6 +933,8 @@ def extra_facts_or_none(v):
         if not isinstance(k, str):
             continue
         key = k.strip()
+        if key == RESERVED_KEY:
+            continue
         if not key:
             continue
         if val is None:
@@ -1098,7 +1266,19 @@ def inventory_only_full_scopes(data):
     return scopes
 
 
+def is_daum_unknown_tenure(listing):
+    evidence = listing.get("daumTenureEvidence")
+    return (
+        listing.get("sourceKey") == "daum-commercial"
+        and listing.get("daumUnknownTenure") is True
+        and isinstance(evidence, dict)
+        and all(evidence.get(key) == "unknown" for key in ("inventory", "detail", "resolved"))
+    )
+
+
 def transaction_type_of(listing):
+    if is_daum_unknown_tenure(listing):
+        return None
     tt = (listing.get("transactionType") or "").lower()
     if "sale" in tt and ("lease" in tt or "let" in tt):
         return "sale_or_lease"
@@ -1448,11 +1628,248 @@ def parse_strict_freshness_timestamp(value, *, field):
     return parsed.astimezone(timezone.utc)
 
 
+def validate_matthews_targeted_claims(claims, *, now=None):
+    """Validate a caller-owned batch, never treating queue time as observation."""
+    current = now or datetime.now(timezone.utc)
+    context = (
+        claims.get("matthewsTargetedRefresh") if isinstance(claims, dict) else None
+    )
+    if (
+        not isinstance(context, dict)
+        or set(context) != {"sourceKey", "generationId", "generationStartedAt"}
+        or context["sourceKey"] != "matthews"
+    ):
+        raise ValueError("targeted Matthews caller context is invalid")
+    if not re.fullmatch(
+        r"matthews-targeted-[0-9a-f]{32}", context["generationId"] or ""
+    ):
+        raise ValueError("targeted Matthews caller generation is invalid")
+    boundary = parse_strict_freshness_timestamp(
+        context["generationStartedAt"], field="targeted generation start"
+    )
+    if not 0 <= (current - boundary).total_seconds() <= 600:
+        raise ValueError("targeted Matthews caller boundary is stale or future")
+    items = claims.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 50:
+        raise ValueError("targeted Matthews caller selection is invalid")
+    identities, urls, claim_ids = set(), set(), set()
+    for item in items:
+        if not isinstance(item, dict) or item.get("sourceKey") != "matthews":
+            raise ValueError("targeted Matthews caller source is invalid")
+        identity, url = item.get("externalId"), item.get("url")
+        if not isinstance(identity, str) or not isinstance(url, str):
+            raise ValueError("targeted Matthews caller identity is invalid")
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "www.matthews.com"
+            or parsed.query
+            or parsed.fragment
+            or not re.fullmatch(r"/properties/[^/]+", parsed.path)
+            or re.sub(r"%[0-9A-Fa-f]{2}", lambda m: m[0].lower(), parsed.path[12:])
+            != identity
+            or any(ord(c) < 33 or ord(c) == 127 for c in url)
+        ):
+            raise ValueError("targeted Matthews caller URL is invalid")
+        try:
+            claim_id = str(uuid.UUID(item.get("claimId", "")))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("targeted Matthews claim witness is invalid") from exc
+        claimed = parse_strict_freshness_timestamp(
+            item.get("claimedAt"), field="claim witness"
+        )
+        if (
+            not -MAX_FUTURE_CLOCK_SKEW.total_seconds()
+            <= (current - claimed).total_seconds()
+            < 3600
+        ):
+            raise ValueError("targeted Matthews claim witness is expired")
+        if (
+            identity in identities
+            or url in urls
+            or claim_id in claim_ids
+            or item.get("transaction") not in (None, "sale", "lease")
+        ):
+            raise ValueError("targeted Matthews caller selection is ambiguous")
+        identities.add(identity)
+        urls.add(url)
+        claim_ids.add(claim_id)
+    return context
+
+
+def validate_matthews_targeted_artifact(data, claims, *, now=None):
+    """Bind strict partial output to the worker's actual selection and boundary."""
+    context = validate_matthews_targeted_claims(claims, now=now)
+    meta = data.get("runMeta") if isinstance(data, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or meta.get("mode") != "enrich"
+        or meta.get("matthewsTargetedRefresh") != context
+    ):
+        raise ValueError("targeted Matthews artifact is not caller-bound")
+    freshness = meta.get("freshness")
+    if (
+        not isinstance(freshness, dict)
+        or freshness.get("generationId") != context["generationId"]
+        or freshness.get("generationStartedAt") != context["generationStartedAt"]
+    ):
+        raise ValueError("targeted Matthews freshness is not caller-bound")
+    validate_strict_artifact_freshness(data, require_strict_freshness=True, now=now)
+    listings, sources = data.get("listings"), data.get("sources")
+    if (
+        not isinstance(listings, list)
+        or not isinstance(sources, list)
+        or len(sources) != 1
+    ):
+        raise ValueError("targeted Matthews source receipt is invalid")
+    source = sources[0]
+    if (
+        not isinstance(source, dict)
+        or source.get("sourceKey") != "matthews"
+        or source.get("supported") is not True
+        or source.get("enricher") != "bespoke"
+        or source.get("error")
+        or source.get("truncated")
+        or type(source.get("requested")) is not int
+        or source["requested"] != len(claims["items"])
+        or type(source.get("listingsCollected")) is not int
+        or source["listingsCollected"] != len(listings)
+    ):
+        raise ValueError("targeted Matthews source counts are invalid")
+    selected = {item["externalId"]: item for item in claims["items"]}
+    seen = set()
+    for listing in listings:
+        identity = listing.get("id")
+        item = selected.get(identity)
+        if (
+            item is None
+            or identity in seen
+            or listing.get("sourceKey") != "matthews"
+            or listing.get("url") != item["url"]
+            or listing.get("canonicalUrl") != item["url"]
+        ):
+            raise ValueError("targeted Matthews emitted identity is invalid")
+        tenure = (
+            "lease" if re.search(r"/properties/leasing-", item["url"], re.I) else "sale"
+        )
+        if (
+            listing.get("transactionMode") != tenure
+            or listing.get("transactionType")
+            != ("Lease" if tenure == "lease" else "Sale")
+            or item.get("transaction") not in (None, tenure)
+        ):
+            raise ValueError("targeted Matthews emitted tenure is invalid")
+        provenance = listing["freshnessProvenance"]
+        if (
+            provenance.get("method") != "matthews_canonical_detail"
+            or provenance.get("identityMethod") != "canonical_property_url"
+        ):
+            raise ValueError("targeted Matthews provider identity proof is invalid")
+        if parse_strict_freshness_timestamp(
+            listing["inventoryObservedAt"], field="inventory"
+        ) > parse_strict_freshness_timestamp(
+            listing["detailObservedAt"], field="detail"
+        ):
+            raise ValueError(
+                "targeted Matthews inventory follows its detail observation"
+            )
+        seen.add(identity)
+    return listings
+
+
+def matthews_targeted_sql_context(data, claims, *, now=None):
+    listings = validate_matthews_targeted_artifact(data, claims, now=now)
+    selected = {item["externalId"]: item for item in claims["items"]}
+    return [
+        {
+            **selected[row["id"]],
+            "inventoryObservedAt": row["inventoryObservedAt"],
+            "detailObservedAt": row["detailObservedAt"],
+            "canonicalUrl": row["canonicalUrl"],
+            "transactionMode": row["transactionMode"],
+            "generationId": claims["matthewsTargetedRefresh"]["generationId"],
+        }
+        for row in listings
+    ]
+
+
+def _matthews_enrichment_preserves_collections(listing):
+    """Match the SQL's recursive true/string-true preservation markers."""
+    pending = [(listing, False)]
+    while pending:
+        value, marker = pending.pop()
+        if marker and (value is True or value == "true"):
+            return True
+        if isinstance(value, dict):
+            pending.extend(
+                (
+                    child,
+                    key in {"preserveChildCollections", "preserveContactCollections"},
+                )
+                for key, child in value.items()
+            )
+        elif isinstance(value, list):
+            # Lax JSONPath comparisons also unwrap arrays at the marker value.
+            pending.extend((child, marker) for child in value)
+    return False
+
+
+def validate_hanley_enrichment_artifact(data, *, now=None):
+    """Ordinary Hanley refreshes retain children and source-backed identity.
+
+    This is not a strict-generation/full-source completion certificate.
+    """
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict) or run_meta.get("mode") != "enrich":
+        return
+    latest_allowed = (now or datetime.now(timezone.utc)) + MAX_FUTURE_CLOCK_SKEW
+    for listing in data.get("listings") or []:
+        if not isinstance(listing, dict) or listing.get("sourceKey") != "hanley":
+            continue
+        raw = listing.get("rawHanley")
+        raw_id = raw.get("id") if isinstance(raw, dict) else None
+        identity = (
+            str(raw_id).strip()
+            if isinstance(raw_id, (str, int, float)) and not isinstance(raw_id, bool)
+            else ""
+        )
+        url = f"https://hanleyinvestmentgroup.com/listings/?id={identity}"
+        provenance = listing.get("freshnessProvenance")
+        if (
+            listing.get("preserveChildCollections") is not True
+            or not identity
+            or listing.get("id") != identity
+            or listing.get("url") != url
+            or listing.get("canonicalUrl") != url
+            or not str(raw.get("visibility") or "").strip().lower().startswith("public")
+            or not isinstance(provenance, dict)
+            or provenance.get("detailScope") != "authoritative_inventory_feed"
+            or provenance.get("method") != "hanley_embedded_inventory_feed"
+        ):
+            raise ValueError(
+                "Hanley enrichment requires child-preserving authoritative feed identity"
+            )
+        try:
+            observed = parse_strict_freshness_timestamp(
+                listing.get("inventoryObservedAt"),
+                field="Hanley enrichment inventoryObservedAt",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Hanley enrichment requires an actual inventory observation: {exc}"
+            ) from exc
+        if observed > latest_allowed:
+            raise ValueError(
+                "Hanley enrichment inventory observation exceeds clock-skew allowance"
+            )
+
+
 def validate_strict_artifact_freshness(
     data,
     *,
     require_strict_freshness=False,
     now=None,
+    pyramid_incomplete_ids=frozenset(),
 ):
     """Reject a strict refresh artifact whose rows do not prove observation time.
 
@@ -1460,8 +1877,20 @@ def validate_strict_artifact_freshness(
     was observed. Buildout is the one explicit exception because its paginated
     inventory feed is the authoritative listing payload.
     """
+    require_canonical_artifact(data)
     run_meta = data.get("runMeta")
     freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
+    matthews_enrichment = (
+        isinstance(run_meta, dict)
+        and run_meta.get("mode") == "enrich"
+        and any(
+            isinstance(listing, dict) and listing.get("sourceKey") == "matthews"
+            for listing in (data.get("listings") or [])
+        )
+    )
+    # A successful partial detail replaces raw_data. Do not admit a Matthews
+    # queue result that would discard inventory/generation proof on that path.
+    require_strict_freshness = require_strict_freshness or matthews_enrichment
     artifact_is_strict = (
         isinstance(freshness, dict) and freshness.get("requireFreshDetails") is True
     )
@@ -1471,6 +1900,7 @@ def validate_strict_artifact_freshness(
             "does not assert requireFreshDetails=true"
         )
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    validate_hanley_enrichment_artifact(data, now=current)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     for field in ("startedAt", "finishedAt"):
         value = run_meta.get(field) if isinstance(run_meta, dict) else None
@@ -1531,11 +1961,43 @@ def validate_strict_artifact_freshness(
         # Provider cards in an explicit inventory-only namespace are not
         # canonical listing rows. Their full-scope reconciliation is proved in
         # the source-index lane, not by canonical detail evidence.
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and listing.get("inventoryOnly") is not None
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] must be canonical detail"
+            )
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and _matthews_enrichment_preserves_collections(listing)
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] must not preserve collections"
+            )
         if listing.get("inventoryOnly") is not None:
             continue
         provenance = listing.get("freshnessProvenance")
         if not isinstance(provenance, dict):
             raise ValueError(f"strict freshness listings[{index}] lacks provenance")
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and provenance.get("detailScope") != "detail_page"
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] lacks detail_page scope"
+            )
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and provenance.get("cacheDisposition") != "live"
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] lacks live detail evidence"
+            )
         if provenance.get("generationId") != generation_id:
             raise ValueError(
                 f"strict freshness listings[{index}] has the wrong generation"
@@ -1578,7 +2040,15 @@ def validate_strict_artifact_freshness(
                 raise ValueError(
                     f"strict freshness listings[{index}] must preserve child collections"
                 )
-        elif preserves_children:
+        elif preserves_children and not (
+            source_key == "pyramid-brokerage"
+            and (listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
+            and listing.get("detailObservedWithChildPreservation") is True
+            and bool((listing.get("missingFieldEvidence") or {}).get("fields"))
+        ) and not (
+            is_daum_unknown_tenure(listing)
+            and listing.get("detailObservedWithChildPreservation") is True
+        ):
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
             )
@@ -2008,6 +2478,7 @@ _JLL_WITHHELD_TOP_LEVEL = frozenset(
         "sizeText",
         "buildingSizeSqft",
         "lastUpdated",
+        "inventoryObservedAt",
         "detailObservedAt",
         "freshnessProvenance",
         "currentTenants",
@@ -2119,6 +2590,36 @@ def _safe_jll_tenant_identities(value):
     return tenants
 
 
+def _safe_jll_generation_id(value):
+    """Retain bounded opaque run tokens, never monetary labels or prose."""
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", value) is None
+    ):
+        return None
+    # Token delimiters cannot hide an otherwise explicit monetary disclosure.
+    text = re.sub(r"[._:-]+", " ", value)
+    text = re.sub(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])", " ", text)
+    if _jll_text_has_monetary_disclosure(text) or _JLL_LABELLED_PRICE.search(text):
+        return None
+    return value
+
+
+def _safe_jll_inventory_observation(value):
+    """Validate the original absolute observation without rewriting its clock."""
+    if (
+        not isinstance(value, str)
+        or len(value) > 64
+        or re.fullmatch(r"[0-9TtZz:+. -]+", value) is None
+    ):
+        return None
+    try:
+        parse_strict_freshness_timestamp(value, field="inventoryObservedAt")
+    except (ValueError, OverflowError):
+        return None
+    return value
+
+
 def _safe_jll_freshness_provenance(value):
     """Project trusted JLL freshness leaves, never arbitrary detail prose."""
     if not isinstance(value, dict):
@@ -2128,6 +2629,9 @@ def _safe_jll_freshness_provenance(value):
         candidate = value.get(key)
         if candidate in allowed:
             projected[key] = candidate
+    generation = _safe_jll_generation_id(value.get("generationId"))
+    if generation is not None:
+        projected["generationId"] = generation
     return projected or None
 
 
@@ -2157,6 +2661,11 @@ def _safe_jll_withheld_projection(value, pricing):
     projected = {
         key: item for key, item in raw.items() if key in _JLL_WITHHELD_TOP_LEVEL
     }
+    inventory = _safe_jll_inventory_observation(raw.get("inventoryObservedAt"))
+    if inventory is None:
+        projected.pop("inventoryObservedAt", None)
+    else:
+        projected["inventoryObservedAt"] = inventory
     search = projected.get("jllSearchResult")
     if isinstance(search, dict):
         projected["jllSearchResult"] = {
@@ -2196,6 +2705,9 @@ def _safe_jll_withheld_projection(value, pricing):
     else:
         projected.pop("freshnessProvenance", None)
     projected["jllDetail"] = {"pricing": pricing} if pricing else {}
+    detail = raw.get("jllDetail")
+    if isinstance(detail, dict) and isinstance(detail.get("isSubleaseOnly"), bool):
+        projected["jllDetail"]["isSubleaseOnly"] = detail["isSubleaseOnly"]
     return projected
 
 
@@ -2353,8 +2865,27 @@ def _jll_pricing_has_foreign_lease_currency(listing):
     return isinstance(currency, str) and currency.upper() != "USD"
 
 
-def to_row(listing, brokers_by_idx, scraped_at):
+def generic_enrichment_substantive(listing):
+    """Require a mapped generic detail value, not just a URL or identity."""
+    for key in ("name", "description", "salePriceText"):
+        value = listing.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    for key in ("salePriceUsd", "latitude", "longitude"):
+        value = listing.get(key)
+        if type(value) is int:
+            return True
+        if type(value) is float and math.isfinite(value):
+            return True
+    return False
+
+
+def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None, *, allow_newmark_nim=False):
     """Map one collector listing to a staging row dict, or None to skip."""
+    # Qualification maps are bound to the input artifact object, before any
+    # source-specific staging projection creates a sanitized copy.
+    input_listing_identity = id(listing)
+    input_listing = listing
     if is_retired_om_parse_listing(listing):
         return None
     # Inventory-only cards intentionally have no canonical listing identity or
@@ -2364,6 +2895,34 @@ def to_row(listing, brokers_by_idx, scraped_at):
     if listing.get("inventoryOnly") is not None:
         return None
     source_key = listing.get("sourceKey")
+    if source_key == "newmark":
+        from source_fields.newmark_nim_public_facts import _safe_url, attach
+        marker = listing.get("newmarkNimRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "newmark-nim-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx, publish=allow_newmark_nim)
+    if source_key == "srs":
+        from source_fields.srs_public_facts import _safe_url, attach
+        marker = listing.get("srsRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "srs-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
+    if source_key == "kidder-mathews":
+        from source_fields.kidder_public_facts import _safe_url, attach
+        marker = listing.get("kidderRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "kidder-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
+    if source_key in BUILDOUT_SOURCE_KEYS:
+        from source_fields.buildout_public_facts import attach, safe_url
+        marker = listing.get("buildoutRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "buildout-raw-retention-v1"
+                and listing.get("url") and safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
         return None
@@ -2420,9 +2979,13 @@ def to_row(listing, brokers_by_idx, scraped_at):
         t_size, t_lot = parse_size_text(listing.get("sizeText"))
         size_sf = size_sf if size_sf is not None else t_size
         lot_size_sf = lot_size_sf if lot_size_sf is not None else t_lot
+    property_type = norm_property_type(listing.get("assetType"))
+    size_sf, lot_size_sf = land_area_to_lot(source_key, property_type, size_sf, lot_size_sf)
 
     sale_price_text = listing.get("salePriceText")
-    sale_price = num_or_none(listing.get("salePriceUsd"), lo=100, hi=1e11)
+    sale_price = num_or_none(
+        listing.get("salePriceUsd"), lo=100, hi=MAX_NORMALIZED_SALE_PRICE_USD
+    )
     price_per_sf = num_or_none(listing.get("salePricePerSf"), lo=0, hi=10000)
     if jll_pricing_withheld:
         sale_price_text = None
@@ -2440,18 +3003,19 @@ def to_row(listing, brokers_by_idx, scraped_at):
         sale_price = num_or_none(
             cre_parse.parse_amount_ignoring_currency_label(sale_price_text),
             lo=100,
-            hi=1e11,
+            hi=MAX_NORMALIZED_SALE_PRICE_USD,
         )
     # (DQ guard 6) Newmark 'Subject to Offer' / non-numeric price: num_or_none
     # already drops a non-numeric salePriceUsd, and parse_money only matches a real
     # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
     # No extra branch needed; the existing numeric clamps cover it.
     if is_sale_psf_text(sale_price_text):
-        # (DQ guard 2) Lee salePriceUsd per-SF conflation: a per-SF sale text means
-        # the absolute sale price must NOT be read; route it to sale_price_per_sf.
-        price_per_sf = price_per_sf or num_or_none(
-            parse_money(sale_price_text), lo=0, hi=10000
-        )
+        # The new CBRE source-price context may retain a dollar symbol whose
+        # currency is unverified. Preserve its text without inventing USD/SF.
+        if rcm_fields.permits_psf_inference(source_key, listing, sale_price_text):
+            price_per_sf = price_per_sf or num_or_none(
+                parse_money(sale_price_text), lo=0, hi=10000
+            )
         sale_price = None
     if price_per_sf is None and sale_price and size_sf and size_sf > 100:
         # Apply the same economic bound to a derived value that we apply to an
@@ -2463,17 +3027,20 @@ def to_row(listing, brokers_by_idx, scraped_at):
 
     # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
     # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.
-    lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
+    lease_min, lease_max = ((None, None) if source_key == "avison-young"
+                            else parse_lease_rates(listing.get("leaseRateText")))
     # An adapter may pre-parse a cleaner lease rate than leaseRateText; prefer the
     # explicit leaseRateMin/Max when present (contract B), COALESCE-style.
     lease_min = (
         lease_min
         if lease_min is not None
+        else None if source_key == "avison-young"
         else num_or_none(listing.get("leaseRateMin"), lo=0, hi=500)
     )
     lease_max = (
         lease_max
         if lease_max is not None
+        else None if source_key == "avison-young"
         else num_or_none(listing.get("leaseRateMax"), lo=0, hi=500)
     )
     if jll_pricing_withheld or jll_foreign_lease_currency:
@@ -2486,6 +3053,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         source_contacts = _safe_jll_hidden_child_metadata(source_contacts, broker=True)
     if source_contacts:
         for i, c in enumerate(source_contacts):
+            if rcm_fields.source_contact(source_key, c) and not (c.get("name") or c.get("email")):
+                # No stable child identity for additive refresh; preserve it in source facts below.
+                continue
             if not isinstance(c, dict) or not (
                 c.get("name")
                 or c.get("email")
@@ -2504,11 +3074,12 @@ def to_row(listing, brokers_by_idx, scraped_at):
                     "license": clean_text(c.get("license"), 64),
                     "email": c.get("email"),
                     "phone": c.get("phone"),
-                    "company": c.get("company") or listing.get("sourceCompany"),
+                    "company": (c.get("company") if rcm_fields.source_contact(source_key, c)
+                                else c.get("company") or listing.get("sourceCompany")),
                     "profileUrl": http_url_or_none(c.get("profileUrl")),
                     "avatarUrl": http_url_or_none(c.get("avatarUrl")),
                     "vcardUrl": http_url_or_none(c.get("vcardUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
         if not contacts:
@@ -2529,7 +3100,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
                     "phone": b.get("phone"),
                     "company": b.get("company") or listing.get("sourceCompany"),
                     "avatarUrl": http_url_or_none(b.get("avatarUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
 
@@ -2584,6 +3155,12 @@ def to_row(listing, brokers_by_idx, scraped_at):
         if photo_url:
             images.append({"url": photo_url, "isPrimary": i == 0, "order": i})
 
+    # DAUM orders these arrays, but that ordering is not an explicit primary
+    # witness. Preserve an existing primary while retaining observed children.
+    if is_daum_unknown_tenure(listing):
+        for child in contacts + images:
+            child.pop("isPrimary", None)
+
     # Media (video / virtual-tour / matterport / 360) and outbound links harvested
     # from detail pages (lib/harvest.ts). Bare strings normalize to the default
     # 'other' type; everything is http-url filtered so non-URL noise never stages.
@@ -2631,16 +3208,26 @@ def to_row(listing, brokers_by_idx, scraped_at):
                     }
                 )
 
-    # GetCREdata is the sole production OM writer. Ignore an `omFacts` payload
-    # in every Firecrawl collector artifact so a legacy or manually supplied
+    # GetCREdata is the sole production OM writer. An `omFacts` payload in a
+    # Firecrawl collector artifact is never read, so a legacy or manually supplied
     # artifact cannot write cre_listing_om_facts through this ingestor.
-    om_facts = []
 
-    title = listing.get("name") or listing.get("headline") or listing.get("street")
+    title = (
+        clean_text(listing.get("name"))
+        or clean_text(listing.get("headline"))
+        or clean_text(listing.get("street"))
+    )
     desc = listing.get("description")
     markdown = listing.get("markdown")
     highlights = str_array_or_none(listing.get("highlights"))
     extra_facts = extra_facts_or_none(listing.get("extraFacts"))
+    if source_key in rcm_fields.CONTACT_SOURCES:
+        source_contacts_for_facts = listing.get("contactsDetailed")
+        if isinstance(source_contacts_for_facts, list):
+            unbound_contacts = [c for c in source_contacts_for_facts if rcm_fields.source_contact(source_key, c)
+                                and not (c.get("name") or c.get("email"))]
+            if unbound_contacts:
+                extra_facts = {**(extra_facts or {}), "rcm_unidentified_source_contacts": unbound_contacts}
     if jll_pricing_withheld:
         # A legacy/manual JLL artifact cannot prove that prose is free of an
         # asking-price disclosure. Omit it rather than attempting a future
@@ -2656,13 +3243,18 @@ def to_row(listing, brokers_by_idx, scraped_at):
         desc = None
         markdown = None
 
-    return {
+    building_decision = (building_candidates or {}).get(input_listing_identity, {})
+    count_decision = (field_candidates or {}).get(input_listing_identity, {})
+    if count_decision and listing is not input_listing:
+        from source_fields.buildout import rebind_count_decision
+        count_decision = rebind_count_decision(input_listing, listing, count_decision)
+    row = {
         "slug": slug,
         "external_id": external_id,
         "source_url": url,
         "canonical_url": http_url_or_none(listing.get("canonicalUrl")),
         "transaction_type": transaction_type_of(listing),
-        "property_type": norm_property_type(listing.get("assetType")),
+        "property_type": property_type,
         "title": title[:500] if isinstance(title, str) else None,
         "address": listing.get("street"),
         "city": listing.get("city"),
@@ -2670,8 +3262,8 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "zip": str(listing.get("postalCode"))[:12]
         if listing.get("postalCode")
         else None,
-        "lat": num_or_none(listing.get("latitude"), lo=-90, hi=90),
-        "lng": num_or_none(listing.get("longitude"), lo=-180, hi=180),
+        "lat": coordinate_or_none(listing.get("latitude"), 90),
+        "lng": coordinate_or_none(listing.get("longitude"), 180),
         "size_sf": size_sf,
         "lot_size_sf": lot_size_sf,
         "year_built": (
@@ -2696,7 +3288,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
             else num_or_none(listing.get("grossRevenue"), lo=0, hi=1e12)
         ),
         "occupancy_rate": norm_occupancy_rate(listing.get("occupancyRate")),
-        "units": num_or_none(listing.get("units"), lo=0, hi=1e6),
+        "units": (
+            num_or_none(listing.get("units"), lo=0, hi=1e6)
+            or num_or_none(cre_parse.parse_units_text(listing.get("sizeText")), lo=0, hi=1e6)
+        ),
         "floors": num_or_none(listing.get("floors"), lo=0, hi=1e4),
         "parking_spaces": num_or_none(listing.get("parkingSpaces"), lo=0, hi=1e6),
         "parking_ratio": num_or_none(listing.get("parkingRatio"), lo=0, hi=1e4),
@@ -2752,6 +3347,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "power_service": clean_text(listing.get("powerService"), 128),
         "rail_served": bool_or_none(listing.get("railServed")),
         "extra_facts": extra_facts,
+        "source_field_count": count_decision.get("values", {}).get("available_space_count"),
+        "_source_field_conflict": "available_space_count" in count_decision.get("blocked", []),
+        "source_field_building": building_decision.get("values") or None,
+        "_source_building_conflicts": building_decision.get("blocked", []),
         "highlights": highlights,
         "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
@@ -2770,9 +3369,13 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "images": images,
         "media": media,
         "links": links,
-        "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
+        "_geo_source_county": clean_text(listing.get("county"), 128),
+        "_geo_country": clean_text(listing.get("country"), 64),
     }
+    guard_row_coordinates(row)
+    row.update(derive_row_geo(row))
+    return avison_leases.project_row(avison_prices.project_row(row))
 
 
 def _contact_aliases(item):
@@ -2803,14 +3406,6 @@ def _child_identity(collection, item):
         url = clean_text(item.get("url"))
         if url:
             return ("link", item.get("linkType") or "other", url)
-    elif collection == "om_facts":
-        return (
-            "om_fact",
-            item.get("factGroup") or "scalar",
-            item.get("factKey"),
-            item.get("sourceDocUrl"),
-            item.get("parserVersion"),
-        )
     return ("row", json.dumps(item, sort_keys=True, default=str))
 
 
@@ -2894,11 +3489,23 @@ def _merge_child_collections(collection, primary, secondary):
 
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
+    from source_fields.merge import merge_building_candidates
+    avison_prose = avison_prices.mixed_prose_snapshot(a, b)
+    a["source_field_building"], a["_source_building_conflicts"] = merge_building_candidates(a, b)
+    prior_candidate, incoming_candidate = a.get("source_field_count"), b.get("source_field_count")
+    if a.get("_source_field_conflict") or b.get("_source_field_conflict"):
+        a["source_field_count"], a["_source_field_conflict"] = None, True
+    elif prior_candidate is not None and incoming_candidate is not None and prior_candidate != incoming_candidate:
+        a["source_field_count"], a["_source_field_conflict"] = None, True
+    elif prior_candidate is None:
+        a["source_field_count"] = incoming_candidate
     a["_modes"] |= b["_modes"]
     if a["_modes"] >= {"sale", "lease"}:
         a["transaction_type"] = "sale_or_lease"
     elif b["transaction_type"] == "sale_or_lease":
         a["transaction_type"] = "sale_or_lease"
+    elif a["slug"] in {"svn", "newmark"} and a["transaction_type"] is None:
+        a["transaction_type"] = b["transaction_type"]
     for k in (
         "property_type",
         "title",
@@ -2906,8 +3513,6 @@ def merge_rows(a, b):
         "city",
         "state",
         "zip",
-        "lat",
-        "lng",
         "size_sf",
         "lot_size_sf",
         "year_built",
@@ -2960,8 +3565,28 @@ def merge_rows(a, b):
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
-    for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
+    # Coordinates are one observation: never assemble a point from two passes.
+    # A complete incoming pair beats an incomplete first pass; otherwise retain
+    # the first available observation, including a single available component.
+    if ((a["lat"] is None or a["lng"] is None)
+            and b["lat"] is not None and b["lng"] is not None):
+        a["lat"], a["lng"] = b["lat"], b["lng"]
+    elif a["lat"] is None and a["lng"] is None:
+        a["lat"], a["lng"] = b["lat"], b["lng"]
+    # Geo is derived, not merged: re-derive from the merged location fields so
+    # the bundle follows ZIP-over-lat/lng precedence and the state guard on the
+    # fullest inputs either pass supplied.
+    for k in GEO_INPUT_KEYS:
+        if a.get(k) is None:
+            a[k] = b.get(k)
+    guard_row_coordinates(a)
+    a.update(derive_row_geo(a))
+    for k in ("contacts", "documents", "images", "media", "links"):
         a[k] = _merge_child_collections(k, a[k], b[k])
+    from source_fields.buildout_public_facts import merge_public_facts
+    merge_public_facts(a, b)
+    from source_fields.kidder_public_facts import merge_public_facts as merge_kidder_public_facts
+    merge_kidder_public_facts(a, b)
     # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
     # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
     # the upsert (a missing/empty pass keeps the other's blob).
@@ -2985,6 +3610,10 @@ def merge_rows(a, b):
         a["status"] = sb
     elif sa is None:
         a["status"] = sb
+    # Keep distinct prose from a retained pass and a legacy projected pass.
+    # Raw source passes remain separately bound below; do not infer that a
+    # longer or newer text includes the facts in the other one.
+    avison_prices.merge_mixed_prose(a, b, avison_prose)
     # Keep both raw payloads when the passes differ.  The top-level marker is
     # deliberately carried outside that wrapper so SQL does not need to infer
     # a price-withholding state from nested, malformed, or legacy provider data.
@@ -3030,7 +3659,7 @@ def merge_rows(a, b):
         a["contacts"] = _safe_jll_hidden_child_metadata(a["contacts"], broker=True)
         for key in ("documents", "images", "media", "links"):
             a[key] = _safe_jll_hidden_child_metadata(a[key])
-    return a
+    return avison_leases.project_row(avison_prices.project_row(a))
 
 
 def validate_duplicate_identity_before_merge(a, b):
@@ -3161,7 +3790,7 @@ STAGE_COLS = [
     "source_lastmod",
     "canonical_key",
     # Phase-2 data-lift (sql/012): canonical_url + discrete institutional columns
-    # + extra_facts jsonb. om_facts is staged as a jsonb array (sql/013 child).
+    # + extra_facts jsonb. OM facts are not staged (GetCREdata is the sole writer).
     "canonical_url",
     "building_class",
     "property_subtype",
@@ -3180,7 +3809,10 @@ STAGE_COLS = [
     "power_service",
     "rail_served",
     "extra_facts",
-    "om_facts",
+    "source_field_count",
+    "source_field_building",
+    # Forward geo (AGENTIC-5133): derive_row_geo bundle, written COALESCE-keep.
+    *GEO_COLS,
 ]
 
 INVENTORY_ONLY_COLS = [
@@ -3273,6 +3905,68 @@ def apply_status_activation_gate(rows, activate_status):
     return suppressed
 
 
+def _matthews_targeted_sql_parts(targets):
+    """Transaction-local input; no persistent schema or lifecycle permission."""
+    values = ",\n".join(
+        "("
+        + ",".join(
+            sql_lit(t[key])
+            for key in (
+                "claimId",
+                "claimedAt",
+                "externalId",
+                "url",
+                "inventoryObservedAt",
+                "detailObservedAt",
+                "canonicalUrl",
+                "transactionMode",
+            )
+        )
+        + ")"
+        for t in targets
+    )
+    queue = f"""
+CREATE TEMP TABLE _matthews_targets ON COMMIT DROP AS
+SELECT claim_id::uuid, claimed_at::timestamptz, external_id,url,
+ inventory_at::timestamptz,detail_at::timestamptz,canonical_url,tenure
+FROM (VALUES {values}) v(claim_id,claimed_at,external_id,url,inventory_at,detail_at,canonical_url,tenure);
+"""
+    guard = """
+CREATE TEMP TABLE _matthews_queue_locks ON COMMIT DROP AS
+SELECT q.id FROM credeals.cre_enrichment_queue q
+JOIN _matthews_targets e ON e.claim_id=q.id ORDER BY q.id FOR UPDATE OF q;
+DO $$ BEGIN
+ IF (SELECT count(*) FROM _src) != (SELECT count(*) FROM _matthews_targets)
+ OR (SELECT count(*) FROM _src s
+ JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id AND b.slug='matthews'
+ JOIN _matthews_targets e ON e.external_id=s.external_id AND e.url=s.source_url
+ JOIN credeals.cre_enrichment_queue q ON q.id=e.claim_id AND q.brokerage_id=s.brokerage_id
+ JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+ JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
+ WHERE q.source_key='matthews' AND q.external_id=e.external_id AND q.url=e.url
+   AND q.claimed_at IS NOT DISTINCT FROM e.claimed_at AND q.done_at IS NULL
+   AND q.attempts<5 AND q.claimed_at>now()-interval '1 hour'
+   AND l.status='active' AND l.deleted_at IS NULL AND l.source_url=e.url
+   AND (l.scraped_at IS NULL OR (isfinite(l.scraped_at) AND l.scraped_at<=e.detail_at))
+   AND si.source_key='matthews' AND si.url=e.url AND si.observation_present IS TRUE
+   AND si.soft_deleted IS FALSE AND si.last_seen IS NOT NULL AND si.last_enumerated_at IS NOT NULL
+   AND isfinite(si.last_seen) AND isfinite(si.last_enumerated_at)
+   AND si.last_seen<=e.inventory_at AND si.last_enumerated_at<=e.inventory_at
+   AND s.scraped_at=e.detail_at AND s.transaction_type=e.tenure AND s.canonical_url=e.canonical_url
+ ) != (SELECT count(*) FROM _matthews_targets) THEN
+   RAISE EXCEPTION 'targeted Matthews identity, eligibility or claim tenure changed';
+ END IF;
+END $$;
+"""
+    observation = """
+-- Selected current observations update clocks only; no presence/lifecycle transition.
+UPDATE credeals.cre_source_index si SET last_seen=e.inventory_at,last_enumerated_at=e.inventory_at
+FROM _matthews_targets e JOIN _src s ON s.external_id=e.external_id
+WHERE si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id;
+"""
+    return queue, guard, observation
+
+
 def build_sql(
     rows,
     job_meta,
@@ -3285,11 +3979,69 @@ def build_sql(
     finished_at=None,
     colliers_first_party_transition=False,
     skip_post_commit_summary=False,
+    matthews_targeted_targets=None,
+    image_transition_binding=None,
+    daum_verified_subset_claims=None,
+    pyramid_verified_subset_claims=None,
+    transwestern_image_transition_binding=None,
+    pyramid_guard_binding=None,
+    svn_enrichment_ids=(),
+    inventory_preserve_enrichment_ids=(),
 ):
+    from cre_essex_identity import (
+        historical_claims_sql,
+        historical_conflicts_sql,
+        incoming_claims_sql,
+        invalid_incoming_sql,
+    )
+
     # Defense in depth for direct callers of this builder. Normal ingestion
-    # reaches here through to_row(), which already drops `omFacts`, but this
-    # prevents a manually constructed row from restoring the retired writer.
-    rows = [{**row, "om_facts": []} for row in rows]
+    # reaches here through to_row(), which never reads `omFacts`; no staging
+    # column or writer exists for OM facts, so a manually constructed row's
+    # `om_facts` key is ignored.
+    rows = [
+        {
+            **avison_prices.project_row(row),
+            "source_field_count": row.get("source_field_count"),
+            "source_field_building": row.get("source_field_building"),
+            "extra_facts": (
+                {k: v for k, v in row["extra_facts"].items() if k != RESERVED_KEY}
+                if isinstance(row.get("extra_facts"), dict)
+                else row.get("extra_facts")
+            ),
+        }
+        for row in rows
+    ]
+    avison_price_sql = avison_prices.sql_policy(rows)
+    targeted = matthews_targeted_targets is not None
+    if targeted and (not matthews_targeted_targets or mark_missing_slugs
+                     or inventory_only_rows or inventory_only_scopes):
+        raise ValueError("targeted Matthews SQL scope is invalid")
+    targeted_queue, targeted_guard, targeted_observation = (
+        _matthews_targeted_sql_parts(matthews_targeted_targets) if targeted else ("", "", "")
+    )
+    daum_subset_guard = ""
+    if daum_verified_subset_claims is not None:
+        if targeted or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
+            raise ValueError("DAUM subset cannot change lifecycle or inventory-only scope")
+        from cre_daum_subset_sql import guard_sql
+        daum_subset_guard = guard_sql(daum_verified_subset_claims)
+    pyramid_subset_guard = ""
+    if pyramid_verified_subset_claims is not None:
+        if targeted or daum_verified_subset_claims is not None or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
+            raise ValueError("Pyramid subset cannot change lifecycle or inventory-only scope")
+        from cre_pyramid_subset_sql import guard_sql
+        pyramid_subset_guard = guard_sql(pyramid_verified_subset_claims, mark_missing=False,
+                                         status_activation=False, inventory_only=False)
+    else:
+        from cre_pyramid_subset_sql import unclassified_complete_guard_sql
+        pyramid_subset_guard = unclassified_complete_guard_sql()
+    from cre_pyramid_subset_sql import historical_conflict_rows_sql
+    pyramid_historical_rows = historical_conflict_rows_sql()
+    pyramid_guard_sql = ""
+    if pyramid_guard_binding is not None:
+        from cre_pyramid_rollback_result import build_guard_sql
+        pyramid_guard_sql = build_guard_sql(pyramid_guard_binding)
     finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
@@ -3301,6 +4053,43 @@ def build_sql(
         artifact_run_key = (
             "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
         )
+    if pyramid_guard_binding is not None and pyramid_guard_binding.get("artifact_run_key") != artifact_run_key:
+        raise ValueError("Pyramid guard artifact run key changed")
+    tw_parts = None
+    if transwestern_image_transition_binding is not None:
+        if (not isinstance(transwestern_image_transition_binding, dict)
+                or colliers_first_party_transition or image_transition_binding is not None
+                or targeted or daum_verified_subset_claims is not None or pyramid_verified_subset_claims is not None
+                or mark_missing_slugs or inventory_only_rows or inventory_only_scopes
+                or transwestern_image_transition_binding.get("artifact_run_key") != artifact_run_key):
+            raise ValueError("invalid Transwestern image transition scope")
+        from cre_transwestern_image_sql import build_parts
+        tw_parts = build_parts(rows, transwestern_image_transition_binding)
+    tw_verify_sql = tw_parts["verify"] if tw_parts else ""
+    tw_retention_sql = (
+        "    AND NOT (prior_counts.source_key = 'transwestern' AND prior_counts.child_type = 'images')\n"
+        if tw_parts else ""
+    )
+    tw_alt_column = ", alt_text" if tw_parts else ""
+    tw_alt_value = ", x->>'altText'" if tw_parts else ""
+    tw_alt_update = ",\n  alt_text = incoming.x->>'altText'" if tw_parts else ""
+    tw_image_primary = "(x->>'isPrimary')::boolean" if tw_parts else "COALESCE((x->>'isPrimary')::boolean, false)"
+    tw_image_order = "(x->>'order')::integer" if tw_parts else "COALESCE((x->>'order')::integer, 0)"
+    tw_additive_filter = " AND s.slug <> 'transwestern'" if tw_parts else ""
+    tw_additive_image_sql = """-- Preserve physical image identities for additive Transwestern parents.
+UPDATE credeals.cre_listing_images i
+SET is_primary=p.is_primary,display_order=p.display_order,alt_text=p.alt_text
+FROM _tw_image_projection p JOIN _src s ON s.external_id=p.external_id
+JOIN _up u ON u.brokerage_id=s.brokerage_id AND u.external_id=s.external_id
+JOIN _child_additive a ON a.id=u.id
+WHERE p.image_id=i.id AND i.listing_id=u.id;
+INSERT INTO credeals.cre_listing_images (listing_id,url,is_primary,display_order,alt_text)
+SELECT u.id,p.url,p.is_primary,p.display_order,p.alt_text
+FROM _tw_image_projection p JOIN _src s ON s.external_id=p.external_id
+JOIN _up u ON u.brokerage_id=s.brokerage_id AND u.external_id=s.external_id
+JOIN _child_additive a ON a.id=u.id
+WHERE p.image_id IS NULL;
+""" if tw_parts else ""
     job_meta = [
         {
             **jm,
@@ -3311,10 +4100,123 @@ def build_sql(
         }
         for jm in job_meta
     ]
+    svn_enrichment_ids = set(svn_enrichment_ids)
+    if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
+        raise ValueError("invalid SVN enrichment identity")
+    # Only source contracts reviewed for inventory/detail separation belong here.
+    # JLL visibility and Matthews targeted freshness have separate policies.
+    inventory_preserve_enrichment_ids = set(inventory_preserve_enrichment_ids)
+    inventory_preserve_enrichment_ids.update(("svn", value) for value in svn_enrichment_ids)
+    if any(not isinstance(pair, tuple) or len(pair) != 2
+           or pair[0] not in {"svn", "newmark"} or not isinstance(pair[1], str) or not pair[1]
+           for pair in inventory_preserve_enrichment_ids):
+        raise ValueError("invalid inventory-preserving enrichment identity")
+    newmark_enrichment_ids = sorted(value for slug, value in inventory_preserve_enrichment_ids if slug == "newmark")
+    newmark_enrichment_sql = (
+        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in newmark_enrichment_ids) + ")"
+        if newmark_enrichment_ids else "FALSE"
+    )
+    def newmark_context_sql(incoming):
+        # Keep the latest report without asserting inventory freshness.
+        # Longer history requires the separate source-evidence retention path.
+        return f"""CASE WHEN {incoming} ?| ARRAY['inventoryObservedAt', 'latestInventoryObservation',
+                                                   'newmarkUnqualifiedInventoryContext']
+          THEN jsonb_build_object('newmarkUnqualifiedInventoryContext',
+            CASE WHEN t.raw_data->'newmarkUnqualifiedInventoryContext'->'reported' =
+                  (SELECT jsonb_object_agg(key,value) FROM jsonb_each({incoming})
+                   WHERE key IN ('inventoryObservedAt','latestInventoryObservation',
+                                 'newmarkUnqualifiedInventoryContext'))
+              THEN t.raw_data->'newmarkUnqualifiedInventoryContext'
+              WHEN t.raw_data ? 'newmarkUnqualifiedInventoryContext'
+              THEN jsonb_build_object(
+                'reported', (SELECT jsonb_object_agg(key,value) FROM jsonb_each({incoming})
+                  WHERE key IN ('inventoryObservedAt','latestInventoryObservation',
+                                'newmarkUnqualifiedInventoryContext')),
+                'olderContextNotRetained', true)
+              ELSE jsonb_build_object('reported', (SELECT jsonb_object_agg(key,value) FROM jsonb_each({incoming})
+                   WHERE key IN ('inventoryObservedAt','latestInventoryObservation',
+                                 'newmarkUnqualifiedInventoryContext')))
+            END)
+          ELSE '{{}}'::jsonb END"""
+    inventory_preserve_sql = (
+        "(sb.slug, EXCLUDED.external_id) IN (" +
+        ", ".join("(" + sql_lit(slug) + ", " + sql_lit(value) + ")"
+                  for slug, value in sorted(inventory_preserve_enrichment_ids)) + ")"
+        if inventory_preserve_enrichment_ids else "FALSE"
+    )
+    svn_enrichment_ids.update(value for slug, value in inventory_preserve_enrichment_ids if slug == "svn")
+    svn_enrichment_sql = (
+        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
+        if svn_enrichment_ids else "FALSE"
+    )
+    svn_enrichment_source_sql = (
+        "s.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
+        if svn_enrichment_ids else "FALSE"
+    )
+    detail_source_sql = (
+        "(b.slug, s.external_id) IN (" +
+        ", ".join("(" + sql_lit(slug) + ", " + sql_lit(value) + ")"
+                  for slug, value in sorted(inventory_preserve_enrichment_ids)) + ")"
+        if inventory_preserve_enrichment_ids else "FALSE"
+    )
+    detail_source_insert_sql = (
+        "EXISTS (SELECT 1 FROM credeals.cre_brokerages b WHERE b.id=s.brokerage_id AND " +
+        detail_source_sql + ")"
+    )
+    detail_target_sql = (
+        "EXISTS (SELECT 1 FROM credeals.cre_brokerages sb WHERE sb.id=EXCLUDED.brokerage_id AND " +
+        inventory_preserve_sql + ")"
+    )
     lines = []
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
+    buildout_source_keys_sql = ", ".join(f"'{key}'" for key in sorted(BUILDOUT_SOURCE_KEYS))
     live_source_key_sql = source_key_sql("l", "b")
+    # Site boilerplate documents (AGENTIC-5143) do not count toward the child-loss guard on
+    # either side, so removing them is not read as a parser collapse of real documents.
+    boilerplate_document_sql = document_boilerplate_sql("d.url")
+    if image_transition_binding is not None:
+        from cre_colliers_image_transition import valid_binding
+        if not colliers_first_party_transition or not valid_binding(image_transition_binding):
+            raise ValueError("invalid Colliers transition binding")
+    image_outcome_table_sql = (
+        "CREATE TEMP TABLE _colliers_image_outcome (payload jsonb) ON COMMIT PRESERVE ROWS;"
+        if image_transition_binding is not None else ""
+    )
+    image_outcome_sql = ""
+    if image_transition_binding is not None:
+        image_outcome_sql = f"""
+    INSERT INTO _colliers_image_outcome
+    SELECT jsonb_build_object(
+      'schema', 'colliers-image-transition-v1', 'source_key', 'colliers-main',
+      'binding', {sql_lit(json.dumps(image_transition_binding))}::jsonb,
+      'semantic_before', colliers_images_before,
+      'semantic_retained_after', colliers_images_after,
+      'raw_before', (SELECT coalesce(sum(child_count),0) FROM _child_counts_by_listing_before
+                    WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_retained_after', (SELECT coalesce(sum(child_count),0) FROM _child_counts_after
+                            WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_after', whole.image_count,
+      'raw_new_after', whole.image_count -
+                    (SELECT coalesce(sum(child_count),0) FROM _child_counts_after
+                     WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_retired_before', (SELECT coalesce(sum(old.child_count),0)
+                            FROM _child_counts_by_listing_before old
+                            WHERE old.source_key='colliers-main' AND old.child_type='images'
+                              AND NOT EXISTS (SELECT 1 FROM _retained_child_scope_after kept
+                                              WHERE kept.listing_id=old.listing_id)),
+      'staged_current', (SELECT count(*) FROM _src s
+                        JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id
+                        WHERE {staged_source_key_sql}='colliers-main'),
+      'current_without_images', 0
+    )
+    FROM (SELECT count(i.id) AS image_count
+          FROM credeals.cre_listings l
+          JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
+          JOIN credeals.cre_listing_images i ON i.listing_id=l.id
+          WHERE l.deleted_at IS NULL AND {live_source_key_sql}='colliers-main') whole;
+"""
+
     colliers_transition_sql = "true" if colliers_first_party_transition else "false"
     colliers_transition_row_sql = f"""(
       {colliers_transition_sql}
@@ -3352,11 +4254,14 @@ def build_sql(
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
+    w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
     # connection. Bound the data load separately, then restore the tighter
     # mutation timeout after all four transaction-local COPY stages.
     w("SET LOCAL statement_timeout = '1800s';")
+    if targeted:
+        w("SELECT pg_advisory_xact_lock(1687068469);")
     w("-- Intentionally serialize all generated lifecycle mutation transactions.")
     w(lifecycle_transaction_lock_sql())
     # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
@@ -3392,7 +4297,9 @@ CREATE TEMP TABLE _stage (
     guarantor text, lease_years_remaining numeric, price_per_unit numeric,
     grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
     clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
-    power_service text, rail_served boolean, extra_facts jsonb, om_facts jsonb
+    power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb,
+    source_field_building jsonb,
+    county text, cbsa_code text, cbsa_name text, geo_source text
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -3710,6 +4617,7 @@ UNION ALL
 SELECT a.listing_id, a.source_key, 'documents'::text, count(d.id)::bigint
 FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+  AND NOT {boilerplate_document_sql}
 GROUP BY a.listing_id, a.source_key
 UNION ALL
 SELECT a.listing_id, a.source_key, 'images'::text, count(i.id)::bigint
@@ -3722,6 +4630,7 @@ GROUP BY a.listing_id, a.source_key;
 -- the distinct underlying asset baseline before any child replacement so the
 -- one reviewed first-party transition can reject real asset loss without
 -- protecting known row-multiplication defects.
+{image_outcome_table_sql}
 CREATE TEMP TABLE _colliers_semantic_images_before ON COMMIT DROP AS
 SELECT count(DISTINCT regexp_replace(
          regexp_replace(lower(i.url), '&quot;+$', ''),
@@ -3753,6 +4662,9 @@ DO $$ BEGIN
     GROUP BY a.listing_id, a.source_key;
   END IF;
 END $$;""")
+    if tw_parts:
+        w(tw_parts["before"])
+        w(tw_parts["project"])
 
     w(
         """
@@ -3788,6 +4700,175 @@ BEGIN
     END IF;
 END $$;
 
+""")
+    w(f"""
+-- JLL Investor prospective URL collision pairs include every live brokerage
+-- counterpart. Staged rows replace prior URL/deleted state exactly as the upsert
+-- does; unchanged historical pairs are not a new collision or a repair waiver.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    WITH investor_brokerages AS MATERIALIZED (
+      SELECT DISTINCT s.brokerage_id
+      FROM _src s JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+      WHERE {staged_source_key_sql} = 'jll-investor'
+    ), before_rows AS MATERIALIZED (
+      SELECT t.brokerage_id, t.external_id, t.source_url,
+             'stored:' || t.id::text AS row_key
+      FROM credeals.cre_listings t
+      JOIN investor_brokerages ib ON ib.brokerage_id = t.brokerage_id
+      WHERE t.deleted_at IS NULL
+    ), prospective_rows AS MATERIALIZED (
+      SELECT t.brokerage_id, t.source_url, t.row_key, false AS investor_stage
+      FROM before_rows t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM _src s
+        WHERE s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id
+      )
+      UNION ALL
+      SELECT s.brokerage_id, s.source_url,
+             COALESCE('stored:' || t.id::text, 'new:' || s.external_id),
+             {staged_source_key_sql} = 'jll-investor'
+      FROM _src s JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+      JOIN investor_brokerages ib ON ib.brokerage_id = s.brokerage_id
+      LEFT JOIN credeals.cre_listings t
+        ON t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+    )
+    SELECT count(*) INTO conflicting_rows FROM (
+      SELECT a.brokerage_id, a.source_url, a.row_key, b.row_key
+      FROM prospective_rows a JOIN prospective_rows b
+        ON b.brokerage_id = a.brokerage_id AND b.source_url = a.source_url
+       AND a.row_key < b.row_key
+      WHERE a.investor_stage OR b.investor_stage
+      EXCEPT
+      SELECT a.brokerage_id, a.source_url, a.row_key, b.row_key
+      FROM before_rows a JOIN before_rows b
+        ON b.brokerage_id = a.brokerage_id AND b.source_url = a.source_url
+       AND a.row_key < b.row_key
+    ) added_pairs;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'JLL Investor URL collision growth (% new pair(s)); reviewed identity reconciliation required',
+        conflicting_rows;
+    END IF;
+END $$;
+
+""")
+    w("""
+-- Interra switched from legacy listing/<slug> keys to native WordPress IDs.
+-- Exact URL overlap across those namespaces requires a reviewed identity repair,
+-- not an additive INSERT beside the existing row. Match the validator's exact
+-- source_url/non-soft-deleted scope without guessing aliases or changing IDs.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    SELECT count(*) INTO conflicting_rows
+    FROM _src s
+    JOIN credeals.cre_listings t
+      ON t.brokerage_id = s.brokerage_id
+     AND t.source_url = s.source_url
+     AND t.external_id IS DISTINCT FROM s.external_id
+    WHERE t.deleted_at IS NULL
+      AND jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "interra-realty")'
+      );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Interra identity repair required for % existing URL collision(s); refusing duplicate growth',
+        conflicting_rows;
+    END IF;
+    -- Also refuse conflicting incoming IDs before either can become an existing
+    -- row. Preserve exact source and brokerage scope; do not invent aliases.
+    WITH incoming_interra AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "interra-realty")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_interra s
+    JOIN incoming_interra other
+      ON other.brokerage_id = s.brokerage_id
+     AND other.source_url = s.source_url
+     AND other.external_id IS DISTINCT FROM s.external_id;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Interra incoming inventory contains conflicting identities for the same URL; refusing duplicate growth';
+    END IF;
+END $$;
+
+
+-- DAUM keeps historical literal property-path keys. Refuse contradictory
+-- staged/historical associations before DML, including soft-deleted parents.
+-- Only explicitly preserved positive WordPress IDs are comparable. Missing old
+-- native IDs remain unknown; no historical identity is inferred or repaired.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    CREATE TEMP TABLE _daum_identity_claims ON COMMIT DROP AS
+    SELECT s.brokerage_id, s.external_id, s.source_url,
+           ARRAY(SELECT DISTINCT n.value #>> '{}'
+                 FROM jsonb_path_query(s.raw_data, '$.**.daumPostId') n(value)) AS native_ids
+    FROM _src s
+    WHERE jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "daum-commercial")');
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _daum_identity_claims s
+    WHERE s.source_url IS NULL OR s.external_id IS NULL
+       OR s.source_url !~ '^https://daumcommercial[.]com/property/[^/?#]+/$'
+       OR s.external_id IS DISTINCT FROM substr(
+           s.source_url, length('https://daumcommercial.com/') + 1,
+           length(s.source_url) - length('https://daumcommercial.com/') - 1)
+       OR cardinality(s.native_ids) <> 1
+       OR CASE WHEN s.native_ids[1] ~ '^[1-9][0-9]{0,15}$'
+               THEN s.native_ids[1]::numeric > 9007199254740991
+               ELSE true END;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'DAUM identity contradiction in incoming URL/path/native claims; refusing mutation';
+    END IF;
+
+    CREATE TEMP TABLE _daum_historical_identity_claims ON COMMIT DROP AS
+    SELECT t.brokerage_id, t.external_id, t.source_url,
+           ARRAY(SELECT DISTINCT n.value #>> '{}'
+                 FROM jsonb_path_query(t.raw_data, '$.**.daumPostId') n(value)
+                 WHERE n.value <> 'null'::jsonb) AS native_ids
+    FROM credeals.cre_listings t
+    WHERE EXISTS (
+      SELECT 1 FROM _daum_identity_claims s WHERE s.brokerage_id = t.brokerage_id
+    );
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _daum_identity_claims s
+    JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
+    WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
+       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
+       OR (s.native_ids[1] = ANY(t.native_ids)
+           AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
+       OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
+           AND cardinality(t.native_ids) > 0
+           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_ids[1]));
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'DAUM identity contradiction in historical rows; refusing mutation';
+    END IF;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _daum_identity_claims s
+    JOIN _daum_identity_claims other ON other.brokerage_id = s.brokerage_id
+    WHERE (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+       OR (other.native_ids[1] = s.native_ids[1]
+           AND (other.source_url IS DISTINCT FROM s.source_url OR other.external_id IS DISTINCT FROM s.external_id))
+       OR ((other.source_url = s.source_url OR other.external_id = s.external_id)
+           AND other.native_ids[1] IS DISTINCT FROM s.native_ids[1]);
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'DAUM identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
 -- The transaction-wide lifecycle advisory lock above serializes every generated
 -- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
 -- per identity: a complete high-volume source can exceed PostgreSQL's shared
@@ -3795,7 +4876,7 @@ END $$;
 -- canonical source-index-then-listing order; the unique identity constraints
 -- serialize new-row conflicts.
 -- Lock present source-index rows after the transaction-wide lifecycle lock.
-CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
+""" + targeted_queue + """CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
 JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
@@ -3810,15 +4891,116 @@ JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id
 ORDER BY t.id
 FOR UPDATE OF t;
 
+-- Essex keeps historical literal property-path keys. Refuse contradictory
+-- staged/historical associations before DML, including soft-deleted parents.
+-- Only typed WordPress page claims are comparable. Old currentPropertyId variables
+-- remain observed metadata; missing old page IDs are unknown, never inferred.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
+    """ + incoming_claims_sql() + """;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM (""" + invalid_incoming_sql() + """) AS invalid_claims;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in incoming URL/path/native claims; refusing mutation';
+    END IF;
+
+    CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
+    """ + historical_claims_sql() + """;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM (""" + historical_conflicts_sql() + """) AS historical_conflicts;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in historical rows; refusing mutation';
+    END IF;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _essex_identity_claims s
+    JOIN _essex_identity_claims other ON other.brokerage_id = s.brokerage_id
+    WHERE (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+       OR (other.native_ids[1] = s.native_ids[1]
+           AND (other.source_url IS DISTINCT FROM s.source_url OR other.external_id IS DISTINCT FROM s.external_id))
+       OR ((other.source_url = s.source_url OR other.external_id = s.external_id)
+           AND other.native_ids[1] IS DISTINCT FROM s.native_ids[1]);
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
+
+CREATE TEMP TABLE _pyramid_native_transitions (
+  brokerage_id uuid NOT NULL, external_id text NOT NULL,
+  PRIMARY KEY (brokerage_id, external_id)
+) ON COMMIT DROP;
+{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}
+-- Pyramid preserves historical literal path identities. Inspect the actual
+-- staged cohort and every historical parent, including soft-deleted rows,
+-- before an upsert can overwrite a contradictory URL or create a duplicate.
+-- Literal comparisons deliberately do not invent aliases or repair old keys.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    SELECT count(*) INTO conflicting_rows FROM (
+{pyramid_historical_rows}
+    ) AS pyramid_historical_conflicts;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction in % historical row(s); refusing mutation',
+        conflicting_rows;
+    END IF;
+    WITH incoming_pyramid AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_pyramid s
+    JOIN incoming_pyramid other
+      ON other.brokerage_id = s.brokerage_id
+     AND (
+       (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+     );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
+-- Carry the transition's additive policy into subsequent refreshes. A later
+-- native ID match alone cannot establish continuity for the older children.
+UPDATE _src s SET raw_data = s.raw_data || jsonb_build_object(
+  'pyramidNativeTransitionPreserve', true,
+  'pyramidTransitionPrior', COALESCE(t.raw_data->'pyramidTransitionPrior', to_jsonb(t.raw_data::text)),
+  'preserveChildCollections', true,
+  'detailObservedWithChildPreservation', true)
+FROM credeals.cre_listings t
+WHERE t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+  AND t.source_url = s.source_url
+  AND s.raw_data->>'sourceKey' = 'pyramid-brokerage'
+  AND (t.raw_data->'pyramidNativeTransitionPreserve' = 'true'::jsonb
+       OR (s.raw_data#>>'{missingFieldEvidence,method}' = 'source_detail_and_taxonomy'
+           AND s.raw_data->'preserveChildCollections' = 'true'::jsonb)
+       OR EXISTS (SELECT 1 FROM _pyramid_native_transitions x
+                  WHERE x.brokerage_id = s.brokerage_id AND x.external_id = s.external_id));
 -- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
 -- BEFORE the upsert mutates them, so history and presence snapshots cannot be
 -- stale relative to a concurrent retirement.
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
 SELECT t.id, t.brokerage_id, t.external_id,
        t.sale_price_usd, t.sale_price_per_sf, t.lease_rate_min, t.lease_rate_max,
-       t.status, t.cap_rate, t.deleted_at
+       t.status, t.cap_rate, t.deleted_at{avison_price_sql["prior_select"]}
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
+
+{avison_price_sql.get("transition_sql", "")}
 
 CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id,
@@ -3827,7 +5009,7 @@ FROM _src s
 LEFT JOIN credeals.cre_source_index si
   ON si.brokerage_id = s.brokerage_id AND si.external_id = s.external_id;
 
-CREATE TEMP TABLE _up ON COMMIT DROP AS
+{targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
         brokerage_id, external_id, source_url, status, transaction_type,
@@ -3839,7 +5021,11 @@ WITH ins AS (
         description, highlights, amenities, zoning, markdown,
         updated_date, scraped_at, raw_data, source_lastmod, canonical_key
     )
-    SELECT brokerage_id, external_id, source_url, COALESCE(status, 'active'), transaction_type,
+    SELECT brokerage_id, external_id, source_url,
+           CASE WHEN {detail_source_insert_sql}
+                THEN NULL ELSE COALESCE(status, 'active') END,
+           CASE WHEN {detail_source_insert_sql}
+                THEN NULL ELSE transaction_type END,
            property_type, title, address, city, state, zip, lat, lng, market, submarket,
            size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
            floors, year_built, units, parking_spaces, parking_ratio,
@@ -3891,7 +5077,7 @@ WITH ins AS (
              ELSE raw_data
            END,
            source_lastmod, canonical_key
-    FROM _src
+    FROM _src s
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
         source_url        = EXCLUDED.source_url,
@@ -3899,8 +5085,15 @@ WITH ins AS (
         -- (a mark-missing soft-delete marker), not a real terminal (sold/leased/
         -- off_market) that flickered back into the feed. A terminal-bearing row that
         -- reappears stays with its terminal label; the board gate excludes it.
-        status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
-                                 THEN 'active' ELSE t.status END,
+        status            = CASE
+                              WHEN {detail_target_sql}
+                                THEN t.status
+                              WHEN t.status IS NULL
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug IN ('svn','newmark'))
+                                THEN EXCLUDED.status
+                              WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
+                                THEN 'active' ELSE t.status END,
         -- transaction_type NEVER narrows a known type. A partial/generic re-ingest
         -- (the generic enricher emits no transactionType, and the enrichment queue
         -- has no transaction column so cre_enrich tags every claimed row "sale")
@@ -3914,6 +5107,8 @@ WITH ins AS (
         --   existing/incoming differ (sale vs lease)  -> 'sale_or_lease' (serves both)
         --   same single mode, or incoming NULL        -> keep existing
         transaction_type  = CASE
+                              WHEN {detail_target_sql}
+                                THEN t.transaction_type
                               WHEN t.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
                               WHEN EXCLUDED.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
                               WHEN t.transaction_type IS NULL THEN EXCLUDED.transaction_type
@@ -3935,12 +5130,19 @@ WITH ins AS (
         city              = COALESCE(EXCLUDED.city, t.city),
         state             = COALESCE(EXCLUDED.state, t.state),
         zip               = COALESCE(EXCLUDED.zip, t.zip),
-        lat               = COALESCE(EXCLUDED.lat, t.lat),
-        lng               = COALESCE(EXCLUDED.lng, t.lng),
+        -- Treat coordinates as a single observation; retain partial values
+        -- only if no prior component exists, never mix observations.
+        lat               = CASE WHEN (EXCLUDED.lat IS NOT NULL AND EXCLUDED.lng IS NOT NULL)
+                                      OR (t.lat IS NULL AND t.lng IS NULL)
+                                 THEN EXCLUDED.lat ELSE t.lat END,
+        lng               = CASE WHEN (EXCLUDED.lat IS NOT NULL AND EXCLUDED.lng IS NOT NULL)
+                                      OR (t.lat IS NULL AND t.lng IS NULL)
+                                 THEN EXCLUDED.lng ELSE t.lng END,
         size_sf           = CASE
                               WHEN {colliers_transition_row_sql} THEN EXCLUDED.size_sf
-                              WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
-                              ELSE COALESCE(EXCLUDED.size_sf, t.size_sf)
+                              WHEN EXCLUDED.size_sf > 0 AND EXCLUDED.size_sf <= 1000000000
+                                THEN EXCLUDED.size_sf
+                              ELSE t.size_sf
                             END,
         market            = COALESCE(EXCLUDED.market, t.market),
         submarket         = COALESCE(EXCLUDED.submarket, t.submarket),
@@ -3975,11 +5177,14 @@ WITH ins AS (
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END,
+        -- Sparse updates retain prior values; only new values must meet forward bounds.
         sale_price_per_sf = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END,
+                                 WHEN EXCLUDED.sale_price_per_sf > 0 AND EXCLUDED.sale_price_per_sf <= 10000
+                                 THEN EXCLUDED.sale_price_per_sf
+                                 ELSE t.sale_price_per_sf END,
         cap_rate          = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END,
@@ -3994,12 +5199,16 @@ WITH ins AS (
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END,
+                                 WHEN EXCLUDED.lease_rate_min > 0 AND EXCLUDED.lease_rate_min <= 500
+                                 THEN EXCLUDED.lease_rate_min
+                                 ELSE t.lease_rate_min END,
         lease_rate_max    = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END,
+                                 WHEN EXCLUDED.lease_rate_max > 0 AND EXCLUDED.lease_rate_max <= 500
+                                 THEN EXCLUDED.lease_rate_max
+                                 ELSE t.lease_rate_max END,
         lease_rate_type   = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
@@ -4037,6 +5246,9 @@ WITH ins AS (
         -- while preserving children when its supplemental team feed is degraded;
         -- child refresh remains additive below.
         scraped_at        = CASE
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN t.scraped_at
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -4069,6 +5281,32 @@ WITH ins AS (
                               ELSE EXCLUDED.scraped_at
                             END,
         raw_data          = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.daumUnknownTenure ? (@ == true)')
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages db WHERE db.id=EXCLUDED.brokerage_id AND db.slug='daum-commercial')
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                  'latestDaumUnknownTenureObservation', EXCLUDED.raw_data)
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                     'avisonRetainedPrior', EXCLUDED.raw_data->'avisonRetainedPrior')
+                              -- Published Newmark detail preserves child collections but does not
+                              -- establish a new inventory observation. Unwrap that detail without
+                              -- replacing the prior inventory clock or its paired observation.
+                              WHEN {newmark_enrichment_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                            WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                AND jsonb_typeof(EXCLUDED.raw_data->'latestInventoryObservation') = 'object'
+                                AND EXCLUDED.raw_data#>>'{latestInventoryObservation,preserveChildCollections}' = 'true'
+                                AND NOT jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                THEN (
+                                  CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    THEN t.raw_data ELSE '{}'::jsonb END
+                                  || ((EXCLUDED.raw_data->'latestInventoryObservation')
+                                      - 'inventoryObservedAt' - 'latestInventoryObservation'
+                                      - 'newmarkUnqualifiedInventoryContext')
+                                  || {newmark_partial_context_sql}
+                                  || jsonb_build_object('newmarkEnrichmentRetained', true)
+                                )
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -4095,6 +5333,11 @@ WITH ins AS (
                                              t.raw_data,
                                              '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
                                            )
+                                           AND NOT (
+                                             COALESCE(t.raw_data->'newmarkEnrichmentRetained' = 'true'::jsonb, false)
+                                             AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb_prior
+                                                         WHERE nb_prior.id=t.brokerage_id AND nb_prior.slug='newmark')
+                                           )
                                          )
                                        THEN '{}'::jsonb
                                        ELSE COALESCE(t.raw_data, '{}'::jsonb)
@@ -4118,11 +5361,46 @@ WITH ins AS (
                                           to_jsonb(EXCLUDED.scraped_at)
                                         )
                                       )
+                              WHEN jsonb_typeof(EXCLUDED.raw_data) = 'object'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND {inventory_preserve_sql})
+                                THEN (
+                                  CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    AND jsonb_typeof(t.raw_data) = 'object'
+                                    THEN t.raw_data ELSE '{}'::jsonb END
+                                  || CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    THEN EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation'
+                                         - 'newmarkUnqualifiedInventoryContext'
+                                    ELSE EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation' END
+                                  || CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    THEN {newmark_generic_context_sql} ELSE '{}'::jsonb END
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'inventoryObservedAt'
+                                    THEN jsonb_build_object('inventoryObservedAt', t.raw_data->'inventoryObservedAt')
+                                    ELSE '{}'::jsonb END
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'latestInventoryObservation'
+                                    THEN jsonb_build_object('latestInventoryObservation', t.raw_data->'latestInventoryObservation')
+                                    ELSE '{}'::jsonb END
+                                  || CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    THEN jsonb_build_object('newmarkEnrichmentRetained', true)
+                                    ELSE '{}'::jsonb END
+                                )
                               ELSE EXCLUDED.raw_data
                             END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
         canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
-        deleted_at        = NULL,
+        deleted_at        = CASE
+                              WHEN {detail_target_sql}
+                                THEN t.deleted_at ELSE NULL END,
         updated_at        = now()
     RETURNING t.id, t.brokerage_id, t.external_id
 )
@@ -4220,7 +5498,7 @@ FROM _src s
 WHERE t.brokerage_id = s.brokerage_id
   AND t.external_id = s.external_id
   AND s.status IS NOT NULL
-  AND t.status IS DISTINCT FROM s.status
+{targeted_status_allowed}  AND t.status IS DISTINCT FROM s.status
   AND NOT (t.status IN ('sold','leased','off_market')
            AND s.status IN ('under_contract','pending'));
 
@@ -4264,26 +5542,56 @@ DO $$ BEGIN
         drive_in_doors        = COALESCE(s.drive_in_doors, t.drive_in_doors),
         power_service         = COALESCE(s.power_service, t.power_service),
         rail_served           = COALESCE(s.rail_served, t.rail_served),
+        -- Forward geo (AGENTIC-5133): keep-wins like cre_geo_backfill.py. A
+        -- stored county/CBSA, including a source value, is never overwritten;
+        -- only NULL columns are filled, and the CBSA code and name only as a
+        -- pair so one row never mixes two CBSAs. Geo comes from this pass's
+        -- location fields; a later ZIP correction does not re-derive it.
+        county                = COALESCE(t.county, s.county),
+        cbsa_code             = CASE WHEN t.cbsa_code IS NULL AND t.cbsa_name IS NULL
+                                     THEN s.cbsa_code ELSE t.cbsa_code END,
+        cbsa_name             = CASE WHEN t.cbsa_code IS NULL AND t.cbsa_name IS NULL
+                                     THEN s.cbsa_name ELSE t.cbsa_name END,
+        geo_source            = COALESCE(t.geo_source, s.geo_source),
         -- extra_facts: jsonb merge, keeping prior keys; a NULL/empty staged blob
         -- (no new facts this pass) leaves the prior blob untouched.
         extra_facts           = CASE
                                   WHEN {jll_price_withheld_stage_sql} THEN NULL
                                   WHEN s.extra_facts IS NULL
                                        OR s.extra_facts = '{}'::jsonb THEN COALESCE(t.extra_facts, '{}'::jsonb)
-                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
+                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || (s.extra_facts - '_source_field_provenance')
                                 END
     FROM _src s
+    JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
     WHERE t.brokerage_id = s.brokerage_id
       AND t.external_id = s.external_id;
   END IF;
 END $$;
 
-""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
+""".replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
+        .replace("{newmark_partial_context_sql}", newmark_context_sql("(EXCLUDED.raw_data->'latestInventoryObservation')"))
+        .replace("{newmark_generic_context_sql}", newmark_context_sql("EXCLUDED.raw_data"))
+        .replace("{inventory_preserve_sql}", inventory_preserve_sql)
+        .replace("{svn_enrichment_sql}", svn_enrichment_sql)
+        .replace("{svn_enrichment_source_sql}", svn_enrichment_source_sql)
+        .replace("{detail_source_insert_sql}", detail_source_insert_sql)
+        .replace("{detail_target_sql}", detail_target_sql)
+        .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
+        .replace("{daum_subset_guard}", daum_subset_guard)
+        .replace("{pyramid_subset_guard}", pyramid_subset_guard)
+        .replace("{pyramid_guard_sql}", pyramid_guard_sql)
+        .replace("{pyramid_historical_rows}", pyramid_historical_rows)
+        .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
+        .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
+        .replace("{targeted_guard}", targeted_guard)
+        .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
     )
 
-    w(f"""
+    w(build_field_updates())
+
+    w(targeted_observation if targeted else f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
 -- in the same transaction as the cre_listings upsert.
 INSERT INTO credeals.cre_source_index AS si
@@ -4294,6 +5602,8 @@ SELECT s.brokerage_id, s.external_id, {staged_source_key_sql}, s.source_url, fal
        s.status, true, 0, s.scraped_at, s.scraped_at, s.scraped_at, s.scraped_at
 FROM _src s
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+-- A detail-only SVN observation is not a fresh inventory enumeration.
+WHERE NOT ({detail_source_sql})
 ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
     source_key = COALESCE(EXCLUDED.source_key, si.source_key),
     url = EXCLUDED.url,
@@ -4327,10 +5637,11 @@ JOIN credeals.cre_source_index si
   ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
-WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
+WHERE (p.observation_present = false OR pv.deleted_at IS NOT NULL)
+  AND NOT ({detail_source_sql})
 ON CONFLICT DO NOTHING;
-
--- Children: refresh wholesale only when the latest source row completed a
+""")
+    w(f"""-- Children: refresh wholesale only when the latest source row completed a
 -- detail pass. This protects previously good documents/images/contacts from
 -- transient errors and from deliberate API-only/base refresh modes.
 CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
@@ -4338,6 +5649,7 @@ SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
       s.raw_data,
@@ -4362,7 +5674,8 @@ JOIN _src s USING (brokerage_id, external_id)
 JOIN _prior_vals p
   ON p.brokerage_id = s.brokerage_id
  AND p.external_id = s.external_id
-WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
+WHERE ({avison_price_sql.get('transition_predicate', 'false')})
+   OR jsonb_path_exists(s.raw_data, '$.**.detailError')
    OR jsonb_path_exists(
         s.raw_data,
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
@@ -4408,7 +5721,62 @@ WHERE {colliers_transition_sql}
   AND jsonb_path_exists(
     s.raw_data,
     '$.**.colliersMain.unresolvedExpertIds[*] ? (@ != "")'
-  );
+  )
+UNION
+-- An empty Buildout detail contact set does not establish that existing
+-- contacts disappeared. Preserve them without changing other child refreshes.
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+JOIN _prior_vals p
+  ON p.brokerage_id = s.brokerage_id AND p.external_id = s.external_id
+WHERE {staged_source_key_sql} IN ({buildout_source_keys_sql})
+  AND s.contacts = '[]'::jsonb;
+
+-- Unknown DAUM tenure is an explicitly admitted partial observation. Keep
+-- existing contact facts when they conflict; the full new observation remains
+-- in raw_data, and missing fields/new contacts can still be added.
+CREATE TEMP TABLE _daum_unknown_contacts ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+WHERE b.slug = 'daum-commercial'
+  AND s.raw_data->>'sourceKey' = 'daum-commercial'
+  AND s.raw_data->'daumUnknownTenure' = 'true'::jsonb;
+
+-- Preserve every observed contact in raw_data; choose the first matching
+-- identity for canonical child writes so duplicates in one batch cannot race
+-- the pre-existing-row check. Existing duplicate rows are never deleted.
+UPDATE _src s
+SET contacts = (
+  WITH RECURSIVE scan(position, retained) AS (
+    SELECT 0, '[]'::jsonb
+    UNION ALL
+    SELECT scan.position + 1,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM jsonb_array_elements(scan.retained) AS prior(x)
+        WHERE (
+          (NULLIF(lower((s.contacts->scan.position)->>'email'), '') IS NOT NULL
+           AND lower(prior.x->>'email') = lower((s.contacts->scan.position)->>'email'))
+          OR
+          (NULLIF(lower((s.contacts->scan.position)->>'name'), '') IS NOT NULL
+           AND lower(prior.x->>'name') = lower((s.contacts->scan.position)->>'name')
+           AND COALESCE(prior.x->>'phone', '') = COALESCE((s.contacts->scan.position)->>'phone', ''))
+        )
+      ) THEN scan.retained
+        ELSE scan.retained || jsonb_build_array(s.contacts->scan.position)
+      END
+    FROM scan
+    WHERE scan.position < jsonb_array_length(s.contacts)
+  )
+  SELECT retained FROM scan ORDER BY position DESC LIMIT 1
+)
+FROM _up u
+WHERE u.brokerage_id = s.brokerage_id AND u.external_id = s.external_id
+  AND u.id IN (SELECT id FROM _daum_unknown_contacts)
+  AND jsonb_typeof(s.contacts) = 'array';
 
 CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
 SELECT id FROM _child_refresh
@@ -4464,7 +5832,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4477,7 +5846,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4497,9 +5867,9 @@ CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
 WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
 
-INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0)
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
@@ -4515,6 +5885,7 @@ JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
 WHERE u.id IN (SELECT id FROM _contact_additive)
   AND c.listing_id = u.id
+  AND u.id NOT IN (SELECT id FROM _daum_unknown_contacts)
   AND jsonb_typeof(s.contacts) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
 
@@ -4529,7 +5900,9 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4537,16 +5910,21 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
-      license = COALESCE(i.x->>'license', c.license),
-      email = COALESCE(i.x->>'email', c.email),
-      phone = COALESCE(i.x->>'phone', c.phone),
-      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
-      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
-      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
-      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
-      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+                   WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
+      license = CASE WHEN i.daum_unknown THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
+      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -4570,7 +5948,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4603,7 +5982,9 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4611,15 +5992,20 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
-      email = COALESCE(i.x->>'email', c.email),
-      phone = COALESCE(i.x->>'phone', c.phone),
-      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
-      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
-      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
-      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
-      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+                   WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
+      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -4643,7 +6029,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -4683,6 +6070,7 @@ WITH ranked_primary_contacts AS (
   FROM credeals.cre_listing_contacts c
   JOIN _up u ON u.id = c.listing_id
   WHERE c.is_primary
+    AND c.listing_id NOT IN (SELECT id FROM _daum_unknown_contacts)
 )
 UPDATE credeals.cre_listing_contacts c
 SET is_primary = false
@@ -4696,6 +6084,7 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_additive)
+  {tw_additive_filter}
   AND i.listing_id = u.id
   AND jsonb_typeof(s.images) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
@@ -4706,23 +6095,25 @@ WITH incoming AS (
   JOIN _src s USING (brokerage_id, external_id)
   CROSS JOIN LATERAL jsonb_array_elements(s.images) x
   WHERE u.id IN (SELECT id FROM _child_additive)
+    {tw_additive_filter}
     AND jsonb_typeof(s.images) = 'array'
     AND x->>'url' IS NOT NULL
 )
 UPDATE credeals.cre_listing_images i SET
   is_primary = COALESCE((incoming.x->>'isPrimary')::boolean, i.is_primary),
-  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order)
+  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order){tw_alt_update}
 FROM incoming
 WHERE i.listing_id = incoming.listing_id
   AND i.url = incoming.x->>'url';
 
-INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0)
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_additive)
+  {tw_additive_filter}
   AND jsonb_typeof(s.images) = 'array'
   AND x->>'url' IS NOT NULL
   AND NOT EXISTS (
@@ -4730,8 +6121,10 @@ WHERE u.id IN (SELECT id FROM _child_additive)
     WHERE i.listing_id = u.id AND i.url = x->>'url'
   );
 
+{tw_additive_image_sql}
+
 WITH incoming AS (
-  SELECT u.id AS listing_id, x
+  SELECT u.id AS listing_id, x, {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
   FROM _up u
   JOIN _src s USING (brokerage_id, external_id)
   CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
@@ -4746,7 +6139,11 @@ UPDATE credeals.cre_listing_documents d SET
                ) THEN incoming.x->>'docType'
                ELSE d.doc_type
              END,
-  title = COALESCE(incoming.x->>'title', d.title),
+  title = CASE WHEN incoming.avison_transition AND d.title IS NOT NULL AND incoming.x->>'title' IS NOT NULL
+               THEN CASE WHEN position(incoming.x->>'title' in d.title)>0 THEN d.title
+                         WHEN position(d.title in incoming.x->>'title')>0 THEN incoming.x->>'title'
+                         ELSE d.title || E'\\n\\n' || (incoming.x->>'title') END
+               ELSE COALESCE(incoming.x->>'title', d.title) END,
   scraped_at = now()
 FROM incoming
 WHERE d.listing_id = incoming.listing_id
@@ -4831,46 +6228,14 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- OM-parsed facts (sql/013 cre_listing_om_facts). Existence-guarded so a pre-013
--- ingest is a no-op. UNLIKE media/links, om_facts is NOT wholesale-deleted on
--- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
--- pass carries no om_facts, so a DELETE would wipe a prior OM parse. Insert-only
--- with ON CONFLICT DO UPDATE on the (listing_id, fact_group, fact_key,
--- source_doc_url, parser_version) unique key, so a re-parse of the SAME parser
--- release and doc is idempotent (refreshes value/confidence/parsed_at), while a
--- new parser release or doc adds an auditable row. Rides the same _child_refresh
--- set, so detailError rows never write (invariant). The OM tier sets the matching
--- cre_listings scalar via the institutional UPDATE / COALESCE-keep path; this
--- table is the audit home. parser_version/source_doc_url are NOT NULL in the
--- table. Firecrawl ingestion stages an empty om_facts array by policy; this
--- retained upsert shape protects migration compatibility and archive handling.
-DO $$ BEGIN
-  IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
-    INSERT INTO credeals.cre_listing_om_facts (
-        listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
-        unit_count, source_doc_url, parsed_at, parser_version, confidence)
-    SELECT u.id, COALESCE(x->>'factGroup','scalar'), x->>'factKey',
-           x->>'factValueText', NULLIF(x->>'factValueNum','')::numeric,
-           NULLIF(x->>'unitCount','')::integer, x->>'sourceDocUrl', now(),
-           x->>'parserVersion', NULLIF(x->>'confidence','')::numeric
-    FROM _up u
-    JOIN _src s USING (brokerage_id, external_id)
-    CROSS JOIN LATERAL jsonb_array_elements(s.om_facts) x
-    WHERE u.id IN (SELECT id FROM _child_refresh)
-      AND jsonb_typeof(s.om_facts) = 'array'
-      AND x->>'factKey' IS NOT NULL
-      AND x->>'sourceDocUrl' IS NOT NULL
-      AND x->>'parserVersion' IS NOT NULL
-    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version) DO UPDATE SET
-        fact_value_text = EXCLUDED.fact_value_text,
-        fact_value_num  = EXCLUDED.fact_value_num,
-        unit_count      = EXCLUDED.unit_count,
-        parsed_at       = EXCLUDED.parsed_at,
-        parser_version  = EXCLUDED.parser_version,
-        confidence      = EXCLUDED.confidence;
-  END IF;
-END $$;
-""")
+{avison_price_sql["post_sql"]}
+-- OM-parsed facts (sql/013 cre_listing_om_facts) are not written here. GetCREdata
+-- is the sole OM writer (credeals.write_cre_listing_om_facts_v1) and this ingestor
+-- stages no OM facts. The former insert-only upsert was
+-- removed (AGENTIC-5136/5137): it carried ON CONFLICT on the five-column key,
+-- which Postgres resolves at plan time even for zero rows, so it would fail every
+-- ingest once the five-column unique index is replaced by the run-lineage key.
+""".replace('{avison_price_sql["post_sql"]}', avison_price_sql["post_sql"]))
 
     # (H4a) Append-only price/status history: one row per listing whose watched
     # value actually changed this run. The diff is computed from the new effective
@@ -5061,17 +6426,37 @@ DO $$ BEGIN
 END $$;
 
 -- (013) Archive final OM facts of retired listings. Existence-guarded (013 may
--- not be applied yet), mirroring the 011 media/links archive snapshot.
-DO $$ BEGIN
+-- not be applied yet), mirroring the 011 media/links archive snapshot. GetCREdata
+-- owns the run-lineage DDL (AGENTIC-5136/5137) that adds extraction_run_id to
+-- both tables. The column is carried only once it exists on BOTH, so a retired
+-- listing's archive rows keep their lineage and this block runs unchanged before
+-- and after that DDL is applied. The statement is dynamic because a static column
+-- list naming a missing column fails at plan time.
+DO $$
+DECLARE
+  _lineage text := '';
+  _lineage_src text := '';
+BEGIN
   IF to_regclass('credeals.cre_listing_om_facts_archive') IS NOT NULL
      AND to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
-    INSERT INTO credeals.cre_listing_om_facts_archive
+    IF EXISTS (SELECT 1 FROM pg_attribute
+                WHERE attrelid = to_regclass('credeals.cre_listing_om_facts_archive')
+                  AND attname = 'extraction_run_id' AND NOT attisdropped)
+       AND EXISTS (SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('credeals.cre_listing_om_facts')
+                      AND attname = 'extraction_run_id' AND NOT attisdropped) THEN
+      _lineage := ', extraction_run_id';
+      _lineage_src := ', f.extraction_run_id';
+    END IF;
+    EXECUTE 'INSERT INTO credeals.cre_listing_om_facts_archive
         (source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
-         unit_count, source_doc_url, parsed_at, parser_version, confidence)
+         unit_count, source_doc_url, parsed_at, parser_version, confidence'
+        || _lineage || ')
     SELECT f.listing_id, f.fact_group, f.fact_key, f.fact_value_text, f.fact_value_num,
-           f.unit_count, f.source_doc_url, f.parsed_at, f.parser_version, f.confidence
+           f.unit_count, f.source_doc_url, f.parsed_at, f.parser_version, f.confidence'
+        || _lineage_src || '
     FROM credeals.cre_listing_om_facts f
-    JOIN _retired r ON r.id = f.listing_id;
+    JOIN _retired r ON r.id = f.listing_id';
   END IF;
 END $$;"""
         if history_guard:
@@ -5155,6 +6540,7 @@ UNION ALL
 SELECT a.source_key, 'documents', count(d.id)
 FROM _retained_child_scope_after a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+  AND NOT {boilerplate_document_sql}
 GROUP BY a.source_key
 UNION ALL
 SELECT a.source_key, 'images', count(i.id)
@@ -5185,7 +6571,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-DO $$
+{tw_verify_sql}DO $$
 DECLARE
   regressions text;
   colliers_coveo_image_transition boolean := {colliers_transition_sql};
@@ -5212,7 +6598,7 @@ BEGIN
       AND prior_counts.source_key = 'colliers-main'
       AND prior_counts.child_type = 'images'
     )
-    AND COALESCE(current_counts.child_count, 0)
+{tw_retention_sql}    AND COALESCE(current_counts.child_count, 0)
       < (
         prior_counts.child_count * {CHILD_COUNT_RETAIN_NUMERATOR}
         / {CHILD_COUNT_RETAIN_DENOMINATOR}
@@ -5272,11 +6658,26 @@ BEGIN
       RAISE EXCEPTION
         'checkpoint Colliers first-party image transition left a current property without an image';
     END IF;
+{image_outcome_sql}
   END IF;
 END $$;
 
 COMMIT;
 """)
+    if pyramid_guard_binding is not None:
+        from cre_pyramid_rollback_result import build_commit_sql
+        w(build_commit_sql(pyramid_guard_binding))
+    if tw_parts:
+        w(tw_parts["emit"])
+    if image_transition_binding is not None:
+        # The temp table is created in this transaction: ROLLBACK removes it,
+        # so no successful post-COMMIT outcome can be emitted after rollback.
+        w(r"""\pset format unaligned
+\pset tuples_only on
+SELECT 'CRE_COLLIERS_IMAGE_TRANSITION ' || payload::text
+FROM _colliers_image_outcome;
+\pset format aligned
+\pset tuples_only off""")
     if not skip_post_commit_summary:
         w("""\\echo ''
 \\echo '=== credeals.cre_listings after ingest ==='
@@ -5384,18 +6785,70 @@ def parse_postgres_uri_query(query):
     return pairs
 
 
+def _postgres_uri_hostname(parsed, db_url):
+    """Keep abstract socket names opaque instead of relying on DNS case folding."""
+    host = strict_uri_unquote(parsed.hostname or "", label="PostgreSQL URL host")
+    if host.startswith("@"):
+        # hostname is documented as lowercase. Recover the original encoded
+        # host, excluding userinfo and the port, for this case-sensitive name.
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        host = strict_uri_unquote(
+            authority.split(":", 1)[0], label="PostgreSQL URL host"
+        )
+        # urlsplit strips literal tabs/newlines; never silently route such a
+        # URI to a different abstract name. Diagnostics omit the URI entirely.
+        if any(
+            ord(character) < 32 or ord(character) == 127
+            for value in (host, db_url)
+            for character in value
+        ):
+            raise ValueError("abstract PostgreSQL socket URI contains a control character")
+    return host
+
+
+def _supabase_pooler_tenant(parsed, query_pairs):
+    """Bind the project selected by Supavisor, independently of role/password."""
+    # Supavisor can route through startup options.reference or .cluster. users.
+    # These alternate routes are outside this single-project checkpoint contract.
+    if any(key.lower() == "options" and value for key, value in query_pairs):
+        raise ValueError("Supabase pooler startup options may override project routing")
+    users = []
+    if parsed.username is not None:
+        users.append(strict_uri_unquote(parsed.username, label="PostgreSQL URL username"))
+    query_users = [value for key, value in query_pairs if key.lower() == "user"]
+    if len(query_users) > 1:
+        raise ValueError("Supabase pooler URL has repeated user routing parameters")
+    users.extend(query_users)
+    if not users:
+        raise ValueError("Supabase pooler URL requires an explicit project-qualified user")
+    tenants = set()
+    for user in users:
+        if ".cluster." in user.lower():
+            raise ValueError("Supabase pooler cluster routing is not supported")
+        role, separator, tenant = user.rpartition(".")
+        if not role or not separator or not re.fullmatch(r"[a-z]{20}", tenant):
+            raise ValueError("Supabase pooler user must end with a valid project reference")
+        if any(ord(character) < 32 or ord(character) == 127 for character in user):
+            raise ValueError("Supabase pooler user contains a control character")
+        tenants.add(tenant)
+    if len(tenants) != 1:
+        raise ValueError("Supabase pooler URL contains conflicting project routing")
+    return tenants.pop()
+
+
 def database_target_fingerprint_from_url(db_url):
     """Return a credential-free hash for one unambiguous PostgreSQL URI target."""
     parsed = urlsplit(db_url)
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
         raise ValueError("selected database URL has no usable PostgreSQL host")
     authority = parsed.netloc.rsplit("@", 1)[-1]
-    decoded_hostname = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
+    decoded_hostname = _postgres_uri_hostname(parsed, db_url)
     if "," in authority or "," in decoded_hostname:
         raise ValueError("multi-host PostgreSQL URLs are not supported")
+    query_pairs = parse_postgres_uri_query(parsed.query)
     override_keys = {
         key.lower()
-        for key, _value in parse_postgres_uri_query(parsed.query)
+        for key, _value in query_pairs
         if key.lower() in DATABASE_TARGET_OVERRIDE_QUERY_KEYS
     }
     if override_keys:
@@ -5412,11 +6865,23 @@ def database_target_fingerprint_from_url(db_url):
     )
     if not database or "/" in database:
         raise ValueError("selected database URL has no usable database name")
-    if decoded_hostname.startswith("/") or ":" in decoded_hostname:
+    if decoded_hostname.startswith(("/", "@")) or ":" in decoded_hostname:
         fingerprint_host = decoded_hostname
     else:
         fingerprint_host = decoded_hostname.lower().rstrip(".")
     target = f"{fingerprint_host}:{port}/{database}"
+    if (
+        not fingerprint_host.startswith(("/", "@"))
+        and ":" not in fingerprint_host
+        and fingerprint_host.endswith(".pooler.supabase.com")
+    ):
+        # A shared host/database does not identify a project: Supavisor routes
+        # role.PROJECT_REF to the tenant. Keep legacy direct-target hashes intact.
+        tenant = _supabase_pooler_tenant(parsed, query_pairs)
+        target = json.dumps(
+            ["supabase-pooler-v1", fingerprint_host, port, database, tenant],
+            separators=(",", ":"),
+        )
     return {
         "algorithm": "sha256",
         "value": hashlib.sha256(target.encode("utf-8")).hexdigest(),
@@ -5451,7 +6916,8 @@ def find_psql():
     p = shutil.which("psql")
     if p:
         return p
-    sys.exit("psql not found. brew install libpq, or set PSQL_BIN.")
+    sys.exit("psql not found. Install a PostgreSQL client (apt install postgresql-client on Ubuntu; "
+             "brew install libpq on macOS), or set PSQL_BIN.")
 
 
 PSQL_QUERY_ENV = {
@@ -5533,7 +6999,7 @@ def psql_connection_env(db_url):
     env = os.environ.copy()
     for key in PSQL_TARGET_ENV_KEYS:
         env.pop(key, None)
-    env["PGHOST"] = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
+    env["PGHOST"] = _postgres_uri_hostname(parsed, db_url)
     try:
         env["PGPORT"] = str(parsed.port or 5432)
     except ValueError as exc:
@@ -5579,8 +7045,8 @@ def psql_connection_args(db_url):
     ]
     if not uri_only:
         return []
-    hostname = strict_uri_unquote(parsed.hostname or "", label="PostgreSQL URL host")
-    if ":" in hostname:
+    hostname = _postgres_uri_hostname(parsed, db_url)
+    if ":" in hostname and not hostname.startswith("@"):
         rendered_host = f"[{quote(hostname, safe=':')}]"
     else:
         rendered_host = quote(hostname, safe="-._~")
@@ -5714,6 +7180,44 @@ def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
 # ---------------------------------------------------------------------------
 
 
+def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key):
+    """Bind only the complete fresh source input to its actual clean collector."""
+    from pathlib import Path
+    from cre_checkpoint_refresh import git_identity
+    from cre_transwestern_image_outcome import valid_binding
+
+    if (len(args.inputs) != 1 or not args.checkpoint_ingest_attempt
+            or not args.expected_db_target_sha256 or not args.require_strict_freshness
+            or args.mark_missing or _status_activation_enabled(args.activate_status)
+            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims or args.matthews_targeted_claims):
+        raise ValueError("unbound Transwestern image transition")
+    validate_strict_artifact_freshness(data, require_strict_freshness=True)
+    scope = strict_full_source_scope(data, "transwestern")
+    if (len(scope["entries"]) != len(data["sources"])
+            or len(scope["listings"]) != len(data["listings"])):
+        raise ValueError("mixed Transwestern image transition scope")
+    code_sha, dirty = git_identity()
+    if dirty or code_sha != args.checkpoint_collector_git_sha:
+        raise ValueError("Transwestern collector code changed")
+    input_bytes = Path(args.inputs[0]).read_bytes()
+    digest = hashlib.sha256(input_bytes).hexdigest()
+    if (input_bytes != original_bytes
+            or artifact_run_key != artifact_run_identity_from_digests([digest])[0]):
+        raise ValueError("Transwestern transition input changed")
+    generation = data["runMeta"]["freshness"]
+    binding = {
+        "artifact_sha256": digest, "artifact_bytes": len(input_bytes),
+        "artifact_run_key": artifact_run_key,
+        "generation_id": generation["generationId"],
+        "generation_started_at": generation["generationStartedAt"],
+        "database_target_sha256": args.expected_db_target_sha256,
+        "attempt_id": args.checkpoint_ingest_attempt, "collector_git_sha": code_sha,
+    }
+    if not valid_binding(binding):
+        raise ValueError("invalid Transwestern image transition binding")
+    return binding
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -5726,6 +7230,12 @@ def main():
         help="collect.ts output JSON (repeatable)",
     )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -5770,6 +7280,8 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.checkpoint_collector_git_sha is not None and not args.checkpoint_ingest_attempt:
+        ap.error("collector code binding requires a checkpoint ingest attempt")
 
     merged = {}  # (slug, external_id) -> row
     inventory_only_merged = {}  # (slug, external_id) -> source-index row
@@ -5781,23 +7293,141 @@ def main():
     finished_at = None
     finished_at_by_slug = {}
     colliers_transition_inputs = []
+    inventory_enrichment_ids = set()
+    inventory_non_enrichment_ids = set()
 
+    daum_subset_claims = None
+    if args.daum_verified_subset_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims or args.pyramid_verified_subset_claims
+                or _status_activation_enabled(args.activate_status)
+                or not args.require_strict_freshness or not args.expected_db_target_sha256
+                or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound DAUM subset ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+        from cre_daum_current_inventory import ingest_subset_context
+        from cre_checkpoint_refresh import git_identity
+        claim_path = Path(args.daum_verified_subset_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        daum_subset_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha,
+            current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256,
+            attempt_id=args.checkpoint_ingest_attempt)
+    pyramid_subset_claims = None
+    if args.pyramid_verified_subset_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
+                or args.daum_verified_subset_claims or _status_activation_enabled(args.activate_status)
+                or not args.require_strict_freshness or not args.expected_db_target_sha256
+                or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound Pyramid subset ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+        from cre_pyramid_current_inventory import ingest_subset_context
+        from cre_checkpoint_refresh import git_identity
+        claim_path = Path(args.pyramid_verified_subset_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        pyramid_subset_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256,
+            attempt_id=args.checkpoint_ingest_attempt)
+    targeted_claims, targeted_targets = None, None
+    if args.matthews_targeted_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.activate_status
+            or args.pyramid_verified_subset_claims or _status_activation_enabled(args.activate_status)
+            or not args.expected_db_target_sha256):
+            sys.exit("refusing unbound targeted Matthews ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+
+        claim_path = Path(args.matthews_targeted_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=128 * 1024)
+            targeted_claims = json.loads(raw)
+            validate_matthews_targeted_claims(targeted_claims)
+            from cre_stop_guarded_tier import require_guarded_matthews_parent
+            guarded = targeted_claims.get("matthewsGuardedWorker")
+            if not isinstance(guarded, dict) or not isinstance(guarded.get("workerIdentity"), dict):
+                sys.exit("refusing targeted Matthews without guarded worker identity")
+            require_guarded_matthews_parent(
+                guarded.get("runId"), args.expected_db_target_sha256,
+                len(targeted_claims["items"]), worker_identity=guarded["workerIdentity"])
+        finally:
+            os.close(directory)
     for path in args.inputs:
-        with open(path) as f:
-            data = json.load(f)
+        with open(path, "rb") as f:
+            image_transition_input = f.read()
+        data = json.loads(image_transition_input)
+        try:
+            require_canonical_artifact(data)
+        except ValueError as exc:
+            sys.exit(str(exc))
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
                 "sole production OM extraction writer"
             )
+        is_pyramid_subset = any(
+            isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
+            and entry["currentInventoryProof"].get("schema") in ("pyramid-verified-subset-v1", "pyramid-incomplete-v2")
+            for entry in data.get("sources", []))
+        if is_pyramid_subset != (pyramid_subset_claims is not None):
+            sys.exit("refusing Pyramid subset without its guarded claims")
+        if pyramid_subset_claims is not None and hashlib.sha256(image_transition_input).hexdigest() != pyramid_subset_claims["binding"]["artifact_sha256"]:
+            sys.exit("Pyramid subset artifact changed after gate revalidation")
+        is_daum_subset = any(
+            isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
+            and entry["currentInventoryProof"].get("schema") in {"daum-verified-subset-v1", "daum-verified-subset-v2"}
+            for entry in data.get("sources", []))
+        if is_daum_subset != (daum_subset_claims is not None):
+            sys.exit("refusing DAUM subset without its explicit guarded claims")
+        if daum_subset_claims is not None:
+            from pathlib import Path
+            if hashlib.sha256(image_transition_input).hexdigest() != daum_subset_claims["binding"]["artifact_sha256"]:
+                sys.exit("DAUM subset artifact changed after gate revalidation")
         run_meta = data.get("runMeta") or {}
+        is_matthews_enrich = run_meta.get("mode") == "enrich" and any(
+            isinstance(row, dict) and row.get("sourceKey") == "matthews"
+            for row in data.get("listings", [])
+        )
+        if targeted_claims is not None:
+            try:
+                targeted_targets = matthews_targeted_sql_context(data, targeted_claims)
+            except (ValueError, TypeError, KeyError):
+                sys.exit("refusing caller-unbound targeted Matthews artifact")
         try:
             validate_strict_artifact_freshness(
                 data,
                 require_strict_freshness=args.require_strict_freshness,
+                pyramid_incomplete_ids=frozenset(
+                    m["native_id"] for m in (pyramid_subset_claims or {}).get("members", [])
+                    if m.get("incomplete") is True
+                ),
             )
         except ValueError as exc:
             sys.exit(f"refusing strict freshness artifact: {exc}")
+        from source_fields.buildout import qualified_counts
+        field_candidates = qualified_counts(data, hashlib.sha256(image_transition_input).hexdigest())
+        from source_fields.transwestern import qualified_building_fields
+        building_candidates = qualified_building_fields(data, hashlib.sha256(image_transition_input).hexdigest())
+        if is_matthews_enrich and targeted_claims is None:
+            sys.exit("refusing strict freshness Matthews enrichment without caller-bound targeted claims")
         has_colliers_main = any(
             isinstance(entry, dict) and entry.get("sourceKey") == "colliers-main"
             for entry in (data.get("sources") or [])
@@ -5874,7 +7504,25 @@ def main():
                     "full snapshot for that source"
                 )
             inventory_only_scopes_merged[scope["source_key"]] = scope
+        newmark_public_facts = {}
+        if (mode == "enrich" and len(artifact_source_entries) == 1
+                and isinstance(artifact_source_entries[0], dict)
+                and artifact_source_entries[0].get("sourceKey") == "newmark"
+                and isinstance(artifact_source_entries[0].get("retainedObservations"), list)
+                and any(isinstance(o, dict) and o.get("newmarkRcmObservation") is True
+                        for o in artifact_source_entries[0]["retainedObservations"])):
+            from source_fields.newmark_public_facts import qualified
+            try:
+                newmark_public_facts = qualified(image_transition_input)
+            except (ValueError, TypeError, KeyError) as exc:
+                sys.exit(f"refusing Newmark public facts projection: {exc}")
         for listing in data.get("listings") or []:
+            if newmark_public_facts:
+                from source_fields.newmark_public_facts import attach
+                listing = attach(listing, newmark_public_facts)
+            if (mode == "enrich" and isinstance(listing, dict) and "genericEnrich" in listing
+                    and not generic_enrichment_substantive(listing)):
+                continue
             inventory_row = to_inventory_only_row(listing, scraped_at)
             if inventory_row is not None:
                 inventory_key = (
@@ -5891,11 +7539,21 @@ def main():
                     )
                 inventory_only_merged[inventory_key] = inventory_row
                 continue
-            row = to_row(listing, brokers_by_idx, scraped_at)
+            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates, building_candidates,
+                         allow_newmark_nim=mode == "full")
             if row is None:
                 skipped_no_url += 1
                 continue
             key = (row["slug"], row["external_id"])
+            if row["slug"] in {"svn", "newmark"}:
+                identity = (row["slug"], row["external_id"])
+                if mode == "enrich":
+                    # These detail-only producers do not establish sale/lease.
+                    row["transaction_type"] = None
+                    row["_modes"] = set()
+                    inventory_enrichment_ids.add(identity)
+                else:
+                    inventory_non_enrichment_ids.add(identity)
             if key in merged:
                 try:
                     validate_duplicate_identity_before_merge(merged[key], row)
@@ -5922,6 +7580,8 @@ def main():
         sys.exit("nothing to ingest (0 usable listings or inventory-only rows)")
     for r in rows:
         r.pop("_modes", None)
+        for k in GEO_INPUT_KEYS:
+            r.pop(k, None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
     finished_at = finished_at or started_at
 
@@ -6036,6 +7696,48 @@ def main():
         f"{'ENABLED' if colliers_first_party_transition else 'OFF'}",
         file=sys.stderr,
     )
+    image_transition_binding = None
+    if args.checkpoint_ingest_attempt is not None and colliers_first_party_transition:
+        if (len(args.inputs) != 1
+                or not args.expected_db_target_sha256 or args.mark_missing
+                or activate_status):
+            sys.exit("refusing unbound Colliers image transition")
+        from cre_colliers_image_transition import valid_binding
+        from pathlib import Path
+        input_bytes = Path(args.inputs[0]).read_bytes()
+        if (input_bytes != image_transition_input
+                or artifact_run_key != artifact_run_identity_from_digests(
+                    [hashlib.sha256(input_bytes).hexdigest()])[0]):
+            sys.exit("Colliers transition input changed")
+        generation = data["runMeta"]["freshness"]
+        image_transition_binding = {
+            "artifact_sha256": hashlib.sha256(input_bytes).hexdigest(),
+            "artifact_bytes": len(input_bytes), "artifact_run_key": artifact_run_key,
+            "generation_id": generation["generationId"],
+            "generation_started_at": generation["generationStartedAt"],
+            "database_target_sha256": args.expected_db_target_sha256,
+            "attempt_id": args.checkpoint_ingest_attempt,
+        }
+        if not valid_binding(image_transition_binding):
+            sys.exit("invalid Colliers image transition binding")
+    transwestern_image_transition_binding = None
+    if args.checkpoint_collector_git_sha is not None:
+        try:
+            transwestern_image_transition_binding = transwestern_checkpoint_binding(
+                args, data, image_transition_input, artifact_run_key
+            )
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            sys.exit(f"refusing Transwestern image transition: {exc}")
+    pyramid_guard_binding = None
+    if args.checkpoint_pyramid_code_sha is not None:
+        from cre_pyramid_rollback_result import bind_input
+        try:
+            pyramid_guard_binding = bind_input(
+                args, data, image_transition_input, artifact_run_key,
+                activate_status=activate_status,
+            )
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            sys.exit(f"refusing Pyramid guard outcome: {exc}")
     sql = build_sql(
         rows,
         job_meta,
@@ -6048,6 +7750,13 @@ def main():
         finished_at=finished_at,
         colliers_first_party_transition=colliers_first_party_transition,
         skip_post_commit_summary=args.skip_post_commit_summary,
+        matthews_targeted_targets=targeted_targets,
+        image_transition_binding=image_transition_binding,
+        daum_verified_subset_claims=daum_subset_claims,
+        pyramid_verified_subset_claims=pyramid_subset_claims,
+        transwestern_image_transition_binding=transwestern_image_transition_binding,
+        pyramid_guard_binding=pyramid_guard_binding,
+        inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
     )
 
     print(
@@ -6081,6 +7790,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
+            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -6092,10 +7802,10 @@ def main():
         stderr=sys.stderr,
     )
     if not args.keep_artifacts:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
-    print("ingest complete", file=sys.stderr)
+    print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None else "ingest complete", file=sys.stderr)
 
 
 if __name__ == "__main__":

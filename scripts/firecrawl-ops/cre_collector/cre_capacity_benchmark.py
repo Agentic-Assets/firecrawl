@@ -39,6 +39,8 @@ import cre_capacity_multisource_v1 as multisource
 import cre_capacity_runtime as capacity_runtime
 import cre_capacity_telemetry as capacity_telemetry
 import cre_checkpoint_refresh as checkpoint_refresh
+from cre_linux_telemetry import LinuxTelemetryError, cpu_percent as linux_cpu_percent
+from cre_linux_telemetry import read_cpu_ticks as read_linux_cpu_ticks
 from cre_capacity_topology import compose_loopback_endpoints, default_command_runner
 from cre_checkpoint_refresh import (
     BENCHMARK_ACTIVE_MARKER,
@@ -98,6 +100,7 @@ IMPLEMENTATION_PATHS = (
     "scripts/firecrawl-ops/cre_collector/lib/broker.ts",
     "scripts/firecrawl-ops/cre_collector/lib/config.ts",
     "scripts/firecrawl-ops/cre_collector/lib/freshness.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/observation-clock.ts",
     "scripts/firecrawl-ops/cre_collector/lib/harvest.ts",
     "scripts/firecrawl-ops/cre_collector/lib/html.ts",
     "scripts/firecrawl-ops/cre_collector/lib/parse.ts",
@@ -1632,8 +1635,12 @@ def _cpu_ticks() -> tuple[int, ...]:
         if result != 0 or count.value < 4:
             raise BenchmarkError("Darwin host CPU telemetry is unavailable")
         return tuple(int(value) for value in info.ticks)
-    fields = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
-    return tuple(int(value) for value in fields)
+    if not sys.platform.startswith("linux"):
+        raise BenchmarkError("host CPU telemetry unsupported on this platform")
+    try:
+        return read_linux_cpu_ticks()
+    except LinuxTelemetryError as exc:
+        raise BenchmarkError(str(exc)) from exc
 
 
 def _cpu_percent(before: tuple[int, ...], after: tuple[int, ...]) -> float:
@@ -1644,14 +1651,12 @@ def _cpu_percent(before: tuple[int, ...], after: tuple[int, ...]) -> float:
             return checkpoint_refresh.cpu_percent_from_ticks(before, after)
         except checkpoint_refresh.CpuTelemetryError as exc:
             raise BenchmarkError(str(exc)) from exc
-    if any(right < left for left, right in zip(before, after, strict=True)):
-        raise BenchmarkError("host CPU tick counter moved backwards")
-    delta = [right - left for left, right in zip(before, after, strict=True)]
-    total = sum(delta)
-    if total <= 0:
-        raise BenchmarkError("host CPU clock did not advance")
-    idle = delta[3] + (delta[4] if len(delta) > 4 else 0)
-    return 100.0 * (total - idle) / total
+    if not sys.platform.startswith("linux"):
+        raise BenchmarkError("host CPU telemetry unsupported on this platform")
+    try:
+        return linux_cpu_percent(before, after)
+    except LinuxTelemetryError as exc:
+        raise BenchmarkError(str(exc)) from exc
 
 
 def _http_json(url: str, maximum: int = 64 * 1024) -> dict[str, Any]:
@@ -1921,6 +1926,7 @@ def _worker_contract(expected_details: int, concurrency: int) -> dict[str, Any]:
 WORKER_TEMPLATE = r"""import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
+import { observationNow } from __OBSERVATION_CLOCK_IMPORT__;
 import {
   enrichJllListing, jllDetailCachePath, jllNextData,
   jllStrandedMedia, jllNativeAssetUrls, jllHasUsableBrochure,
@@ -2046,7 +2052,7 @@ function cacheObservation(item) {
   }
 }
 __WORKER_SCHEDULER__
-const startedAt = new Date().toISOString();
+const startedAt = observationNow();
 const generation = process.env.CRE_REFRESH_GENERATION;
 const performancePath = process.env.CRE_PERFORMANCE_PATH;
 let providerStop = null;
@@ -2087,7 +2093,7 @@ try {
   recordSourceCompleted("jll", "sale", { outcome: "failed" }); flushPerformance({ terminal: true }); throw error;
 }
 flushPerformance({ terminal: true });
-writeFileSync(outputPath, JSON.stringify({ schema_version: 1, kind: "cre_jll_capacity_worker", worker_contract_sha256: workerContractSha256, generation, started_at: startedAt, finished_at: new Date().toISOString(), provider_stop: providerStop, rows }));
+writeFileSync(outputPath, JSON.stringify({ schema_version: 1, kind: "cre_jll_capacity_worker", worker_contract_sha256: workerContractSha256, generation, started_at: startedAt, finished_at: observationNow(), provider_stop: providerStop, rows }));
 """
 
 
@@ -2098,10 +2104,14 @@ def _worker_source(
     performance_module = (
         repo_root / "scripts/firecrawl-ops/cre_collector/lib/performance.ts"
     ).as_uri()
+    observation_clock = (
+        repo_root / "scripts/firecrawl-ops/cre_collector/lib/observation-clock.ts"
+    ).as_uri()
     contract = _worker_contract(expected_details, concurrency)
     return (
         WORKER_TEMPLATE.replace("__JLL_IMPORT__", json.dumps(jll))
         .replace("__PERFORMANCE_IMPORT__", json.dumps(performance_module))
+        .replace("__OBSERVATION_CLOCK_IMPORT__", json.dumps(observation_clock))
         .replace("__WORKER_SCHEDULER__", WORKER_SCHEDULER_JS)
         .replace("__EXPECTED_DETAILS__", str(expected_details))
         .replace("__EXPECTED_CONCURRENCY__", str(concurrency))

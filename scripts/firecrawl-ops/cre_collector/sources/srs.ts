@@ -1,3 +1,6 @@
+import { captureSrsRaw, preserveSrsRaw } from "./pure/srs-raw-retention.js";
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
+import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -54,6 +57,10 @@ export type SrsMappingContext = {
 };
 
 let srsCache: SrsInventoryResult | null = null;
+const srsCacheDisposition = new WeakMap<object, CacheDisposition>();
+function srsDisposition(row: any): CacheDisposition {
+  return srsCacheDisposition.get(row) ?? "live";
+}
 
 function numeric(value: any): number | null {
   return value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -155,10 +162,18 @@ async function srsPost(page: number, strict = requireFreshDetails()): Promise<an
         ...(strict ? { cache: "no-store" as const } : {}),
       });
       if (!res.ok) throw new Error(`SRS API HTTP ${res.status}`);
-      const data: any = await res.json();
+      let data: any;
+      if (nativeJsonFeedCaptureEnabled()) {
+        const text = await res.text();
+        publishNativeJsonFeed({ profile: "srs_search_post_v1", sourceKey: "srs",
+          requestVariant: strict ? "strict" : "standard", requestBody: body,
+          page, offset: SRS_PAGE_SIZE * page, status: res.status, body: text });
+        data = JSON.parse(text);
+      } else data = await res.json();
       if (data && Array.isArray(data.properties)) return data;
       throw new Error("SRS API response missing properties[]");
     } catch (err) {
+      if (err instanceof NativeJsonFeedCaptureError) throw err;
       if (attempt === 3) throw err;
       await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
     }
@@ -174,10 +189,11 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
   ) {
     return {
       ...srsCache,
-      items: srsCache.items.map((row) => ({
-        ...row,
-        __creInventoryCacheDisposition: "generation_cache",
-      })),
+      items: srsCache.items.map((row) => {
+        const copy = { ...row };
+        srsCacheDisposition.set(copy, "generation_cache");
+        return copy;
+      }),
     };
   }
   if (srsCache) srsCache = null;
@@ -199,7 +215,7 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
       assertSrsInventoryPage(data, page, firstPage, strict);
       return data.properties ?? [];
     } catch (err) {
-      if (strict) throw err;
+      if (strict || err instanceof NativeJsonFeedCaptureError) throw err;
       failed++;
       console.error(`  srs: page ${page} failed: ${err}`);
       return [];
@@ -211,7 +227,7 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
     items,
     total,
     truncated: failed > 0 || wantPages < allPages,
-    inventoryObservedAt: new Date().toISOString(),
+    inventoryObservedAt: observationNow(),
     generationId,
     strictValidated: strict,
   };
@@ -239,7 +255,18 @@ export function mapSrsListing(
     throw new Error("SRS strict listing requires apto_data.SRS_Listings_ID__c");
   }
   const { isSale } = srsTenure(row);
-  const salePrice = !data.Hide_Sale_Price__c ? numeric(data.Sale_Price__c) : null;
+  // The source's display flag is retained as context, not used to erase the
+  // publicly reported API value. The API value does not establish currency.
+  const rawSalePrice = data.Sale_Price__c;
+  const salePrice = typeof rawSalePrice === "number" || typeof rawSalePrice === "string"
+    ? numeric(rawSalePrice) : null;
+  const hasFlag = Object.hasOwn(data, "Hide_Sale_Price__c");
+  const flagState = !hasFlag ? "missing" : data.Hide_Sale_Price__c === null ? "null" :
+    data.Hide_Sale_Price__c === true ? "true" : data.Hide_Sale_Price__c === false ? "false" : "other";
+  const hasPrice = Object.hasOwn(data, "Sale_Price__c");
+  const priceState = !hasPrice ? "missing" : data.Sale_Price__c === null ? "null" :
+    typeof data.Sale_Price__c === "number" && Number.isFinite(data.Sale_Price__c) ? "number" :
+    typeof data.Sale_Price__c === "string" ? (data.Sale_Price__c === "" ? "empty_string" : "string") : "other";
   const photos: string[] = [];
   const listingImages = data.listing_images;
   if (Array.isArray(listingImages)) {
@@ -264,7 +291,10 @@ export function mapSrsListing(
     .filter((id: number | null): id is number => id !== null);
   const url = row.permalink ? `https://www.srsre.com${row.permalink}` : null;
 
-  return prune({
+  const id = providerIdentity ?? clean(row.id) ?? clean(data.Id);
+  const { raw, marker } = captureSrsRaw(row, id ?? null, url);
+
+  const listing = prune({
     id: providerIdentity ?? clean(row.id) ?? clean(data.Id),
     inventoryObservedAt: context.inventoryObservedAt,
     freshnessProvenance: context.inventoryObservedAt
@@ -274,8 +304,7 @@ export function mapSrsListing(
           method: "srs_cloud_run_inventory_feed",
           cacheDisposition:
             context.cacheDisposition ??
-            row.__creInventoryCacheDisposition ??
-            "live",
+            srsDisposition(row),
         }
       : undefined,
     preserveChildCollections: true,
@@ -290,8 +319,16 @@ export function mapSrsListing(
     country: "US",
     latitude: numeric(row.location?.lat) ?? numeric(data.Property_Latitude__c) ?? numeric(data.Latitude__c),
     longitude: numeric(row.location?.lon) ?? numeric(data.Property_Longitude__c) ?? numeric(data.Longitude__c),
-    salePriceUsd: isSale ? salePrice : null,
-    salePriceText: isSale && salePrice ? `$${salePrice.toLocaleString("en-US")}` : null,
+    extraFacts: { srs_reported_sale_price: {
+      source: "srs_public_inventory_api", source_field: "Sale_Price__c",
+      flag_field: "Hide_Sale_Price__c", flag_state: flagState, price_state: priceState,
+      ...(priceState === "number" ? { reported_number: data.Sale_Price__c } : {}),
+      ...(priceState === "string" && data.Sale_Price__c.length <= 1024 ? { reported_text: data.Sale_Price__c } : {}),
+      currency: "unverified",
+    } },
+    // The feed does not establish currency; retain the source amount as text
+    // and evidence without asserting the USD-normalized column.
+    salePriceText: isSale && salePrice !== null ? salePrice.toLocaleString("en-US") : null,
     capRatePct: numeric(data.Cap_Rate__c),
     buildingSizeSqft: numeric(data.Total_Property_SF_GLA__c) ?? numeric(data.square_footage),
     lotSizeAcres: numeric(data.Total_Property_Land_Acres__c) ?? numeric(data.lot_size_acres),
@@ -301,8 +338,8 @@ export function mapSrsListing(
     photos: photos.slice(0, 12),
     url,
     canonicalUrl: url,
-    rawSrs: row,
   });
+  return preserveSrsRaw(listing, raw, marker);
 }
 
 export async function srcSrs(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
@@ -321,7 +358,7 @@ export async function srcSrs(tx: Tx, max: number, _monitor: boolean): Promise<So
         strict: requireFreshDetails(),
         inventoryObservedAt,
         generationId,
-        cacheDisposition: row.__creInventoryCacheDisposition ?? "live",
+        cacheDisposition: srsDisposition(row),
       })
     );
   }

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import errno
-import fcntl
+from cre_posix import fcntl
 import os
 import signal
 import stat

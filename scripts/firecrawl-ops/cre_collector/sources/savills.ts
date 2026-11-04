@@ -3,7 +3,8 @@ import { brokerRef } from "../lib/broker.js";
 import { detailObservation } from "../lib/freshness.js";
 import { scrapeRaw } from "../lib/scrape.js";
 import { SourceResult, Tx } from "../types.js";
-import { clean, moneyToNumber, num } from "../lib/util.js";
+import { parseMoney } from "../lib/parse.js";
+import { clean, num } from "../lib/util.js";
 import { parseSavillsNextData, savillsFailedSearchInformation, savillsListHtmlIsUsable, savillsNextDataProperties } from "./pure/savills-next.js";
 
 
@@ -547,7 +548,7 @@ export function mapSavillsRow(row: any, transactionType: Tx, sourceUrl: string):
     country: "US",
     latitude: num(row.Latitude),
     longitude: num(row.Longitude),
-    salePriceUsd: transactionType === "sale" && /(?:US\$|\$)/.test(priceText ?? "") ? moneyToNumber(priceText) : null,
+    salePriceUsd: transactionType === "sale" && /(?:US\$|\$)/.test(priceText ?? "") ? parseMoney(priceText) : null,
     salePriceText: transactionType === "sale" ? priceText : null,
     leaseRateText: transactionType === "lease" ? priceText : null,
     sizeText: clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted),

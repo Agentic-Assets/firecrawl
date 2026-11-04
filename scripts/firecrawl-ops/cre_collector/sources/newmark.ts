@@ -1,3 +1,8 @@
+import { captureNewmarkNimRaw, preserveNewmarkNimRaw } from "./pure/newmark-nim-raw-retention.js";
+import { newmarkNimCanonicalIdentity } from "./pure/newmark-nim-identity.js";
+export { newmarkNimCanonicalIdentity } from "./pure/newmark-nim-identity.js";
+import { publishNativeJsonFeed, nativeJsonFeedCaptureEnabled, NativeJsonFeedCaptureError } from "../lib/source-evidence/native-json-feed.js";
+import { observationNow } from "../lib/observation-clock.js";
 // sources/newmark.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { CONCURRENCY } from "../lib/config.js";
 import { detailObservation, requireFreshDetails } from "../lib/freshness.js";
@@ -398,7 +403,7 @@ export async function srcNewmarkAlgoliaLegacy(
       `  newmark/${tx}: WARNING recovered ${hitMap.size}/${Math.min(max, total)} expected Algolia hits; coverage truncated`
     );
   }
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const sourceObservation = detailObservation(
     "newmark_algolia_public_record",
     "live",
@@ -602,6 +607,11 @@ export async function newmarkNimPage(
   timeoutMs = 30_000,
   retryBaseMs = 1_000
 ): Promise<any> {
+  if (nativeJsonFeedCaptureEnabled() && (take !== NEWMARK_NIM_PAGE_SIZE ||
+      !Number.isSafeInteger(page) || page < 0 || !Number.isSafeInteger(page * NEWMARK_NIM_PAGE_SIZE) ||
+      (tx !== "sale" && tx !== "lease"))) {
+    throw new NativeJsonFeedCaptureError();
+  }
   const requestBody = JSON.stringify({
     type: newmarkNimType(tx),
     listingIds: [],
@@ -637,9 +647,15 @@ export async function newmarkNimPage(
       if (response.ok) {
         // Keep the same deadline through the response body. Fetch resolving
         // headers is not proof that the JSON payload has arrived.
-        return await response.json();
+        if (!nativeJsonFeedCaptureEnabled()) return await response.json();
+        const text = await response.text();
+        publishNativeJsonFeed({ profile: tx === "sale" ? "newmark_nim_sale_post_v1" : "newmark_nim_lease_post_v1",
+          sourceKey: "newmark", requestVariant: requireFreshDetails() ? "strict" : "standard", requestBody,
+          page, offset: page * NEWMARK_NIM_PAGE_SIZE, status: response.status, body: text });
+        return JSON.parse(text);
       }
     } catch (error) {
+      if (error instanceof NativeJsonFeedCaptureError) throw error;
       requestError = controller.signal.aborted
         ? new Error(`Newmark NIM request timed out after ${timeoutMs}ms`)
         : error;
@@ -715,93 +731,6 @@ export function newmarkNimPropertyRegion(property: any): NewmarkNimRegion {
     return "us";
   }
   return "ambiguous";
-}
-
-export function newmarkNimCanonicalIdentity(record: any): {
-  id: string | null;
-  url: string | null;
-} {
-  const slug = clean(record?.slug);
-  const safeSlug =
-    slug
-    && slug !== "."
-    && slug !== ".."
-    && /^[A-Za-z0-9._~-]+$/.test(slug)
-      ? slug
-      : null;
-  const providerUrl = clean(record?.externalWebsiteUrl);
-  if (!providerUrl) {
-    if (slug && !safeSlug) {
-      throw new Error("Newmark NIM fallback slug identity is unsafe");
-    }
-    return safeSlug
-      ? {
-          id: safeSlug,
-          url: `https://www.nmrk.com/properties/${encodeURIComponent(safeSlug)}`,
-        }
-      : { id: null, url: null };
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(providerUrl);
-  } catch {
-    throw new Error("Newmark NIM externalWebsiteUrl is not a valid URL");
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  if (
-    parsed.protocol !== "https:"
-    || parsed.username
-    || parsed.password
-    || parsed.port
-  ) {
-    throw new Error("Newmark NIM externalWebsiteUrl is not a safe HTTPS URL");
-  }
-  if (
-    hostname === "my.rcm1.com"
-    || hostname === "properties.nmrk.com"
-  ) {
-    if (slug && !safeSlug) {
-      throw new Error("Newmark NIM fallback slug identity is unsafe");
-    }
-    return safeSlug
-      ? {
-          id: safeSlug,
-          url: `https://www.nmrk.com/properties/${encodeURIComponent(safeSlug)}`,
-        }
-      : { id: null, url: null };
-  }
-  if (
-    !["www.nmrk.com", "nmrk.com"].includes(hostname)
-  ) {
-    throw new Error(
-      `Newmark NIM externalWebsiteUrl has an unsupported host: ${hostname}`
-    );
-  }
-  const match = parsed.pathname.match(/^\/properties\/([^/]+)\/?$/);
-  if (!match) {
-    throw new Error("Newmark NIM externalWebsiteUrl has an unexpected path");
-  }
-  let id: string;
-  try {
-    id = decodeURIComponent(match[1]);
-  } catch (error) {
-    throw new Error(
-      `Newmark NIM canonical URL has an invalid encoded identity: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-  if (
-    id === "."
-    || id === ".."
-    || !/^[A-Za-z0-9._~-]+$/.test(id)
-  ) {
-    throw new Error("Newmark NIM canonical identity is unsafe");
-  }
-  return {
-    id,
-    url: `https://www.nmrk.com/properties/${match[1]}`,
-  };
 }
 
 export function newmarkNimMeasurementFields(property: any): {
@@ -924,7 +853,9 @@ export function mapNewmarkNimListing(
     mainImageUrl && /^https?:\/\//i.test(mainImageUrl)
       ? [mainImageUrl]
       : [];
-  return {
+  const { raw, marker } = captureNewmarkNimRaw(record, tx, canonicalIdentity.id,
+    canonicalIdentity.url, clean(record?.id), inventoryObservedAt, observation.cacheDisposition);
+  const listing = {
     id: canonicalIdentity.id,
     name:
       clean(record?.name)
@@ -967,8 +898,8 @@ export function mapNewmarkNimListing(
       method: observation.method,
       cacheDisposition: observation.cacheDisposition,
     },
-    rawNewmarkNimRecord: record,
   };
+  return preserveNewmarkNimRaw(listing, raw, marker);
 }
 
 export async function srcNewmark(
@@ -1025,7 +956,7 @@ export async function srcNewmark(
     );
   }
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const usListings = globalRows
     .map((record) =>
       mapNewmarkNimListing(record, tx, inventoryObservedAt, strict)

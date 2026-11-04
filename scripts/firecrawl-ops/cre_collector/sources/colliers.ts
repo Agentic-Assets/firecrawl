@@ -1,3 +1,5 @@
+import { rcmSourceControls, rcmPublicContactUrl, RCM_CONTACT_FLAGS } from "./pure/rcm-source-controls.js";
+import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -6,9 +8,10 @@ import { harvestDetail } from "../lib/harvest.js";
 import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { refreshGenerationId } from "../lib/freshness.js";
 import { parseJsonBody } from "../lib/scrape.js";
+import { recordRetry } from "../lib/performance.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { parseLeaseRate } from "../lib/parse.js";
-import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import { parseLeaseRate, parseMoney } from "../lib/parse.js";
+import { clean, num, pmap, prune } from "../lib/util.js";
 import {
   COLLIERS_PAGE_SIZE as pureColliersPageSize,
   COLLIERS_RCM_BASE as pureColliersRcmBase,
@@ -80,21 +83,136 @@ export function colliersUrl(href: string | null | undefined): string | null {
   }
 }
 
-export async function colliersGetText(url: string): Promise<string> {
+class ColliersHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfter: string | null,
+    url: string
+  ) {
+    super(`Colliers GET ${url} HTTP ${status}`);
+    this.name = "ColliersHttpError";
+  }
+}
+
+export async function colliersGetText(url: string, signal?: AbortSignal, onRetryAfter?: (value: string | null) => void): Promise<string> {
+  const timeoutSignal = AbortSignal.timeout(30000);
   const res = await fetch(url, {
     headers: colliersHeaders("text/html,application/json,*/*"),
-    signal: AbortSignal.timeout(30000),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   });
-  if (!res.ok) throw new Error(`Colliers GET ${url} HTTP ${res.status}`);
+  onRetryAfter?.(res.headers.get("retry-after"));
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new ColliersHttpError(res.status, res.headers.get("retry-after"), url);
+  }
   return res.text();
 }
 
-export async function colliersGetJson(url: string): Promise<any> {
-  const text = await colliersGetText(url);
+class ColliersPageFailure extends Error {}
+
+export async function colliersGetJson(url: string, signal?: AbortSignal, onText?: (text: string) => void, onRetryAfter?: (value: string | null) => void): Promise<any> {
+  const text = await colliersGetText(url, signal, onRetryAfter);
+  onText?.(text);
   const parsed = parseJsonBody(text);
   if (parsed === null) throw new Error(`Colliers GET ${url} returned non-JSON`);
-  if (parsed?.success === false) throw new Error(`Colliers GET ${url} returned success=false`);
+  if (parsed?.success === false) {
+    const error = `Colliers GET ${url} returned success=false`;
+    if (["Failure retrieving listing HTML.", "Failure retrieving map."].includes(parsed?.error)) throw new ColliersPageFailure(error);
+    throw new Error(error);
+  }
   return parsed;
+}
+
+const COLLIERS_PAGE_PAIR_RETRY_DELAY_MS = 1000;
+const COLLIERS_RETRYABLE_HTTP_STATUSES = new Set([500, 502, 503, 504]);
+const COLLIERS_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function colliersPairRetryable(error: unknown): boolean {
+  if (error instanceof ColliersHttpError) {
+    return (
+      COLLIERS_RETRYABLE_HTTP_STATUSES.has(error.status) &&
+      error.retryAfter === null
+    );
+  }
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && COLLIERS_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+function colliersSiblingAbort(error: unknown, firstFailure: unknown): boolean {
+  return error !== firstFailure && error instanceof Error && error.name === "AbortError";
+}
+
+async function colliersFetchPagePair(
+  listUrl: string,
+  mapUrl: string,
+  onResponses?: (attempt: number, responses: { list?: string; map?: string }) => void,
+  maxAttempts = 2,
+): Promise<[any, any]> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    let firstFailure: unknown;
+    const responses: { list?: string; map?: string } = {};
+    let retryAfter = false;
+    const request = async (url: string, kind: "list" | "map"): Promise<any> => {
+      try {
+        return await colliersGetJson(url, controller.signal, text => { responses[kind] = text; }, value => { if (value !== null) retryAfter = true; });
+      } catch (error) {
+        // A semantic page failure must not hide a later denial from its sibling.
+        if (!(error instanceof ColliersPageFailure) && !controller.signal.aborted) {
+          firstFailure = error;
+          controller.abort(error);
+        }
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled([request(listUrl, "list"), request(mapUrl, "map")]);
+    if (Object.keys(responses).length) onResponses?.(attempt, responses);
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason)
+      .filter((error) => !colliersSiblingAbort(error, firstFailure));
+    if (retryAfter) {
+      const failure = failures.find(error => error instanceof ColliersHttpError);
+      if (failure) throw failure;
+      throw new Error("Colliers page response requested Retry-After");
+    }
+    if (!failures.length) {
+      return [
+        (settled[0] as PromiseFulfilledResult<any>).value,
+        (settled[1] as PromiseFulfilledResult<any>).value,
+      ];
+    }
+
+    const nonRetryableIndex = failures.findIndex((error) => !colliersPairRetryable(error));
+    if (nonRetryableIndex >= 0) {
+      // Any observed denial or other failure wins over a source-reported page failure.
+      const nonRetryable = failures.find(error => !(error instanceof ColliersPageFailure) && !colliersPairRetryable(error)) ??
+        failures.find(error => !(error instanceof ColliersPageFailure)) ?? failures[nonRetryableIndex];
+      if (nonRetryable === undefined) {
+        throw new Error("Colliers paired page request failed without an error value");
+      }
+      throw nonRetryable;
+    }
+    if (attempt === maxAttempts) throw failures[0];
+
+    const waitStarted = performance.now();
+    await new Promise<void>((resolve) => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+    recordRetry(
+      "http_helper",
+      Math.max(0, Math.round(performance.now() - waitStarted)),
+      true
+    );
+  }
+  throw new Error("Colliers page-pair retry exhausted unexpectedly");
 }
 
 export function extractColliersEngineKey(html: string): string {
@@ -161,13 +279,19 @@ export function colliersContactsFromCard($: cheerio.CheerioAPI, card: cheerio.Ch
     const phone =
       clean(row.find(".phone").first().text()) ??
       clean(row.find('a[href^="tel:"]').first().attr("href")?.replace(/^tel:/i, ""));
-    if (!name && !email && !phone) return;
+    const company = clean(row.find(".company").first().text());
+    const title = clean(row.find(".title").first().text());
+    const license = clean(row.find(".license").first().text());
+    if (!name && !email && !phone && !company && !title && !license) return;
     contacts.push(
       prune({
         name,
         email,
         phone,
-        company: "Colliers",
+        company,
+        title,
+        license,
+        rcmContactSource: "colliers_sales_tracker",
       }) ?? {}
     );
   });
@@ -204,14 +328,10 @@ export function parseColliersCards(
     const id = `salestracker:card:${mapGroup.projectId}`;
     const contactsDetailed = colliersContactsFromCard($, card);
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          company: "Colliers",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone), company }) : null;
+      })
       .filter((brokerId: number | null): brokerId is number => brokerId !== null);
     cards.push({
       id,
@@ -226,7 +346,7 @@ export function parseColliersCards(
       city: location.city,
       state: location.state,
       country: "US",
-      salePriceUsd: moneyToNumber(salePriceText),
+      salePriceUsd: parseMoney(salePriceText),
       salePriceText,
       sizeText,
       latitude: mapCoordinates.latitude,
@@ -331,6 +451,28 @@ export function colliersSqftToNumber(value: string | null): number | null {
   return match ? Number(match[1].replace(/,/g, "")) : null;
 }
 
+// Colliers SalesTracker multifamily "Size" is often the average unit size
+// ("931 sq ft" on a 196-unit mid-rise). The rule matches the cre_validate.py
+// mf_avg_unit_size check; without a unit count, a small size priced above
+// $1,000/SF is also read as per unit.
+const COLLIERS_MAX_SF_PER_UNIT = 300;
+const COLLIERS_MAX_AVG_UNIT_SF = 3000;
+const COLLIERS_MIN_UNITS_FOR_SMALL_SIZE = 10;
+const COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE = 1000;
+export function colliersAverageUnitSf(
+  assetType: string | null | undefined,
+  sizeSf: number | null,
+  units: number | null | undefined,
+  salePriceUsd: number | null | undefined
+): number | null {
+  if (!sizeSf || sizeSf <= 0 || !/multi[\s-]?family|apartment/i.test(assetType ?? "")) return null;
+  const small = sizeSf < COLLIERS_MAX_AVG_UNIT_SF;
+  if (units && units > 0) {
+    return sizeSf / units < COLLIERS_MAX_SF_PER_UNIT || (small && units > COLLIERS_MIN_UNITS_FOR_SMALL_SIZE) ? sizeSf : null;
+  }
+  return small && (salePriceUsd ?? 0) > sizeSf * COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE ? sizeSf : null;
+}
+
 export function colliersAcresToNumber(value: string | null): number | null {
   const text = clean(value);
   if (!text) return null;
@@ -340,21 +482,18 @@ export function colliersAcresToNumber(value: string | null): number | null {
 
 export function colliersDetailContacts(detail: any): any[] {
   const contacts = Array.isArray(detail?.ProjectContacts) ? detail.ProjectContacts : [];
-  return contacts
-    .map((c: any) =>
-      prune({
-        name: clean(c?.Name),
-        title: clean(c?.Title),
-        email: c?.ShowEmail === false ? null : clean(c?.Email),
-        phone: clean(c?.Phone),
-        company: clean(c?.Company) ?? "Colliers",
-        avatarUrl: colliersUrl(c?.ProfileImageUrl),
-        profileUrl: c?.ShowExpertBio === true ? colliersUrl(c?.ExpertBioUrl) : null,
-        license: clean(c?.License),
-        colliersProjectContactId: c?.ProjectContactId ?? null,
-      })
-    )
-    .filter(Boolean);
+  return contacts.map((c: any) => {
+    const contact = prune({
+      name: clean(c?.Name), title: clean(c?.Title), email: clean(c?.Email), phone: clean(c?.Phone),
+      company: clean(c?.Company), license: clean(c?.License),
+      avatarUrl: rcmPublicContactUrl(colliersUrl(c?.ProfileImageUrl)),
+      profileUrl: rcmPublicContactUrl(colliersUrl(c?.ExpertBioUrl)),
+    });
+    if (!contact) return null;
+    return { ...contact, rcmContactSource: "colliers_sales_tracker",
+      sourceDisplayControls: rcmSourceControls(c, RCM_CONTACT_FLAGS),
+      ...(c?.ProjectContactId != null ? { colliersProjectContactId: c.ProjectContactId } : {}) };
+  }).filter(Boolean);
 }
 
 export function colliersDetailImages(detail: any, fallback: string[]): string[] {
@@ -425,7 +564,7 @@ export function colliersStrandedStructured(detail: any, details: any): Record<st
 
 export function colliersInventoryOnlyCard(
   card: ColliersCard,
-  reason: "card_not_linked" | "detail_request_failed"
+  reason: "card_not_linked" | "detail_request_failed" | "detail_not_attempted"
 ): any {
   return prune({
     ...card,
@@ -444,7 +583,7 @@ export function colliersInventoryOnlyCard(
     detailUnavailable: {
       reason,
       publicCardObserved: true,
-      publicPageObserved: Boolean(card.detailPv),
+      publicPageObserved: reason !== "detail_not_attempted" && Boolean(card.detailPv),
     },
     colliersSalesTrackerDetail: {
       skipped: reason,
@@ -463,15 +602,11 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const details = detail?.ProjectDetails ?? {};
     const contactsDetailed = colliersDetailContacts(detail);
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          avatarUrl: clean(c.avatarUrl),
-          company: "Colliers",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone),
+          avatarUrl: clean(c.avatarUrl), company }) : null;
+      })
       .filter((brokerId: number | null): brokerId is number => brokerId !== null);
     const description =
       stripHtmlText(detail?.SimpleLandingPageValues?.Description) ??
@@ -506,13 +641,22 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const lr = parseLeaseRate(leaseRateText);
     // projectType into extraFacts (long-tail; no discrete column).
     const projectType = clean(details?.ProjectType?.Value);
-    const extraFacts: Record<string, string> | undefined = projectType ? { project_type: projectType } : undefined;
+    const assetType = clean(details?.AssetType?.Value) ?? card.assetType;
+    const salePriceUsd =
+      parseMoney(clean(summary?.AskingPrice)) ?? parseMoney(colliersProjectField(details, "Asking Price")) ?? card.salePriceUsd;
+    const sizeField = colliersProjectField(details, "Size");
+    const avgUnitSf = colliersAverageUnitSf(assetType, colliersSqftToNumber(sizeField ?? card.sizeText), lifted.units, salePriceUsd);
+    const extraFacts = {
+      ...(projectType ? { project_type: projectType } : {}),
+      ...(avgUnitSf !== null ? { avg_unit_sf: avgUnitSf } : {}),
+      rcm_source_contacts: contactsDetailed,
+    };
     return prune({
       ...card,
       id: projectId,
       name: clean(summary?.ProjectName) ?? card.name,
       description,
-      assetType: clean(details?.AssetType?.Value) ?? card.assetType,
+      assetType,
       status: resolvedStatus,
       street: clean(address?.Street),
       city: clean(address?.City) ?? card.city,
@@ -521,10 +665,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       country: clean(address?.CountryCode) ?? card.country,
       latitude: num(Number(address?.Latitude)) ?? card.latitude,
       longitude: num(Number(address?.Longitude)) ?? card.longitude,
-      salePriceUsd: moneyToNumber(clean(summary?.AskingPrice)) ?? moneyToNumber(colliersProjectField(details, "Asking Price")) ?? card.salePriceUsd,
+      salePriceUsd,
       salePriceText: clean(summary?.AskingPrice) ?? colliersProjectField(details, "Asking Price") ?? card.salePriceText,
-      sizeText: colliersProjectField(details, "Size") ?? card.sizeText,
-      buildingSizeSqft: colliersSqftToNumber(colliersProjectField(details, "Size")),
+      // An average unit size is not building area: neither the number nor the
+      // text (which the ingest would re-parse) may reach size_sf. The value
+      // rides extra_facts.avg_unit_sf; the raw label stays in the detail block.
+      sizeText: avgUnitSf !== null ? null : sizeField ?? card.sizeText,
+      buildingSizeSqft: avgUnitSf !== null ? null : colliersSqftToNumber(sizeField),
       lotSizeAcres: colliersAcresToNumber(colliersProjectField(details, "Parcel")),
       yearBuilt: num(Number(colliersProjectField(details, "Year Built"))),
       ...lifted,
@@ -547,9 +694,11 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
         projectId,
         projectType,
         assetType: clean(details?.AssetType?.Value),
+        sizeField,
         pageTitle: clean(detail?.Seo?.PageTitle),
         photoCount: Array.isArray(detail?.GalleryImages) ? detail.GalleryImages.length : 0,
         contactCount: contactsDetailed.length,
+        sourceDisplayControls: rcmSourceControls(summary?.AttributeVisibility, ["ShowValue"]),
         brochureUrl: colliersUrl(detail?.ProjectHeader?.BrochureUrl),
         agreementUrl: colliersUrl(detail?.ProjectHeader?.AgreementButton?.buttonUrl),
         brochureAndAgreementNote:
@@ -567,7 +716,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   }
 }
 
-export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+const COLLIERS_RECOVERY_MAX_PAIRS = 20;
+
+export async function srcColliers(tx: Tx, max: number, monitor: boolean,
+  onPage?: (page: number, start: number, cards: any[], pageSize?: number) => void,
+  onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }, pageSize?: number) => void,
+  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "requested_limit" | "page_cap") => void,
+  captureWritable?: () => boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Colliers",
@@ -612,10 +767,145 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
   let start = 1;
   for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
-    const [listData, mapData] = await Promise.all([
-      colliersGetJson(colliersListUrl(engineKey, start, pageSize)),
-      colliersGetJson(colliersMapUrl(engineKey, start, pageSize)),
-    ]);
+    let listData: any, mapData: any;
+    try {
+      [listData, mapData] = await colliersFetchPagePair(
+        colliersListUrl(engineKey, start, pageSize),
+        colliersMapUrl(engineKey, start, pageSize),
+        (attempt, responses) => onResponses?.(page, start, attempt, responses, pageSize),
+      );
+    } catch (original) {
+      if (!(original instanceof ColliersPageFailure) || !onPage || !onResponses || !onHole || !captureWritable?.() ||
+          !Number.isSafeInteger(total) || total === null || total < start) throw original;
+      const knownTotal = total;
+      const rangeSize = Math.min(pageSize, knownTotal - start + 1);
+      const recordPage = onPage;
+      const isCaptureWritable = captureWritable;
+      const retainValidatedPair = (pageNo: number, offset: number, size: number, list: any, map: any, tail: boolean): void => {
+        const stage = tail ? "tail" : "recovery";
+        if (Number(list.total) !== total || (tail && map.total != null && Number(map.total) !== total)) throw new Error(`Colliers ${stage} total changed`);
+        if (totalAvail !== null && (Number(list.totalAvail) !== totalAvail || (tail && map.totalAvail != null && Number(map.totalAvail) !== totalAvail))) throw new Error(`Colliers ${stage} totalAvail changed`);
+        const html = String(list.html ?? "");
+        const count = cheerio.load(html)("li.item").length;
+        const groups = groupColliersMapLocations(Array.isArray(map?.projectLocations) ? map.projectLocations : []);
+        if (groups.length !== count || colliersAssertPageCount(list.numProjects, count, offset) !== size) throw new Error(`Colliers ${stage} page parity failed`);
+        if (groups.some(group => providerProjectIds.has(group.projectId))) throw new Error(`Colliers ${stage} repeated map ProjectId`);
+        const cards = parseColliersCards(html, groups, offset);
+        if (cards.length !== count) throw new Error(`Colliers ${stage} parsed-card parity failed`);
+        for (const group of groups) providerProjectIds.add(group.projectId);
+        recordPage(pageNo, offset, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")), size);
+        if (!isCaptureWritable()) throw new Error(`Colliers ${stage} capture failed`);
+      };
+      const pending: Array<{ start: number; size: number }> = [];
+      if (rangeSize > 1) {
+        const left = Math.floor(rangeSize / 2);
+        pending.push({ start, size: left }, { start: start + left, size: rangeSize - left });
+      }
+      let requests = 0;
+      let providerHole = false;
+      let budgetExhausted = false;
+      let tailAccounted = false;
+      let requestedRemainderAccounted = false;
+      const recordRequestedRemainder = (): void => {
+        const lastRequested = Math.min(knownTotal, want);
+        if (lastRequested < knownTotal) {
+          onHole(page + 1, lastRequested + 1, knownTotal - lastRequested, "requested_limit");
+          if (!captureWritable()) throw new Error("Colliers tail capture failed");
+        }
+        requestedRemainderAccounted = true;
+      };
+      // Evidence only: this attempt remains failed and never enters detail or ingest.
+      try {
+        if (rangeSize === 1) {
+          onHole(page, start, 1, "provider_failure");
+          providerHole = true;
+          if (!captureWritable()) throw new Error("Colliers recovery capture failed");
+        }
+        while (pending.length) {
+          const part = pending.shift()!;
+            if (requests >= COLLIERS_RECOVERY_MAX_PAIRS) { budgetExhausted = true; onHole(page, part.start, part.size, "budget_exhausted"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
+            requests++;
+            await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+            try {
+              const [list, map] = await colliersFetchPagePair(
+                colliersListUrl(engineKey, part.start, part.size), colliersMapUrl(engineKey, part.start, part.size),
+                (attempt, responses) => { onResponses(page, part.start, attempt, responses, part.size); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }, 1);
+              retainValidatedPair(page, part.start, part.size, list, map, false);
+            } catch (error) {
+              if (!(error instanceof ColliersPageFailure)) {
+                if (captureWritable()) {
+                  onHole(page, part.start, part.size, "recovery_stopped");
+                  for (const remaining of pending) {
+                    if (!captureWritable()) break;
+                    onHole(page, remaining.start, remaining.size, "recovery_stopped");
+                  }
+                }
+                throw error;
+              }
+              if (part.size === 1) { providerHole = true; onHole(page, part.start, part.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }
+              else {
+                const left = Math.floor(part.size / 2);
+                pending.push({ start: part.start, size: left }, { start: part.start + left, size: part.size - left });
+              }
+            }
+        }
+        // A settled provider hole does not make the remaining pages worthless.
+        // Keep the original source failure; only retain later, independently
+        // validated page pairs in the private attempt spool.
+        tailAccounted = true;
+        if (providerHole && !budgetExhausted) {
+          const last = Math.min(total, want);
+          let tailStart = start + rangeSize;
+          let tailPage = page + 1;
+          while (tailStart <= last && tailPage <= PAGE_CAP) {
+            const tailSize = Math.min(COLLIERS_PAGE_SIZE, last - tailStart + 1);
+            try {
+              await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+              const [list, map] = await colliersFetchPagePair(
+                colliersListUrl(engineKey, tailStart, tailSize), colliersMapUrl(engineKey, tailStart, tailSize),
+                (attempt, responses) => { onResponses(tailPage, tailStart, attempt, responses, tailSize); if (!captureWritable()) throw new Error("Colliers tail capture failed"); }, 1);
+              retainValidatedPair(tailPage, tailStart, tailSize, list, map, true);
+            } catch (error) {
+              if (captureWritable()) {
+                if (error instanceof ColliersPageFailure) {
+                  onHole(tailPage, tailStart, tailSize, "provider_failure");
+                  tailStart += tailSize;
+                }
+                if (tailStart <= last && captureWritable()) onHole(tailPage, tailStart, last - tailStart + 1, "recovery_stopped");
+              }
+              throw error;
+            }
+            tailStart += tailSize;
+            tailPage++;
+          }
+          if (tailStart <= last) {
+            onHole(tailPage, tailStart, last - tailStart + 1, "page_cap");
+            if (!captureWritable()) throw new Error("Colliers tail capture failed");
+          }
+        } else {
+          const tailStart = start + rangeSize;
+          const last = Math.min(total, want);
+          if (tailStart <= last) {
+            onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
+            if (!captureWritable()) throw new Error("Colliers tail capture failed");
+          }
+        }
+        recordRequestedRemainder();
+      } catch (error) {
+        const tailStart = start + rangeSize;
+        const last = Math.min(total, want);
+        let accountingFailed = false;
+        try {
+          if (!tailAccounted && tailStart <= last && captureWritable()) {
+            onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
+          }
+          if (!requestedRemainderAccounted && captureWritable()) recordRequestedRemainder();
+        } catch { accountingFailed = true; }
+        const capture = captureWritable() && !accountingFailed ? "" : "; recovery capture failed and evidence is unverified";
+        throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}${capture}`);
+      }
+      throw original;
+    }
     const reportedTotal = Number.isFinite(Number(listData.total))
       ? Number(listData.total)
       : null;
@@ -654,6 +944,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     console.error(
       `  colliers/sale: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed cards (${selected.length}/${total ?? "?"})`
     );
+    onPage?.(page, start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")));
     const numProjects = colliersAssertPageCount(
       listData.numProjects,
       providerCardCount,
@@ -691,7 +982,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     }
     return listing;
   });
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const listings = enriched.map((listing) => {
     if (listing?.inventoryOnly) {
       // An unlinked or failed SLP card is only provisional source-index

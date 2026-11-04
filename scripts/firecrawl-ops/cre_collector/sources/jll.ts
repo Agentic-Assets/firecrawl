@@ -1,3 +1,5 @@
+import { jllPropertyHarvestDoc } from "./jll-harvest-scope.js";
+import { observationNow } from "../lib/observation-clock.js";
 // sources/jll.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import {
@@ -17,14 +19,13 @@ import {
   stripHtmlText,
   titleFromFilename,
 } from "../lib/html.js";
-import { normBuildingClass } from "../lib/parse.js";
+import { normBuildingClass, parseMoney } from "../lib/parse.js";
 import { recordJllDetailCache } from "../lib/performance.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import {
   boundedInt,
   clean,
-  moneyToNumber,
   num,
   pmap,
   prune,
@@ -33,6 +34,7 @@ import {
   detailObservation,
   generationMatches,
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
 import {
@@ -171,7 +173,7 @@ export function parseJllSearchPage(
       state: m ? m[2] : null,
       postalCode: m?.[3] ?? null,
       country: "US",
-      salePriceUsd: tx === "sale" ? moneyToNumber(priceText) : null,
+      salePriceUsd: tx === "sale" ? parseMoney(priceText) : null,
       salePriceText: tx === "sale" ? priceText : null,
       leaseRateText: tx === "lease" ? priceText : null,
       sizeText,
@@ -773,6 +775,7 @@ const JLL_WITHHELD_PUBLIC_BASE_KEYS = new Set([
   "sizeText",
   "buildingSizeSqft",
   "lastUpdated",
+  "inventoryObservedAt",
   "detailObservedAt",
 ]);
 
@@ -1166,7 +1169,7 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   const observed =
-    doc.detailObservation?.observedAt ?? new Date().toISOString();
+    doc.detailObservation?.observedAt ?? observationNow();
   writeFileSync(
     tmp,
     JSON.stringify(
@@ -1594,6 +1597,11 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   const extraFacts: Record<string, unknown> = {};
   if (locationDescription)
     extraFacts.location_description = locationDescription;
+  // Source tenure labels verbatim (today "sale" or "rent").
+  const tenureTypes = Array.isArray(property?.tenureTypes)
+    ? dedupeStrings(property.tenureTypes.map((value: any) => clean(value)).filter(Boolean))
+    : [];
+  if (tenureTypes.length) extraFacts.tenure_types = tenureTypes;
 
   return (
     prune({
@@ -1611,7 +1619,18 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   );
 }
 
-export async function enrichJllListing(base: any): Promise<any> {
+// Ordinary prune removes false; this native boolean must retain both states.
+export function preserveJllSubleaseFact(listing: any, value: unknown): any {
+  if (typeof value === "boolean" && listing?.jllDetail) {
+    listing.jllDetail.isSubleaseOnly = value;
+  }
+  return listing;
+}
+
+export async function enrichJllListing(
+  base: any,
+  options: { refresh?: boolean; onCompletedNative404?: () => void } = {},
+): Promise<any> {
   if (!base.url) return base;
   // A listing can carry the same provider control at its top level and inside
   // jllSearchResult. Establish that boundary before a cached detail payload is
@@ -1623,7 +1642,7 @@ export async function enrichJllListing(base: any): Promise<any> {
   const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
   try {
-    let doc = await scrapeJllDetailDoc(base.url);
+    let doc = await scrapeJllDetailDoc(base.url, { refresh: options.refresh });
     let next = jllNextData(doc.rawHtml);
     let pageProps = next?.props?.pageProps;
     let property = pageProps?.property;
@@ -1637,6 +1656,25 @@ export async function enrichJllListing(base: any): Promise<any> {
       property = pageProps?.property;
     }
     if (!property) {
+      // Only the LAST completed document can authorize a late pass. A cached
+      // 404 followed by a timeout reaches catch instead and is never eligible.
+      const startedAt = refreshStartedAt();
+      if (
+        requireFreshDetails() &&
+        refreshGenerationId() &&
+        startedAt &&
+        clean(base.id) &&
+        jllCachedAtMeetsBoundary(base.inventoryObservedAt, startedAt) &&
+        generationMatches(doc.detailObservation?.generationId) &&
+        jllCachedAtMeetsBoundary(doc.detailObservation?.observedAt, startedAt) &&
+        next?.page === "/404" &&
+        doc.metadata?.statusCode === 404 &&
+        doc.metadata?.sourceURL === base.url &&
+        doc.metadata?.url === base.url &&
+        !/captcha|verify (?:that )?you are human|access denied|cf-chl-|just a moment|you have been blocked/i.test(doc.rawHtml)
+      ) {
+        options.onCompletedNative404?.();
+      }
       return prune({
         ...(basePriceWithheld
           ? jllWithheldPublicProjection(base)
@@ -1721,6 +1759,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // so a url present in BOTH brochures and documents would insert twice).
     const rawBrochures = jllNativeAssetUrls(property.brochures, "brochures");
     const images = jllNativeAssetUrls(property.images, "images");
+    const photoPrefix = dedupeStrings(images.length ? images : (base.photos ?? []));
     const url = normalizedJllListingUrl(base.url);
     const floorPlanDocuments = jllStrandedDocs(property);
 
@@ -1734,9 +1773,16 @@ export async function enrichJllListing(base: any): Promise<any> {
     const harvestDoc: ScrapedDoc = Array.isArray(doc.images)
       ? doc
       : { ...doc, images };
-    const harvested = harvestDetail(harvestDoc, {
+    const nativeMedia = jllStrandedMedia(property);
+    const scopedHarvest = jllPropertyHarvestDoc(harvestDoc, url, [
+      ...photoPrefix, ...rawBrochures,
+      ...floorPlanDocuments.map(item => item.url),
+      ...nativeMedia.flatMap(item => typeof item === "string" ? [item]
+        : [item.url, item.embedUrl].filter((value): value is string => Boolean(value))),
+    ], contactsDetailed.map(contact => contact.name ?? ""));
+    const harvested = harvestDetail(scopedHarvest.doc, {
       baseUrl: url,
-      extraMedia: jllStrandedMedia(property),
+      extraMedia: nativeMedia,
       extraDocs: floorPlanDocuments,
       extraImages: images,
     });
@@ -1767,10 +1813,13 @@ export async function enrichJllListing(base: any): Promise<any> {
           jllSanitizeHiddenChildMetadata(item, "artifact"),
         )
       : harvested.media;
-    const photos = dedupeStrings([
-      ...(images.length ? images : (base.photos ?? [])),
-      ...harvested.images,
-    ]);
+    // Native extraction can return the same image set in different orders.
+    // Preserve the gallery/base primary and ranks; stabilize only extra images.
+    // With no usable prefix, retain legacy ordering rather than pick a primary.
+    const supplementalImages = photoPrefix.length
+      ? [...harvested.images].sort()
+      : harvested.images;
+    const photos = dedupeStrings([...photoPrefix, ...supplementalImages]);
     // Withheld detail gets a deliberately minimal, allowlisted representation.
     // Do not attempt to maintain a future blacklist for arbitrary provider
     // fields: price-bearing prose can surface in highlights or long-tail facts.
@@ -1780,7 +1829,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // normalized detail values too.
     const description = jllDescription(property) ?? base.description;
     const markdown = doc.markdown || base.markdown;
-    return prune({
+    const listing = prune({
       ...publicBase,
       detailObservedAt: doc.detailObservation?.observedAt,
       freshnessProvenance: {
@@ -1888,6 +1937,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         virtualTours: hiddenPrice ? undefined : property.virtualTours,
         view360URLs: hiddenPrice ? undefined : property.view360URLs,
         floorPlans: hiddenPrice ? undefined : property.floorPlans,
+        harvestScope: scopedHarvest.scope,
         floorPlanAssetCount: floorPlanDocuments.length,
         brokerCount: contactsDetailed.length,
         brochureCount: documentChannels.brochures.length,
@@ -1899,6 +1949,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         },
       },
     });
+    return preserveJllSubleaseFact(listing, property.isSubleaseOnly);
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
     // The error path is also a visibility boundary.  Redact recursively so a
@@ -2024,7 +2075,7 @@ export async function srcJll(
   }
   if (!listings.length)
     throw new Error("no listing cards found on JLL search page");
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   for (const listing of listings) {
     listing.inventoryObservedAt = inventoryObservedAt;
   }
@@ -2055,11 +2106,14 @@ export async function srcJll(
     coverageTruncated = true;
   }
   let enrichedCount = 0;
+  const completedNative404: number[] = [];
   const enriched = await pmap(
     listings,
     JLL_DETAIL_CONCURRENCY,
-    async (listing) => {
-      const row = await enrichJllListing(listing);
+    async (listing, index) => {
+      const row = await enrichJllListing(listing, {
+        onCompletedNative404: () => completedNative404.push(index),
+      });
       enrichedCount++;
       if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
         console.error(
@@ -2069,6 +2123,22 @@ export async function srcJll(
       return row;
     },
   );
+  // One late pass, using the same bounded reader/fallback and original bases.
+  // Skip doomed recovery if any other failure would still refuse the artifact.
+  // No callback here: persistent failures cannot schedule another pass.
+  if (completedNative404.length === enriched.filter((row) => row.detailError).length) {
+    await pmap(completedNative404, JLL_DETAIL_CONCURRENCY, async (index) => {
+      const listing = listings[index];
+      console.error(
+        `  jll/${tx}: late detail retry ${listing.id} ${listing.url} (completed native404)`,
+      );
+      const row = await enrichJllListing(listing, { refresh: true });
+      console.error(
+        `  jll/${tx}: late detail retry ${listing.id} ${listing.url}: ${row.detailError ? "failed" : "validated"}`,
+      );
+      enriched[index] = row;
+    });
+  }
   const totalEvidence = JLL_PROPERTY_TYPES.map(
     (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`,
   ).join(", ");

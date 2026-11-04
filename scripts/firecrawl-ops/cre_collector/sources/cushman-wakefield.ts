@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/cushman-wakefield.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
@@ -5,10 +6,11 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, firstJsonLd, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { parseLeaseRate } from "../lib/parse.js";
+import { parseLeaseRate, parseMoney } from "../lib/parse.js";
+import { recordRetry } from "../lib/performance.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { boundedInt, clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import { boundedInt, clean, pmap, prune } from "../lib/util.js";
 import {
   detailObservation,
   refreshGenerationId,
@@ -381,6 +383,13 @@ function cushmanProviderIdentity(row: any): string | null {
     : null;
 }
 
+function cushmanInventoryTotal(value: unknown): number {
+  return typeof value === "number"
+    || (typeof value === "string" && value.trim() !== "")
+    ? Number(value)
+    : Number.NaN;
+}
+
 export function assertCushmanInventoryPage(
   data: any,
   offset: number,
@@ -404,7 +413,7 @@ export function assertCushmanInventoryPage(
       `Cushman strict inventory offset ${offset} requires a content array`
     );
   }
-  const total = Number(data.total_item);
+  const total = cushmanInventoryTotal(data.total_item);
   if (!Number.isFinite(total) || !Number.isInteger(total) || total < 0) {
     throw new Error(
       `Cushman strict inventory offset ${offset} requires a valid integer total`
@@ -556,7 +565,7 @@ export function baseCushmanListing(row: any, tx: Tx): any {
 export function cushmanBaseRefreshListing(
   row: any,
   tx: Tx,
-  inventoryObservedAt = new Date().toISOString(),
+  inventoryObservedAt = observationNow(),
   strict = requireFreshDetails()
 ): any {
   const observed = detailObservation(
@@ -585,7 +594,7 @@ export function cushmanBaseRefreshListing(
 export async function enrichCushmanListing(
   row: any,
   tx: Tx,
-  inventoryObservedAt = new Date().toISOString()
+  inventoryObservedAt = observationNow()
 ): Promise<any> {
   const base = baseCushmanListing(row, tx);
   if (!base.url) {
@@ -662,7 +671,7 @@ export async function enrichCushmanListing(
       },
       name: clean(listingLd?.name) ?? base.name,
       description: clean(listingLd?.description) ?? clean(doc.markdown.match(/Overview\s*-+\s*([\s\S]{1,2500}?)(?:\n[A-Z][A-Za-z ]+\n-+|\n#{1,6}\s|\nCONTACT|\nLOCATION|$)/i)?.[1]),
-      salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
+      salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
       salePriceText: tx === "sale" ? salePriceText ?? base.salePriceText : null,
       leaseRateText: tx === "lease" ? leaseRateText : null,
       leaseRateMin: leaseRateMin ?? undefined,
@@ -732,7 +741,19 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   if (pages > 1) {
     const offsets = Array.from({ length: pages - 1 }, (_, i) => (i + 1) * CUSHMAN_PAGE_SIZE);
     const rest = await pmap(offsets, CUSHMAN_API_CONCURRENCY, async (offset) => {
-      const d = await scrapeJson(cushmanSearchApiUrl(tx, offset), strictApiOpts);
+      const url = cushmanSearchApiUrl(tx, offset);
+      let d = await scrapeJson(url, strictApiOpts);
+      if (
+        strict && offset > 0 && firstPage.total > 0
+        && cushmanInventoryTotal(d?.total_item) === 0
+        && Array.isArray(d?.content) && d.content.length === 0
+      ) {
+        // One semantic read retry, separate from scrapeJson's parse retries.
+        console.error(`  cushman-wakefield/${tx}: API offset ${offset} returned empty zero total; retry 2/2 after 12000ms`);
+        recordRetry("http_helper", 12000, true);
+        await new Promise(resolve => setTimeout(resolve, 12000));
+        d = await scrapeJson(url, strictApiOpts);
+      }
       const rows = Array.isArray(d.content) ? d.content : [];
       assertCushmanInventoryPage(d, offset, firstPage, strict);
       console.error(`  cushman-wakefield/${tx}: API offset ${offset}, ${rows.length} rows`);
@@ -751,7 +772,7 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
     (strict ? collectedRows.length < total : collectedRows.length < want)
     || want < total;
   const rows = collectedRows.slice(0, want);
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   let done = 0;
   // Strict refreshes, monitor mode, and explicit API-base mode skip rendered
   // detail pages. Strict mode admits the fully reconciled public API as an

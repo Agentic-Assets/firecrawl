@@ -8,6 +8,7 @@ transactions and only inspect the `credeals` listing tables/views.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -19,6 +20,8 @@ from pathlib import Path
 
 from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
+    MAX_NORMALIZED_SALE_PRICE_USD,
+    MIN_PLAUSIBLE_CAP_RATE,
     assert_expected_database_target,
     find_psql,
     load_db_url,
@@ -26,9 +29,254 @@ from cre_ingest import (
     psql_connection_env,
     source_key_sql,
 )
+from cre_document_boilerplate import document_boilerplate_sql
 from cre_source_policy import load_source_policy
+import cre_geo
+
+FULL_VALIDATION_PROFILE = "full"
+CHECKPOINT_PREFLIGHT_PROFILE = "checkpoint-preflight"
+VALIDATION_AUDIT_SCOPES = {
+    FULL_VALIDATION_PROFILE: "full_standalone_post_ingest_or_recovery",
+    CHECKPOINT_PREFLIGHT_PROFILE: "checkpoint_before_collection_only",
+}
+CHECKPOINT_PREFLIGHT_QUERY_NAMES = (
+    "lifecycle_schema_contract",
+    "source_counts",
+    "duplicates",
+    "bad_child_urls",
+    "primary_child_conflicts",
+    "orphans",
+    "quality_by_source",
+    "child_counts",
+)
 
 SOURCE_KEY_SQL = source_key_sql()
+
+# Report-only listing-basis diagnostics over active rows: the single source for
+# the validator query and the data-quality audit. The legacy rows these flag are
+# not repaired here; the listing-structure sidecar owns basis.
+LISTING_BASIS_MIN_MF_AVG_UNIT_SF = 300
+LISTING_BASIS_MIN_MF_LARGE_COMPLEX_SF = 3000
+LISTING_BASIS_MF_LARGE_COMPLEX_UNITS = 10
+LISTING_BASIS_PSF_MISMATCH_TOLERANCE = 0.02
+LISTING_BASIS_SIZE_LOT_TOLERANCE = 0.01
+LISTING_BASIS_TINY_SIZE_SF = 100
+LISTING_BASIS_MAX_NON_PORTFOLIO_PRICE_USD = 1_000_000_000
+
+# Ordered (check name, SQL boolean over the active listing row).
+LISTING_BASIS_CHECKS: tuple[tuple[str, str], ...] = (
+    (
+        "mf_avg_unit_size",
+        f"""property_type = 'multifamily'
+      AND units > 0
+      AND size_sf > 0
+      AND (
+        size_sf::numeric / units < {LISTING_BASIS_MIN_MF_AVG_UNIT_SF}
+        OR (
+          size_sf < {LISTING_BASIS_MIN_MF_LARGE_COMPLEX_SF}
+          AND units > {LISTING_BASIS_MF_LARGE_COMPLEX_UNITS}
+        )
+      )""",
+    ),
+    (
+        "stored_psf_mismatch",
+        f"""sale_price_per_sf IS NOT NULL
+      AND sale_price_usd > 0
+      AND size_sf > 0
+      AND abs(sale_price_per_sf - sale_price_usd::numeric / size_sf)
+        > {LISTING_BASIS_PSF_MISMATCH_TOLERANCE} * (sale_price_usd::numeric / size_sf)""",
+    ),
+    (
+        "stored_psf_without_size",
+        """sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)""",
+    ),
+    (
+        "land_stored_psf_without_size",
+        """sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)
+      AND property_type = 'land'""",
+    ),
+    (
+        "non_land_size_equals_lot",
+        f"""property_type IS DISTINCT FROM 'land'
+      AND size_sf > 0
+      AND lot_size_sf > 0
+      AND abs(size_sf - lot_size_sf) <= {LISTING_BASIS_SIZE_LOT_TOLERANCE} * lot_size_sf""",
+    ),
+    (
+        "land_size_without_lot",
+        """property_type = 'land'
+      AND size_sf IS NOT NULL
+      AND lot_size_sf IS NULL""",
+    ),
+    (
+        "tiny_size_with_price",
+        f"size_sf > 0 AND size_sf < {LISTING_BASIS_TINY_SIZE_SF} AND sale_price_usd > 0",
+    ),
+    (
+        "cap_rate_under_2pct",
+        f"cap_rate > 0 AND cap_rate < {MIN_PLAUSIBLE_CAP_RATE}",
+    ),
+    (
+        "lease_with_sale_price",
+        "transaction_type = 'lease' AND sale_price_usd IS NOT NULL",
+    ),
+    (
+        "price_over_1b_non_portfolio",
+        f"""sale_price_usd > {LISTING_BASIS_MAX_NON_PORTFOLIO_PRICE_USD}
+      AND coalesce(title, '') !~* 'portfolio'""",
+    ),
+    (
+        "closed_price_text_active",
+        "lower(btrim(raw_data->>'salePriceText')) = 'closed'",
+    ),
+)
+
+# closed_price_text_active is a lifecycle finding, so it is informational here
+# and never joins the basis warning set.
+LISTING_BASIS_INFO_KEY = "closed_price_text_active"
+LISTING_BASIS_WARN_KEYS = tuple(
+    name for name, _ in LISTING_BASIS_CHECKS if name != LISTING_BASIS_INFO_KEY
+)
+
+
+def render_listing_basis_sql(
+    source_key_sql_text: str,
+    count_cast: str,
+    *,
+    include_rows_checked: bool = False,
+) -> str:
+    """Per-source counts for every listing-basis check over active rows.
+
+    The validator renders text counts; the audit adds rows_checked and bigint
+    counts.
+    """
+    rows_checked = (
+        f"  count(*){count_cast} AS rows_checked,\n" if include_rows_checked else ""
+    )
+    counts = ",\n".join(
+        f"  count(*) FILTER (\n    WHERE {condition}\n  ){count_cast} AS {name}"
+        for name, condition in LISTING_BASIS_CHECKS
+    )
+    return f"""
+WITH active AS (
+  SELECT
+    {source_key_sql_text} AS source_key,
+    l.*
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL AND l.status = 'active'
+)
+SELECT
+  source_key,
+{rows_checked}{counts}
+FROM active
+GROUP BY source_key
+ORDER BY source_key;
+"""
+
+def render_coordinate_conflict_sql(source_key_sql_text: str, count_cast: str, *, detail: bool = False) -> str:
+    """Active rows whose lat/lng the ingest guard would reject (AGENTIC-5133).
+
+    SQL twin of cre_ingest.guard_row_coordinates over credeals.cre_zip_cbsa_crosswalk:
+    a provider default pin, or a point whose nearest centroid within
+    cre_geo.MAX_LATLNG_KM is in another state while no centroid of the listing's
+    state is that close and the row's ZIP does not resolve to the point's
+    state. Rows sharing a 0.25-degree cell with a same-state centroid are
+    within about 39 km of it and are settled by an equality join; only the
+    rest are measured, over 0.5-degree cells (+/-1 latitude, +/-4 longitude
+    covers 50 km below about 77 degrees north). detail=True returns the
+    rejected rows for a repair instead of per-source counts.
+    """
+    max_km = cre_geo.MAX_LATLNG_KM
+    placeholders = " OR ".join(
+        f"(round(l.lat::numeric, 4) = {lat} AND round(l.lng::numeric, 4) = {lng})"
+        for lat, lng in sorted(cre_geo.PLACEHOLDER_POINTS)
+    ) or "false"
+    body = f"""
+WITH cw AS (
+  SELECT upper(btrim(state::text)) AS state, zip5, centroid_lat AS lat, centroid_lng AS lng,
+         floor(centroid_lat * 2)::int AS cy, floor(centroid_lng * 2)::int AS cx,
+         floor(centroid_lat * 4)::int AS fy, floor(centroid_lng * 4)::int AS fx
+  FROM credeals.cre_zip_cbsa_crosswalk
+  WHERE centroid_lat IS NOT NULL AND centroid_lng IS NOT NULL
+),
+fine_cells AS (SELECT DISTINCT state, fy, fx FROM cw),
+states AS (SELECT DISTINCT state FROM cw),
+listing AS (
+  SELECT
+    {source_key_sql_text} AS source_key,
+    l.id, l.lat, l.lng,
+    upper(btrim(l.state::text)) AS state,
+    CASE WHEN length(regexp_replace(coalesce(l.zip, ''), '[^0-9]', '', 'g')) >= 5
+         THEN left(regexp_replace(l.zip, '[^0-9]', '', 'g'), 5) END AS zip5,
+    ({placeholders}) AS placeholder
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL AND l.status = 'active'
+    AND l.lat IS NOT NULL AND l.lng IS NOT NULL
+),
+undecided AS (
+  SELECT l.*
+  FROM listing l
+  JOIN states s ON s.state = l.state
+  WHERE NOT l.placeholder
+    AND NOT EXISTS (
+      SELECT 1 FROM fine_cells f
+      WHERE f.state = l.state AND f.fy = floor(l.lat * 4)::int AND f.fx = floor(l.lng * 4)::int
+    )
+),
+near AS (
+  SELECT u.id, u.state AS listing_state, cw.state,
+         2 * 6371.0 * asin(sqrt(
+           power(sin(radians(cw.lat - u.lat) / 2), 2)
+           + cos(radians(u.lat)) * cos(radians(cw.lat)) * power(sin(radians(cw.lng - u.lng) / 2), 2)
+         )) AS km
+  FROM undecided u
+  CROSS JOIN LATERAL generate_series(floor(u.lat * 2)::int - 1, floor(u.lat * 2)::int + 1) AS gy(cy)
+  CROSS JOIN LATERAL generate_series(floor(u.lng * 2)::int - 4, floor(u.lng * 2)::int + 4) AS gx(cx)
+  JOIN cw ON cw.cy = gy.cy AND cw.cx = gx.cx
+),
+nearest AS (
+  SELECT id, bool_or(state = listing_state) AS same_state_near,
+         (array_agg(state ORDER BY km))[1] AS coordinates_state
+  FROM near
+  WHERE km < {max_km}
+  GROUP BY id
+),
+rejected AS (
+  SELECT l.source_key, l.id, l.state AS listing_state, l.lat, l.lng,
+         'placeholder_point' AS reason, NULL::text AS coordinates_state
+  FROM listing l
+  WHERE l.placeholder
+  UNION ALL
+  SELECT u.source_key, u.id, u.state, u.lat, u.lng,
+         'outside_listing_state', n.coordinates_state
+  FROM undecided u
+  JOIN nearest n ON n.id = u.id
+  WHERE NOT n.same_state_near
+    AND NOT EXISTS (
+      SELECT 1 FROM cw z WHERE z.zip5 = u.zip5 AND z.state = n.coordinates_state
+    )
+)"""
+    if detail:
+        return body + """
+SELECT id, source_key, listing_state, lat, lng, reason, coordinates_state
+FROM rejected
+ORDER BY source_key, id;
+"""
+    return body + f"""
+SELECT
+  source_key,
+  count(*){count_cast} AS coords_rejected,
+  count(*) FILTER (WHERE reason = 'placeholder_point'){count_cast} AS placeholder_point,
+  count(*) FILTER (WHERE reason = 'outside_listing_state'){count_cast} AS outside_listing_state
+FROM rejected
+GROUP BY source_key
+ORDER BY source_key;
+"""
+
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
 # inventory-only preservation wrapper.  Keep this ordered tuple shared by the
@@ -65,7 +313,7 @@ def _nonempty_string(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def persisted_freshness_provenance(raw_data):
+def persisted_freshness_provenance(raw_data, *, source_key=None):
     """Return only freshness values explicitly persisted in raw JSON data.
 
     ``cre_listings.scraped_at`` is deliberately absent from this interface:
@@ -76,7 +324,13 @@ def persisted_freshness_provenance(raw_data):
     empty = dict.fromkeys(FRESHNESS_PROVENANCE_FIELDS)
     if not isinstance(raw_data, dict):
         return empty
-    for path in FRESHNESS_PAYLOAD_PATHS:
+    paths = FRESHNESS_PAYLOAD_PATHS
+    daum = _raw_payload_at(raw_data, ("latestDaumUnknownTenureObservation",))
+    if (source_key == "daum-commercial" and daum is not None
+            and daum.get("sourceKey") == "daum-commercial"
+            and daum.get("daumUnknownTenure") is True):
+        paths = (("latestDaumUnknownTenureObservation",), *paths)
+    for path in paths:
         payload = _raw_payload_at(raw_data, path)
         if payload is None:
             continue
@@ -117,8 +371,27 @@ def _raw_json_object(alias, path):
     return f"{alias}.raw_data #> '{{{','.join(path)}}}'"
 
 
-def _freshness_payload_sql(alias):
+def _freshness_payload_sql(alias, *, source_key_expr=None):
     branches = []
+    if source_key_expr is not None:
+        payload = _raw_json_object(alias, ("latestDaumUnknownTenureObservation",))
+        values = [
+            f"{payload}->'inventoryObservedAt'",
+            f"{payload}->'detailObservedAt'",
+            *(f"{payload}->'freshnessProvenance'->'{field}'"
+              for field in ("generationId", "detailScope", "cacheDisposition")),
+        ]
+        has_freshness = " OR ".join(
+            f"(jsonb_typeof({value}) = 'string' AND NULLIF(btrim({value} #>> '{{}}'), '') IS NOT NULL)"
+            for value in values
+        )
+        branches.append(
+            f"WHEN {source_key_expr} = 'daum-commercial' "
+            f"AND jsonb_typeof({payload}) = 'object' "
+            f"AND {payload}->>'sourceKey' = 'daum-commercial' "
+            f"AND {payload}->'daumUnknownTenure' = 'true'::jsonb "
+            f"AND ({has_freshness}) THEN {payload}"
+        )
     for path in FRESHNESS_PAYLOAD_PATHS:
         payload = _raw_json_object(alias, path)
         branches.append(
@@ -131,7 +404,7 @@ def _freshness_payload_sql(alias):
     return "CASE\n      " + "\n      ".join(branches) + "\n      ELSE NULL::jsonb\n    END"
 
 
-FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("l")
+FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("decoded", source_key_expr="b.slug")
 
 
 SOURCE_POLICY = load_source_policy()
@@ -368,19 +641,25 @@ UNION ALL
 SELECT 'v_cre_market_summary', count(*)::text FROM credeals.v_cre_market_summary
 ORDER BY metric;
 """,
+    # Share the decoded root across observation/recursive-flag reads without
+    # retaining the full raw payload in the materialized aggregate relation.
     "source_counts": f"""
 WITH base AS (
   SELECT
-    {SOURCE_KEY_SQL} AS source_key,
+    {source_key_sql("decoded")} AS source_key,
     b.slug AS brokerage_slug,
     l.transaction_type,
     l.scraped_at,
-    NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz
+    NULLIF(decoded.raw_data->>'inventoryObservedAt', '')::timestamptz
       AS inventory_observed_at,
-    jsonb_path_exists(l.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
+    jsonb_path_exists(decoded.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
     l.deleted_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  CROSS JOIN LATERAL (
+    SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data
+    OFFSET 0
+  ) AS decoded
 ),
 active AS (
   SELECT * FROM base WHERE deleted_at IS NULL
@@ -511,7 +790,7 @@ WITH source_policy (source_key, evidence_class, detail_claim) AS (
 -- production statement timeout.
 raw AS MATERIALIZED (
   SELECT
-    {SOURCE_KEY_SQL} AS source_key,
+    {source_key_sql("decoded")} AS source_key,
     NULLIF(provenance."generationId", '') AS generation_id,
     NULLIF(provenance."detailScope", '') AS detail_scope,
     NULLIF(provenance."cacheDisposition", '') AS cache_disposition,
@@ -521,6 +800,14 @@ raw AS MATERIALIZED (
       AS detail_observed_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  -- Empty-path extraction preserves every JSON type while detoasting the root
+  -- once. Keep this per-row fence: repeated CASE path/presence checks otherwise
+  -- decompress a wide raw_data value independently. Do not materialize the full
+  -- raw JSON relation; only the small final provenance projection is retained.
+  CROSS JOIN LATERAL (
+    SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data
+    OFFSET 0
+  ) AS decoded
   CROSS JOIN LATERAL (
     SELECT {FRESHNESS_PAYLOAD_SQL} AS payload
     OFFSET 0
@@ -713,9 +1000,22 @@ SELECT
   count(*) FILTER (WHERE state IS NULL OR btrim(state::text) = '')::text AS missing_state,
   count(*) FILTER (WHERE state IS NOT NULL AND state::text !~ '^[A-Z]{{2}}$')::text AS invalid_state,
   count(*) FILTER (WHERE lat IS NULL OR lng IS NULL)::text AS missing_coords,
+  -- AGENTIC-5133 geo coverage (report-only, not a refresh gate). The first
+  -- counts rows with a ZIP or lat/lng but no CBSA, including non-metro ZIPs the
+  -- crosswalk resolves without a CBSA. The second counts the same inputs where
+  -- derivation never ran or found no match (geo_source NULL); it should stay
+  -- near zero once the forward ingest and backfill have run.
+  count(*) FILTER (
+    WHERE cbsa_code IS NULL
+      AND (NULLIF(btrim(zip), '') IS NOT NULL OR (lat IS NOT NULL AND lng IS NOT NULL))
+  )::text AS geo_inputs_without_cbsa,
+  count(*) FILTER (
+    WHERE geo_source IS NULL
+      AND (NULLIF(btrim(zip), '') IS NOT NULL OR (lat IS NOT NULL AND lng IS NOT NULL))
+  )::text AS geo_inputs_underived,
   count(*) FILTER (WHERE lat IS NOT NULL AND (lat < -90 OR lat > 90))::text AS impossible_lat,
   count(*) FILTER (WHERE lng IS NOT NULL AND (lng < -180 OR lng > 180))::text AS impossible_lng,
-  count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > 20000000000))::text AS sale_price_flags,
+  count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > {MAX_NORMALIZED_SALE_PRICE_USD}))::text AS sale_price_flags,
   count(*) FILTER (WHERE sale_price_per_sf IS NOT NULL AND (sale_price_per_sf <= 0 OR sale_price_per_sf > 10000))::text AS sale_psf_flags,
   count(*) FILTER (WHERE lease_rate_min IS NOT NULL AND (lease_rate_min <= 0 OR lease_rate_min > 500))::text AS lease_rate_min_flags,
   count(*) FILTER (WHERE lease_rate_max IS NOT NULL AND (lease_rate_max <= 0 OR lease_rate_max > 500))::text AS lease_rate_max_flags,
@@ -724,6 +1024,12 @@ FROM active
 GROUP BY source_key
 ORDER BY source_key;
 """,
+    # Report-only; closed_price_text_active is a lifecycle finding routed to the
+    # lifecycle owner.
+    "listing_basis_quality": render_listing_basis_sql(SOURCE_KEY_SQL, "::text"),
+    # Report-only (AGENTIC-5133): rows the forward ingest would no longer stage
+    # coordinates for. Should fall to zero once the legacy rows are repaired.
+    "coordinate_conflicts": render_coordinate_conflict_sql(SOURCE_KEY_SQL, "::text"),
     "duplicates": f"""
 WITH active AS (
   SELECT
@@ -776,6 +1082,7 @@ child_rows AS (
   UNION ALL
   SELECT a.source_key, 'documents', count(d.id)
   FROM active a LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.id
+    AND NOT {document_boilerplate_sql("d.url")}
   GROUP BY a.source_key
   UNION ALL
   SELECT a.source_key, 'images', count(i.id)
@@ -835,16 +1142,18 @@ ORDER BY check_name;
     "primary_child_conflicts": """
 SELECT child_type, count(*)::text AS listings
 FROM (
-  SELECT 'contacts' AS child_type, listing_id
-  FROM credeals.cre_listing_contacts
-  WHERE is_primary
-  GROUP BY listing_id
+  SELECT 'contacts' AS child_type, c.listing_id
+  FROM credeals.cre_listing_contacts c
+  JOIN credeals.cre_listings l ON l.id = c.listing_id
+  WHERE c.is_primary AND l.deleted_at IS NULL
+  GROUP BY c.listing_id
   HAVING count(*) > 1
   UNION ALL
-  SELECT 'images' AS child_type, listing_id
-  FROM credeals.cre_listing_images
-  WHERE is_primary
-  GROUP BY listing_id
+  SELECT 'images' AS child_type, c.listing_id
+  FROM credeals.cre_listing_images c
+  JOIN credeals.cre_listings l ON l.id = c.listing_id
+  WHERE c.is_primary AND l.deleted_at IS NULL
+  GROUP BY c.listing_id
   HAVING count(*) > 1
 ) conflicts
 GROUP BY child_type
@@ -894,6 +1203,13 @@ ORDER BY smoke;
 }
 
 
+# Historical child conflicts remain visible but do not describe active inventory.
+# Keep this diagnostic outside QUERIES, whose rows feed operational quality gates.
+HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY = QUERIES["primary_child_conflicts"].replace(
+    "l.deleted_at IS NULL", "l.deleted_at IS NOT NULL"
+)
+
+
 def parse_tsv(output):
     lines = [line for line in output.splitlines() if line.strip()]
     if not lines:
@@ -910,7 +1226,99 @@ def parse_tsv(output):
     return rows
 
 
-def _run_psql_script(psql, db_url, script, *, variables=None):
+def queries_for_profile(
+    profile=FULL_VALIDATION_PROFILE, *, expected_artifact_run_key=None
+):
+    """Select unchanged SQL; reduced preflight never substitutes for readback."""
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation profile")
+    if profile == CHECKPOINT_PREFLIGHT_PROFILE:
+        if expected_artifact_run_key is not None:
+            raise ValueError("artifact recovery requires the full validation profile")
+        if not set(CHECKPOINT_PREFLIGHT_QUERY_NAMES).issubset(QUERIES):
+            raise ValueError("checkpoint preflight query definitions are incomplete")
+        return {
+            name: sql
+            for name, sql in QUERIES.items()
+            if name in CHECKPOINT_PREFLIGHT_QUERY_NAMES
+        }
+    queries = dict(QUERIES)
+    queries["historical_primary_child_conflicts"] = (
+        HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY
+    )
+    if expected_artifact_run_key:
+        queries["artifact_run_jobs"] = artifact_run_jobs_query(
+            expected_artifact_run_key
+        )
+    return queries
+
+
+def _require_query_families(rows, expected):
+    if (
+        not isinstance(rows, dict)
+        or set(rows) != set(expected)
+        or any(
+            not isinstance(value, list)
+            or any(not isinstance(row, dict) for row in value)
+            for value in rows.values()
+        )
+    ):
+        raise ValueError("validation query families are incomplete or malformed")
+
+
+def _report_profile(report):
+    # Existing full reports predate profile metadata and remain readable.
+    if not isinstance(report, dict):
+        raise TypeError("validation report must be an object")
+    profile = report.get("validation_profile", FULL_VALIDATION_PROFILE)
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation report profile")
+    if ("validation_profile" in report or "audit_scope" in report) and report.get(
+        "audit_scope"
+    ) != VALIDATION_AUDIT_SCOPES[profile]:
+        raise ValueError("validation report audit scope does not match its profile")
+    return profile
+
+
+def require_checkpoint_preflight_report(report, *, expected_profile=None):
+    """Fail closed on every before-report family consumed by checkpoints."""
+    profile = _report_profile(report)
+    if expected_profile is not None and profile != expected_profile:
+        raise ValueError("validation report does not match the requested profile")
+    queries = report.get("queries")
+    if report.get("ok") is not True or not isinstance(queries, dict):
+        raise ValueError("checkpoint preflight report is unavailable")
+    required = set(CHECKPOINT_PREFLIGHT_QUERY_NAMES)
+    if not required.issubset(queries):
+        raise ValueError(
+            "checkpoint preflight report is missing required query families"
+        )
+    _require_query_families({name: queries[name] for name in required}, required)
+    if profile == CHECKPOINT_PREFLIGHT_PROFILE and set(queries) != required:
+        raise ValueError("checkpoint preflight report has an unexpected query scope")
+    if profile == FULL_VALIDATION_PROFILE:
+        require_full_validation_report(report)
+    return profile
+
+
+def require_full_validation_report(report):
+    """A declared reduced report cannot serve as full or recovery evidence."""
+    if _report_profile(report) != FULL_VALIDATION_PROFILE:
+        raise ValueError("a full validation report is required")
+    if "validation_profile" in report or "audit_scope" in report:
+        queries = report.get("queries")
+        expected = set(QUERIES)
+        if isinstance(queries, dict) and "artifact_run_jobs" in queries:
+            expected.add("artifact_run_jobs")
+        _require_query_families(queries, expected)
+        historical = report.get("historical_primary_child_conflicts")
+        if not isinstance(historical, list) or any(
+            not isinstance(row, dict) for row in historical
+        ):
+            raise ValueError("full validation historical diagnostic is incomplete")
+
+
+def _run_psql_script(psql, db_url, script, *, variables=None, timeout=None):
     """Run a closed SQL script without a parent-to-psql stdin pipe."""
     script_path = None
     try:
@@ -963,15 +1371,22 @@ def _run_psql_script(psql, db_url, script, *, variables=None):
             text=True,
             capture_output=True,
             check=False,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
     finally:
         if script_path is not None:
             script_path.unlink(missing_ok=True)
 
 
+# Backslashes in string literals (the document boilerplate regexes in child_counts) are literal
+# only with standard_conforming_strings on, so every read-only validation transaction pins it.
+PIN_STRING_LITERALS = "SET LOCAL standard_conforming_strings = on;"
+
+
 def run_query(psql, db_url, sql):
     wrapped = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+        f"{PIN_STRING_LITERALS}\n"
         f"{sql}\n"
         "ROLLBACK;\n"
     )
@@ -1210,6 +1625,7 @@ def _build_query_batch_script(queries):
     statements = [
         r"\o :CRE_VALIDATION_RESULTS",
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;",
+        PIN_STRING_LITERALS,
     ]
     for ordinal, (name, sql) in enumerate(queries.items()):
         frame_id = _query_frame_id(ordinal, name)
@@ -1297,6 +1713,13 @@ def render_markdown(report):
         f"Credentials source file: `{env_path}`. Values were not printed.",
         "",
     ]
+    if report.get("validation_profile") == CHECKPOINT_PREFLIGHT_PROFILE:
+        parts.extend(
+            [
+                "Reduced checkpoint before-collection audit only. This is not full validation or freshness proof.",
+                "",
+            ]
+        )
     if report.get("psql_warnings"):
         parts.extend(["## psql Warnings", ""])
         for warning in report["psql_warnings"]:
@@ -1336,6 +1759,8 @@ def render_markdown(report):
         "inventory_only_index": "Inventory-Only Source Index",
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
+        "listing_basis_quality": "Listing Basis Quality",
+        "coordinate_conflicts": "Coordinate Conflicts",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",
@@ -1345,13 +1770,28 @@ def render_markdown(report):
         "artifact_run_jobs": "Artifact Run Jobs",
     }
     for key in report["queries"]:
-        parts.extend([f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""])
+        parts.extend(
+            [f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""]
+        )
+    if "historical_primary_child_conflicts" in report:
+        parts.extend(
+            [
+                "## Historical Primary Child Conflicts (Soft-Deleted Listings)",
+                "",
+                "Diagnostic only; historical child rows are preserved.",
+                "",
+                markdown_table(report["historical_primary_child_conflicts"]),
+                "",
+            ]
+        )
     return "\n".join(parts)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    parser.add_argument(
+        "--env-file", default=None, help="env file holding POSTGRES_URL*"
+    )
     parser.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -1362,32 +1802,67 @@ def main():
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument("--expected-ingest-attempt", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out", default=None, help="optional output path")
+    parser.add_argument("--transwestern-image-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument(
+        "--profile",
+        choices=tuple(VALIDATION_AUDIT_SCOPES),
+        default=FULL_VALIDATION_PROFILE,
+        help="full by default; checkpoint-preflight is a reduced before-collection audit only",
+    )
     args = parser.parse_args()
+    if args.expected_ingest_attempt is not None and (
+        not re.fullmatch(r"[a-f0-9]{32}", args.expected_ingest_attempt)
+        or not args.expected_artifact_run_key or not args.expected_db_target_sha256
+        or args.profile != FULL_VALIDATION_PROFILE
+    ):
+        parser.error("ingest attempt requires bound full validation")
+    if args.transwestern_image_state and (
+        args.profile != FULL_VALIDATION_PROFILE or not args.expected_artifact_run_key
+        or not args.expected_db_target_sha256
+    ):
+        parser.error("Transwestern image state requires bound full validation")
+    try:
+        queries = queries_for_profile(
+            args.profile, expected_artifact_run_key=args.expected_artifact_run_key
+        )
+        if args.transwestern_image_state:
+            from cre_transwestern_image_sql import image_state_query
+            queries["transwestern_image_state"] = image_state_query() + ";"
+    except ValueError as exc:
+        parser.error(str(exc))
 
     db_url, env_path = load_db_url(args.env_file)
     assert_expected_database_target(db_url, args.expected_db_target_sha256)
     psql = find_psql()
     report = {
         "ok": True,
+        "validation_profile": args.profile,
+        "audit_scope": VALIDATION_AUDIT_SCOPES[args.profile],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "env_file": env_path,
         "queries": {},
         "query_timings": {},
         "psql_warnings": [],
     }
-    queries = dict(QUERIES)
-    if args.expected_artifact_run_key:
-        try:
-            queries["artifact_run_jobs"] = artifact_run_jobs_query(
-                args.expected_artifact_run_key
-            )
-        except ValueError as exc:
-            parser.error(str(exc))
+    if args.expected_ingest_attempt is not None:
+        report["artifact_run_probe"] = {
+            "database_target_sha256": args.expected_db_target_sha256,
+            "artifact_run_key_sha256": hashlib.sha256(args.expected_artifact_run_key.encode("utf-8")).hexdigest(),
+            "attempt_id": args.expected_ingest_attempt,
+        }
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries
     )
+    _require_query_families(report["queries"], queries)
+    if args.transwestern_image_state:
+        report["transwestern_image_state"] = report["queries"].pop("transwestern_image_state")
+    if args.profile == FULL_VALIDATION_PROFILE:
+        report["historical_primary_child_conflicts"] = report["queries"].pop(
+            "historical_primary_child_conflicts"
+        )
     warning = normalize_warning(stderr)
     if warning:
         report["psql_warnings"].append(warning)

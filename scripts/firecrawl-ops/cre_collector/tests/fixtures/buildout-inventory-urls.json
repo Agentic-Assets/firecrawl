@@ -1,0 +1,128 @@
+[
+  {
+    "name": "https-query",
+    "url": "https://broker.example/listings/?propertyId=one-lease",
+    "accepted": true,
+    "externalId": "one"
+  },
+  {
+    "name": "http-metadata",
+    "url": "http://broker.example/listings/?propertyId=one-lease",
+    "accepted": true,
+    "externalId": "one"
+  },
+  {
+    "name": "empty-before",
+    "url": "https://broker.example/listings/?propertyId=&propertyId=one-lease",
+    "accepted": true,
+    "externalId": "one"
+  },
+  {
+    "name": "empty-after",
+    "url": "https://broker.example/listings/?propertyId=one-lease&propertyId=",
+    "accepted": true,
+    "externalId": "one"
+  },
+  {
+    "name": "native-path",
+    "url": "https://broker.example/properties/One-OakbrookTerrace/",
+    "accepted": true,
+    "externalId": "968697"
+  },
+  {
+    "name": "native-www-path",
+    "url": "http://www.broker.example/property-search/shopping-center/",
+    "accepted": true,
+    "externalId": "968697"
+  },
+  {
+    "name": "home",
+    "url": "https://broker.example/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "query-only",
+    "url": "https://broker.example/?search=one",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "hub",
+    "url": "https://broker.example/properties/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "nested-hub",
+    "url": "https://broker.example/properties/available-properties/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "native-query-junk",
+    "url": "https://broker.example/properties/one/?search=one",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "conflicting-query",
+    "url": "https://broker.example/listings/?propertyId=one&propertyId=two",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "repeated-nonempty-query",
+    "url": "https://broker.example/listings/?propertyId=one&propertyId=one",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "empty-query",
+    "url": "https://broker.example/listings/?propertyId=&propertyId=",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "encoded-identity",
+    "url": "https://broker.example/listings/?propertyId=%6Fne-lease",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "foreign",
+    "url": "https://foreign.example/properties/one/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "credentials",
+    "url": "https://user@broker.example/properties/one/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "explicit-port",
+    "url": "https://broker.example:443/properties/one/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "fragment",
+    "url": "https://broker.example/properties/one/#",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "other-protocol",
+    "url": "ftp://broker.example/properties/one/",
+    "accepted": false,
+    "externalId": null
+  },
+  {
+    "name": "dot-segment",
+    "url": "https://broker.example/properties/one/../two/",
+    "accepted": false,
+    "externalId": null
+  }
+]

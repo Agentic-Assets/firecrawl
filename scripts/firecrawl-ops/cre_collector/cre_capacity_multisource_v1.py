@@ -116,7 +116,7 @@ _JLL_ENUMERATION_PROPERTY_TYPES = frozenset(
 )
 _JLL_SUPPORTED_TENURES = frozenset({"sale", "rent"})
 _JLL_SEARCH_RESULTS_QUERY_SHA256 = (
-    "a37aa4cde62fc942439ef618db119157f6158a70a9700acc7cd44a5d6577a9b6"
+    "b6b1f651b14455bb5be15cc9efa820a078cccc6140b5e9a67712eafc5e1d80dc"
 )
 # This is a versioned prevalidation lane, not a generic registry projection.
 # Keep the review matrix adjacent to its verifier so a config edit cannot point

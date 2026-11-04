@@ -1,3 +1,5 @@
+import { setImmediate } from "node:timers/promises";
+
 // lib/util.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 
 
@@ -17,12 +19,6 @@ export function boundedInt(value: string | undefined, fallback: number, lo: numb
   const parsed = value === undefined ? fallback : Number(value);
   const finite = Number.isFinite(parsed) ? parsed : fallback;
   return Math.max(lo, Math.min(hi, Math.trunc(finite)));
-}
-
-export function moneyToNumber(t: string | null): number | null {
-  if (!t) return null;
-  const m = t.replace(/,/g, "").match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
-  return m ? Number(m[1]) : null;
 }
 
 export function isPerSfPriceText(t: string | null): boolean {
@@ -56,12 +52,19 @@ export async function pmap<T, R>(items: T[], limit: number, fn: (t: T, i: number
       const i = next++;
       try {
         results[i] = await fn(items[i], i);
+        await setImmediate();
       } catch (error) {
         failed = true;
         throw error;
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  try {
+    await Promise.all(workers);
+  } catch (error) {
+    await Promise.allSettled(workers);
+    throw error;
+  }
   return results;
 }

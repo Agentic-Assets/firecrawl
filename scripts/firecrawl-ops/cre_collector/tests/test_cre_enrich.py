@@ -223,7 +223,7 @@ def test_empty_listings_enriched_artifact_advances_retry_without_ingest(
                                 "https://x/a", "new", "0")],
                       collect_rc=0, write_enriched={"listings": []})
     rc = cre_enrich.run(_Args(env_file=None))
-    assert rc == 0
+    assert rc == 21
     assert calls["ingest_called"] is False
     assert any(
         "attempts = attempts + 1" in sql for sql in calls["exec_sql"]
@@ -400,7 +400,7 @@ def test_happy_path_deletes_done_and_increments_absent(monkeypatch, tmp_path):
         write_enriched={"listings": [{"id": "usa1", "url": "https://x/a"}]},
     )
     rc = cre_enrich.run(_Args(env_file=None))
-    assert rc == 0
+    assert rc == 20
     assert calls["ingest_called"] is True
     exec_sql = "\n".join(calls["exec_sql"])
     assert "DELETE FROM credeals.cre_enrichment_queue" in exec_sql
@@ -420,8 +420,8 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     per-listing detail endpoint to enrich). The capture-everything build added
     the Buildout Tier-B enricher for svn + lee-associates (their detail iframe
     carries the media / tours / full gallery / OM docs the inventory bulk path
-    cannot see). Marcus & Millichap, Avison Young, SRS, and Kidder Mathews use
-    direct source paths rather than the generic JSON-LD fallback, which must
+    cannot see). Marcus & Millichap, Matthews, Avison Young, SRS, and Kidder
+    Mathews use direct source paths rather than the generic JSON-LD fallback, which must
     never complete a claim without a source-backed payload.
 
     Source-text assertion only (no DB, no Node): mirrors the TS unit test
@@ -445,9 +445,11 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     assert keys == {
         "colliers-main",
         "jll-investor",
+        "hanley",
         "svn",
         "lee-associates",
         "marcus-millichap",
+        "matthews",
         "avison-young",
         "srs",
         "kidder-mathews",
@@ -455,7 +457,7 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     assert "cbre" not in keys
     # cbre's exclusion is intentional and documented in the same file.
     assert "cbre is intentionally ABSENT" in src
-    assert "return row?.genericEnrich?.hadJsonLd ? row : null;" in src
+    # Generic qualification is exercised by the enrichment evidence behavior tests.
 
 
 # ---------------------------------------------------------------------------
@@ -502,8 +504,6 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
 
     monkeypatch.setattr(cre_enrich, "_psql_query", _fake_query)
     monkeypatch.setattr(cre_enrich, "_psql_exec", _fake_exec)
-
-    claimed_urls = [t[3] for t in claimed]
 
     class _Proc:
         def __init__(self, rc):

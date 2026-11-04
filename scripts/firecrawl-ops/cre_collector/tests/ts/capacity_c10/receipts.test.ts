@@ -416,9 +416,18 @@ test("private receipt store fails closed without FD-relative primitives and prod
   const link = join(parent, "link");
   if (PrivateReceiptStore.safeRuntimeAvailable()) {
     const store = await PrivateReceiptStore.create(target);
-    await symlink(target, link);
-    await assert.rejects(PrivateReceiptStore.create(link), /root could not retain|real mode/);
-    await store.close();
+    try {
+      await symlink(target, link);
+      await assert.rejects(PrivateReceiptStore.create(link), (error: unknown) =>
+        error instanceof Error && (
+          /root could not retain|real mode/.test(error.message)
+          // Linux rejects O_DIRECTORY | O_NOFOLLOW on a symlink with ENOTDIR.
+          || ("code" in error && error.code === "ENOTDIR")
+        ));
+      assert.deepEqual(await readdir(target), [], "symlink refusal wrote a receipt artifact");
+    } finally {
+      await store.close();
+    }
   } else {
     await assert.rejects(PrivateReceiptStore.create(target), /fd-relative filesystem primitives/);
   }

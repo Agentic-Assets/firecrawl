@@ -1,17 +1,31 @@
+import { PARTIAL_PAGE_SOURCES, PartialPageSpool, partialPageEnvName, type PartialPageSource } from "./lib/partial-page-spool.js";
+import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
+import { observationNow } from "./lib/observation-clock.js";
+import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { join } from "node:path";
+import { observePages, readObservationInput } from "./lib/page-observations/index.js";
+import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-property-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { srcAvisonYoung } from "./sources/avison-young.js";
-import { brokers } from "./lib/broker.js";
+import {
+  AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  isAvisonYoungTerminalSourceError,
+  isExclusiveAvisonYoungTerminal404Failure,
+  srcAvisonYoung,
+} from "./sources/avison-young.js";
+import { brokerIndex, brokers } from "./lib/broker.js";
 import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
   srcBuildout,
 } from "./sources/buildout.js";
 import { registeredBuildoutFirmFor } from "./sources/buildout-registry.js";
+import { allBuildoutFeeds, buildoutFeedFor } from "./sources/buildout-feeds/index.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
-import { srcColliersMain } from "./sources/colliers-main.js";
+import {
+  COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE,
+  ColliersMainBootstrapDeniedError, srcColliersMain,
+} from "./sources/colliers-main.js";
 import { API_URL, OUT_PATH, PAGE_CAP, flags } from "./lib/config.js";
 import { srcCushman } from "./sources/cushman-wakefield.js";
 import { srcDaumCommercial } from "./sources/daum-commercial.js";
@@ -20,20 +34,25 @@ import { srcFoundryCommercial } from "./sources/foundry-commercial.js";
 import { srcFranklinStreet } from "./sources/franklin-street.js";
 import { srcHanley } from "./sources/hanley.js";
 import { srcInterraRealty } from "./sources/interra-realty.js";
-import { srcJll } from "./sources/jll.js";
+import { preserveJllSubleaseFact, srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
-import { srcLyonStahl } from "./sources/lyon-stahl.js";
+import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
-import { srcMatthews } from "./sources/matthews.js";
+import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
-import { srcPyramidBrokerage } from "./sources/pyramid-brokerage.js";
+import { srcPyramidBrokerage, PyramidAccessDenied, PYRAMID_DENIED_EXIT } from "./sources/pyramid-brokerage.js";
 import { srcSavills } from "./sources/savills.js";
 import { srcSrs } from "./sources/srs.js";
+import { preserveSrsRaw } from "./sources/pure/srs-raw-retention.js";
+import { preserveBuildoutRaw } from "./sources/pure/buildout-raw-retention.js";
+import { preserveKidderRaw } from "./sources/pure/kidder-raw-retention.js";
+import { preserveNewmarkNimRaw } from "./sources/pure/newmark-nim-raw-retention.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
+import { RetainedSourceError } from "./lib/source-observations.js";
 import { readFileSync } from "node:fs";
 import { EnrichItem, groupEnrichItems, resolveEnricher, runEnrichGroups } from "./lib/enrich.js";
 import {
@@ -53,11 +72,18 @@ import {
 
 // ---------- CLI ----------
 
+if (flags["observe-input"] !== undefined && (!flags["observe-input"] || !OUT_PATH ||
+    ["source", "transaction", "max-items", "page-cap", "concurrency", "monitor", "enrich-input", "matthews-targeted-refresh"].some(key => flags[key as keyof typeof flags] !== undefined))) {
+  throw new Error("observe mode requires --out and forbids other collection mode flags");
+}
 const sourceArg = (flags.source ?? "all").toLowerCase();
 const requestedSources: SourceKey[] =
   sourceArg === "all"
     ? [...SOURCE_KEYS]
     : (sourceArg.split(",").map((s) => s.trim()) as SourceKey[]);
+if (new Set(requestedSources).size !== requestedSources.length) {
+  throw new Error("duplicate source keys are not allowed");
+}
 for (const s of requestedSources) {
   if (!SOURCE_KEYS.includes(s)) {
     console.error(`unknown source '${s}'. Valid: all, ${SOURCE_KEYS.join(", ")}`);
@@ -82,7 +108,9 @@ const UNSUPPORTED: Record<string, string> = {};
 
 // ---------- main ----------
 
-async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
+  spools: Partial<Record<PartialPageSource, PartialPageSpool>>): Promise<SourceResult> {
+  const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
     return srcBuildout(
@@ -97,7 +125,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
   }
   switch (key) {
     case "cbre":
-      return srcCbre(tx, max, monitor);
+      return srcCbre(tx, max, monitor, cbreSpool
+        ? (page, pass, documents) => {
+            try { cbreSpool.record({ transaction: tx, page, pass,
+              observedAt: observationNow(), documents }); }
+            catch { cbreSpool.markFailure(); }
+          }
+        : undefined);
     case "cbre-dealflow":
       return srcCbreDealflow(tx, max, monitor);
     case "jll":
@@ -107,7 +141,25 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
     case "cushman-wakefield":
       return srcCushman(tx, max, monitor);
     case "colliers":
-      return srcColliers(tx, max, monitor);
+      return srcColliers(tx, max, monitor, spools.colliers
+        ? (page, start, documents, pageSize) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              pageSize, observedAt: observationNow(), documents }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined, spools.colliers
+        ? (page, start, pairAttempt, responses, pageSize) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              pageSize, pairAttempt, kind: "unqualified_response_pair", observedAt: observationNow(), documents: [responses] }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined, spools.colliers
+        ? (page, start, pageSize, reason) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start, pageSize,
+              reason, kind: "recovery_hole", observedAt: observationNow(), documents: [] }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined, spools.colliers ? () => spools.colliers!.writable : undefined);
     case "colliers-main":
       return srcColliersMain(tx, max, monitor);
     case "newmark":
@@ -115,29 +167,29 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
     case "marcus-millichap":
       return srcMarcusMillichap(tx, max, monitor);
     case "avison-young":
-      return srcAvisonYoung(tx, max, monitor);
+      return srcAvisonYoung(tx, max, monitor, spools["avison-young"]
+        ? (listing, index) => {
+            try { spools["avison-young"]!.record({ transaction: tx, page: index + 1,
+              kind: "validated_detail", pass: 1, observedAt: observationNow(), documents: [{ ...listing, sourceKey: key, transactionMode: tx }] }); }
+            catch { spools["avison-young"]!.markFailure(); }
+          }
+        : undefined);
     case "savills":
       return srcSavills(tx, max, monitor);
     case "svn":
+    case "lee-associates": {
+      const feed = buildoutFeedFor(key);
+      if (!feed) throw new Error(`missing Buildout coordinates for ${key}`);
       return srcBuildout(
-        "SVN",
-        "b933480474026c41d248b77156c84aef37dcac68",
-        "https://svn.com/properties/",
+        feed.company,
+        feed.pluginKey,
+        feed.listingsPage,
         tx,
         max,
         monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS.svn
+        BUILDOUT_SOURCE_INVENTORY_OPTS[key]
       );
-    case "lee-associates":
-      return srcBuildout(
-        "Lee & Associates",
-        "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
-        "https://www.lee-associates.com/properties/",
-        tx,
-        max,
-        monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"]
-      );
+    }
     case "nai-global":
       return srcNaiGlobal(tx, max, monitor);
     case "transwestern":
@@ -170,16 +222,38 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
 }
 
 async function main() {
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
+  const spools: Partial<Record<PartialPageSource, PartialPageSpool>> = {};
+  const attempts: Partial<Record<PartialPageSource, number>> = {};
+  for (const key of PARTIAL_PAGE_SOURCES) {
+    const path = process.env[partialPageEnvName(key, "PATH")];
+    const attempt = Number(process.env[partialPageEnvName(key, "ATTEMPT")]);
+    if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
+      spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
+      attempts[key] = attempt;
+    }
+  }
   const sources: any[] = [];
   const listings: any[] = [];
+  const avisonTerminalFailures: Array<{
+    transaction: Tx;
+    failures: Array<{ listingId: string; role: string; status: 404 }>;
+  }> = [];
+  let avisonOtherFailures = 0;
+  let terminalCaptureFailure = false;
 
-  for (const key of requestedSources) {
+  sourceLoop: for (const key of requestedSources) {
     if (UNSUPPORTED[key]) {
       console.error(`skipping unsupported source ${key}`);
       sources.push({ sourceKey: key, supported: false, note: UNSUPPORTED[key] });
       continue;
     }
+    const pyramidStart = key === "pyramid-brokerage" ? {
+      listingCount: listings.length,
+      sourceCount: sources.length,
+      brokers: brokers.map(broker => ({ ...broker })),
+      brokerIndex: new Map(brokerIndex),
+    } : null;
     for (const tx of TRANSACTIONS) {
       console.error(
         `collecting ${key}/${tx} (max ${Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : "unlimited"})...`
@@ -187,7 +261,7 @@ async function main() {
       recordSourceStarted(key, tx);
       try {
         const res = await withPerformanceSource(key, tx, () =>
-          runSource(key, tx, MAX_ITEMS, MONITOR)
+          runSource(key, tx, MAX_ITEMS, MONITOR, spools)
         );
         const freshness = summarizeListingFreshness(res.listings);
         sources.push({
@@ -201,12 +275,20 @@ async function main() {
           listingsCollected: res.listings.length,
           truncated: res.truncated === true,
           note: res.note ?? null,
+          ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
+          ...(res.retainedObservations !== undefined ? { retainedObservations: res.retainedObservations } : {}),
           freshness,
         });
         for (const l of res.listings) {
-          listings.push(
-            prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l })
-          );
+          const listing = prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l });
+          if (l.buildoutRawRetention) preserveBuildoutRaw(listing, l.rawBuildout, l.buildoutRawRetention, key);
+          if (key === "newmark" && l.newmarkNimRawRetention) preserveNewmarkNimRaw(listing, l.rawNewmarkNimRecord, l.newmarkNimRawRetention);
+          if (key === "kidder-mathews") preserveKidderRaw(listing, l.rawKidder, l.kidderRawRetention);
+          if (key === "srs") preserveSrsRaw(listing, l.rawSrs, l.srsRawRetention);
+          if (key === "lyon-stahl") preserveLyonStahlOffers(listing, l.extraFacts?.providerOffers);
+          listings.push(key === "jll"
+            ? preserveJllSubleaseFact(listing, l.jllDetail?.isSubleaseOnly)
+            : listing);
         }
         console.error(
           `  ${key}/${tx}: ${res.listings.length} listings (source total: ${res.totalAvailable ?? "unknown"})`
@@ -217,21 +299,115 @@ async function main() {
         });
       } catch (err) {
         recordSourceCompleted(key, tx, { outcome: "failed" });
+        if (key === "pyramid-brokerage" && err instanceof PyramidAccessDenied) {
+          if (pyramidStart) {
+            listings.splice(pyramidStart.listingCount);
+            sources.splice(pyramidStart.sourceCount);
+            brokers.splice(0, brokers.length, ...pyramidStart.brokers);
+            brokerIndex.clear();
+            for (const [brokerKey, index] of pyramidStart.brokerIndex) brokerIndex.set(brokerKey, index);
+          }
+          sources.push({ sourceKey: key, transaction: tx, supported: true, error: `HTTP ${err.status} access denied` });
+          console.error(`  ${key}/${tx} FAILED: HTTP ${err.status} access denied`);
+          if (requestedSources.length === 1) {
+            process.exitCode = PYRAMID_DENIED_EXIT[err.status];
+            return;
+          }
+          break;
+        }
+        if (err instanceof NativeEvidenceTerminalError) {
+          sources.push({ sourceKey: key, transaction: tx, supported: true, error: "native_capture_failed" });
+          console.error(`  ${key}/${tx} FAILED: native_capture_failed`);
+          terminalCaptureFailure = true;
+          break sourceLoop;
+        }
         console.error(`  ${key}/${tx} FAILED: ${err}`);
+        if (
+          !MONITOR && key === "colliers-main" && requestedSources.length === 1
+          && err instanceof ColliersMainBootstrapDeniedError
+        ) {
+          console.error(JSON.stringify({
+            event: "colliers_main_terminal_bootstrap_denial", code: err.code, http_status: 403,
+          }));
+          process.exitCode = COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE;
+          return;
+        }
+        if (key === "avison-young") {
+          if (isAvisonYoungTerminalSourceError(err)) {
+            avisonTerminalFailures.push({ transaction: tx, failures: err.failures });
+          } else {
+            avisonOtherFailures += 1;
+          }
+        }
         sources.push({
           sourceKey: key,
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
       }
     }
   }
 
+  let partialCaptureAttached = false;
+  let partialSourceFailed = false;
+  for (const key of PARTIAL_PAGE_SOURCES) {
+    const spool = spools[key];
+    if (!spool) continue;
+    const receipt = spool.finish();
+    const failed = sources.find((source) => source.sourceKey === key && source.error);
+    const source = failed ?? sources.find((entry) => entry.sourceKey === key);
+    if (source) {
+      partialCaptureAttached = true;
+      partialSourceFailed ||= Boolean(failed);
+      source.partialCapture = { ...receipt, sourceKey: key,
+        generationId: refreshGenerationId(), attempt: attempts[key],
+        path: `${key}-partial/attempt-${attempts[key]}.jsonl`,
+        coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
+    }
+  }
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
+  const evidenceOnly = !MONITOR && listings.length === 0 &&
+    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
+  let avisonTerminal404 = false;
   if (listings.length === 0) {
+    if (
+      !MONITOR
+      && isExclusiveAvisonYoungTerminal404Failure({
+        requestedSources,
+        transactions: TRANSACTIONS,
+        listingsCollected: listings.length,
+        terminalFailureTransactions: avisonTerminalFailures.length,
+        otherFailureCount: avisonOtherFailures,
+      })
+    ) {
+      // This exit is reserved for the typed direct-HTTP 404 path. It carries no
+      // accepted artifact and is used only when every selected transaction failed
+      // with that terminal response. If a private spool captured validated peers,
+      // write a rejected evidence-only artifact before returning the same code.
+      console.error(JSON.stringify({
+        event: "avison_young_terminal_required_detail_failure",
+        code: "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404",
+        failures: avisonTerminalFailures.flatMap(({ transaction, failures }) =>
+          failures.map(({ listingId, role, status }) => ({
+            transaction,
+            listingId,
+            role,
+            status,
+          }))
+        ),
+      }));
+      avisonTerminal404 = true;
+      const capture = sources.find(source => source.sourceKey === "avison-young" && source.partialCapture)?.partialCapture;
+      if (!capture || !["sealed", "sealed_partial"].includes(capture.state)
+          || capture.observationRecords < 1) {
+        process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
+        return;
+      }
+    }
     // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that
     // are excluded from monitor: jll, jll-investor, cbre-dealflow, colliers), so
@@ -239,16 +415,20 @@ async function main() {
     // still recorded in `sources[].error` (enforced by the downstream coverage gate),
     // and a source emitting 0 rows is never evaluated for disappearance because its
     // key is absent from run_source_keys.
-    if (!MONITOR) {
+    if (!MONITOR && !evidenceOnly && !terminalCaptureFailure) {
       throw new Error("no listings collected from any source");
     }
+    if (MONITOR) {
+      console.error(
+        "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      );
+    }
+  }
+  if (!evidenceOnly && !terminalCaptureFailure) {
     console.error(
-      "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
     );
   }
-  console.error(
-    `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
-  );
 
   const out = {
     description:
@@ -259,8 +439,10 @@ async function main() {
       maxItemsPerSource: Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : null,
       pageCap: PAGE_CAP,
       mode: MONITOR ? "monitor" : "full",
+      ...(terminalCaptureFailure ? { terminalCaptureFailure: true } : {}),
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       startedAt,
-      finishedAt: new Date().toISOString(),
+      finishedAt: observationNow(),
       freshness: {
         generationId: refreshGenerationId(),
         generationStartedAt: refreshStartedAt() ?? startedAt,
@@ -274,12 +456,63 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
+  const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
+  const franklinFallback = !partialCaptureAttached && sources.some(source => source.sourceKey === "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !sources.some(source => source.sourceKey !== "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !listings.some(listing => listing.sourceKey !== "franklin-street" &&
+      (listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention));
+  let outputCollision = false;
+  const writeFranklinProjection = () => {
+    let sidecar = "written";
+    const sidecarJson = JSON.stringify({ ...out, runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_private_sidecar" } });
+    try { console.error(`Franklin private sidecar: ${writeTerminalCollectorArtifact(undefined, sidecarJson)}`); }
+    catch {
+      sidecar = "failed";
+      console.error("Franklin private sidecar failed; private evidence was not retained");
+      process.exitCode = 1;
+    }
+    const projection = {
+      ...out,
+      runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_sidecar_projection", franklinSidecar: sidecar },
+      sources: sources.map(source => {
+        if (source.sourceKey !== "franklin-street") return source;
+        const { retainedObservations, ...projection } = source;
+        return projection;
+      }),
+      listings: listings.map(listing => {
+        if (listing.sourceKey !== "franklin-street") return listing;
+        const { rawBuildout, buildoutRawRetention, ...projection } = listing;
+        return projection;
+      }),
+    };
+    if (outputCollision) process.exitCode = 1;
+    writeCollectorArtifact(outputCollision ? undefined : OUT_PATH, JSON.stringify(projection), false);
+    if (outputCollision) console.error("existing output unchanged; Franklin projection written to stdout");
+  };
+  if (terminalCaptureFailure) {
+    const path = writeTerminalCollectorArtifact(OUT_PATH, json);
+    console.error(`terminal partial artifact: ${path}`);
+  } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
+  else {
+    try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
+    catch (error) {
+      if (franklinFallback && (error as NodeJS.ErrnoException).code === "EEXIST") {
+        outputCollision = true;
+        writeFranklinProjection();
+      }
+      else throw error;
+    }
+  }
+  if (OUT_PATH && !outputCollision) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
+  }
+  if (terminalCaptureFailure) process.exitCode = 1;
+  if (evidenceOnly) {
+    console.error("no listings collected from any source");
+    process.exitCode = avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
   }
 }
 
@@ -324,17 +557,30 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
 // and emit the standard artifact with runMeta.mode="enrich". cre_ingest.py
 // consumes this artifact unchanged.
 async function enrichMain(claimPath: string): Promise<void> {
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   const raw = readFileSync(claimPath, "utf8");
-  const parsed = JSON.parse(raw) as { items?: EnrichItem[] };
+  const parsed = JSON.parse(raw) as { items?: EnrichItem[]; matthewsTargetedRefresh?: unknown };
   const items = Array.isArray(parsed.items) ? parsed.items : [];
-
+  const optedIn = flags["matthews-targeted-refresh"] === true;
+  const hasContext = Object.hasOwn(parsed, "matthewsTargetedRefresh");
+  if (optedIn !== hasContext) throw new Error("Matthews targeted: CLI opt-in and input context must agree");
+  const context = optedIn ? validateMatthewsTargetedRefresh(parsed.matthewsTargetedRefresh) : undefined;
   const groups = groupEnrichItems(items);
+  if (!OUT_PATH && groups.has("kidder-mathews")) {
+    throw new Error("Kidder targeted enrichment requires a private --out file");
+  }
+  if (context && (MONITOR || (flags.source !== undefined && sourceArg !== "matthews") || groups.size !== 1 || !groups.has("matthews") || groups.get("matthews")?.length !== items.length)) {
+    throw new Error("Matthews targeted: requires an exact Matthews-only enrichment input");
+  }
   const companyFor = (key: string) =>
     ENRICH_COMPANY[key as SourceKey] ??
     registeredBuildoutFirmFor(key as SourceKey)?.company ??
     key;
-  const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor);
+  const { sources, listings, terminalCaptureFailure } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
+  if (context) validateMatthewsTargetedRefresh(context);
+  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
+  const evidenceOnly = listings.length === 0 && privateEvidence;
 
   console.error(
     `enrich done: ${listings.length} listing(s) from ${groups.size} source group(s), ${brokers.length} unique brokers`
@@ -346,9 +592,20 @@ async function enrichMain(claimPath: string): Promise<void> {
     runMeta: {
       apiUrl: API_URL,
       mode: "enrich",
+      ...(terminalCaptureFailure ? { terminalCaptureFailure: true } : {}),
       enrichInput: claimPath,
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
+      ...(context ? {
+        matthewsTargetedRefresh: context,
+        freshness: {
+          generationId: context.generationId,
+          generationStartedAt: context.generationStartedAt,
+          requireFreshDetails: true,
+          requireFreshPropertyDetails: requireFreshPropertyDetails(),
+        },
+      } : {}),
       startedAt,
-      finishedAt: new Date().toISOString(),
+      finishedAt: observationNow(),
     },
     sources,
     listings,
@@ -356,12 +613,15 @@ async function enrichMain(claimPath: string): Promise<void> {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
+  // All targeted artifacts belong to the worker's private custody, including
+  // empty and bespoke-only results without retained observation arrays.
+  if (terminalCaptureFailure) {
+    const path = writeTerminalCollectorArtifact(OUT_PATH, json);
+    console.error(`terminal partial artifact: ${path}`);
+    process.exitCode = 1;
+  } else writeCollectorArtifact(OUT_PATH, json, true);
   if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
   }
 }
 
@@ -369,6 +629,34 @@ async function dispatch(): Promise<void> {
   flushPerformance({ terminal: false });
   try {
     const enrichInput = flags["enrich-input"];
+    if (flags["observe-input"] === undefined && !enrichInput && !OUT_PATH &&
+        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || key === "newmark" || allBuildoutFeeds.some((feed) => feed.sourceKey === key)) &&
+        !(requestedSources.length === 1 && requestedSources[0] === "franklin-street")) {
+      throw new Error("SRS, Kidder, Newmark and Buildout collection require a private --out file");
+    }
+    if (enrichInput && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1" && !OUT_PATH)
+      throw new Error("Newmark published-detail evidence requires a private --out file");
+    if (flags["observe-input"] !== undefined) {
+      if (!OUT_PATH) throw new Error("observe mode requires --out");
+      const items = readObservationInput(flags["observe-input"]);
+      try { reservePrivateCollectorDirectory(OUT_PATH); }
+      catch { throw new Error("unable to reserve private observation output"); }
+      try {
+        const result = await observePages(items, undefined, captureBuildoutObservationForCaller);
+        const names = result.parts.map((_, index) => `part-${String(index + 1).padStart(4, "0")}.json`);
+        for (let i = 0; i < result.parts.length; i++)
+          writeCollectorArtifact(join(OUT_PATH, names[i]), JSON.stringify(result.parts[i]), true);
+        writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({ ...result.summary, parts: names }), true);
+      } catch {
+        try { writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({kind: "observation_run_summary", runMeta: { mode: "observe", evidenceOnly: true }, error: "observation_incomplete"}), true); }
+        catch { /* A previously written part remains available for inspection. */ }
+        process.exitCode = 1;
+      }
+      return;
+    }
+    if (flags["matthews-targeted-refresh"] && !enrichInput) {
+      throw new Error("Matthews targeted: requires --enrich-input");
+    }
     if (enrichInput) {
       await enrichMain(enrichInput);
     } else {

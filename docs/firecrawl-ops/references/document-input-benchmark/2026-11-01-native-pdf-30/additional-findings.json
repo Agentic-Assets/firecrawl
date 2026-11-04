@@ -1,0 +1,28 @@
+{
+  "schema": "native-pdf-additional-findings/v1",
+  "method": "Agent visual source inspection; illustrative non-exhaustive errors outside frozen gold; not human certified.",
+  "rows": [
+    {
+      "document_id": "core-05",
+      "model": "openai/gpt-6-luna",
+      "probe_family": "additional_unscored_visual_inspection",
+      "classification": "structured_association_reversal",
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "render_sha256": "d366a217a57c6f66273501261b11f7a53a4a383da2f559a1a2afc67b3a8210a4",
+      "result_sha256": "8d087e0a6f0a18adfa5d324f603fadde761bc65689391f64c88bff64448b6b10",
+      "private_witness_sha256": "7e03bb41149e2262dea01916af4b8f8a3ca6433c4e304fafd96f36c87a76e9fe",
+      "outside_frozen_gold": true
+    },
+    {
+      "document_id": "core-06",
+      "model": "meta/muse-spark-1.3-contributor",
+      "probe_family": "additional_unscored_visual_inspection",
+      "classification": "structured_numeric_transcription_error",
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "render_sha256": "05a512d5a502c2eb488c18867dd8b2d526aa94ea494dde257a69c30940587ac4",
+      "result_sha256": "5d6c5eba8a6817cf1b9e51e5047916d62f0b71537c0e8b3c06c8e8736dfc7890",
+      "private_witness_sha256": "29779fcd110f61f2c1dcde8951357d226ce962cf83d0ec8620212a5f948157c9",
+      "outside_frozen_gold": true
+    }
+  ]
+}

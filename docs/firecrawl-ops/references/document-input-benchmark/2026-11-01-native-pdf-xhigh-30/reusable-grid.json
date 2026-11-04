@@ -1,0 +1,26 @@
+{
+  "schema": "native-pdf-benchmark/v1",
+  "routes": [
+    {
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000
+    },
+    {
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000
+    }
+  ],
+  "budget_usd": 30,
+  "reservation_usd": 3.5,
+  "workers": 4
+}

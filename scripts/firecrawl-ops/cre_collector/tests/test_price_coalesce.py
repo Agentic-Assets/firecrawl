@@ -1,16 +1,9 @@
 """
 test_price_coalesce.py
 
-Locks down the L1 price COALESCE-keep fix in cre_ingest.py build_sql().
-
-Pre-fix: sale_price_usd, sale_price_per_sf, lease_rate_min, and lease_rate_max
-were overwritten unconditionally with EXCLUDED.* in the DO UPDATE SET block. A
-transient parse miss (regex miss, "Call for offer") would null a previously-good
-numeric price.
-
-Post-fix: all four price columns use COALESCE(EXCLUDED.x, t.x) so a NULL in
-EXCLUDED preserves the prior good value. A real new numeric value still overwrites
-because COALESCE picks the first non-NULL.
+Sparse price updates preserve existing values when source fields are absent.
+The executable PostgreSQL contract in test_cre_quality_consistency.py covers
+bounded new values, prior-value preservation, and authoritative clear events.
 
 Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set()).
 """
@@ -34,24 +27,6 @@ def _sql():
 def test_sale_price_usd_coalesce_present():
     assert "ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END" in _sql(), (
         "Expected COALESCE-keep for sale_price_usd in DO UPDATE SET block."
-    )
-
-
-def test_sale_price_per_sf_coalesce_present():
-    assert (
-        "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql()
-    ), "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
-
-
-def test_lease_rate_min_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END" in _sql(), (
-        "Expected COALESCE-keep for lease_rate_min in DO UPDATE SET block."
-    )
-
-
-def test_lease_rate_max_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END" in _sql(), (
-        "Expected COALESCE-keep for lease_rate_max in DO UPDATE SET block."
     )
 
 

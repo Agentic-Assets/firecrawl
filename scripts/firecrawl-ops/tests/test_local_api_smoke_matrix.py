@@ -9,6 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -270,11 +271,28 @@ class LocalApiSmokeMatrixTests(unittest.TestCase):
             ):
                 MODULE.run_matrix(ctx)
             self.assertEqual([(item.name, item.status) for item in ctx.results], [("core", "pass"), ("optional", "skip")])
-            ctx.results.append(MODULE.ProbeResult(name="failed", status="fail", error="line one\nline two"))
+            ctx.results.append(MODULE.ProbeResult(
+                name="failed", status="fail", error="line one\nline two",
+                response={"markdown": "東京 • €"},
+            ))
             with patch.object(MODULE.time, "strftime", return_value="20260813-120000"):
                 json_path, md_path = MODULE.write_artifacts(ctx)
             summary = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["counts"], {"pass": 1, "fail": 1, "skip": 1})
+            self.assertEqual(summary["results"][-1]["response"]["markdown"], "東京 • €")
+            preflight_spec = importlib.util.spec_from_file_location(
+                "smoke_preflight_contract", SCRIPT_PATH.with_name("local_agent_preflight.py")
+            )
+            assert preflight_spec and preflight_spec.loader
+            preflight = importlib.util.module_from_spec(preflight_spec)
+            sys.modules[preflight_spec.name] = preflight
+            with patch.object(sys, "path", [str(SCRIPT_PATH.parent), *sys.path]):
+                preflight_spec.loader.exec_module(preflight)
+            evidence = preflight.select_smoke_evidence(
+                json_path, ctx.out_dir, 60, datetime.now(UTC)
+            )
+            self.assertEqual(evidence.state, "fresh")
+            self.assertIn("core", evidence.passed)
             self.assertIn("line one line two", md_path.read_text(encoding="utf-8"))
 
             optional_ctx = self.make_context(Path(tmp_dir), optional=True)

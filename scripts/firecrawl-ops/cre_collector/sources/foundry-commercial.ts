@@ -1,3 +1,12 @@
+import {
+  cancelResponseBody,
+  readBoundedUtf8,
+  ResponseBodyDeadlineError,
+  ResponseBodyLimitError,
+  settleResponseBodyRead,
+} from "../lib/response-body.js";
+import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
 import * as cheerio from "cheerio";
 import { CONCURRENCY } from "../lib/config.js";
 import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
@@ -9,12 +18,15 @@ import {
   foundryPropertyNotes,
   foundryPropertyUrls,
   foundryProviderIdentity,
+  foundryListingId,
   foundryUrl,
   FOUNDRY_HOST,
   FOUNDRY_SITEMAP_URL,
   samePage,
 } from "./pure/foundry-identity.js";
 import { classifyFoundryStatus, explicitFoundryTenures, type FoundryStatusDecision } from "./pure/foundry-status.js";
+import { captureFoundryPageContext } from "./pure/foundry-observation.js";
+import { isSourceChallengeShell } from "../lib/source-page-context/index.js";
 
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
 export const FOUNDRY_FETCH_TIMEOUT_MS = 60_000;
@@ -27,6 +39,7 @@ export {
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
+  foundryListingId,
   FOUNDRY_HOST,
   FOUNDRY_SITEMAP_URL,
 } from "./pure/foundry-identity.js";
@@ -38,12 +51,24 @@ export type FoundryParseContext = {
   strict?: boolean;
 };
 
+type FoundryHeldObservation = {
+  id: string;
+  foundryPostId: string;
+  url: string;
+  propertyNotes: string[];
+  status: string | null;
+  reason: string;
+  requestedTransaction: Tx;
+  inventoryObservedAt?: string;
+  detailObservedAt?: string;
+};
+
 export type FoundryParseOutcome =
   | { kind: "accepted"; listing: any; status: string }
   | { kind: "terminal"; status: string; reason: string }
   | { kind: "other_tenure"; status: string; reason: string }
-  | { kind: "held"; status: string | null; reason: string }
-  | { kind: "rejected"; reason: string };
+  | { kind: "held"; status: string | null; reason: string; observation: FoundryHeldObservation; pageContext?: ReturnType<typeof captureFoundryPageContext> }
+  | { kind: "rejected"; reason: string; pageContext?: ReturnType<typeof captureFoundryPageContext> };
 
 type FetchLike = (
   input: string | URL | Request,
@@ -84,14 +109,19 @@ export function foundryAssetUrl(value: unknown): string | null {
 }
 
 export function assertFoundryUniqueProviderIds(
-  listings: Array<{ id?: unknown }>
+  listings: Array<{ id?: unknown; foundryPostId?: unknown }>
 ): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("Foundry emitted a listing without a provider ID");
+    const id = clean(String(listing?.foundryPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("Foundry emitted a listing without a valid provider ID");
+    if (!key) throw new Error("Foundry emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`Foundry emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`Foundry emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
@@ -172,16 +202,18 @@ export function parseFoundryCommercialDetail(
 ): FoundryParseOutcome {
   const strict = context.strict ?? requireFreshDetails();
   const identity = foundryProviderIdentity(html, requestedUrl);
-  if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch" };
-
   const $ = cheerio.load(html);
   const heading = clean($("h1").first().text());
   const visibleHeading = [clean($("title").first().text()), heading].filter(Boolean).join(" ");
-  if (
+  const shell =
     /\b(?:404|not found|access denied|forbidden|captcha|just a moment|service unavailable)\b/i.test(
       visibleHeading
-    )
-  ) {
+    );
+  const observationShell = isSourceChallengeShell(html);
+  if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch",
+    ...(!observationShell && foundryUrl(requestedUrl, "detail")
+      ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
+  if (shell) {
     return { kind: "rejected", reason: "challenge or error shell" };
   }
 
@@ -189,10 +221,28 @@ export function parseFoundryCommercialDetail(
   const listing = nodes.find((node) => ldTypes(node).some((type) => type === "RealEstateListing"));
   const listingUrl = clean(listing?.url);
   if (strict && (!listingUrl || !samePage(listingUrl, requestedUrl))) {
-    return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
+    return { kind: "rejected", reason: "RealEstateListing identity mismatch",
+      ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
   }
   const notes = foundryPropertyNotes(html);
   const status = foundryStatusFromNotes(notes);
+  const heldOutcome = (reason: string): Extract<FoundryParseOutcome, { kind: "held" }> => ({
+    kind: "held",
+    status: status.status,
+    reason,
+    ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}),
+    observation: {
+      id: foundryListingId(requestedUrl),
+      foundryPostId: identity,
+      url: requestedUrl,
+      propertyNotes: [...notes],
+      status: status.status,
+      reason,
+      requestedTransaction: tx,
+      ...(context.inventoryObservedAt !== undefined ? { inventoryObservedAt: context.inventoryObservedAt } : {}),
+      ...(context.detailObservedAt !== undefined ? { detailObservedAt: context.detailObservedAt } : {}),
+    },
+  });
   if (status.disposition === "terminal") {
     return {
       kind: "terminal",
@@ -201,15 +251,11 @@ export function parseFoundryCommercialDetail(
     };
   }
   if (status.disposition === "held") {
-    return { kind: "held", status: status.status, reason: status.reason };
+    return heldOutcome(status.reason);
   }
   const tenures = status.tenures.length ? status.tenures : explicitFoundryTenures(notes);
   if (!tenures.length) {
-    return {
-      kind: "held",
-      status: status.status,
-      reason: `${status.reason}; no explicit sale or lease tenure found`,
-    };
+    return heldOutcome(`${status.reason}; no explicit sale or lease tenure found`);
   }
   if (!tenures.includes(tx)) {
     return {
@@ -221,7 +267,8 @@ export function parseFoundryCommercialDetail(
 
   const entity = listing?.mainEntity ?? {};
   const name = clean(listing?.name) ?? metaContent($, "og:title") ?? heading;
-  if (!name) return { kind: "rejected", reason: "property page has no listing name" };
+  if (!name) return { kind: "rejected", reason: "property page has no listing name",
+    ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
   const address = foundryAddress(entity?.address);
   const facts = foundryFactMap($);
   const priceText = fact(facts, /^(?:asking |sale |list )?price$/i);
@@ -271,7 +318,8 @@ export function parseFoundryCommercialDetail(
   });
 
   const listingRow = prune({
-    id: identity,
+    id: foundryListingId(requestedUrl),
+    foundryPostId: identity,
     inventoryObservedAt: context.inventoryObservedAt,
     detailObservedAt: context.detailObservedAt,
     freshnessProvenance:
@@ -314,34 +362,79 @@ export function parseFoundryCommercialDetail(
 
 type FetchKind = "html" | "xml";
 
+const FOUNDRY_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+const FOUNDRY_RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+class FoundryRetryableFetchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "FoundryRetryableFetchError";
+  }
+}
+
+function foundryIsTransientTransportFailure(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && FOUNDRY_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+/** A failed or stalled cancel must never authorize another request. */
+async function foundryCancelBody(
+  body: { cancel(): Promise<unknown> } | null,
+  timeoutMs = 1_000
+): Promise<boolean> {
+  return cancelResponseBody(body, Math.min(timeoutMs, 1_000));
+}
+
 async function foundryBoundedResponseText(
   response: Response,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs: number,
+  controller: AbortController,
+  deadlineAt: number
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await foundryCancelBody(response.body, timeoutMs);
     throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
+    return await readBoundedUtf8(reader, { maxBytes, signal: controller.signal, deadlineAt });
+  } catch (error) {
+    // A deterministic size refusal remains terminal even if cleanup aborts.
+    if (error instanceof ResponseBodyLimitError) {
+      if (!await foundryCancelBody(reader, timeoutMs)) {
+        throw new Error("Foundry response body did not settle after exceeding its size limit", { cause: error });
       }
-      text += decoder.decode(value, { stream: true });
+      throw new Error(`Foundry response exceeds ${maxBytes} bytes`, { cause: error });
     }
-    text += decoder.decode();
-    return text;
+    const timedOut = error instanceof ResponseBodyDeadlineError || controller.signal.aborted;
+    const cause = timedOut
+      ? new Error(`Foundry response body timed out after ${timeoutMs}ms`, { cause: error }) : error;
+    if (error instanceof ResponseBodyDeadlineError) controller.abort(cause);
+    if (!await settleResponseBodyRead(reader, error, Math.min(timeoutMs, 1_000))) {
+      throw new Error(timedOut
+        ? `Foundry response body timed out after ${timeoutMs}ms and did not cancel`
+        : "Foundry response body read failed and did not cancel", { cause });
+    }
+    if (!foundryIsTransientTransportFailure(error, timedOut)) throw cause;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new FoundryRetryableFetchError(`Foundry response body read failed: ${message}`, { cause });
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* preserve the primary outcome */ }
   }
 }
 
@@ -355,6 +448,7 @@ export async function foundryFetchText(
 ): Promise<string> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const deadlineAt = performance.now() + timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -363,25 +457,57 @@ export async function foundryFetchText(
         const allowed = foundryUrl(current, kind === "html" ? "detail" : "sitemap");
         if (!allowed) throw new Error(`Foundry refused unsafe ${kind} URL`);
         const strict = requireFreshDetails();
-        const response = await fetchImpl(allowed, {
-          redirect: "manual",
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 CRE collector",
-            Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
-            ...(strict ? { "Cache-Control": "no-cache" } : {}),
-          },
-          ...(strict ? { cache: "no-store" as const } : {}),
-        });
+        let response: Response;
+        try {
+          response = await fetchImpl(allowed, {
+            redirect: "manual",
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "Mozilla/5.0 CRE collector",
+              Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
+              ...(strict ? { "Cache-Control": "no-cache" } : {}),
+            },
+            ...(strict ? { cache: "no-store" as const } : {}),
+          });
+        } catch (error) {
+          if (foundryIsTransientTransportFailure(error, controller.signal.aborted)) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new FoundryRetryableFetchError(`Foundry transient transport failure: ${message}`, { cause: error });
+          }
+          throw error;
+        }
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          if (!location) throw new Error(`Foundry redirect ${response.status} lacks Location`);
-          current = new URL(location, allowed).toString();
+          if (!location) {
+            await foundryCancelBody(response.body);
+            throw new Error(`Foundry redirect ${response.status} lacks Location`);
+          }
+          let next: string;
+          try {
+            next = new URL(location, allowed).toString();
+          } catch {
+            await foundryCancelBody(response.body);
+            throw new Error(`Foundry redirect ${response.status} has invalid Location`);
+          }
+          if (!await foundryCancelBody(response.body, timeoutMs)) {
+            throw new Error("Foundry redirect body did not settle before the next request");
+          }
+          current = next;
           continue;
         }
-        if (!response.ok) throw new Error(`Foundry HTTP ${response.status}`);
+        if (!response.ok) {
+          const status = response.status;
+          const hasRetryAfter = response.headers.has("retry-after");
+          const cancelled = await foundryCancelBody(response.body, timeoutMs);
+          if (!cancelled) throw new Error(`Foundry HTTP ${status} response body did not settle`);
+          if (FOUNDRY_RETRYABLE_HTTP_STATUSES.has(status) && !hasRetryAfter) {
+            throw new FoundryRetryableFetchError(`Foundry HTTP ${status}`);
+          }
+          throw new Error(`Foundry HTTP ${status}`);
+        }
         const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
         if (contentType.includes("application/pdf")) {
+          await foundryCancelBody(response.body, timeoutMs);
           throw new Error("Foundry refused PDF response");
         }
         if (
@@ -390,16 +516,18 @@ export async function foundryFetchText(
           && !contentType.includes("text/html")
           && !contentType.includes("application/xhtml+xml")
         ) {
+          await foundryCancelBody(response.body, timeoutMs);
           throw new Error(`Foundry detail returned ${contentType}`);
         }
-        const body = await foundryBoundedResponseText(response, maxBytes);
+        const body = await foundryBoundedResponseText(response, maxBytes, timeoutMs, controller, deadlineAt);
         if (!body.trim()) throw new Error(`Foundry returned empty ${kind}`);
         return body;
       }
       throw new Error("Foundry exceeded redirect cap");
     } catch (error) {
       lastError = error;
-      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      if (!(error instanceof FoundryRetryableFetchError) || attempt >= attempts) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     } finally {
       clearTimeout(timer);
     }
@@ -431,16 +559,24 @@ export async function srcFoundryCommercial(
   });
   const urls = dedupeStrings(propertySnapshots.flat());
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
   let fetchFailures = 0;
   const outcomes = await pmap(take, FOUNDRY_DETAIL_CONCURRENCY, async (url) => {
     try {
       const html = await foundryFetchText(url, "html");
-      return parseFoundryCommercialDetail(html, url, tx, {
+      const outcome = parseFoundryCommercialDetail(html, url, tx, {
         inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
+        detailObservedAt: observationNow(),
       });
+      if (outcome.kind === "held") {
+        console.error(JSON.stringify({
+          event: "foundry_held_observation",
+          schema: "foundry-held-observation-v1",
+          observation: outcome.observation,
+        }));
+      }
+      return outcome;
     } catch (error) {
       fetchFailures++;
       console.error(`  foundry-commercial/${tx}: ${url} failed: ${error}`);
@@ -450,7 +586,33 @@ export async function srcFoundryCommercial(
   const listings = outcomes
     .filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
     .map((outcome) => outcome.listing);
-  assertFoundryUniqueProviderIds(listings);
+  const retainedObservations: unknown[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "held") retainedObservations.push({
+      event: "foundry_held_observation", schema: "foundry-held-observation-v1",
+      observation: outcome.observation, ...(outcome.pageContext ? { pageContext: outcome.pageContext } : {}),
+    });
+    if (outcome.kind === "rejected" && outcome.pageContext) retainedObservations.push({
+      event: "foundry_rejected_observation", schema: "foundry-rejected-observation-v1",
+      reason: outcome.reason, pageContext: outcome.pageContext,
+    });
+  }
+  try {
+    assertFoundryUniqueProviderIds(listings);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new RetainedSourceError(error, [
+      ...retainedObservations,
+      ...outcomes.filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
+        .map((outcome) => ({
+        event: "foundry_identity_conflict_observation",
+        schema: "foundry-identity-conflict-observation-v1",
+        reason: "source_identity_validation_failed",
+        status: outcome.status,
+        observation: outcome.listing,
+      })),
+    ]);
+  }
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
@@ -472,6 +634,7 @@ export async function srcFoundryCommercial(
       "WordPress property sitemap enumeration to same-host HTML details; stable shortlink identity plus JSON-LD/DOM parsing; explicit status admission",
     totalAvailable: urls.length,
     listings,
+    retainedObservations,
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

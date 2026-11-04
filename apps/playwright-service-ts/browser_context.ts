@@ -164,7 +164,8 @@ const routeGuard =
       console.log(hostname);
       return route.abort();
     }
-    return route.continue();
+    // Keep the security guard first, then allow earlier opt-in media routes.
+    return route.fallback();
   };
 
 /** Runs context setup, bounded by the scrape deadline when one is given. */
@@ -272,8 +273,9 @@ export function createBrowserPool(settings: {
       // Never hand back (or silently drop) a half-configured context, which
       // could lack the per-request SSRF route guard above. The caller's lease
       // decides what an unconfirmed close means for its permit.
-      const closed = await closeBrowserResources(null, () => newContext.close());
-      throw closed ? error : new BrowserResourceLeakError(error);
+      const closed = await closeBrowserResources(null, () => newContext.close())
+        .result;
+      throw closed === "closed" ? error : new BrowserResourceLeakError(error);
     }
 
     return { context: newContext, securityState };

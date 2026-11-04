@@ -1,0 +1,124 @@
+{
+  "scope": "one terminal observation of the original Qualified Brokerage Pipeline scheduled instance; no replay, refresh, provider, database query, task change, or suite",
+  "output_root": "C:\\Users\\CSEAGRAVES2018\\GitHub\\firecrawl-dev\\.scratch\\2026-10-22-qualified-natural-terminal-final-20261022T030535Z-406b1183",
+  "source_pins": {
+    "native_sha256": "8bfebbaf95f11371d59cb35efc2829ae3ab2503d1dc11940ed98740ebb0c94fe",
+    "linux_sha256": "e03441e189b68ee07838f20dfebec996591c561abea95443c0a6885d7e12f923"
+  },
+  "operation": {
+    "task_instance_id": "{041c9c67-3663-43dd-9adc-e310d6520974}",
+    "audit": "20261022T020002Z-8453c42c8a364989990f1ecb5d67aa19.json",
+    "series_id": "2026-10-22T020005Z",
+    "checkpoint_run_id": "2026-10-22T020005Z-c558473ecf2f",
+    "parent_invocation_id": "7ded077ba9a74118ae43028f3e251e60",
+    "child_invocation_id": "2a3aeaaac6f942e0abe61b7aac24b678"
+  },
+  "prior_task_state_reads": [
+    {
+      "time_utc": "2026-10-22T03:04:20.4431528Z/03:04:20.4691555Z",
+      "source": "Task Scheduler COM",
+      "state": 3,
+      "active_instances": 0,
+      "last_task_result": 1
+    },
+    {
+      "time_utc": "2026-10-22T03:04:55.4297635Z/03:04:56.1933561Z",
+      "source": "Get-ScheduledTask/Get-ScheduledTaskInfo",
+      "state": "Ready",
+      "last_task_result": 1
+    }
+  ],
+  "native": {
+    "started_utc": "2026-10-21T23:05:35.660572-04:00",
+    "finished_utc": "2026-10-21T23:05:38.050527-04:00",
+    "child_process_id": 67372,
+    "exit_code": 0,
+    "stdout_eof": true,
+    "stdout_bytes": 582,
+    "stdout_sha256": "ae3e4b65707dd41cfde88a8b4a330d1165c47701615189863e8dd04f4f7873a0",
+    "stderr_eof": true,
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "task_state": "Ready",
+    "last_task_result": 1,
+    "instance_event_ids": [
+      102,
+      201,
+      200,
+      100,
+      107
+    ],
+    "task_end_event": [
+      {
+        "utc": "2026-10-22T03:03:34.8339537Z",
+        "record_id": 93318
+      }
+    ],
+    "action_event": [
+      {
+        "utc": "2026-10-22T03:03:34.833604Z",
+        "record_id": 93317,
+        "result_code": "2147942401"
+      }
+    ],
+    "audit": {
+      "bytes": 25744,
+      "sha256": "60c20f93a1b589d034788d67c97e1751283c6027918b3486e59c62be7a6a060d",
+      "status": "returned",
+      "dispatch": "returned",
+      "native_exit_code": 1,
+      "wrapper_exit_code": 1,
+      "linux_settlement": "unverified",
+      "stdout_eof": true,
+      "stderr_eof": true
+    }
+  },
+  "linux": {
+    "started_utc": "2026-10-21T23:05:54.848985-04:00",
+    "finished_utc": "2026-10-21T23:05:55.13346-04:00",
+    "child_process_id": 91148,
+    "exit_code": 0,
+    "stdout_eof": true,
+    "stdout_bytes": 773,
+    "stdout_sha256": "ae260d819b4e44b22c7ebac0fe27bac93efca8df0ba6ff46cb1f030e3905e509",
+    "stderr_eof": true,
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "uid": 1000,
+    "euid": 1000,
+    "python": "3.12.3",
+    "git_head": "16d6468c5f491df853e9d3792148d688dc530468",
+    "git_tree": "dffde62f82ff0107d2631be263a49a51e3f5ffd4",
+    "git_clean": true,
+    "series_status": "failed",
+    "source_state_counts": {
+      "complete": 39,
+      "failed_source": 1
+    },
+    "checkpoint_status": "failed",
+    "checkpoint_error": "RefreshError: pipeline source checkpoints remain incomplete: cbre",
+    "parent_status": "failed",
+    "parent_local_settlement": "confirmed",
+    "child_terminal_receipt_present": true,
+    "child_terminal_evidence_saved": true,
+    "guards_stopped": true,
+    "nested_cleanup_confirmed": true,
+    "expected_parent_process_matches": false,
+    "expected_owner_process_matches": false,
+    "canonical_lock_directory_exists": false,
+    "authority_status": "complete",
+    "authority_state": "normal",
+    "authority_owner_pid": 3627771,
+    "authority_bytes": 106,
+    "authority_hash": "dd76f93a10d7f5cfbf206b9170c276074a0654d1be9e6cb4d07ace609523a22e"
+  },
+  "evidence_files": {
+    "native_observation_sha256": "21665387860f3c98427e387cd274751819d1ae54a1eb98dd6342d7b2b88554cc",
+    "linux_observation_sha256": "9b0b92cd594c17eca977e09b3ea9a82e582521d7ad16e50732a7cadbd61d03f3",
+    "native_wrapper_execution_sha256": "ea6e5b491b6f5393b7e17a4fa0f7fdbef9275c4fe5a860c75a6c098a10dccee6",
+    "linux_wrapper_execution_sha256": "968f150e680ebbe536a5c5597d369b40000a6c57477f376b792d018a9324ce30",
+    "task_definition_sha256": "6785b8688e521c485878d9701c37e38139a63a1350ada576816efe8bb22b5add",
+    "native_audit_snapshot_sha256": "60c20f93a1b589d034788d67c97e1751283c6027918b3486e59c62be7a6a060d"
+  },
+  "limits": "Native reader retains strict exact-instance GUID event filter, so prior Event 129/93193 remain only PID/time-linked evidence in their original packet. Linux authority alone used a 65,536-byte completeness cap and 65,537-byte probe; this is not a global file-read bound. No 51-source acceptance or provider/database success is claimed."
+}

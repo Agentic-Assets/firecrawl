@@ -1,6 +1,6 @@
 ---
 name: firecrawl-ops
-description: Operate, verify, sync, and troubleshoot the self-hosted Firecrawl stack in this fork. Use when the user asks about OrbStack/Docker compose runtime health, local API startup/rebuilds/logs, Firecrawl CLI local setup, upstream sync from firecrawl/firecrawl:main, endpoint capability checks, model routing, OpenRouter/Vercel AI Gateway/OpenAI profile changes, or which Firecrawl methods work locally.
+description: Operate, verify, sync, and troubleshoot the self-hosted Firecrawl stack in this fork. Use when the user asks about OrbStack or Windows Docker Desktop/Compose runtime health, local API startup/rebuilds/logs, Firecrawl CLI local setup, upstream sync from firecrawl/firecrawl:main, endpoint capability checks, model routing, OpenRouter/Vercel AI Gateway/OpenAI profile changes, or which Firecrawl methods work locally.
 ---
 
 # Firecrawl Ops
@@ -10,6 +10,8 @@ Use this skill for runtime, sync, and platform work around this fork's self-host
 ## First Checks
 
 Run from the repo root unless `FC_DIR` is set:
+
+On Windows, use the [Docker Desktop onboarding guide](references/windows-docker-desktop-onboarding.md). Run general `.sh` ops helpers with Git Bash explicitly, and verify that `python3` resolves there. Run CRE POSIX helpers in Ubuntu from the ext4 checkout as described below. Docker and compatible Python helpers can also run directly from PowerShell. The compatibility doctor's `--run` stdio probe currently assumes POSIX pipe polling; use its static diagnostic on native Windows and verify CLI/MCP separately.
 
 ```bash
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
@@ -32,20 +34,50 @@ scripts/firecrawl-ops/check_pnpm_docker_config.py
 operator guide. For a high-volume listing refresh, do not use raw
 `collect.ts --source=all` or `cre_daily_update.sh` as the normal path.
 
-1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
-   recreate `api` and `playwright-service`.
-2. Run `cre_checkpoint_series.py --sources all` with serial collection,
-   explicit CPU settings, and `nice`; use the exact command in `START_HERE.md`.
-3. The checkpoint guard stops and checkpoints a sustained host-CPU breach. It
-   is not a permanent monitor or auto-resume service. Inspect
-   `host-cpu-guard.jsonl` and, when present, `cpu-incidents.jsonl` before
-   resuming exit `75`.
+The supervised runner supports Darwin Mach/sysctl safety telemetry and Linux
+CPU, memory PSI, available memory/swap and visible cgroup v2 limits/events.
+Unknown platforms or missing evidence fail closed. Under WSL2/Docker Desktop,
+the guards measure the Linux VM and visible cgroups, not aggregate Windows host
+CPU or RAM. Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
+for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
+Linux verification does not prove native Windows or native Mac runtime parity.
+Separate Linux and native Mac offline regression proof is recorded on
+[AGENTIC-3753](https://linear.app/agenticassets/issue/AGENTIC-3753); it does not
+establish a live refresh or authorize a Mac writer. For current Windows operation,
+follow the [current-state procedure](references/development-and-runtime-checkouts.md#routine-operation-and-updates):
+keep eligible sources running, report partial outcomes, and resolve an uncertain
+write before replay. A Mac readback or an old cutover packet is not a routine
+Windows restart prerequisite. Keep local writer exclusion and data ownership;
+onboarding alone does not authorize a new scheduler or production write.
+
+For CRE database transport failures, use
+[WSL Supabase connection troubleshooting](references/wsl-supabase-connection-troubleshooting.md).
+It distinguishes IPv6 routing, approved IPv4 session pooling, verified TLS,
+CLI API access and checkpoint tenant identity from full-refresh acceptance.
+
+1. Verify the existing resource profile and running containers first. Do not
+   reapply settings or recreate services before each refresh. For an approved
+   resource change, follow the scoped procedure in `START_HERE.md`; browser-only
+   changes must not recreate the API or apply a pending model transition.
+2. Run `cre_checkpoint_series.py` with an approved finite source selection,
+   explicit CPU settings, and `nice`; use the commands in `START_HERE.md`.
+   Serial mode is the default. Opt-in `--pipeline --source-workers 2` overlaps
+   collection with serial database units through the same shared runner on
+   macOS and Linux/WSL. Keep exact-key source admissions and provider limits.
+3. The checkpoint guards stop and checkpoint sustained CPU or warning memory
+   pressure, critical memory pressure, or missing required telemetry/evidence.
+   They are not a permanent monitor or auto-resume service. Inspect
+   `host-cpu-guard.jsonl`, `host-memory-guard.jsonl` and, when present,
+   `cpu-incidents.jsonl` after an interruption. Serial resume requires the exact
+   recorded configuration; pipeline resume is unsupported, so reconcile its
+   settled generation before any new invocation. Memory stops never qualify
+   for automatic CPU-only recovery.
 
 The supervised path never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. GetCREdata remains the only
 production OM-extraction writer.
 
-This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
+On the Mac, use OrbStack. If Docker commands fail there, open OrbStack and confirm `docker context show` is `orbstack`. Native Windows uses Docker Desktop with Linux containers and `desktop-linux`; Ubuntu/WSL may report `default` for the same Desktop daemon. Verify the daemon and existing containers before changing contexts; do not switch Windows to `orbstack`. The expected local API on either host is `http://localhost:3002`.
 
 For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, start and verify the core stack without a root `.env`, then have a human create the minimal root `.env` described in the local guide if AI-backed calls are needed. Obtain an operator dry-run plan for the selected model, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then complete the human-owned transition.
 
@@ -148,7 +180,7 @@ Keep Firecrawl tooling separate from any one agent runtime:
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
 - User-level installer: `scripts/firecrawl-ops/sync_agent_skills.sh`
 
-Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for this Mac's Firecrawl stack; cloud agents need a reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
+Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for the workstation's Firecrawl stack; cloud agents need a separately reviewed reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
 
 After updating repo skills, run:
 

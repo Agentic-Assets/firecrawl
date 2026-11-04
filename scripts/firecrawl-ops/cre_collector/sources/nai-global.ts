@@ -1,5 +1,7 @@
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { createHash } from "node:crypto";
+import * as cheerio from "cheerio";
 import { PAGE_CAP } from "../lib/config.js";
 import { stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
@@ -13,6 +15,9 @@ import { DetailObservation, LinkItem, ScrapedDoc, SourceResult, Tx } from "../ty
 import { boundedInt, clean, num, pmap } from "../lib/util.js";
 import { naiDocumentUrls, naiImageUrls } from "./pure/nai-assets.js";
 import { naiPublicPostId } from "./pure/nai-identity.js";
+import { cancelResponseBody, settleResponseBodyRead, type ResponseBodyReader } from "../lib/response-body.js";
+import { NAI_CAPTURE_MAX_BODY_BYTES, publishNaiNativePage } from "../lib/source-evidence/nai-page.js";
+import { observationNow } from "../lib/observation-clock.js";
 
 
 // --- NAI Global: Infabode public GraphQL feed ---
@@ -103,6 +108,13 @@ function naiDiscoveryError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class NaiDiscoveryUnsettledError extends Error {
+  constructor(cause: unknown) {
+    super(`NAI discovery response cleanup was not acknowledged: ${naiDiscoveryError(cause)}`, { cause });
+    this.name = "NaiDiscoveryUnsettledError";
+  }
+}
+
 async function fetchNaiDiscoveryText(
   url: string,
   fetchImpl: typeof fetch,
@@ -110,6 +122,9 @@ async function fetchNaiDiscoveryText(
   referer = NAI_WIDGET_URL
 ): Promise<string> {
   const controller = new AbortController();
+  let response: Response | undefined;
+  let reader: ResponseBodyReader | undefined;
+  let readFailure: { error: unknown } | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
@@ -118,7 +133,7 @@ async function fetchNaiDiscoveryText(
     }, timeoutMs);
   });
   try {
-    const response = await Promise.race([
+    response = await Promise.race([
       fetchImpl(url, {
         headers: {
           referer,
@@ -134,16 +149,17 @@ async function fetchNaiDiscoveryText(
       throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
     }
     if (!response.body) return "";
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     while (true) {
-      const { done, value } = await Promise.race([reader.read(), deadline]);
+      const { done, value } = await Promise.race([
+        reader.read().catch((error: unknown) => { readFailure = { error }; throw error; }),
+        deadline,
+      ]);
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES) {
-        controller.abort();
-        await reader.cancel();
         throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
       }
       chunks.push(value);
@@ -155,8 +171,25 @@ async function fetchNaiDiscoveryText(
       offset += chunk.byteLength;
     }
     return new TextDecoder().decode(body);
+  } catch (error) {
+    controller.abort();
+    await Promise.resolve();
+    // A separate one-second cleanup allowance bounds refusal; it is not an
+    // observed provider duration or permission to continue without an ACK.
+    const readError = readFailure ? readFailure.error : error;
+    let settled = reader
+      ? await settleResponseBodyRead(reader, readError, 1_000)
+      : await cancelResponseBody(response?.body ?? null, 1_000);
+    if (!settled && reader && readFailure && readFailure.error !== readError) {
+      settled = await settleResponseBodyRead(reader, readFailure.error, 0);
+    }
+    if (!settled) {
+      throw new NaiDiscoveryUnsettledError(error);
+    }
+    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
+    reader?.releaseLock();
   }
 }
 
@@ -291,12 +324,14 @@ export async function discoverNaiSourceIds(
           return discovered;
         }
       } catch (error) {
+        if (error instanceof NaiDiscoveryUnsettledError) throw error;
         scriptErrors.push(`${scriptUrl}: ${naiDiscoveryError(error)}`);
       }
     }
     const suffix = scriptErrors.length ? `; ${scriptErrors.join("; ")}` : "";
     throw new Error(`no validated domestic NAI office config found in ${scriptUrls.length} chunks${suffix}`);
   } catch (error) {
+    if (error instanceof NaiDiscoveryUnsettledError) throw error;
     const wrapped = new Error(`NAI source organization discovery failed: ${naiDiscoveryError(error)}`);
     if (strict) throw wrapped;
     return naiDocumentedSourceIdFallback(wrapped, widgetUrl);
@@ -312,6 +347,7 @@ async function resolveNaiSourceIds(strict: boolean): Promise<NaiSourceIdDiscover
   try {
     return await naiLiveSourceIdDiscovery;
   } catch (error) {
+    if (error instanceof NaiDiscoveryUnsettledError) throw error;
     naiLiveSourceIdDiscovery = null;
     if (strict) throw error;
     return naiDocumentedSourceIdFallback(error, NAI_WIDGET_URL);
@@ -389,6 +425,14 @@ export async function naiGraphqlPost(
 ): Promise<any> {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const requestBody = JSON.stringify(body);
+  const captureDir = process.env.CRE_NAI_NATIVE_CAPTURE_DIR;
+  const capture = !!captureDir && url === NAI_PUBLIC_POST_URL && body?.operationName === "GET_LISTINGS_PUBLIC_POSTS";
+  if (capture && (body?.query !== NAI_FEED_QUERY || process.env.CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER !== "1"))
+    throw new NativeEvidenceTerminalError("NAI native capture failed");
+  const startedAt = capture ? observationNow() : "";
+  let reader: ResponseBodyReader | undefined;
+  let captureStopped = false;
   const request = fetch(url, {
     method: "POST",
     headers: {
@@ -397,7 +441,7 @@ export async function naiGraphqlPost(
       referer,
       "user-agent": "Mozilla/5.0 CRE collector",
     },
-    body: JSON.stringify(body),
+    body: requestBody,
     signal: controller.signal,
   });
   // Keep the deadline live through both fetch and response-body consumption.
@@ -412,12 +456,51 @@ export async function naiGraphqlPost(
   let res: Response;
   let text: string;
   try {
-    ({ res, text } = await Promise.race([
-      request.then(async (response) => ({ res: response, text: await response.text() })),
-      deadline,
-    ]));
+    if (capture) {
+      const received = await Promise.race([
+        request.then(async (response) => {
+          if (captureStopped) {
+            await cancelResponseBody(response.body, 1_000);
+            throw new Error("capture deadline expired");
+          }
+          const chunks: Uint8Array[] = [];
+          let bytes = 0;
+          if (response.body) {
+            reader = response.body.getReader();
+            while (true) {
+              const next = await reader.read();
+              if (next.done) break;
+              bytes += next.value.byteLength;
+              if (bytes > NAI_CAPTURE_MAX_BODY_BYTES) throw new Error("response limit");
+              chunks.push(next.value);
+            }
+          }
+          return { res: response, bytes: Buffer.concat(chunks, bytes) };
+        }),
+        deadline,
+      ]);
+      res = received.res;
+      await publishNaiNativePage(captureDir, { requestUrl: url, finalUrl: res.url, status: res.status,
+        startedAt, finishedAt: observationNow(), requestBody, responseBody: received.bytes });
+      text = new TextDecoder("utf-8", { fatal: true }).decode(received.bytes);
+    } else {
+      ({ res, text } = await Promise.race([
+        request.then(async (response) => ({ res: response, text: await response.text() })),
+        deadline,
+      ]));
+    }
+  } catch (error) {
+    if (!capture) throw error;
+    captureStopped = true;
+    controller.abort();
+    if (!reader || !(await settleResponseBodyRead(reader, error, 1_000))) {
+      throw new NativeEvidenceTerminalError("NAI native capture failed: response settlement unconfirmed");
+    }
+    throw new NativeEvidenceTerminalError("NAI native capture failed");
   } finally {
+    captureStopped = true;
     if (timeout) clearTimeout(timeout);
+    reader?.releaseLock();
   }
   let parsed: any = null;
   try {
@@ -577,6 +660,40 @@ export function harvestNai(row: any, detail: any): {
   return { media: r.media, links: r.links, documents: r.documents, images: r.images };
 }
 
+/** Explicit property facts in the Infabode post's two-cell editor tables. */
+function naiPhysicalFacts(content: unknown): { yearBuilt?: number; assetType?: string } {
+  if (typeof content !== "string" || !content.trim()) return {};
+  const $ = cheerio.load(content);
+  const facts = new Map<string, Map<string, string>>();
+  $("table tr").each((_, row) => {
+    const cells = $(row).children("td,th");
+    // Nested tables are not one unambiguous label/value pair.
+    if (
+      cells.length !== 2 || $(row).parents("table").length !== 1 || cells.find("table").length
+    ) return;
+    const label = cells.eq(0).text().replace(/\s+/g, " ").trim()
+      .replace(/\s*:\s*$/, "").toLowerCase();
+    if (label !== "year built" && label !== "property type") return;
+    const value = clean(cells.eq(1).text().replace(/\s+/g, " "));
+    if (!value) return;
+    const values = facts.get(label) ?? new Map<string, string>();
+    const key = value.toLowerCase();
+    if (!values.has(key)) values.set(key, value);
+    facts.set(label, values);
+  });
+  const unique = (label: string): string | undefined => {
+    const values = facts.get(label);
+    return values?.size === 1 ? values.values().next().value : undefined;
+  };
+  const year = unique("year built");
+  return {
+    yearBuilt: year && /^\d{4}$/.test(year) && Number(year) > 1700 && Number(year) < 2100
+      ? Number(year)
+      : undefined,
+    assetType: unique("property type"),
+  };
+}
+
 export function naiListingFromFeed(
   row: any,
   tx: Tx,
@@ -588,6 +705,7 @@ export function naiListingFromFeed(
   // The publicPosts feed carries the public listing detail fields, including
   // price, size, contacts, documents, and the provider status label.
   const scalarSource = detail ?? (useFeedScalars ? row : null);
+  const physicalFacts = !detailError ? naiPhysicalFacts(scalarSource?.content) : {};
   const id = Number(row?.id);
   const sourceLocations = Array.isArray(detail?.locations) && detail.locations.length ? detail.locations : row?.locations;
   const loc = naiLocation(Array.isArray(sourceLocations) ? sourceLocations : []);
@@ -648,7 +766,9 @@ export function naiListingFromFeed(
     id: Number.isFinite(id) ? `infabode:${id}` : null,
     name: clean(detail?.title ?? row?.title),
     transactionType: tx === "sale" ? "Sale" : "Lease",
-    assetType: clean(detail?.contentType?.name ?? row?.contentType?.name),
+    // contentType is a publication category, retained verbatim in the raw post.
+    assetType: physicalFacts.assetType,
+    yearBuilt: physicalFacts.yearBuilt,
     description: stripHtmlText(detail?.content) ?? clean(detail?.summary ?? row?.summary),
     city: loc.city,
     state: loc.state,

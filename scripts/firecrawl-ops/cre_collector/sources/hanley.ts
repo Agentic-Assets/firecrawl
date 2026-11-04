@@ -1,3 +1,5 @@
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import {
   generationMatches,
@@ -68,7 +70,7 @@ function renderedHanleyInventory(html: string): {
   };
 }
 
-function embeddedArrayAt(html: string, marker: number): any[] | null {
+function embeddedArrayLiteralAt(html: string, marker: number): string | null {
   const start = html.indexOf("[", marker);
   if (start < 0) return null;
   let depth = 0;
@@ -91,9 +93,14 @@ function embeddedArrayAt(html: string, marker: number): any[] | null {
       }
     }
   }
-  if (end < 0) return null;
+  return end < 0 ? null : html.slice(start, end);
+}
+
+function embeddedArrayAt(html: string, marker: number): any[] | null {
+  const literal = embeddedArrayLiteralAt(html, marker);
+  if (literal === null) return null;
   try {
-    const parsed = JSON.parse(html.slice(start, end));
+    const parsed = JSON.parse(literal);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -204,6 +211,16 @@ export function hanleyFallbackOptions(strict = requireFreshDetails()): {
   };
 }
 
+function captureHanleyLiteral(html: string, variant: "direct" | "firecrawl", status: number | null): void {
+  if (!nativeJsonFeedCaptureEnabled()) return;
+  const match = /\brethink_properties\s*=/.exec(html);
+  const marker = match?.index ?? html.indexOf("rethink_properties");
+  if (marker < 0) return;
+  const literal = embeddedArrayLiteralAt(html, marker);
+  if (literal !== null) publishNativeJsonFeed({ profile: "hanley_embedded_array_v1", sourceKey: "hanley",
+    requestVariant: variant, requestBody: null, page: null, offset: null, status, body: literal });
+}
+
 async function fetchHanleyHtml(strict = requireFreshDetails()): Promise<string> {
   try {
     const res = await fetch(HANLEY_URL, {
@@ -217,14 +234,17 @@ async function fetchHanleyHtml(strict = requireFreshDetails()): Promise<string> 
     if (res.ok) {
       const html = await res.text();
       if (html.includes("rethink_properties")) {
+        captureHanleyLiteral(html, "direct", res.status);
         parseHanleyInventory(html, strict);
         return html;
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeJsonFeedCaptureError) throw error;
     /* fall back to Firecrawl raw HTML */
   }
   const html = await scrapeRaw(HANLEY_URL, hanleyFallbackOptions(strict));
+  captureHanleyLiteral(html, "firecrawl", null);
   if (strict) parseHanleyInventory(html, true);
   return html;
 }
@@ -292,12 +312,8 @@ export function mapHanleyListing(
   });
 }
 
-export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
-  const strict = requireFreshDetails();
-  const generationId = refreshGenerationId();
-  if (strict && !generationId) {
-    throw new Error("Hanley strict inventory requires CRE_REFRESH_GENERATION");
-  }
+async function loadHanleyInventory(strict: boolean, generationId: string | null, fresh = false) {
+  if (fresh) hanleyCache = null;
   let cacheDisposition: CacheDisposition = "live";
   if (
     hanleyCache &&
@@ -311,24 +327,56 @@ export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise
     if (!parsed.rows.length) throw new Error("Hanley: rethink_properties array not found or empty");
     hanleyCache = {
       rows: parsed.publicRows,
-      inventoryObservedAt: new Date().toISOString(),
+      inventoryObservedAt: observationNow(),
       generationId,
       strictValidated: strict,
     };
   } else {
     cacheDisposition = "generation_cache";
   }
+  return { inventory: hanleyCache, cacheDisposition };
+}
+
+// Ordinary enrichment uses the same structurally validated public feed and
+// mapper, without claiming a full-source strict-generation certificate.
+export async function enrichHanleyListings(
+  items: { externalId: string; url: string }[]
+): Promise<any[]> {
+  const { inventory, cacheDisposition } = await loadHanleyInventory(true, refreshGenerationId(), true);
+  const byId = new Map(inventory.rows.map((row) => [String(row.id), row]));
+  return items.flatMap((item) => {
+    const sourceRow = byId.get(item.externalId);
+    if (!sourceRow) return [];
+    const transactionMode = hanleyIsLease(sourceRow) ? "lease" : "sale";
+    const row = mapHanleyListing(sourceRow, transactionMode, {
+      strict: true,
+      inventoryObservedAt: inventory.inventoryObservedAt,
+      generationId: inventory.generationId,
+      cacheDisposition,
+    });
+    // A queue URL is not permission to overwrite the source's canonical URL.
+    return row.url === item.url ? [{ ...row, transactionMode }] : [];
+  });
+}
+
+export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
+  if (strict && !generationId) {
+    throw new Error("Hanley strict inventory requires CRE_REFRESH_GENERATION");
+  }
+  const { inventory, cacheDisposition } = await loadHanleyInventory(strict, generationId);
   const listings: any[] = [];
   let eligible = 0;
-  for (const row of hanleyCache.rows) {
+  for (const row of inventory.rows) {
     if (tx === "lease" ? !hanleyIsLease(row) : hanleyIsLease(row)) continue;
     eligible++;
     if (listings.length >= max) continue;
     listings.push(
       mapHanleyListing(row, tx, {
         strict,
-        inventoryObservedAt: hanleyCache.inventoryObservedAt,
-        generationId: hanleyCache.generationId,
+        inventoryObservedAt: inventory.inventoryObservedAt,
+        generationId: inventory.generationId,
         cacheDisposition,
       })
     );
@@ -337,7 +385,7 @@ export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise
     company: "Hanley Investment Group",
     sourceUrl: HANLEY_URL,
     method: "Direct fetch of /listings/ with embedded rethink_properties JSON",
-    totalAvailable: hanleyCache.rows.length,
+    totalAvailable: inventory.rows.length,
     listings,
     truncated: listings.length < eligible,
   };

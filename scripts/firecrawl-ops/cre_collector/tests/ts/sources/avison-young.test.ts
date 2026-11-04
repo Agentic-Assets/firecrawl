@@ -21,7 +21,6 @@ import {
   avisonYoungMatchesTx,
   avisonYoungTransactionType,
   avisonYoungSizeText,
-  avisonYoungLeaseRateText,
   avisonYoungContact,
   avisonYoungEntityItems,
   avisonYoungTeamFeedState,
@@ -42,8 +41,14 @@ import {
   assertAvisonYoungOutputIdentity,
   assertAvisonYoungDetailDoc,
   assertAvisonYoungStrictFeed,
+  AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AvisonYoungHttpStatusError,
+  AvisonYoungTerminalDetailError,
+  AvisonYoungTerminalSourceError,
   fetchAvisonYoungDirectDoc,
   fetchAvisonYoungDirectDocWithRetry,
+  isExclusiveAvisonYoungTerminal404Failure,
+  mapAvisonYoungStrictDetails,
   isAvisonYoungDirectDetailUrl,
   isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
@@ -58,6 +63,10 @@ import { firecrawl } from "../../../lib/scrape.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dir = dirname(__filename);
 const FIXTURE_PATH = join(__dir, "../../fixtures/raw_data/avison-young.json");
+const SHARP_LAUNCH_LAYOUT_FIXTURE_PATH = join(
+  __dir,
+  "../../fixtures/raw_data/avison-young-sharplaunch-detail.html"
+);
 
 /** Load the avison-young.json fixture (array of {external_id, rawSharpLaunch} blobs). */
 function loadFixture(): Array<{ external_id: string; rawSharpLaunch: any }> {
@@ -148,7 +157,7 @@ test("avisonYoungTransactions and transaction matchers classify rows", () => {
   assert.equal(avisonYoungTransactionType({ transaction: "Lease" }), "Lease");
 });
 
-test("avisonYoungSizeText and avisonYoungLeaseRateText format feed metrics", () => {
+test("avisonYoungSizeText formats feed size metrics without inventing rent units", () => {
   assert.equal(
     avisonYoungSizeText({
       total_surface_sqft: 50000,
@@ -157,14 +166,6 @@ test("avisonYoungSizeText and avisonYoungLeaseRateText format feed metrics", () 
     }),
     "50000 SF total; 2500 - 8000 SF available"
   );
-  assert.equal(
-    avisonYoungLeaseRateText({
-      availabilities_min_rent: 28,
-      availabilities_max_rent: 34,
-    }),
-    "$28 - $34/SF/YR"
-  );
-  assert.equal(avisonYoungLeaseRateText({}), null);
 });
 
 test("avisonYoungContact maps SharpLaunch team members", () => {
@@ -482,6 +483,58 @@ test("extractAvisonYoungContactUrls collects profile and vcard links", () => {
   assert.deepEqual(vcardLinks, [vcard]);
 });
 
+for (const [host, accepted] of [
+  ["www.avisonyoung.us", true],
+  ["avisonyoung.us", true],
+  ["www.avisonyoung.us.invalid", false],
+  ["regional.avisonyoung.us", false],
+  ["example.sharplaunch.com", false],
+] as const) {
+  test(`Avison contact profiles retain only exact official hosts: ${host}`, () => {
+    const profile = `https://${host}/professionals/-/ayp/view/jane-q-public`;
+    const docs = [
+      {
+        url: `${AVISON_YOUNG_HOST}/properties/dallas-tower`,
+        doc: doc(`<a href="${profile}">Jane Q. Public</a>`),
+      },
+    ];
+    const { profileLinks } = extractAvisonYoungContactUrls(docs);
+    assert.deepEqual(
+      profileLinks.map((link) => link.url),
+      accepted ? [profile] : []
+    );
+    const [enriched] = enrichAvisonYoungContacts(
+      [{ name: "Jane Q. Public" }],
+      docs
+    );
+    assert.equal(enriched.profileUrl, accepted ? profile : undefined);
+    const existing = `${AVISON_YOUNG_HOST}/professionals/-/ayp/view/existing-profile`;
+    const [preserved] = enrichAvisonYoungContacts(
+      [{ name: "Jane Q. Public", profileUrl: existing }],
+      docs
+    );
+    assert.equal(preserved.profileUrl, existing);
+  });
+}
+
+test("Avison relative contact profiles retain their observed official base host", () => {
+  const base = "https://avisonyoung.us/properties/dallas-tower";
+  const docs = [
+    {
+      url: base,
+      doc: doc('<a href="/professionals/-/ayp/view/jane-q-public">Jane Q. Public</a>'),
+    },
+  ];
+  const [enriched] = enrichAvisonYoungContacts(
+    [{ name: "Jane Q. Public" }],
+    docs
+  );
+  assert.equal(
+    enriched.profileUrl,
+    "https://avisonyoung.us/professionals/-/ayp/view/jane-q-public"
+  );
+});
+
 test("avisonYoungLongestMarkdown picks the longest non-empty page markdown", () => {
   assert.equal(
     avisonYoungLongestMarkdown([
@@ -590,27 +643,18 @@ test("avisonYoungBaseListing emits availableSf / minDivisibleSf / maxDivisibleSf
   assert.equal(listingB.maxDivisibleSf, 127231);
 });
 
-test("avisonYoungBaseListing emits leaseRateMin/Max for normal rates and suppresses anomalous $7500/SF/YR rate", () => {
+test("avisonYoungBaseListing preserves feed rent without assigning units or period", () => {
   const fixtures = loadFixture();
-
-  // Row 17808: $18/SF/YR -> leaseRateMin=18; leaseRateMax pruned (null -> absent key)
-  const rowA = fixtures.find((f) => f.external_id === "17808")!.rawSharpLaunch;
-  const listingA = avisonYoungBaseListing(rowA, emptyTeam());
-  assert.equal(listingA.leaseRateMin, 18);
-  // prune() drops null values, so leaseRateMax is absent (undefined) when there is no range high
-  assert.equal(listingA.leaseRateMax, undefined, "no range high -> prune drops leaseRateMax");
-
-  // Row 17952: $4.95/SF/YR (same min and max in feed) -> leaseRateMin=4.95, leaseRateMax absent
-  const rowB = fixtures.find((f) => f.external_id === "17952")!.rawSharpLaunch;
-  const listingB = avisonYoungBaseListing(rowB, emptyTeam());
-  assert.equal(listingB.leaseRateMin, 4.95);
-  assert.equal(listingB.leaseRateMax, undefined, "identical min==max -> no range -> leaseRateMax absent");
-
-  // Row 18150: $7500/SF/YR anomaly -> MUST be rejected (>500 $/SF/yr guard) -> both absent after prune
-  const rowC = fixtures.find((f) => f.external_id === "18150")!.rawSharpLaunch;
-  const listingC = avisonYoungBaseListing(rowC, emptyTeam());
-  assert.equal(listingC.leaseRateMin, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
-  assert.equal(listingC.leaseRateMax, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
+  for (const externalId of ["17808", "17952", "18150"]) {
+    const row = fixtures.find((fixture) => fixture.external_id === externalId)!.rawSharpLaunch;
+    const listing = avisonYoungBaseListing(row, emptyTeam());
+    assert.equal(listing.leaseRateText, undefined);
+    assert.equal(listing.leaseRateMin, undefined);
+    assert.equal(listing.leaseRateMax, undefined);
+    assert.equal(listing.leaseRateType, undefined);
+    assert.equal(listing.rawSharpLaunch.availabilities_min_rent, row.availabilities_min_rent);
+    assert.equal(listing.rawSharpLaunch.availabilities_max_rent, row.availabilities_max_rent);
+  }
 });
 
 test("avisonYoungBaseListing emits submarket from rawSharpLaunch.submarket", () => {
@@ -642,11 +686,13 @@ test("avisonYoungBaseListing emits units from rawSharpLaunch.units", () => {
   assert.equal(avisonYoungBaseListing(rowNoUnits, emptyTeam()).units, undefined);
 });
 
-test("avisonYoungBaseListing emits salePricePerSf from rawSharpLaunch.sale_unit_price", () => {
+test("avisonYoungBaseListing retains untyped saleUnitPrice without assigning salePricePerSf", () => {
   const fixtures = loadFixture();
   // Row 18653 has sale_unit_price=2500000
   const rowSale = fixtures.find((f) => f.external_id === "18653")!.rawSharpLaunch;
-  assert.equal(avisonYoungBaseListing(rowSale, emptyTeam()).salePricePerSf, 2500000);
+  const listing = avisonYoungBaseListing(rowSale, emptyTeam());
+  assert.equal(listing.saleUnitPrice, 2500000);
+  assert.equal(listing.salePricePerSf, undefined);
   // Row 17808 has no sale_unit_price -> salePricePerSf absent after prune
   const rowLease = fixtures.find((f) => f.external_id === "17808")!.rawSharpLaunch;
   assert.equal(avisonYoungBaseListing(rowLease, emptyTeam()).salePricePerSf, undefined);
@@ -778,6 +824,196 @@ test("Avison detail admission rejects challenge and wrong-property shells", () =
   );
 });
 
+test("Avison recognizes the observed SharpLaunch property layout only with bound visible identity", () => {
+  const rawHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const base = {
+    id: "fixture-59679",
+    name: "Fixture Commerce Center",
+    street: "159 Example Street",
+    city: "Brooklyn",
+    state: "NY",
+    zip: "11206",
+    sharpLaunchUrl: nativeUrl,
+  };
+  const nativeDoc = {
+    ...doc(rawHtml),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, base)
+  );
+
+  const olderRecognizedNativePage = {
+    ...doc(
+      "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+        "<p>159 Example Street, Brooklyn, NY</p></main></html>"
+    ),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(olderRecognizedNativePage, nativeUrl, base)
+  );
+  for (const incidentalMarker of [
+    "building__property-info-box",
+    "availability-card-v2",
+  ]) {
+    const legacyPageWithIncidentalMarker = {
+      ...doc(
+        '<html><main class="property-detail"><h1>Fixture Commerce Center</h1>' +
+          '<p>159 Example Street, Brooklyn, NY</p>' +
+          '<div class="' + incidentalMarker + '">Legacy markup</div></main></html>'
+      ),
+      metadata: { sourceURL: nativeUrl, statusCode: 200 },
+    };
+    assert.doesNotThrow(() =>
+      assertAvisonYoungDetailDoc(legacyPageWithIncidentalMarker, nativeUrl, base)
+    );
+  }
+
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        name: "Different Property",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "900 Other Avenue",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        city: "Queens",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        state: "NJ",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml.replace(
+            "<h1>Fixture Commerce Center</h1>",
+            "<h1>Fixture Commerce Center</h1><h1>Other Property</h1>"
+          )),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, "https://other.sharplaunch.com", base),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        nativeDoc,
+        "https://fixture-property.sharplaunch.com",
+        { ...base, sharpLaunchUrl: "https://fixture-property.avisonyoung.us" }
+      ),
+    /identity/
+  );
+
+  const incompleteNativeTemplate = {
+    ...doc(rawHtml
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replace("<main>", "<div>")
+      .replace("</main>", "</div>")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(incompleteNativeTemplate, nativeUrl, base),
+    /structure/
+  );
+
+  const unrelatedTemplate = {
+    ...doc(rawHtml.replaceAll("building__property-info-box", "unrelated-info-box")
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replaceAll("<main>", "<div>").replaceAll("</main>", "</div>")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(unrelatedTemplate, nativeUrl, base),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><h1>Fixture Commerce Center</h1><div>Provider template</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><body><h1>Fixture Commerce Center</h1><section"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml),
+          metadata: { sourceURL: nativeUrl, statusCode: 404 },
+        },
+        nativeUrl,
+        base
+      ),
+    /HTTP 404/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><title>Just a moment...</title><div>captcha</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /challenge or error shell/
+  );
+});
+
 test("Avison direct detail transport captures current HTML, links, images, and identity metadata", async (t) => {
   const url =
     "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease";
@@ -849,6 +1085,178 @@ test("Avison strict direct detail reports the terminal per-page failure", async 
       ),
     /failed after 3 attempt\(s\): Error: HTTP 503/
   );
+});
+
+test("Avison direct transport preserves actual HTTP status as a typed error", async () => {
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/missing",
+        30000,
+        async () => ["93.184.216.34"],
+        async () => ({ status: 404, location: null, body: "not found" })
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+});
+
+test("Avison terminal 404 is not retried, while typed transient status is retried", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/missing",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/missing",
+            404
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { waits.push(milliseconds); }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(waits, []);
+
+  calls = 0;
+  const transientWaits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/transient",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/transient",
+            503
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { transientWaits.push(milliseconds); }
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(transientWaits, [20, 40]);
+
+  calls = 0;
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/untyped-404",
+        async () => {
+          calls++;
+          throw new Error("HTTP 404");
+        },
+        3,
+        0
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+});
+
+test("Avison strict mapper stops admission, settles active work, and distinguishes mixed failures", async () => {
+  const started: number[] = [];
+  let rejectSecond!: (error: Error) => void;
+  const second = new Promise<number>((_resolve, reject) => {
+    rejectSecond = reject;
+  });
+  const result = mapAvisonYoungStrictDetails(
+    [0, 1, 2],
+    2,
+    async (_item, index) => {
+      started.push(index);
+      if (index === 0) {
+        throw new AvisonYoungTerminalDetailError({
+          listingId: "17808",
+          role: "external",
+          status: 404,
+        });
+      }
+      return second;
+    }
+  );
+  rejectSecond(new Error("temporary transport failure"));
+  await assert.rejects(result, /temporary transport failure/);
+  assert.deepEqual(started.sort(), [0, 1]);
+
+  const terminalStarted: number[] = [];
+  await assert.rejects(
+    () =>
+      mapAvisonYoungStrictDetails(
+        [0, 1, 2],
+        2,
+        async (_item, index) => {
+          terminalStarted.push(index);
+          throw new AvisonYoungTerminalDetailError({
+            listingId: "id-" + index,
+            role: "sharpLaunch",
+            status: 404,
+          });
+        }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungTerminalSourceError
+      && error.failures.length === 2
+      && error.failures.every((failure) => failure.status === 404)
+  );
+  assert.deepEqual(terminalStarted.sort(), [0, 1]);
+});
+
+test("Avison strict mapper treats undefined rejection as a failure", async () => {
+  await assert.rejects(
+    () => mapAvisonYoungStrictDetails([0], 1, async () => { throw undefined; }),
+    (error: unknown) => error === undefined
+  );
+
+  let rejectSibling!: (error: unknown) => void;
+  const sibling = new Promise<never>((_resolve, reject) => { rejectSibling = reject; });
+  const mixed = mapAvisonYoungStrictDetails([0, 1], 2, async (_item, index) => {
+    if (index === 0) {
+      throw new AvisonYoungTerminalDetailError({
+        listingId: "terminal-id",
+        role: "external",
+        status: 404,
+      });
+    }
+    return sibling;
+  });
+  rejectSibling(undefined);
+  await assert.rejects(mixed, (error: unknown) => error === undefined);
+});
+
+test("Avison reserved source exit is limited to an exclusive complete terminal failure", () => {
+  const requestedSources = ["avison-young"];
+  const transactions = ["sale", "lease"];
+  assert.equal(AVISON_YOUNG_TERMINAL_404_EXIT_CODE, 78);
+  assert.equal(
+    isExclusiveAvisonYoungTerminal404Failure({
+      requestedSources,
+      transactions,
+      listingsCollected: 0,
+      terminalFailureTransactions: 2,
+      otherFailureCount: 0,
+    }),
+    true
+  );
+  for (const input of [
+    { requestedSources: ["cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources: ["avison-young", "cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 1, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 1, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 1 },
+  ]) {
+    assert.equal(isExclusiveAvisonYoungTerminal404Failure(input), false);
+  }
 });
 
 test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {
@@ -993,6 +1401,15 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
     return {
       rawHtml: `
         <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <div class="building__overview-text"><ul><li>1,800 sf available</li></ul></div>
+        <div class="availability-card-v2"><div class="availability-card-v2-container">
+          <div class="availability-card-status-tag">Available</div>
+          <div class="availability-card-name"><h3>Suite 101</h3></div>
+          <div class="availability-card-rent"><h3>$21.00 - $23.00/SF/YR</h3></div>
+          <div class="availability-card-info"><div class="availability-card-info-item">
+            <span class="availability-card-info-item-title">Total Size</span>
+            <p class="availability-card-info-item-value">1,800 SF</p>
+          </div></div></div></div>
         <script type="application/ld+json">
           {"@type":"RealEstateListing","name":"602 N Capitol Ave",
            "url":"${url}","description":"Current property detail"}
@@ -1031,6 +1448,74 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
   assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
   assert.equal(listing.preserveChildCollections, undefined);
   assert.equal(listing.detailError, undefined);
+  assert.deepEqual(
+    listing.extraFacts.avison_lease_facts.pages.map((page: any) => page.role),
+    ["availability", "overview"]
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.external_id,
+    "17808"
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.listing_url,
+    "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease"
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.pages[0].observed_at,
+    listing.detailObservedAt
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.pages[0].observations[0].rent_text,
+    "$21.00 - $23.00/SF/YR"
+  );
+});
+
+test("strict Avison still fetches and validates both SharpLaunch and external detail URLs", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: string[] = [];
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const externalUrl = "https://www.avisonyoung.us/properties/fixture-commerce-center";
+  const rawSharpLaunchHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    return {
+      rawHtml: url === nativeUrl
+        ? rawSharpLaunchHtml
+        : "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+          "<p>159 Example Street, Brooklyn, NY</p></main></html>",
+      markdown: "# Fixture Commerce Center\n159 Example Street, Brooklyn, NY",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-all-detail-urls-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const enriched = await enrichAvisonYoungListing(
+    {
+      id: "fixture-59679",
+      name: "Fixture Commerce Center",
+      street: "159 Example Street",
+      city: "Brooklyn",
+      state: "NY",
+      sharpLaunchUrl: nativeUrl,
+      externalUrl,
+    },
+    true
+  );
+
+  assert.deepEqual(calls, [nativeUrl, externalUrl]);
+  assert.equal(enriched.detailError, undefined);
+  assert.equal(enriched.preserveChildCollections, undefined);
 });
 
 test("degraded non-strict detail refresh preserves prior child collections", async (t) => {
@@ -1121,4 +1606,22 @@ test("strict Avison fails on detail admission errors while non-strict preserves 
   );
   const fallback = await enrichAvisonYoungListing(base, false);
   assert.match(fallback.detailError, /HTTP 503/);
+});
+
+test("untyped sale unit prices retain raw value without asserting a per-SF basis", () => {
+  for (const fields of [
+    { sale_unit_price: 2300000, sale_price: 2300000, total_surface_sqft: 117612, total_surface: 2.7, total_surface_unit: "ac" },
+    { sale_unit_price: 20, sale_price: 2300000, total_surface_sqft: 117612 },
+    { sale_unit_price: 20, sale_price: 2300000 },
+    { sale_unit_price: 20, total_surface_sqft: 117612 },
+  ]) {
+    const feed = { id: "untyped-price-contract", transaction: ["sale"], sale_currency: "USD", ...fields };
+    const listing = avisonYoungBaseListing(feed, new Map());
+    assert.equal(listing.salePricePerSf, undefined, "untyped feed price must not gain a per-SF unit");
+    assert.equal(listing.saleUnitPrice, fields.sale_unit_price);
+    assert.equal(listing.salePriceUsd, fields.sale_price);
+    assert.equal(listing.buildingSizeSqft, fields.total_surface_sqft);
+    assert.equal(listing.transactionType, "Sale");
+    assert.deepEqual(listing.rawSharpLaunch, feed);
+  }
 });

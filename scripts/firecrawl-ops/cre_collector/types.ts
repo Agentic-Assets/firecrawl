@@ -207,12 +207,218 @@ export interface OmFactRow {
   confidence?: number | null;
 }
 
+export type InterraCurrentInventoryProof = {
+  schema: "interra-current-inventory-v1";
+  sourceKey: "interra-realty";
+  generationId: string;
+} & (
+  | {
+      kind: "terminal_feed";
+      transaction: "sale";
+      endpoint: string;
+      observedAt: string;
+      hasNextPage: false;
+      // SHA256 of the exact decoded response text encoded as UTF8, not raw bytes.
+      responseTextSha256: string;
+      nativeIdsByLifecycle: Record<"available" | "under_contract" | "closed", string[]>;
+      // SHA256 of compact JSON for the ASCII-sorted emitted native ID strings.
+      emittedNativeIdsSha256: string;
+    }
+  | {
+      kind: "known_empty_transaction";
+      transaction: "lease";
+      reason: "sale_only_source";
+      count: 0;
+    }
+);
+
+export type BuildoutInventoryProofRow = {
+  id: string;
+  showLink: string;
+  sale: boolean;
+  closed: boolean;
+  underContract: boolean;
+  alsoForSaleOrLease: boolean;
+};
+
+export type BuildoutInventoryProofPage = {
+  index: number;
+  endpoint: string;
+  observedAt: string;
+  generationId: string;
+  cacheDisposition: "live" | "generation_cache";
+  transport: "direct_json" | "firecrawl_json";
+  // SHA256 of UTF8(JSON.stringify(parsed provider response)), not HTTP bytes.
+  parsedJsonSha256: string;
+  total: number;
+  limit: number;
+  rows: BuildoutInventoryProofRow[];
+};
+
+export type BuildoutCurrentInventoryProof = {
+  schema: "buildout-current-inventory-v1";
+  kind: "complete_paginated_feed";
+  sourceKey: string;
+  transaction: Tx;
+  generationId: string;
+  pluginKey: string;
+  listingsPage: string;
+  sort: string;
+  // Counts the entire feed: closed rows and both transaction partitions.
+  total: number;
+  limit: number;
+  pages: BuildoutInventoryProofPage[];
+};
+
+// Compact tuples keep complete strict-detail proof out of worker metadata.
+export type PyramidInventoryPass = {
+  fingerprint: string;
+  pages: Array<[number, string, string, string, number, number, number[]]>;
+};
+export type PyramidCurrentInventoryProof = {
+  schema: "pyramid-strict-detail-v1" | "pyramid-verified-subset-v1" | "pyramid-incomplete-v2";
+  sourceKey: "pyramid-brokerage";
+  transaction: Tx;
+  generationId: string;
+  generationStartedAt: string;
+  total: number;
+  totalPages: number;
+  observedAt: string;
+  passes: PyramidInventoryPass[];
+  // native post, literal owned URL, canonical path key, transaction
+  cohort: Array<[number, string, string, Tx]>;
+  // post, validated canonical URL, detail observation, decoded body SHA256
+  details: Array<[number, string, string, string]>;
+  held?: Array<{ postId: number; reason: "missing_city"; listing: any }>;
+  incomplete?: Array<{ postId: number; missingFields: Array<"state" | "city" | "assetType"> }>;
+};
+
+export type EssexArchiveProof = {
+  endpoint: string;
+  observedAt: string;
+  responseTextSha256: string;
+  declaredTotal: number;
+  // Literal URL, lifecycle, provider name/location/units; closed native IDs are unknown.
+  rows: Array<[string, "on_market" | "under_contract" | "closed", string, string | null, number | null]>;
+};
+export type EssexInventoryPass = {
+  fingerprint: string;
+  current: EssexArchiveProof;
+  closed: EssexArchiveProof;
+  sitemap: { endpoint: string; observedAt: string; responseTextSha256: string; urls: string[] };
+};
+export type EssexCurrentInventoryProof = {
+  schema: "essex-strict-detail-v2";
+  sourceKey: "essex-realty";
+  transaction: Tx;
+  kind: "complete_current_inventory" | "known_empty_transaction";
+  reason?: "sale_only_source";
+  generationId: string;
+  generationStartedAt: string;
+  observedAt: string;
+  total: number;
+  passes: EssexInventoryPass[];
+  // WordPress page ID, literal URL/path, lifecycle and raw currentPropertyId observation.
+  cohort: Array<[string, string, string, "on_market" | "under_contract", string]>;
+  details: Array<[string, string, string, string]>;
+};
+
+export type DaumTenureProof = "sale" | "lease" | "sale_or_lease" | "unknown";
+export type DaumInventoryRow = {
+  url: string;
+  title: string;
+  tenure: DaumTenureProof;
+  tenureText: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  sizeText: string | null;
+  spaceCount: number | null;
+  assetType: string | null;
+  salePriceText: string | null;
+  leaseRateText: string | null;
+  brokerNames: string[];
+  imageUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+export type DaumDetail = {
+  postId: number;
+  observedCanonicalUrl?: string | null;
+  facts: Record<string, string>;
+  title: string;
+  tenure: DaumTenureProof;
+  tenureText: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  salePriceText: string | null;
+  leaseRateText: string | null;
+  sizeText: string | null;
+  description: string | null;
+  highlights: string[];
+  brochures: Array<{ name: string | null; url: string }>;
+  photos: string[];
+  contacts: Array<{
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    office: string | null;
+    profileUrl: string | null;
+    avatarUrl: string | null;
+    license: string | null;
+  }>;
+};
+
+export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
+
+export type DaumInventoryPass = {
+  index: number;
+  total: number;
+  pages: Array<{
+    endpoint: string; method: "POST"; observedAt: string; responseTextSha256: string;
+    reportedTotal: number; reportedPages: number;
+    members: Array<[string, DaumTenureProof, string | null]>;
+  }>;
+};
+export type DaumCurrentInventoryProof = {
+  schema: "daum-strict-detail-v1"; sourceKey: "daum-commercial"; transaction: Tx;
+  kind: "complete_current_inventory"; generationId: string; generationStartedAt: string;
+  observedAt: string; total: number; passes: DaumInventoryPass[];
+  cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, Exclude<DaumTenureProof, "unknown">]>;
+  details: Array<[string, string, string, string]>;
+};
+
+// A separate opt-in scope never establishes whole-source completeness.
+export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "schema" | "kind" | "cohort"> & {
+  schema: "daum-verified-subset-v1";
+  kind: "verified_subset_with_holds";
+  cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, DaumTenureProof]>;
+  retainedUnknownTenure?: string[];
+  // Complete URL-sorted cohort partition: only unknown/unknown may be held.
+  held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
+  // Audit-only parsed cards from new producers, never listing authority.
+  heldInventoryObservations: Array<{ postId: string; inventory: DaumInventoryRow }>;
+  // Audit-only parsed details/empty-title markers; never emitted as listings.
+  heldDetailObservations: Array<{ postId: string; detail: DaumDetail | DaumEmptyTitleObservation }>;
+};
+
+export type DaumEmptyTitleSubsetProof = Omit<DaumVerifiedSubsetInventoryProof, "schema" | "held"> & {
+  schema: "daum-verified-subset-v2";
+  subsetPolicy: "tenure-and-empty-title-v2";
+  titleObservations: Array<[string, 1, "empty"]>;
+  held: Array<[string, "unknown_inventory_and_detail_tenure" | "empty_required_property_title"]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
+  // Unqualified source observations, never canonical listing rows or coverage proof.
+  retainedObservations?: readonly unknown[];
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof | DaumEmptyTitleSubsetProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

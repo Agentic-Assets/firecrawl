@@ -121,6 +121,68 @@ def test_loader_rejects_malformed_source_checkpoint(tmp_path):
         status.load_manifest(manifest_path)
 
 
+@pytest.mark.parametrize("states", [
+    ["complete", "complete", "failed_source"],
+    ["qualified_partial_subset", "complete", "failed_source"],
+    ["complete", "pending", "failed_source"],
+    ["pending", "pending", "pending"],
+    ["complete", "complete", "complete"],
+    ["qualified_partial_subset", "complete", "complete"],
+])
+def test_failed_pipeline_producer_shapes_remain_renderable(tmp_path, capsys, states):
+    # run_pipeline_series requires both rc=0 and every member qualified for
+    # parent success; nonzero rc can leave even all members complete.
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest.update(status="failed", finished_at="2026-09-13T12:00:00+00:00")
+    manifest["config"]["pipeline"] = True
+    for checkpoint, state in zip(manifest["sources"].values(), states):
+        checkpoint.update(state=state, checkpoint_status="failed", attempts=[{"rc": 1}])
+    path.write_text(json.dumps(manifest))
+
+    snapshot = status.build_snapshot(status.load_manifest(path), path)
+    assert snapshot["status"] == "failed"
+    assert snapshot["failed"] == states.count("failed_source")
+    assert snapshot["complete"] == states.count("complete")
+    assert snapshot["handled"] == sum(state in status.HANDLED_STATES for state in states)
+    assert "failed" in status.render(snapshot, color=False).lower()
+    assert status.main([str(path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+@pytest.mark.parametrize("pipeline,states", [
+    (False, ["complete", "complete", "failed_source"]),
+    (None, ["complete", "complete", "failed_source"]),
+    (1, ["complete", "complete", "failed_source"]),
+    ("true", ["complete", "complete", "failed_source"]),
+    (False, ["complete", "complete", "complete"]),
+    (True, ["complete", "running", "failed_source"]),
+    (True, ["complete", "interrupted", "failed_source"]),
+    (True, ["complete", "resource_guard_interrupted", "failed_source"]),
+])
+def test_failed_pipeline_allowance_does_not_hide_inconsistent_series(tmp_path, pipeline, states):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest["status"] = "failed"
+    manifest["config"]["pipeline"] = pipeline
+    for checkpoint, state in zip(manifest["sources"].values(), states):
+        checkpoint["state"] = state
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(TypeError, match="inconsistent checkpoint-series manifest"):
+        status.load_manifest(path)
+
+
+def test_failed_pipeline_without_source_states_remains_inconsistent(tmp_path):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest.update(status="failed", sources={})
+    manifest["config"].update(pipeline=True, sources=[])
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(TypeError, match="inconsistent checkpoint-series manifest"):
+        status.load_manifest(path)
+
+
 def test_render_does_not_echo_raw_error_text(tmp_path):
     manifest_path = _manifest(tmp_path / "2026-09-13T120000Z")
     manifest = status.load_manifest(manifest_path)
@@ -348,7 +410,8 @@ def test_child_progress_shows_latest_counter_without_exposing_log(tmp_path):
         },
     }
     assert "lease: 200/300 in this pass" in rendered
-    assert "Includes cache/error outcomes; not listing completion" in rendered
+    assert "Reported detail pass" in rendered
+    assert "May include cache/errors or item positions; not listing completion" in rendered
     assert "private provider message" not in rendered
     assert "private token" not in json.dumps(snapshot)
 
@@ -472,6 +535,123 @@ def test_last_detail_counter_survives_empty_newer_attempt(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "source,transaction,completed,total",
+    [
+        ("jll", "sale", 2, 9),
+        ("transwestern", "lease", 3, 11),
+        ("avison-young", "sale", 4, 13),
+        ("cbre-dealflow", "lease", 5, 17),
+        ("colliers", "sale", 6, 19),
+        ("cushman-wakefield", "lease", 7, 23),
+        ("marcus-millichap", "sale", 8, 29),
+    ],
+)
+def test_child_progress_reads_exact_source_detail_counter(
+    tmp_path, source, transaction, completed, total
+):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = [source]
+    manifest["sources"] = {source: {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source=source)
+    (run_dir / "logs" / "collect.log").write_text(
+        f"{source}/{transaction}: detail enriched {completed}/{total}\n",
+        encoding="utf-8",
+    )
+
+    progress = status.child_progress(manifest, path, source)
+
+    assert progress == {
+        "state": "collecting",
+        "detail_pass": {
+            "transaction": transaction,
+            "completed": completed,
+            "total": total,
+            "attempt": 1,
+        },
+    }
+
+
+def test_avison_detail_counter_reports_latest_log_line_not_numeric_max(tmp_path):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = ["avison-young"]
+    manifest["sources"] = {"avison-young": {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source="avison-young")
+    (run_dir / "logs" / "collect.log").write_text(
+        "avison-young/lease: detail enriched 9/13\n"
+        "avison-young/lease: detail enriched 3/13\n",
+        encoding="utf-8",
+    )
+
+    progress = status.child_progress(manifest, path, "avison-young")
+
+    assert progress["detail_pass"] == {
+        "transaction": "lease",
+        "completed": 3,
+        "total": 13,
+        "attempt": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "source,lines",
+    [
+        (
+            "cbre-dealflow",
+            ["cbre/sale: detail enriched 8/9"],
+        ),
+        (
+            "transwestern",
+            ["avison-young/lease: detail enriched 8/9"],
+        ),
+        (
+            "transwestern",
+            ["transwestern/sale: enumerated 8/9"],
+        ),
+        (
+            "colliers",
+            ["colliers-main/sale: detail enriched 8/9"],
+        ),
+        (
+            "jll-investor",
+            ["jll-investor: detail enriched 8/9"],
+        ),
+        (
+            "cushman-wakefield",
+            [
+                "cushman-wakefield/sale: detail enriched 9/0",
+                "cushman-wakefield/sale: detail enriched 10/9",
+                "cushman-wakefield/sale: detail enriched 1234567890/1234567890",
+            ],
+        ),
+    ],
+)
+def test_child_progress_rejects_other_source_or_invalid_detail_counters(
+    tmp_path, source, lines
+):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = [source]
+    manifest["sources"] = {source: {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source=source)
+    (run_dir / "logs" / "collect.log").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+
+    assert status.child_progress(manifest, path, source) == {
+        "state": "collecting",
+        "detail_pass": None,
+    }
+
+
 def test_progress_history_is_bounded_and_skips_missing_logs(tmp_path):
     path = _manifest(tmp_path / "series")
     manifest = status.load_manifest(path)
@@ -541,3 +721,104 @@ def test_fifo_child_log_cannot_hang_dashboard(tmp_path):
     log.unlink()
     os.mkfifo(log)
     assert status.child_progress(manifest, path, "jll")["detail_pass"] is None
+
+
+def _running_pipeline_snapshot(tmp_path, *, peer="fetching", drift=None):
+    import cre_checkpoint_series as series
+    from test_pipeline_configuration import (
+        PARENT_ATTEMPTS, PARENT_START, RUN_ID, config, qualified_child,
+    )
+
+    directory = tmp_path / "series"
+    run = directory / "runs" / RUN_ID
+    run.mkdir(parents=True)
+    selected = ["cbre"] if peer == "all_verified" else ["cbre", "jll"]
+    settings = config(pipeline=True, sources=selected)
+    manifest = series.new_manifest(directory, git_sha="a" * 40, config=settings)
+    manifest.update(status="running", started_at=PARENT_START, updated_at=PARENT_START)
+    for row in manifest["sources"].values():
+        row.update(state="running", checkpoint_run="runs/" + RUN_ID,
+                   attempts=[dict(item) for item in PARENT_ATTEMPTS])
+    child = qualified_child(run)
+    child.update(status="running", finished_at=None, collector_git_sha="a" * 40,
+                 config=series._expected_child_config(",".join(selected), settings),
+                 preflight={"database_target": manifest.get("database_target")})
+    if peer != "all_verified":
+        child["sources"]["jll"] = {
+            "state": "collect_failed" if peer == "failed" else "collecting"
+        }
+    if drift == "generation":
+        child["pipeline"]["source_results"]["cbre"]["generation_id"] = "foreign"
+    elif drift == "readback":
+        child["pipeline"]["source_results"]["cbre"]["readback_ok"] = False
+    elif drift == "path":
+        manifest["sources"]["cbre"]["checkpoint_run"] = "runs/foreign"
+    (run / "manifest.json").write_text(json.dumps(child), encoding="utf-8")
+    path = directory / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return status.build_snapshot(
+        manifest, path, now=datetime(2026, 10, 15, 12, 3, tzinfo=timezone.utc)
+    )
+
+
+def test_pipeline_render_foregrounds_qualified_child_preserves_parent_json(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path)
+    before = json.dumps(snapshot, sort_keys=True)
+    rendered = status.render(snapshot, color=False)
+    assert snapshot["complete"] == 0
+    assert snapshot["running"] == 2
+    assert snapshot["percent_complete"] == 0
+    assert snapshot["current_source"] == "cbre"
+    assert snapshot["updated_age_seconds"] == 180
+    assert snapshot["pipeline_progress"]["verified"] == 1
+    assert "1/2 qualified by audit/readback (50.0%)" in rendered
+    assert "Parent recorded status running" in rendered
+    assert "Parent complete        0/2 (0.0%)" in rendered
+    assert "Parent manifest updated" in rendered
+    assert "Parent elapsed" in rendered
+    assert "Recorded source" not in rendered
+    assert "Outer attempt" not in rendered
+    assert json.dumps(snapshot, sort_keys=True) == before
+
+
+def test_pipeline_all_children_verified_does_not_render_parent_complete(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path, peer="all_verified")
+    rendered = status.render(snapshot, color=False)
+    assert "1/1 qualified by audit/readback (100.0%)" in rendered
+    assert "Parent recorded status running" in rendered
+    assert snapshot["status"] == "running"
+    assert snapshot["complete"] == 0
+
+
+def test_pipeline_render_retains_failed_peer_without_whole_run_success(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path, peer="failed")
+    rendered = status.render(snapshot, color=False)
+    assert snapshot["pipeline_progress"]["failed"] == 1
+    assert "1/2 qualified by audit/readback (50.0%)" in rendered
+    assert "failed 1" in rendered
+    assert "Parent recorded status running" in rendered
+
+
+@pytest.mark.parametrize("drift", ["generation", "readback", "path"])
+def test_pipeline_render_never_credits_invalid_child_evidence(tmp_path, drift):
+    snapshot = _running_pipeline_snapshot(tmp_path, drift=drift)
+    rendered = status.render(snapshot, color=False)
+    if snapshot["pipeline_progress"] is None:
+        assert "qualified by audit/readback" not in rendered
+    else:
+        assert snapshot["pipeline_progress"]["verified"] == 0
+        assert "0/2 qualified by audit/readback (0.0%)" in rendered
+    assert snapshot["complete"] == 0
+    assert snapshot["status"] == "running"
+
+
+def test_partial_subset_counts_are_visible_and_malformed_counts_are_ignored(tmp_path):
+    path = _manifest(tmp_path / "2026-09-13T120000Z")
+    manifest = status.load_manifest(path)
+    manifest["sources"]["jll"] = {"state": "qualified_partial_subset",
+        "subset_counts": {"inventory": 102, "emitted": 100, "held": 2}}
+    snapshot = status.build_snapshot(manifest, path)
+    assert snapshot["partial_subset_counts"] == [{"source": "jll", "inventory": 102, "emitted": 100, "held": 2}]
+    assert "100 refreshed, 2 held (inventory 102)" in status.render(snapshot, color=False)
+    manifest["sources"]["jll"]["subset_counts"]["held"] = -1
+    assert status.build_snapshot(manifest, path)["partial_subset_counts"] == []

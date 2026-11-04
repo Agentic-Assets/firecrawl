@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import {
   PYRAMID_LEASE_TERM_ID,
   PYRAMID_INVENTORY_URL,
@@ -10,9 +13,12 @@ import {
   mapPyramidListing,
   parsePyramidDetail,
   pyramidFetch,
+  pyramidDetailTransaction,
   pyramidInventoryUrl,
+  srcPyramidBrokerage,
+  pyramidSizeFacts,
 } from "../../../sources/pyramid-brokerage.js";
-import { resetBrokerStateForTests } from "../../../lib/broker.js";
+import { brokers, resetBrokerStateForTests } from "../../../lib/broker.js";
 
 function row(id: number, saleType: number) {
   return {
@@ -47,7 +53,7 @@ const detailHtml = `
       <link rel="shortlink" href="https://www.pyramidbrokerage.com/?p=101">
       <meta property="og:image" content="https://www.pyramidbrokerage.com/listing.jpg">
     </head>
-    <body>
+    <body><main id="content">
       <section class="property-details"><ul>
         <li><span class="name">Property Name:</span><span class="value">Main Warehouse</span></li>
         <li><span class="name">Sale/Lease:</span><span class="value">Sale</span></li>
@@ -55,6 +61,7 @@ const detailHtml = `
         <li><span class="name">Price:</span><span class="value">$4,950,000</span></li>
       </ul></section>
       <div class="property-content"><p>Current detail description.</p></div>
+      <div class="property-gallery"><img src="https://www.pyramidbrokerage.com/listing.jpg"></div>
       <section class="more-info">
         <a href="https://www.pyramidbrokerage.com/flyer.pdf">View flyer</a>
       </section>
@@ -68,18 +75,53 @@ const detailHtml = `
           <a class="mail" href="mailto:jane@example.com?Subject=Website">jane@example.com</a>
         </div>
       </li></ul>
-    </body>
+    </main></body>
   </html>
 `;
 
-test("Pyramid inventory URL is bounded to 100 base records without oversized embeds", () => {
+test("Pyramid inventory URL requests only the taxonomy terms consumed by mapping", () => {
   const url = new URL(pyramidInventoryUrl(21));
   assert.equal(url.pathname, "/wp-json/wp/v2/pbc-listings");
   assert.equal(url.searchParams.get("per_page"), String(PYRAMID_PAGE_SIZE));
   assert.equal(url.searchParams.get("page"), "21");
   assert.equal(url.searchParams.get("orderby"), "id");
   assert.equal(url.searchParams.get("order"), "asc");
-  assert.equal(url.searchParams.has("_embed"), false);
+  assert.equal(url.searchParams.get("_embed"), "wp:term");
+});
+
+test("Pyramid maps requested taxonomy terms across complete pages and convergence passes", async () => {
+  const requestedPages: number[] = [];
+  const snapshot = await fetchPyramidSnapshot(async (input) => {
+    const url = new URL(String(input));
+    const page = Number(url.searchParams.get("page"));
+    requestedPages.push(page);
+    const ids = page === 1 ? Array.from({ length: 100 }, (_, index) => index + 1) : [101];
+    const body = ids.map((id) => {
+      const fixture = row(id, PYRAMID_SALE_TERM_ID);
+      const value: Record<string, unknown> = { ...fixture };
+      // The real REST API supplies labels only when the request embeds terms.
+      if (url.searchParams.get("_embed") === "wp:term") {
+        value._embedded = { "wp:term": fixture._embedded["wp:term"] };
+      } else {
+        delete value._embedded;
+      }
+      return value;
+    });
+    return Response.json(body, {
+      headers: { "X-WP-Total": "101", "X-WP-TotalPages": "2" },
+    });
+  }, 2);
+  assert.deepEqual(requestedPages, [1, 2, 1, 2]);
+  assert.equal(snapshot.total, 101);
+  assert.equal(snapshot.totalPages, 2);
+  assert.deepEqual(snapshot.rows.map((value) => value.id), Array.from({ length: 101 }, (_, index) => index + 1));
+  const mapped = snapshot.rows.map((value) => mapPyramidListing(value, "sale", snapshot.observedAt));
+  for (const listing of mapped) {
+    assert.equal(listing.state, "NY");
+    assert.equal(listing.city, "Albany");
+    assert.equal(listing.county, "Albany");
+    assert.equal(listing.assetType, "Industrial");
+  }
 });
 
 test("Pyramid transport enforces URL policy, manual redirects, and streaming byte limits", async () => {
@@ -203,8 +245,8 @@ test("Pyramid detail parser rejects missing shells and mismatched shortlink iden
   assert.throws(() => parsePyramidDetail("<html>Page not found</html>", 101), /shell/);
   assert.throws(() => parsePyramidDetail(detailHtml, 102), /identity mismatch/);
   assert.throws(
-    () => parsePyramidDetail(detailHtml.replace("Sale/Lease:", "Tenure:"), 101),
-    /omitted its Sale\/Lease/
+    () => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", parsePyramidDetail(detailHtml.replace("Sale/Lease:", "Tenure:"), 101)),
+    /absent Sale\/Lease fact lacks/
   );
   for (const shortlink of [
     "https://example.com/?p=101",
@@ -366,7 +408,8 @@ test("Pyramid mapper emits strict live freshness on detail and preserves childre
     detail,
     "2026-07-30T18:01:00.000Z"
   );
-  assert.equal(full.id, "101");
+  assert.equal(full.id, "listings/property-101");
+  assert.equal(full.wordpressRecord.id, 101);
   assert.equal(full.salePriceUsd, 4_950_000);
   assert.equal(full.freshnessProvenance.detailScope, "detail_page");
   assert.equal(full.freshnessProvenance.cacheDisposition, "live");
@@ -379,4 +422,418 @@ test("Pyramid mapper emits strict live freshness on detail and preserves childre
   );
   assert.equal(monitor.freshnessProvenance.detailScope, "inventory_only");
   assert.equal(monitor.preserveChildCollections, true);
+});
+
+const publishedPropertyHtml = detailHtml.replace('<main id="content">', `<main id="content">
+    <div class="content-container">
+      <div class="featured-image sale"><img src="https://cdn.photos.sparkplatform.com/cir/featured.jpg"></div>
+      <div class="image-gallery"><ul>
+        <li data-full="https://cdn.photos.sparkplatform.com/cir/large.jpg"><img src="https://cdn.photos.sparkplatform.com/cir/thumb.jpg"></li>
+        <li data-full="https://cdn.photos.sparkplatform.com/cir/second.jpg"></li>
+      </ul></div>
+    </div>
+    <aside><div class="listings-map"><iframe src="https://www.google.com/maps/embed/v1/place?q=100%20Main%20St%2C%20Albany%2C%20NY"></iframe></div></aside>`)
+  .replace("</body>", `<footer><iframe src="https://www.google.com/maps/embed/v1/place?q=Office%20Address"></iframe>
+    <img src="https://cdn.photos.sparkplatform.com/cir/footer-logo.jpg"></footer></body>`);
+
+test("Pyramid canonical keys preserve literal owned paths and native post evidence", () => {
+  const inventory = { ...row(101, PYRAMID_SALE_TERM_ID), link: "https://www.pyramidbrokerage.com/listings/Mixed%20Case/?view=1#photos" };
+  const mapped = mapPyramidListing(inventory, "sale", "2026-07-30T18:00:00Z");
+  assert.equal(mapped.id, "listings/Mixed%20Case");
+  assert.equal(mapped.wordpressRecord.id, 101);
+  assert.equal(mapped.freshnessProvenance.identityMethod, "literal_owned_listing_path+wordpress_post_id");
+  const changedSlug = mapPyramidListing({ ...inventory, link: "https://www.pyramidbrokerage.com/listings/changed/" }, "sale", "2026-07-30T18:00:00Z");
+  assert.notEqual(changedSlug.id, mapped.id);
+  for (const link of ["https://evil.test/listings/x/", "https://www.pyramidbrokerage.com.evil.test/listings/x/", "https://user@www.pyramidbrokerage.com/listings/x/", "https://www.pyramidbrokerage.com/not-listings/x/"]) {
+    assert.throws(() => mapPyramidListing({ ...inventory, link }, "sale", "2026-07-30T18:00:00Z"), /listing URL/);
+  }
+});
+
+test("Pyramid refuses different native posts claiming one canonical path", () => {
+  const first = row(1, PYRAMID_SALE_TERM_ID);
+  assert.throws(() => assertPyramidSnapshot([first, { ...row(2, PYRAMID_LEASE_TERM_ID), link: first.link }], 2, 1), /canonical.*path/);
+});
+
+test("Pyramid retains primary featured and gallery images instead of a page logo", () => {
+  const detail = parsePyramidDetail(publishedPropertyHtml, 101);
+  for (const image of ["featured.jpg", "large.jpg", "second.jpg"]) {
+    assert.ok(detail.photos.includes(`https://cdn.photos.sparkplatform.com/cir/${image}`));
+  }
+  assert.ok(!detail.photos.some((url: string) => /logo|thumb/.test(url)));
+});
+
+test("Pyramid retains the literal property map address and scoped CDN photos", () => {
+  const detail = parsePyramidDetail(publishedPropertyHtml, 101);
+  const mapped = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", detail, "2026-07-30T18:01:00Z");
+  assert.equal(mapped.street, "100 Main St, Albany, NY");
+  assert.equal(mapped.city, "Albany");
+  assert.equal(mapped.state, "NY");
+  assert.equal(mapped.latitude, undefined);
+  assert.equal(mapped.longitude, undefined);
+  for (const image of ["featured.jpg", "large.jpg", "second.jpg"]) assert.ok(mapped.photos.includes(`https://cdn.photos.sparkplatform.com/cir/${image}`));
+  assert.ok(!mapped.photos.some((url: string) => /logo|thumb/.test(url)));
+  for (const bad of ["http://cdn.photos.sparkplatform.com/x.jpg", "https://cdn.photos.sparkplatform.com.evil.test/x.jpg", "https://user@cdn.photos.sparkplatform.com/x.jpg", "javascript:alert(1)"]) {
+    const invalid = parsePyramidDetail(publishedPropertyHtml.replaceAll("https://cdn.photos.sparkplatform.com/cir/featured.jpg", bad), 101);
+    assert.ok(!invalid.photos.includes(bad));
+  }
+  const officeOnly = parsePyramidDetail(publishedPropertyHtml.replace('class="listings-map"', 'class="office-map"'), 101);
+  assert.equal(mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", officeOnly).street, undefined);
+  const coordinateQuery = parsePyramidDetail(publishedPropertyHtml.replace("100%20Main%20St%2C%20Albany%2C%20NY", "42.1,-73.2"), 101);
+  const coordinateMapped = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", coordinateQuery);
+  assert.equal(coordinateMapped.street, undefined);
+  assert.deepEqual(coordinateMapped.mapQueryEvidence, { values: ["42.1,-73.2"], method: "property_map_embed_query" });
+  assert.equal(coordinateMapped.latitude, undefined);
+  assert.equal(coordinateMapped.longitude, undefined);
+  const logoOnly = parsePyramidDetail(detailHtml.replace(/<div class="property-gallery">.*?<\/div>/, "").replace("/listing.jpg", "/footer-logo.jpg"), 101);
+  assert.deepEqual(logoOnly.photos, []);
+});
+
+test("Pyramid mapped historical keys and children survive actual Python staging and merge", () => {
+  resetBrokerStateForTests();
+  const full = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", parsePyramidDetail(publishedPropertyHtml, 101), "2026-07-30T18:01:00Z");
+  const result = spawnSync("python3", ["-c", [
+    "import json,sys",
+    "from cre_ingest import to_row,merge_rows",
+    "d=json.load(sys.stdin)",
+    "listing=dict(d['listing'],sourceKey='pyramid-brokerage')",
+    "brokers={i:b for i,b in enumerate(d['brokers'])}",
+    "a=to_row(listing,brokers,'2026-07-30T18:02:00Z')",
+    "assert a is not None",
+    "b=merge_rows(a,to_row(listing,brokers,'2026-07-30T18:02:00Z'))",
+    "print(json.dumps({'id':b['external_id'],'address':b['address'],'images':len(b['images']),'contacts':len(b['contacts']),'documents':len(b['documents']),'post_id':b['raw_data']['wordpressRecord']['id']}))",
+  ].join("\n")], { cwd: fileURLToPath(new URL("../../../", import.meta.url)), input: JSON.stringify({ listing: full, brokers }), encoding: "utf8", timeout: 10_000, maxBuffer: 64*1024 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  const staged = JSON.parse(result.stdout);
+  assert.equal(staged.id, "listings/property-101");
+  assert.equal(staged.post_id, 101);
+  assert.equal(staged.address, "100 Main St, Albany, NY");
+  assert.ok(staged.images >= 3);
+  assert.equal(staged.contacts, 1);
+  assert.equal(staged.documents, 1);
+});
+
+test("Pyramid refuses conflicting property maps and ignores unsafe map origins", () => {
+  const another = '<div class="listings-map"><iframe src="https://www.google.com/maps/embed/v1/place?q=Different%20Property"></iframe></div>';
+  assert.throws(() => parsePyramidDetail(publishedPropertyHtml.replace("</aside>", another + "</aside>"), 101), /conflicting property map addresses/);
+  for (const origin of ["http://www.google.com", "https://www.google.com.evil.test", "https://user@www.google.com"]) {
+    const detail = parsePyramidDetail(publishedPropertyHtml.replace("https://www.google.com/maps/embed/v1/place?q=100", origin + "/maps/embed/v1/place?q=100"), 101);
+    assert.equal(detail.street, null);
+  }
+});
+
+test("Pyramid monitor does not promote site branding without a featured property image", () => {
+  const inventory = row(101, PYRAMID_SALE_TERM_ID);
+  const mapped = mapPyramidListing({ ...inventory, featured_media: 0, _embedded: { "wp:term": inventory._embedded["wp:term"] }, yoast_head_json: { og_image: [{ url: "https://www.pyramidbrokerage.com/logo.png" }] } }, "sale", "2026-07-30T18:00:00Z");
+  assert.deepEqual(mapped.photos ?? [], []);
+  assert.equal(mapped.preserveChildCollections, true);
+});
+
+test("Pyramid proof cache is immutable, generation-local and never used for monitor or caps", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const old = [process.env.CRE_REFRESH_GENERATION, process.env.CRE_REFRESH_STARTED_AT];
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    for (const [index, key] of ["CRE_REFRESH_GENERATION", "CRE_REFRESH_STARTED_AT"].entries()) {
+      if (old[index] === undefined) delete process.env[key]; else process.env[key] = old[index];
+    }
+  });
+  process.env.CRE_REFRESH_GENERATION = "pyramid-cache-test";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  const rows = [row(1, PYRAMID_SALE_TERM_ID), row(2, PYRAMID_LEASE_TERM_ID)];
+  let inventory = 0;
+  let wrongCanonical = false;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith("/wp-json/")) {
+      inventory++;
+      return Response.json(rows, { headers: { "X-WP-Total": "2", "X-WP-TotalPages": "1" } });
+    }
+    const id = Number(url.pathname.match(/property-(\d+)/)?.[1]);
+    let html = detailHtml.replaceAll("101", String(id));
+    if (id === 2) html = html.replace('class="value">Sale<', 'class="value">Lease<');
+    html = html.replace("<head>", `<head><link rel="canonical" href="${wrongCanonical ? rows[1].link : rows[id - 1].link}">`);
+    return new Response(html);
+  };
+  const sale = await srcPyramidBrokerage("sale", Infinity, false);
+  assert.equal(inventory, 2);
+  assert.throws(() => (sale.currentInventoryProof as any).passes[0].pages.pop(), TypeError);
+  const lease = await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(inventory, 2);
+  assert.deepEqual((sale.currentInventoryProof as any).cohort, (lease.currentInventoryProof as any).cohort);
+  assert.match((sale.currentInventoryProof as any).details[0][3], /^[a-f0-9]{64}$/);
+  await srcPyramidBrokerage("sale", 1, false);
+  assert.equal(inventory, 4);
+  // Monitor may be explicitly refused by strict env; use its normal supported mode.
+  const strict = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  try { assert.equal((await srcPyramidBrokerage("sale", Infinity, true)).currentInventoryProof, undefined); }
+  finally { if (strict !== undefined) process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = strict; }
+  assert.equal(inventory, 6);
+  process.env.CRE_REFRESH_STARTED_AT = new Date().toISOString();
+  await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(inventory, 8);
+  process.env.CRE_REFRESH_GENERATION = "other-pyramid-generation";
+  wrongCanonical = true;
+  await assert.rejects(() => srcPyramidBrokerage("sale", Infinity, false), /canonical URL/);
+  assert.equal(inventory, 10);
+  delete process.env.CRE_REFRESH_GENERATION;
+  assert.equal((await srcPyramidBrokerage("lease", Infinity, false)).currentInventoryProof, undefined);
+  assert.equal(inventory, 12);
+});
+
+test("missing taxonomy retains the record and explicitly identifies absent fields", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStarted = process.env.CRE_REFRESH_STARTED_AT;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION; else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStarted === undefined) delete process.env.CRE_REFRESH_STARTED_AT; else process.env.CRE_REFRESH_STARTED_AT = oldStarted;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  });
+  process.env.CRE_REFRESH_GENERATION = "taxonomy-diagnostic-test";
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  const record = row(101, PYRAMID_LEASE_TERM_ID);
+  record._embedded["wp:term"] = record._embedded["wp:term"].filter((group) => !["city", "state", "property-use"].includes(group[0].taxonomy));
+  globalThis.fetch = async (input) => {
+    if (new URL(String(input)).pathname.startsWith("/wp-json/")) {
+      return Response.json([record], { headers: { "X-WP-Total": "1", "X-WP-TotalPages": "1" } });
+    }
+    return new Response(detailHtml.replace('class="value">Sale<', 'class="value">Lease<')
+      .replace('<li><span class="name">Major Use:</span><span class="value">Industrial</span></li>', '')
+      .replace("<head>", `<head><link rel="canonical" href="${record.link}">`));
+  };
+  const result = await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(result.listings.length, 1);
+  assert.deepEqual(result.listings[0].missingFieldEvidence,
+    { fields: ["state", "city", "assetType"], method: "source_detail_and_taxonomy" });
+  assert.deepEqual((result.currentInventoryProof as any).incomplete,
+    [{ postId: 101, missingFields: ["state", "city", "assetType"] }]);
+});
+
+
+test("Pyramid classifies only known exact transaction facts without defaulting to sale", () => {
+  for (const value of ["Sale", " sale ", "SALE", "\tSale\n"]) assert.equal(pyramidDetailTransaction(value, 119152), "sale");
+  for (const value of ["Lease", " lease ", "LEASE", "Sublease", " SUBLEASE ", "\tSublease\n", "\u00a0Sublease\u00a0"]) assert.equal(pyramidDetailTransaction(value, 119152), "lease");
+  for (const value of ["Both", "Sale/Lease", "For Lease", "unknown", "prelease", "wholesale", "", null, undefined]) {
+    assert.throws(() => pyramidDetailTransaction(value, 119152), /119152.*unsupported Sale\/Lease fact/);
+    const detail = parsePyramidDetail(detailHtml);
+    detail.facts["Sale/Lease"] = value as string;
+    detail.transactionFacts = [value as string];
+    assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /unsupported Sale\/Lease fact/);
+  }
+  assert.throws(() => pyramidDetailTransaction("unknown\n".repeat(100), 119152), (error: Error) => error.message.length < 600 && !error.message.includes("\n"));
+});
+
+test("Pyramid harmless nested fact markup and field order retain Sublease, with conflicts refused", () => {
+  const original = '<li><span class="name">Sale/Lease:</span><span class="value">Sale</span></li>';
+  const equivalent = '<li><div class="name"><strong>  Sale/Lease : </strong></div><div class="value"><em>  SUBLEASE  </em></div></li>';
+  const html = detailHtml.replace(original, "").replace("</ul>", equivalent + "</ul>");
+  const detail = parsePyramidDetail(html);
+  const mapped = mapPyramidListing(row(101, PYRAMID_LEASE_TERM_ID), "lease", "2026-10-15T00:00:00Z", detail);
+  assert.equal(mapped.transactionType, "Lease");
+  assert.equal(mapped.detailFacts["Sale/Lease"], "SUBLEASE");
+  assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /disagrees/);
+});
+
+
+test("Pyramid actual Price-only primary detail uses only bound record-owned tenure", () => {
+  const html = readFileSync(new URL("../../fixtures/pyramid-354272-detail.html", import.meta.url), "utf8");
+  const record = JSON.parse(readFileSync(new URL("../../fixtures/pyramid-354272-record.json", import.meta.url), "utf8"));
+  const detail = parsePyramidDetail(html, record.id);
+  const page: [number, string, string] = [1, "2026-10-15T00:00:00Z", "a".repeat(64)];
+  const map = (r = record, d = detail, binding: typeof page | undefined = page) => mapPyramidListing(r, "lease", page[1], d, page[1], binding);
+  const mapped = map();
+  assert.deepEqual(detail.transactionFacts, []);
+  assert.deepEqual(mapped.detailFacts, { Price: "Contact Agent" });
+  assert.deepEqual(mapped.transactionEvidence, { kind: "wordpress_sale_type", transaction: "lease", inventoryPage: page });
+  assert.equal(mapped.transactionType, "Lease");
+  assert.throws(() => mapPyramidListing(record, "lease", page[1], detail), /lacks bound/);
+  for (const changed of [
+    { status: "draft" }, { type: "page" }, { link: record.link + "changed/" },
+    { "sale-type": [249, 246] }, { "sale-type": ["249"] },
+    { _embedded: {} },
+    ...[ { id: 246 }, { taxonomy: "global-filter" }, { name: "Both" }, { slug: "sublease" } ].map((change) => ({ _embedded: { "wp:term": [[{ ...record._embedded["wp:term"][0][0], ...change }]] } })),
+    { _embedded: { "wp:term": [[...record._embedded["wp:term"][0], ...record._embedded["wp:term"][0]]] } },
+  ]) assert.throws(() => map({ ...record, ...changed }), /Pyramid/);
+  const price = html.match(/<li>\s*<span class="name">Price:<\/span>[\s\S]*?<\/li>/)![0];
+  // A hidden property fact is still present, unlike the unrelated global filter.
+  for (const value of ["", "Both", "unrecognized", "For Lease", "Sale"]) {
+    const fact = `<li hidden><span class="name"> sale / lease : </span><span class="value">${value}</span></li>`;
+    const changed = parsePyramidDetail(html.replace(price, price + fact), record.id);
+    assert.equal(changed.transactionFacts.length, 1);
+    assert.throws(() => map(record, changed), /unsupported|disagrees/);
+  }
+  const fact = '<li><span class="name">Sale/Lease:</span><span class="value">Lease</span></li>';
+  assert.throws(() => map(record, parsePyramidDetail(html.replace(price, price + fact + fact), record.id)), /duplicate/);
+  assert.throws(() => parsePyramidDetail(html.replace(price, price + '<li><span class="name">Sale/Lease:</span></li>'), record.id), /malformed/);
+});
+
+test("Pyramid sizes: building area only in size, available space apart, acreage to lot", () => {
+  assert.deepEqual(
+    pyramidSizeFacts({ "Building Size": "99,620 +/-SF", "Largest Available": "14,000 +/-SF", "Smallest Available": "4,500 +/-SF" }),
+    { sizeText: "99,620 +/-SF", buildingSizeSqft: 99_620, availableSf: 14_000 }
+  );
+  // Available space with no building size never becomes size_sf.
+  assert.deepEqual(pyramidSizeFacts({ Available: "2,400 +/-SF" }), { availableSf: 2_400 });
+  // A date is not available space.
+  assert.deepEqual(pyramidSizeFacts({ Available: "2/1/2027" }), {});
+  // Land: the offered acreage is the lot.
+  assert.deepEqual(pyramidSizeFacts({ "Building Size": "0.00", "Largest Available": "2.00+/- Acres" }), {
+    sizeText: "2.00+/- Acres",
+  });
+  assert.deepEqual(pyramidSizeFacts(undefined), {});
+});
+
+
+for (const status of [401, 403] as const) {
+  test(`Pyramid HTTP ${status} is terminal without a retry`, async () => {
+    let calls = 0;
+    await assert.rejects(pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+      calls++;
+      return new Response("denied", { status });
+    }), new RegExp(`HTTP ${status}`));
+    assert.equal(calls, 1);
+  });
+}
+
+test("Pyramid denial prevents queued pages and a sibling redirect", async () => {
+  const calls: number[] = [];
+  let release!: () => void;
+  const denied = new Promise<void>(resolve => { release = resolve; });
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) { release(); return new Response("denied", { status: 403 }); }
+    if (page === 3) {
+      await denied;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return new Response("", { status: 302, headers: { location: "/listings/redirect/" } });
+    }
+    throw new Error("queued page started after denial");
+  }, 2), /HTTP 403/);
+  assert.deepEqual(calls, [1, 2, 3]);
+});
+
+test("Pyramid denial wins against a sibling transient error and suppresses its retry", async () => {
+  const calls: number[] = [];
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) throw new Error("transient sibling");
+    if (page === 3) { await new Promise(resolve => setTimeout(resolve, 10)); return new Response("denied", { status: 401 }); }
+    throw new Error("queued page started after denial");
+  }, 2), /HTTP 401/);
+  assert.deepEqual(calls, [1, 2, 3]);
+});
+
+test("Pyramid retains ordinary 5xx retry", async () => {
+  let calls = 0;
+  const result = await pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+    calls++;
+    return calls === 1 ? new Response("unavailable", { status: 503 }) : new Response("ok");
+  });
+  assert.equal(result.body, "ok");
+  assert.equal(calls, 2);
+});
+
+
+test("Pyramid refusal on a redirected response is not retried", async () => {
+  let calls = 0;
+  await assert.rejects(pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+    calls++;
+    return calls === 1 ? new Response("", { status: 302, headers: { location: "/listings/fixture/" } })
+      : new Response("denied", { status: 403 });
+  }), /HTTP 403/);
+  assert.equal(calls, 2);
+});
+
+test("Pyramid late denial dominates a sibling failure while pmap settles", async () => {
+  const calls: number[] = [];
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) return new Response("unavailable", { status: 503 });
+    if (page === 3) { await new Promise(resolve => setTimeout(resolve, 650)); return new Response("denied", { status: 403 }); }
+    throw new Error("queued page started after failure");
+  }, 2), /HTTP 403/);
+  assert.deepEqual(calls, [1, 2, 3, 2]);
+});
+
+
+test("Pyramid detail denial stops queued details and sibling retry", async () => {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    calls.push(url.pathname);
+    if (url.pathname === "/wp-json/wp/v2/pbc-listings") {
+      return Response.json([1, 2, 3, 4].map(id => row(id, PYRAMID_SALE_TERM_ID)),
+        { headers: { "X-WP-Total": "4", "X-WP-TotalPages": "1" } });
+    }
+    if (url.pathname === "/listings/property-1/") {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return new Response("denied", { status: 403 });
+    }
+    if (url.pathname === "/listings/property-2/") return new Response("temporary", { status: 503 });
+    if (url.pathname === "/listings/property-3/") {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return new Response("", { status: 302, headers: { location: "/listings/other/" } });
+    }
+    throw new Error("queued detail started after denial");
+  };
+  try {
+    await assert.rejects(srcPyramidBrokerage("sale", Infinity, false), /HTTP 403/);
+    assert.deepEqual(calls, ["/wp-json/wp/v2/pbc-listings", "/wp-json/wp/v2/pbc-listings",
+      "/listings/property-1/", "/listings/property-2/", "/listings/property-3/"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+
+test("Pyramid current inventory partitions missing-city details without fabricating locality", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const keys = ["CRE_REFRESH_GENERATION", "CRE_REFRESH_STARTED_AT", "CRE_REQUIRE_FRESH_DETAILS"] as const;
+  const prior = keys.map(key => process.env[key]);
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    keys.forEach((key, i) => { if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i]; });
+  });
+  process.env.CRE_REFRESH_GENERATION = "pyramid-city-hold-test";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  const records = [row(101, PYRAMID_SALE_TERM_ID), row(102, PYRAMID_SALE_TERM_ID)];
+  records[1]._embedded["wp:term"] = records[1]._embedded["wp:term"].filter(group => group[0].taxonomy !== "city");
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith("/wp-json/")) return Response.json(records,
+      { headers: { "X-WP-Total": "2", "X-WP-TotalPages": "1" } });
+    const id = Number(url.pathname.match(/property-(\d+)/)?.[1]);
+    return new Response(detailHtml.replaceAll("101", String(id)).replace("<head>",
+      `<head><link rel="canonical" href="${records[id - 101].link}">`));
+  };
+  const result = await srcPyramidBrokerage("sale", Infinity, false);
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.listings[0].wordpressRecord.id, 101);
+  const incomplete = result.listings.find((listing: any) => listing.wordpressRecord.id === 102)!;
+  assert.equal(incomplete.city, undefined);
+  assert.equal(incomplete.preserveChildCollections, true);
+  assert.equal(incomplete.detailObservedWithChildPreservation, true);
+  assert.deepEqual(incomplete.missingFieldEvidence, { fields: ["city"], method: "source_detail_and_taxonomy" });
+  assert.ok(incomplete.name && incomplete.description && incomplete.photos.length);
+  assert.equal(result.truncated, true);
+  const proof = result.currentInventoryProof as any;
+  assert.equal(proof.schema, "pyramid-incomplete-v2");
+  assert.deepEqual(proof.incomplete, [{ postId: 102, missingFields: ["city"] }]);
+  assert.deepEqual(proof.details.map((entry: any) => entry[0]), [101, 102]);
 });

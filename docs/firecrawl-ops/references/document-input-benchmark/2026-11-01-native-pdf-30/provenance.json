@@ -1,0 +1,71 @@
+{
+  "schema": "native-pdf-thirty-document-study-provenance/v1",
+  "checked_utc": "2026-11-01T19:23:01.875048+00:00",
+  "parents": [
+    "AGENTIC-5134",
+    "AGENTIC-2895"
+  ],
+  "consumer_issues": [
+    "AGENTIC-5140",
+    "AGENTIC-5141"
+  ],
+  "source_baseline_git_sha": "fffab08386dfde3db7c09ee182bbe2f6a952586d",
+  "protocol_checkpoint_commit": "b7c0e339550a80f2eccf4598af7e5de1a7b176de",
+  "primary_private_protocol_sha256": "25da43361f48b41f40d8e84a9b2c8e074b65d9034c40b0711bbe27e4c22b4dde",
+  "primary_private_routes_config_sha256": "c16e45d851f15c577a1c264c8858ba311b579625b91f854432e659c2ec511eda",
+  "meta_private_protocol_sha256": "0157da79b44550664bc03501b6d43bb264ee8095b59f9cff60525c1840c1f798",
+  "meta_private_route_config_sha256": "202b53cb6c6f44b0d597a9c96533aa4af83338248b22247c45b4e9df866831b2",
+  "source_manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "reviewed_gold_sha256": "0f11938434dad29d0b4972d33386b18f3571e6071babc39e119173d9d9f2a497",
+  "original_reviewed_fact_n": 98,
+  "source_ambiguous_fact_n_per_model": 1,
+  "scorable_reviewed_fact_n_per_model": 97,
+  "reviewed_table_rows_per_model": 16,
+  "shared_prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "executed_runner_sha256": "8e7e4df6217e9717e37ae8eea83439056819d0f06d3472ce6585fc985e15d330",
+  "private_script_sha256": {
+    "dispatch-v3.py": "7fbfcf7b19ccdfa3578c0febba1df40031238436f75e14fe60583768d12518e0",
+    "export-v3.py": "7742bab73b74142686a68c1e7aff1650fcf591a6a338ce4efe7f7672887ce29b",
+    "meta-supplement/dispatch.py": "e4bbda6c234ded5606ca3690ef029e3c8581dd8364a33f69116172d7c31698cf",
+    "meta-supplement/export.py": "3cef03b1d009f605ff761e712ef7431ee901b143c06b4cf30f4b6935beda4f50",
+    "combine-findings.py": "d832549ae9f28dc23b389f856fa50cd81a2c4dbfa809c2abe9b189c0065d3bde"
+  },
+  "study_requests": 155,
+  "cohort_requests": 150,
+  "canary_requests": 5,
+  "models": 5,
+  "documents_per_model": 30,
+  "pages_per_model": 189,
+  "known_cohort_cost_usd": 1.631255416,
+  "known_canary_cost_usd": 0.00531625,
+  "known_total_cost_usd": 1.636571666,
+  "unknown_cost_n": 0,
+  "unsettled_dispatches": 0,
+  "client_inference_retries": 0,
+  "local_dispatchers_exited": true,
+  "all_receipt_models_and_providers_match": true,
+  "all_receipts_non_byok": true,
+  "all_response_finish_reasons_stop": true,
+  "all_responses_report_not_truncated": true,
+  "production_changes": false,
+  "meta_corpus_authorization": "Cayman explicitly authorized this frozen public corpus with Contributor training terms. Private documents not included.",
+  "latency_limitations": "Meta supplement started later with2 workers; primary4. Requested effort not audited effective equal compute. Single observations, provider/clock/network variability and cache convention differences. No randomized latency claim.",
+  "quantile_note": "Initial private sketch mentioned interpolation; final report labels nearest-rank p90 and measurements retain both nearest-rank and linear interpolation.",
+  "privacy": "No source-document bodies, raw model outputs, numeric property values from review witnesses, contact details, credentials or billing generation IDs committed. Public original corpus index retains source URLs and hashes.",
+  "reproduction_limit": "Exact source bytes/private reviewed references required. Scratch finite dispatcher/analysis scripts identified by hashes rather than deployed as another runner. No one-command reproduction claim.",
+  "private_verification_sha256": {
+    "private-verification.json": "b6d0fe14804e4032d32c85c9f720b02a063662e245bf341ed0ad4db2074a6019",
+    "private-response-identity-verification.json": "af68583690b7ac50547c9e267f97e560281a3468b60cb6361d216f95469e33b1"
+  },
+  "artifact_sha256": {
+    "README.md": "7a596534f961a420ff2f50522c85a7a455447ff7253bf592a56d9bb7360a29f3",
+    "additional-findings.json": "7882a60e503c052ceb85fb82603dcc681959719930ce1b422b2c97c966e9fd01",
+    "measurements.json": "258e9b046359c2bb861826f83253b2039e01cd7e72029de9c395017dab762b6b",
+    "meta-protocol.json": "a9b3c55597b2f775e349d6283ef29acf4f002af5578fb7cb089a6c87a24326eb",
+    "prompt.txt": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+    "protocol.json": "d6ea54a86ab2f0b745c2792549b0af68d5451a78459925c045f90696e230c5b9",
+    "qualification.json": "fd31972cb0b99006660e4bab4006988baa1277f0e92f34503a95ac8d97991c16",
+    "research.json": "411abdd620df01f181483ac794ba86050c5f5f67028b1fcf295161a4fbcb5af9",
+    "semantic-review.json": "22e0f8a32d6e5f0570df7e9a70f0a045a5e492fe841eee5d5f8eff41dae66cda"
+  }
+}

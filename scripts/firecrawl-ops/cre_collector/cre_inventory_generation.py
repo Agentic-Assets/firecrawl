@@ -87,6 +87,11 @@ def _child_fingerprint(
             f"{source_id} checkpoint manifest is unavailable"
         ) from exc
     source = (child.get("sources") or {}).get(source_id) or {}
+    if (child.get("status") == "qualified_partial_subset"
+            or (child.get("scope") or {}).get("kind") == "collector_registry_verified_subset"
+            or (source.get("artifact") or {}).get("pyramid_subset") is True
+            or (source.get("gate") or {}).get("verdict") == "ok_additive_verified_subset"):
+        raise InventoryGenerationNotReady(f"{source_id} has partial child evidence")
     readback = source.get("readback") or {}
     fingerprint = readback.get("inventory_fingerprint")
     if readback.get("ok") is not True or not _valid_fingerprint(fingerprint, source_id):
@@ -100,6 +105,13 @@ def build_inventory_generation_receipt(
     series_dir: Path, manifest: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Build the v2 receipt only for one complete required-source series."""
+    from cre_current_inventory_admission import is_verified_subset
+    try:
+        partial = is_verified_subset(manifest.get("config") or {})
+    except (KeyError, TypeError, ValueError):
+        partial = True
+    if partial:
+        raise InventoryGenerationNotReady("verified subset cannot advance a complete generation")
     manifest_sources = manifest.get("sources")
     configured_sources = (manifest.get("config") or {}).get("sources")
     if (

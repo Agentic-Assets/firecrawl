@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers-main.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -8,12 +9,13 @@ import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries } from "../
 import { classifyDocument, harvestDetail } from "../lib/harvest.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { parseLeaseRate } from "../lib/parse.js";
-import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import { parseLeaseRate, parseMoney } from "../lib/parse.js";
+import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
 import {
   detailObservation,
   generationMatches,
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
 
@@ -130,6 +132,7 @@ export type ColliersMainEntry = {
 
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
+let colliersMainAcquisition: { key: string; promise: Promise<any[]> } | null = null;
 export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
 
 export const COLLIERS_MAIN_COVEO_BATCH_URL =
@@ -551,7 +554,7 @@ export function mapColliersMainCoveoListing(
     .map((v) => typeof v === "string" ? v : `${v?.Name ?? ""} ${v?.Value ?? ""}`);
   const zoning = clean(facts.find((v) => /^zoning\s*:/i.test(v))?.replace(/^zoning\s*:\s*/i, ""));
   const yearBuilt = Number(facts.join(" ").match(/Year Built\s*:\s*((?:18|19|20)\d{2})/i)?.[1] ?? 0) || null;
-  const observedAt = new Date().toISOString();
+  const observedAt = observationNow();
   const listing = prune({
     id: entry.id, name: clean(raw.propertyz32xtitle) ?? entry.id, headline: clean(raw.propertyz32xtitle),
     transactionType, assetType: clean(raw.primarypropertytype ?? raw.propertytypescomputed?.[0]),
@@ -566,6 +569,13 @@ export function mapColliersMainCoveoListing(
       : null,
     ...measurements,
     yearBuilt, zoning, canonicalUrl: entry.url, statusBadge: clean(raw.propertyz32xstatus),
+    // Coveo sale and lease types are Sitecore item IDs. Their labels are not in
+    // the public index, so the IDs are carried verbatim for the downstream
+    // classifier; nothing here maps them to a meaning.
+    extraFacts: {
+      colliers_sale_type_id: normalizeCoveoId(raw.salez32xtype),
+      colliers_lease_type_id: normalizeCoveoId(raw.leasez32xtype),
+    },
     contactsDetailed: contactsDetailed.length ? contactsDetailed : undefined,
     brokerIds: contactsDetailed.length
       ? contactsDetailed.map((contact) => brokerRef(contact)).filter((id): id is number => id !== null)
@@ -622,6 +632,17 @@ export function mapColliersMainCoveoListing(
   return listing;
 }
 
+export const COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79;
+
+export class ColliersMainBootstrapDeniedError extends Error {
+  readonly code = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403";
+
+  constructor() {
+    super("Colliers browser bootstrap returned HTTP 403");
+    this.name = "ColliersMainBootstrapDeniedError";
+  }
+}
+
 export async function postColliersMainBrowserBatch(
   requestBodies: string[],
   wait: Sleep = sleep
@@ -639,6 +660,14 @@ export async function postColliersMainBrowserBatch(
       });
       const responseText = await response.text();
       if (!response.ok) {
+        let bootstrapDenied = false;
+        try {
+          const failure = JSON.parse(responseText);
+          bootstrapDenied = failure !== null && typeof failure === "object"
+            && !Array.isArray(failure) && failure.bootstrapStatus === 403
+            && typeof failure.error === "string" && !("responses" in failure);
+        } catch { /* An untyped response keeps the existing status retry policy. */ }
+        if (bootstrapDenied) throw new ColliersMainBootstrapDeniedError();
         retryable = response.status === 429 || response.status >= 500 ||
           /(?:HTTP|bootstrapStatus)[^\d]*429/i.test(responseText);
         throw new Error(
@@ -666,6 +695,7 @@ export async function postColliersMainBrowserBatch(
         return parsed;
       });
     } catch (error) {
+      if (error instanceof ColliersMainBootstrapDeniedError) throw error;
       lastError = error instanceof Error ? error : new Error(String(error));
       // A rejected local fetch has no response status, so retry it as a bounded
       // transport failure. Deterministic validation and 4xx failures remain terminal.
@@ -688,7 +718,11 @@ export async function colliersMainCoveoEnrichAll(entries: ColliersMainEntry[]): 
     const payloads = await postColliersMainBrowserBatch(group.map((batch) => colliersMainCoveoQueryBody(batch.map((e) => e.id), "property")));
     payloads.forEach((payload, index) => {
       if (payload.totalCount !== group[index].length || payload.results.length !== group[index].length) {
-        throw new Error(`Colliers Coveo property batch count mismatch`);
+        throw new Error(
+          `Colliers Coveo property batch count mismatch: requested ${group[index].length}, ` +
+          `provider total ${typeof payload.totalCount === "number" ? payload.totalCount : "<non-numeric>"} (type ${typeof payload.totalCount}), ` +
+          `returned ${payload.results.length}`
+        );
       }
       resultSets.push(...payload.results);
     });
@@ -896,7 +930,7 @@ export async function fetchColliersMainEntries(
       const propsXml = await raw(propsSitemap, scrapeOpts);
       const seen = new Set<string>();
       const entries: ColliersMainEntry[] = [];
-      const inventoryObservedAt = new Date().toISOString();
+      const inventoryObservedAt = observationNow();
       const sitemapEntries = extractSitemapUrlEntries(propsXml);
       if (!sitemapEntries.length) {
         throw new Error("Colliers main: ?type=properties sitemap had no URL rows");
@@ -1262,7 +1296,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     country: addr.country ?? "US",
     latitude: lat,
     longitude: lng,
-    salePriceUsd: salePriceText ? moneyToNumber(salePriceText) : null,
+    salePriceUsd: salePriceText ? parseMoney(salePriceText) : null,
     salePriceText,
     leaseRateText,
     sizeText: clean(md.match(/Building Size:[^\n|]+/i)?.[0]),
@@ -1349,7 +1383,25 @@ export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, lis
 
 // Enrich the full sitemap once (memoized across the sale and lease passes and
 // backed by a durable JSONL cache), then srcColliersMain filters per pass.
-export async function colliersMainEnrichAll(max: number): Promise<any[]> {
+export function colliersMainEnrichAll(max: number): Promise<any[]> {
+  const key = JSON.stringify([
+    refreshGenerationId(), refreshStartedAt(),
+    Number.isFinite(max) && max > 0 ? max : null,
+  ]);
+  if (colliersMainAcquisition?.key === key) return colliersMainAcquisition.promise;
+  if (colliersMainAcquisition) {
+    colliersMainSitemapCache = null;
+    colliersMainEnrichedMemo = null;
+    colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+  }
+  // Install before discovery settles, retaining the original rejection as well
+  // as success. Sale/lease are filters over one full acquisition, not retries.
+  const promise = acquireColliersMainAll(max);
+  colliersMainAcquisition = { key, promise };
+  return promise;
+}
+
+async function acquireColliersMainAll(max: number): Promise<any[]> {
   if (colliersMainEnrichedMemo) return colliersMainEnrichedMemo;
   const entries = await fetchColliersMainEntries();
   const want = max && max > 0 ? Math.min(max, entries.length) : entries.length;
@@ -1385,7 +1437,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       listing = undefined;
     }
     if (listing) {
-      const validatedAt = entry.inventoryObservedAt ?? new Date().toISOString();
+      const validatedAt = entry.inventoryObservedAt ?? observationNow();
       listing = {
         ...listing,
         inventoryObservedAt: validatedAt,
@@ -1410,7 +1462,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       fetchBudget--;
       try {
         const docDoc = await scrapeColliersMainDetailDoc(entry.url);
-        const observed = detailObservation("colliers_main_detail", "live", new Date().toISOString(), {
+        const observed = detailObservation("colliers_main_detail", "live", observationNow(), {
           sourceRevision: entry.lastmod,
         });
         listing = {

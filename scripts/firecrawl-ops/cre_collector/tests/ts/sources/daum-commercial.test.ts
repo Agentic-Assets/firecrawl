@@ -18,6 +18,7 @@ import {
   parseDaumDetail,
   parseDaumSearchPage,
   resolveDaumTenure,
+  srcDaumCommercial,
 } from "../../../sources/daum-commercial.js";
 import { resetBrokerStateForTests } from "../../../lib/broker.js";
 
@@ -317,17 +318,19 @@ test("DAUM mapper rejects unresolved tenure so ingest cannot fall back to sale",
     detailHtml.replace("Sale- Investment", ""),
     "https://daumcommercial.com/property/main-street/"
   );
-  assert.throws(
-    () =>
-      mapDaumListing(
-        inventory({ tenure: "unknown", tenureText: null }),
-        detail,
-        "sale",
-        "2026-07-30T18:00:00.000Z",
-        "2026-07-30T18:01:00.000Z"
-      ),
-    /unresolved transaction tenure/
-  );
+  for (const tx of ["sale", "lease"] as const) {
+    assert.throws(
+      () =>
+        mapDaumListing(
+          inventory({ tenure: "unknown", tenureText: null }),
+          detail,
+          tx,
+          "2026-07-30T18:00:00.000Z",
+          "2026-07-30T18:01:00.000Z"
+        ),
+      /unresolved transaction tenure/
+    );
+  }
   assert.equal(daumBelongsToTx("unknown", "sale"), false);
   assert.equal(daumBelongsToTx("unknown", "lease"), false);
 });
@@ -345,7 +348,8 @@ test("DAUM mapper emits a recognized detail-resolved tenure with live freshness"
     "2026-07-30T18:00:00.000Z",
     "2026-07-30T18:01:00.000Z"
   );
-  assert.equal(mapped.id, "50388");
+  assert.equal(mapped.id, "property/main-street");
+  assert.equal(mapped.daumPostId, "50388");
   assert.equal(mapped.transactionType, "Sale");
   assert.equal(mapped.salePriceUsd, 3_250_000);
   assert.equal(mapped.freshnessProvenance.detailScope, "detail_page");
@@ -429,7 +433,7 @@ test("DAUM polite transport rejects redirects and oversized bodies", async () =>
   assert.ok(DAUM_MAX_RESPONSE_BYTES > 283_608);
 });
 
-test("DAUM identity convergence signature is ordered and field-change agnostic", () => {
+test("DAUM identity convergence signature compares literal URL and tenure membership", () => {
   const one = inventory();
   const two = inventory({
     url: "https://daumcommercial.com/property/second/",
@@ -439,9 +443,15 @@ test("DAUM identity convergence signature is ordered and field-change agnostic",
     daumSnapshotIdentitySignature([one, two]),
     `${one.url}\t${one.tenure}\n${two.url}\t${two.tenure}`
   );
-  assert.notEqual(
+  assert.equal(
     daumSnapshotIdentitySignature([one, two]),
     daumSnapshotIdentitySignature([two, one])
+  );
+  assert.notEqual(daumSnapshotIdentitySignature([one]), daumSnapshotIdentitySignature([one, two]));
+  assert.notEqual(daumSnapshotIdentitySignature([one]), daumSnapshotIdentitySignature([two]));
+  assert.notEqual(
+    daumSnapshotIdentitySignature([one]),
+    daumSnapshotIdentitySignature([{ ...one, url: "https://daumcommercial.com/property/Main-street/" }])
   );
   assert.equal(
     daumSnapshotIdentitySignature([one]),
@@ -454,9 +464,9 @@ test("DAUM identity convergence signature is ordered and field-change agnostic",
 });
 
 test("DAUM emitted provider IDs must be unique", () => {
-  assert.doesNotThrow(() => assertDaumUniqueProviderIds([{ id: "1" }, { id: "2" }]));
+  assert.doesNotThrow(() => assertDaumUniqueProviderIds([{ id: "property/first", daumPostId: "1" }, { id: "property/second", daumPostId: "2" }]));
   assert.throws(
-    () => assertDaumUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertDaumUniqueProviderIds([{ id: "property/first", daumPostId: "1" }, { id: "property/second", daumPostId: "1" }]),
     /duplicate provider ID 1/
   );
 });
@@ -513,7 +523,9 @@ test("DAUM convergence requires stable normalized tenure for each identity", asy
   );
 });
 
-test("DAUM full-pass convergence fails closed after its bounded pass budget", async () => {
+test("DAUM full-pass convergence fails closed after its bounded pass budget", async (t) => {
+  const progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
   const urls = [
     "https://daumcommercial.com/property/first/",
     "https://daumcommercial.com/property/second/",
@@ -530,8 +542,70 @@ test("DAUM full-pass convergence fails closed after its bounded pass budget", as
     /did not converge/
   );
   assert.equal(calls, 3);
+  assert.deepEqual(progress, [1, 2, 3].map(pass =>
+    `  daum-commercial: inventory pass ${pass} completed; pages=1; members=1`));
+  assert.doesNotMatch(progress.join("\n"), /matched|detail|verified|https?:|first|second|third/);
   await assert.rejects(
     fetchDaumSnapshot({ post: async () => searchHtml() } as any, 1),
     /integer from 2 to 5/
   );
+});
+
+test("DAUM failed inventory pages emit no completed or detail progress", async (t) => {
+  const progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
+  await assert.rejects(fetchDaumSnapshot({ post: async () => { throw Error("PRIVATE_TRANSPORT_FAILURE"); } }), /did not converge/);
+  assert.deepEqual(progress, []);
+});
+
+test("DAUM full sale and lease collection converges when complete members reorder", async (t) => {
+  resetBrokerStateForTests();
+  t.after(resetBrokerStateForTests);
+  const rows = [
+    { url: "https://daumcommercial.com/property/main-street/", tenure: "Sale- Investment" },
+    { url: "https://daumcommercial.com/property/second/", tenure: "Lease" },
+  ];
+  const page = (items: typeof rows): string => {
+    const data = items.map(({ url }) => ({
+      title: "100 Main Street", address: "100 Main Street, Phoenix, AZ, 85001",
+      single_post_link: url, "link-to": url, lat: "33.4484", lng: "-112.0740",
+      image: "https://daumcommercial.com/wp-content/uploads/main.jpg",
+      totalsqft: "12,500", "property-type": "Industrial",
+    }));
+    return '<html><body><div class="results-list-controls"><div class="results">2 Results Showing</div></div>'
+      + '<div class="results-list wrap-row">'
+      + items.map(({ url, tenure }) =>
+        '<div class="item"><a class="photo" href="' + url + '"></a>'
+        + '<div class="content"><p class="listing-type">' + tenure + '</p>'
+        + '<a class="red-text" href="' + url + '">100 Main Street</a>'
+        + '<p class="info-location">Phoenix | AZ | 85001</p></div></div>').join("")
+      + '</div><script>var propertySearchData = ' + JSON.stringify(data) + ';</script></body></html>';
+  };
+  let posts = 0;
+  const details: string[] = [];
+  t.mock.method(DaumPoliteTransport.prototype, "post", async (url: string) => {
+    assert.equal(url, daumPageUrl(1));
+    return page(posts++ % 2 === 0 ? rows : [...rows].reverse());
+  });
+  t.mock.method(DaumPoliteTransport.prototype, "get", async (url: string) => {
+    details.push(url);
+    if (url === rows[0].url) return detailHtml;
+    assert.equal(url, rows[1].url);
+    return detailHtml.replaceAll("main-street", "second").replace("50388", "50389")
+      .replace("Sale- Investment", "Lease");
+  });
+  const sale = await srcDaumCommercial("sale", Infinity, false);
+  const lease = await srcDaumCommercial("lease", Infinity, false);
+  assert.equal(posts, 4);
+  assert.deepEqual(details, [rows[0].url, rows[1].url]);
+  assert.deepEqual([sale.totalAvailable, lease.totalAvailable], [1, 1]);
+  assert.deepEqual([sale.truncated, lease.truncated], [false, false]);
+  assert.deepEqual(sale.listings.map(row => [row.id, row.daumPostId, row.transactionType]),
+    [["property/main-street", "50388", "Sale"]]);
+  assert.deepEqual(lease.listings.map(row => [row.id, row.daumPostId, row.transactionType]),
+    [["property/second", "50389", "Lease"]]);
+  for (const row of [...sale.listings, ...lease.listings]) {
+    assert.ok(Number.isFinite(Date.parse(row.inventoryObservedAt)));
+    assert.ok(Number.isFinite(Date.parse(row.detailObservedAt)));
+  }
 });

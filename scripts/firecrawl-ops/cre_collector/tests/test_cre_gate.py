@@ -314,6 +314,50 @@ class TestSavillsFullScopeCoverageFloor:
         assert verdict == "hold" and safe is False
         assert expected_reason in reason
 
+    @pytest.mark.parametrize("savills_first", [True, False])
+    def test_unrelated_artifact_does_not_invalidate_complete_savills(self, savills_first):
+        policy = g.load_gate_coverage_policy()
+        savills = _savills_full_scope_artifact()
+        unrelated = _savills_full_scope_artifact()
+        for section in ("sources", "listings"):
+            for row in unrelated[section]:
+                row["sourceKey"] = "hanley"
+        artifacts = [savills, unrelated] if savills_first else [unrelated, savills]
+        before = json.dumps(artifacts, sort_keys=True)
+
+        assert g.effective_floor_for_source(
+            "savills", g.DEFAULT_FLOOR, artifacts, policy
+        ) == (1, "savills full sale+lease coverage policy", None)
+        assert g.effective_floor_for_source(
+            "hanley", g.DEFAULT_FLOOR, artifacts, policy
+        ) == (g.DEFAULT_FLOOR, None, None)
+        assert json.dumps(artifacts, sort_keys=True) == before
+
+    @pytest.mark.parametrize("section", ["sources", "listings"])
+    def test_second_savills_contribution_cannot_hide_in_another_artifact(self, section):
+        policy = g.load_gate_coverage_policy()
+        full = _savills_full_scope_artifact()
+        hidden = {"sources": [], "listings": []}
+        hidden[section] = [dict(full[section][0])]
+
+        floor, reason, failure = g.effective_floor_for_source(
+            "savills", g.DEFAULT_FLOOR, [full, hidden], policy
+        )
+        assert (floor, reason) == (g.DEFAULT_FLOOR, None)
+        assert "exactly one full Savills artifact" in failure
+
+    def test_split_savills_transactions_cannot_borrow_each_others_proof(self):
+        full = _savills_full_scope_artifact()
+        sale = _savills_full_scope_artifact(
+            entries=full["sources"][:1], listings=full["listings"][:1]
+        )
+        lease = _savills_full_scope_artifact(
+            entries=full["sources"][1:], listings=full["listings"][1:]
+        )
+        assert "exactly one full Savills artifact" in g.savills_full_scope_coverage_error(
+            [sale, lease]
+        )
+
     def test_multiple_artifacts_cannot_claim_the_single_artifact_exception(self):
         policy = g.load_gate_coverage_policy()
         floor, policy_reason, failure = g.effective_floor_for_source(

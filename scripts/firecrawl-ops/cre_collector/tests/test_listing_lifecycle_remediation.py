@@ -562,3 +562,274 @@ def test_artifact_identity_is_content_and_order_stable(tmp_path):
     assert monitor.artifact_run_identity([str(one), str(two)]) == monitor.artifact_run_identity(
         [str(two), str(one)]
     )
+
+
+def test_protected_context_pointer_is_normalized_and_bound_into_plan_hash(
+    tmp_path, monkeypatch,
+):
+    bundle = _evidence(tmp_path)
+    snapshot_path = tmp_path / "protected-context.json"
+    pointer = {
+        "snapshot_path": "protected-context.json",
+        "snapshot_sha256": "a" * 64,
+        "database_target_sha256": "b" * 64,
+    }
+    binding = {
+        "schema": "jll-investor-protected-context-v1",
+        "snapshot_path": str(snapshot_path.resolve()),
+        "snapshot_sha256": pointer["snapshot_sha256"],
+        "database_target_sha256": pointer["database_target_sha256"],
+    }
+    calls = []
+
+    class SyntheticContext:
+        non_action_parents = (
+            {
+                "listing_id": "66666666-6666-4666-8666-666666666666",
+                "brokerage_id": "77777777-7777-4777-8777-777777777777",
+                "external_id": "protected-current-a",
+                "source_url": "https://investor.example.test/current-a",
+            },
+            {
+                "listing_id": "88888888-8888-4888-8888-888888888888",
+                "brokerage_id": "77777777-7777-4777-8777-777777777777",
+                "external_id": "protected-current-b",
+                "source_url": "https://investor.example.test/current-b",
+            },
+        )
+
+        def __init__(self):
+            self.binding = binding
+
+    def load_context(value, actions, *, evidence_base_dir, max_age_hours):
+        calls.append((value, list(actions), evidence_base_dir, max_age_hours))
+        return SyntheticContext()
+
+    monkeypatch.setattr(
+        reconcile, "_load_protected_context", load_context, raising=False,
+    )
+    bundle["protected_context"] = pointer
+
+    plan = reconcile.build_plan(bundle, evidence_base_dir=tmp_path)
+
+    assert len(plan["actions"]) == 1
+    assert calls == [(pointer, plan["actions"], tmp_path, 48)]
+    assert plan["protected_context"] == binding
+    core = {key: value for key, value in plan.items() if key != "plan_hash"}
+    assert plan["plan_hash"] == hashlib.sha256(reconcile._canon(core).encode()).hexdigest()
+
+
+def test_protected_reconciliation_refuses_batch_split_before_database_access(
+    tmp_path, monkeypatch,
+):
+    bundle = _evidence(tmp_path)
+    second = json.loads(json.dumps(bundle["rows"][0]))
+    second["external_id"] = "y"
+    bundle["rows"].append(second)
+    pointer = {
+        "snapshot_path": "protected-context.json",
+        "snapshot_sha256": "c" * 64,
+        "database_target_sha256": "d" * 64,
+    }
+    binding = {
+        "schema": "jll-investor-protected-context-v1",
+        "snapshot_path": str((tmp_path / pointer["snapshot_path"]).resolve()),
+        "snapshot_sha256": pointer["snapshot_sha256"],
+        "database_target_sha256": pointer["database_target_sha256"],
+    }
+
+    class SyntheticContext:
+        non_action_parents = ()
+
+        def __init__(self):
+            self.binding = binding
+
+        @staticmethod
+        def guard_sql():
+            return "SELECT 'synthetic protected preimage guard';"
+
+    monkeypatch.setattr(
+        reconcile, "_load_protected_context",
+        lambda *_args, **_kwargs: SyntheticContext(), raising=False,
+    )
+    bundle["protected_context"] = pointer
+    plan = reconcile.build_plan(bundle, evidence_base_dir=tmp_path)
+    assert len(plan["actions"]) == 2
+
+    database_calls = []
+    monkeypatch.setattr(
+        reconcile, "load_db_url",
+        lambda *_args: database_calls.append("load_db_url"),
+    )
+    with pytest.raises(ValueError, match="one complete batch"):
+        reconcile.apply_plan(
+            plan,
+            approval_contract_path=_approval_contract(tmp_path, plan),
+            confirmation=f"APPLY cre-listing-lifecycle-reconciliation {plan['plan_hash']}",
+            supplied_hash=plan["plan_hash"], env_file=None,
+            expected_db_target_sha256=pointer["database_target_sha256"],
+            batch_size=1,
+        )
+    assert database_calls == []
+
+
+def test_protected_apply_rejects_target_mismatch_before_database_access(
+    tmp_path, monkeypatch,
+):
+    bundle = _evidence(tmp_path)
+    pointer = {
+        "snapshot_path": "protected-context.json",
+        "snapshot_sha256": "1" * 64,
+        "database_target_sha256": "2" * 64,
+    }
+    binding = {
+        "schema": "jll-investor-protected-context-v1",
+        "snapshot_path": str((tmp_path / pointer["snapshot_path"]).resolve()),
+        "snapshot_sha256": pointer["snapshot_sha256"],
+        "database_target_sha256": pointer["database_target_sha256"],
+    }
+
+    class SyntheticContext:
+        non_action_parents = ()
+
+        def __init__(self):
+            self.binding = binding
+
+        @staticmethod
+        def guard_sql():
+            return "SELECT 'synthetic protected preimage guard';"
+
+    monkeypatch.setattr(
+        reconcile, "_load_protected_context",
+        lambda *_args, **_kwargs: SyntheticContext(), raising=False,
+    )
+    bundle["protected_context"] = pointer
+    plan = reconcile.build_plan(bundle, evidence_base_dir=tmp_path)
+    database_calls = []
+    monkeypatch.setattr(
+        reconcile, "load_db_url",
+        lambda *_args: database_calls.append("load_db_url"),
+    )
+
+    with pytest.raises(ValueError, match="database target"):
+        reconcile.apply_plan(
+            plan,
+            approval_contract_path=_approval_contract(tmp_path, plan),
+            confirmation=f"APPLY cre-listing-lifecycle-reconciliation {plan['plan_hash']}",
+            supplied_hash=plan["plan_hash"], env_file=None,
+            expected_db_target_sha256="0" * 64, batch_size=1,
+        )
+    assert database_calls == []
+
+
+def test_protected_apply_rejects_tampered_plan_target_before_database_access(
+    tmp_path, monkeypatch,
+):
+    bundle = _evidence(tmp_path)
+    pointer = {
+        "snapshot_path": "protected-context.json",
+        "snapshot_sha256": "3" * 64,
+        "database_target_sha256": "4" * 64,
+    }
+    binding = {
+        "schema": "jll-investor-protected-context-v1",
+        "snapshot_path": str((tmp_path / pointer["snapshot_path"]).resolve()),
+        "snapshot_sha256": pointer["snapshot_sha256"],
+        "database_target_sha256": pointer["database_target_sha256"],
+    }
+
+    class SyntheticContext:
+        non_action_parents = ()
+
+        def __init__(self):
+            self.binding = binding
+
+        @staticmethod
+        def guard_sql():
+            return "SELECT 'synthetic protected preimage guard';"
+
+    monkeypatch.setattr(
+        reconcile, "_load_protected_context",
+        lambda *_args, **_kwargs: SyntheticContext(), raising=False,
+    )
+    bundle["protected_context"] = pointer
+    plan = reconcile.build_plan(bundle, evidence_base_dir=tmp_path)
+    original_hash = plan["plan_hash"]
+    plan["protected_context"]["database_target_sha256"] = "0" * 64
+    database_calls = []
+    monkeypatch.setattr(
+        reconcile, "load_db_url",
+        lambda *_args: database_calls.append("load_db_url"),
+    )
+
+    with pytest.raises(ValueError, match="exact generated plan"):
+        reconcile.apply_plan(
+            plan,
+            approval_contract_path=_approval_contract(
+                tmp_path,
+                {**plan, "plan_hash": original_hash,
+                 "protected_context": binding},
+            ),
+            confirmation=f"APPLY cre-listing-lifecycle-reconciliation {original_hash}",
+            supplied_hash=original_hash, env_file=None,
+            expected_db_target_sha256=pointer["database_target_sha256"], batch_size=1,
+        )
+    assert database_calls == []
+
+
+def test_protected_apply_places_guard_before_writes_and_finalizes_inline(
+    tmp_path, monkeypatch,
+):
+    bundle = _evidence(tmp_path)
+    pointer = {
+        "snapshot_path": "protected-context.json",
+        "snapshot_sha256": "e" * 64,
+        "database_target_sha256": "f" * 64,
+    }
+    binding = {
+        "schema": "jll-investor-protected-context-v1",
+        "snapshot_path": str((tmp_path / pointer["snapshot_path"]).resolve()),
+        "snapshot_sha256": pointer["snapshot_sha256"],
+        "database_target_sha256": pointer["database_target_sha256"],
+    }
+
+    class SyntheticContext:
+        non_action_parents = ()
+
+        def __init__(self):
+            self.binding = binding
+
+        @staticmethod
+        def guard_sql():
+            return "SELECT 'synthetic protected preimage guard';"
+
+    monkeypatch.setattr(
+        reconcile, "_load_protected_context",
+        lambda *_args, **_kwargs: SyntheticContext(), raising=False,
+    )
+    bundle["protected_context"] = pointer
+    plan = reconcile.build_plan(bundle, evidence_base_dir=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        reconcile, "load_db_url", lambda _path: ("postgresql://fixture", None),
+    )
+    monkeypatch.setattr(reconcile, "assert_expected_database_target", lambda *_args: None)
+    monkeypatch.setattr(reconcile, "find_psql", lambda: "psql")
+    monkeypatch.setattr(reconcile, "_run_psql_script", lambda _psql, _url, sql: calls.append(sql))
+
+    reconcile.apply_plan(
+        plan,
+        approval_contract_path=_approval_contract(tmp_path, plan),
+        confirmation=f"APPLY cre-listing-lifecycle-reconciliation {plan['plan_hash']}",
+        supplied_hash=plan["plan_hash"], env_file=None,
+        expected_db_target_sha256=pointer["database_target_sha256"], batch_size=1,
+    )
+
+    assert len(calls) == 1
+    sql = calls[0]
+    guard = "SELECT 'synthetic protected preimage guard';"
+    assert sql.index(guard) < sql.index("CREATE TEMP TABLE _reconcile_apply")
+    assert sql.index(guard) < sql.index("INSERT INTO credeals.cre_scrape_jobs")
+    assert sql.count("BEGIN;") == 1
+    assert sql.count("COMMIT;") == 1
+    assert "SET status = 'completed'" in sql

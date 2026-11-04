@@ -22,6 +22,7 @@ import {
 import {
   createC10BrowserListener,
   readC10BrowserListenerConfig,
+  type C10BrowserListenerDependencies,
 } from "./c10_browser_listener";
 import { BrowserResourceLeakError } from "./permit_lease";
 
@@ -89,7 +90,8 @@ class FakeC10Context {
 }
 
 async function startListener(
-  createContext: () => Promise<{ context: BrowserContext }>,
+  createContext: C10BrowserListenerDependencies["createContext"],
+  environment: NodeJS.ProcessEnv = {},
 ) {
   const coordinator = pemPair();
   const sidecar = pemPair();
@@ -99,6 +101,7 @@ async function startListener(
     PLAYWRIGHT_HOST_TRANSPORT_V3_KEY: TRANSPORT_KEY,
     C10_BROWSER_INTERNAL_PORT: "40000",
     C10_PROFILE_SHA256: "f".repeat(64),
+    ...environment,
   });
   const semaphore = new Semaphore(CAPACITY);
   const listener = createC10BrowserListener({
@@ -183,6 +186,49 @@ async function startListener(
   return { semaphore, execute, activePages, stop };
 }
 
+// AGENTIC-3737: local-target admission must never disable certificate validation.
+// These signed requests exercise the real listener; only browser I/O is synthetic.
+for (const { name, environment, allowLocalTargets } of [
+  { name: "default", environment: {}, allowLocalTargets: false },
+  {
+    name: "test flag false",
+    environment: { NODE_ENV: "test", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "false" },
+    allowLocalTargets: false,
+  },
+  {
+    name: "test local targets enabled",
+    environment: { NODE_ENV: "test", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "true" },
+    allowLocalTargets: true,
+  },
+  {
+    name: "production flag true",
+    environment: { NODE_ENV: "production", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "true" },
+    allowLocalTargets: false,
+  },
+]) {
+  test(`AGENTIC-3737: ${name} preserves TLS verification on signed execution`, async (t) => {
+    const options: Parameters<C10BrowserListenerDependencies["createContext"]>[0][] = [];
+    const context = new FakeC10Context();
+    const harness = await startListener(async (receivedOptions) => {
+      options.push(receivedOptions);
+      return { context: context as unknown as BrowserContext };
+    }, environment);
+    try {
+      const result = await harness.execute();
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(typeof result.body.evidenceSignature, "string");
+      assert.equal(context.closeCalls, 1);
+      assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY);
+      assert.equal(await harness.activePages(), 0);
+      t.diagnostic(`createContext options=${JSON.stringify(options)}`);
+      assert.deepEqual(options, [{ allowLocalTargets, skipTlsVerification: false }],
+        "local-target admission must not switch off TLS verification");
+    } finally {
+      await harness.stop();
+    }
+  });
+}
+
 /** Resolves true if the request is answered within `ms`. */
 const answeredWithin = (request: Promise<unknown>, ms: number) =>
   Promise.race([request.then(() => true), sleep(ms).then(() => false)]);
@@ -200,6 +246,113 @@ test("C10 control: success signs evidence and returns lease and permit", async (
     assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY);
     assert.equal(await harness.activePages(), 0);
   } finally {
+    await harness.stop();
+  }
+});
+
+// AGENTIC-3767 F6: serialization itself may consume the remaining card deadline.
+test("F6: C10 signed-response serialization crossing the deadline cannot emit success", async (t) => {
+  const originalNow = Date.now;
+  const originalStringify = JSON.stringify;
+  let responseSerializations = 0;
+  let crossedDeadline = false;
+  const context = new FakeC10Context();
+  const harness = await startListener(async () => ({ context: context as unknown as BrowserContext }));
+  t.mock.method(Date, "now", () => crossedDeadline ? originalNow() + CARD_TIMEOUT_MS + 1 : originalNow());
+  t.mock.method(JSON, "stringify", ((value: unknown, ...args: unknown[]) => {
+    const serialized = Reflect.apply(originalStringify, JSON, [value, ...args]);
+    if (value !== null && typeof value === "object" && "evidenceSignature" in value) {
+      responseSerializations += 1;
+      crossedDeadline = true;
+    }
+    return serialized;
+  }) as typeof JSON.stringify);
+  try {
+    const result = await harness.execute();
+    assert.equal(responseSerializations, 1, "signed response serialization must actually execute");
+    assert.equal(context.closeCalls, 1, "context teardown must be confirmed");
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY);
+    assert.equal(await harness.activePages(), 0);
+    assert.equal(result.status, 502, "serialization crossing the card deadline must refuse success");
+    assert.equal(result.body.evidenceSignature, undefined);
+  } finally {
+    t.mock.restoreAll();
+    await harness.stop();
+  }
+});
+
+// AGENTIC-3767 F2: both closes share one remaining card cleanup budget.
+test("F2: C10 hung page and context cleanup answers within one card deadline", async (t) => {
+  const pageClose = deferred<void>();
+  const contextClose = deferred<void>();
+  const page = fakePage();
+  page.close = () => pageClose.promise;
+  const context = new FakeC10Context(async () => page);
+  context.close = () => contextClose.promise;
+  const harness = await startListener(async () => ({ context: context as unknown as BrowserContext }));
+  const started = performance.now();
+  try {
+    const result = await harness.execute();
+    const elapsed = performance.now() - started;
+    t.diagnostic(`cardBudget=${CARD_TIMEOUT_MS}ms responseElapsed=${elapsed.toFixed(1)}ms`);
+    assert.equal(result.status, 502);
+    assert.equal(result.body.evidenceSignature, undefined);
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY - 1);
+    assert.equal(await harness.activePages(), 1);
+    assert.ok(elapsed < CARD_TIMEOUT_MS + 100, `cleanup exceeded single card budget: ${elapsed.toFixed(1)}ms`);
+  } finally {
+    pageClose.resolve();
+    contextClose.resolve();
+    await harness.stop();
+  }
+});
+
+// AGENTIC-3767 F4: the exact timed-out context close later confirms ownership ended.
+test("F4: C10 late successful context close eventually returns its permit and page slot once", async (t) => {
+  const contextClose = deferred<void>();
+  const context = new FakeC10Context();
+  context.close = () => contextClose.promise;
+  const harness = await startListener(async () => ({ context: context as unknown as BrowserContext }));
+  try {
+    const started = performance.now();
+    const result = await harness.execute();
+    t.diagnostic(`cardBudget=${CARD_TIMEOUT_MS}ms responseElapsed=${(performance.now() - started).toFixed(1)}ms`);
+    assert.equal(result.status, 502);
+    assert.equal(result.body.evidenceSignature, undefined);
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY - 1);
+    assert.equal(await harness.activePages(), 1);
+    contextClose.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual({ permits: harness.semaphore.getAvailablePermits(), activePages: await harness.activePages() },
+      { permits: CAPACITY, activePages: 0 }, "confirmed late close must return both owned capacity counters");
+    contextClose.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY, "late close must release exactly once");
+  } finally {
+    contextClose.resolve();
+    await harness.stop();
+  }
+});
+
+test("F5: C10 confirmed cleanup after the wall deadline cannot sign success", async () => {
+  const originalNow = Date.now;
+  const context = new FakeC10Context();
+  context.close = async () => {
+    // Advance only at confirmed context teardown; real timer callbacks have not run.
+    const completedAt = originalNow() + CARD_TIMEOUT_MS + 1;
+    Date.now = () => completedAt;
+  };
+  const harness = await startListener(async () => ({ context: context as unknown as BrowserContext }));
+  try {
+    const result = await harness.execute();
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY,
+      "confirmed context teardown must return capacity despite deadline failure");
+    assert.equal(await harness.activePages(), 0);
+    assert.equal(result.status, 502, "late cleanup must not produce signed success");
+    assert.equal(result.body.evidenceSignature, undefined);
+  } finally {
+    Date.now = originalNow;
     await harness.stop();
   }
 });

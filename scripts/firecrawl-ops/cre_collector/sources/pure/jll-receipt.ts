@@ -7,64 +7,162 @@ import * as cheerio from "cheerio";
 
 export const JLL_SEARCH_PAGE_SIZE = 50;
 export const JLL_GRAPHQL_URL = "https://property.jll.com/api/graphql";
+// The public endpoint allowlists the complete client operation, including unused
+// optional filters and fields. Keep parity rather than reducing its selection.
+// Observed 2026-10-10 in JLL's public client:
+// https://property.jll.com/_next/static/chunks/pages/_app-b7af077e8099160f.js
 export const JLL_SEARCH_RESULTS_QUERY = `
-  query SearchResults(
-    $market: String!
-    $language: String!
-    $propertyTypes: [String!]
-    $tenureTypes: [String!]
-    $skip: Int
-    $take: IntString = 50
-    $orderBy: PropertiesOrderInput
+query SearchResults($market: String!, $language: String!, $propertyTypes: [String!], $tenureTypes: [String!], $cities: [String!], $districts: [String!], $departments: [String!], $marketArea: String, $regions: [String!], $state: String, $postcodes: [String!], $postcodePrefix: [String!], $isSublease: Boolean, $surfaceArea: SurfaceSearchInput, $inCircumference: InCircumferenceInput, $inRectangle: InRectangleInput, $searchInput: SearchInputUnion, $skip: Int, $orderBy: PropertiesOrderInput, $polygonId: Int, $propertySubTypes: [String!], $availableAfter: String, $buildingClasses: [String!], $statuses: [String!], $submarket: String, $withVideos: Boolean, $withFloorPlans: Boolean, $withVirtualTours: Boolean, $withView360URLs: Boolean, $wls: String, $ids: [String!], $placeId: String, $price: PropertyPriceSearchInput, $take: IntString = 50, $hasParking: Boolean, $hasRaisedFloor: Boolean, $hasAllDaySecurity: Boolean, $hasAirConditioning: Boolean, $hasBreeamRating: Boolean, $hasCanteen: Boolean, $hasChargingRoom: Boolean, $hasColdChamber: Boolean, $hasCrane: Boolean, $hasDockAccess: Boolean, $hasDPE: Boolean, $hasEVChargingPoints: Boolean, $hasElevator: Boolean, $hasEmergencyElevator: Boolean, $hasExtractionDuct: Boolean, $hasFalseCeiling: Boolean, $hasFireExtinguisher: Boolean, $hasFireHydrant: Boolean, $hasFoodBeverage: Boolean, $hasGroundLevelAccess: Boolean, $hasIndustrialElevator: Boolean, $hasIronConnection: Boolean, $hasLicense: Boolean, $hasLoadingDock: Boolean, $hasOffice: Boolean, $hasPlotArea: Boolean, $hasPopupStore: Boolean, $hasSeismicStatus: Boolean, $hasSolarPanels: Boolean, $hasSprinklers: Boolean, $hasSunProtection: Boolean, $hasTerrace: Boolean, $hasWellness: Boolean, $hasRampway: Boolean, $hasReception: Boolean, $isBranchable: Boolean, $isCommissionFree: Boolean, $isSingleTenant: Boolean, $isEquippedOffice: Boolean, $isHighFloor: Boolean, $isJLLExclusive: Boolean, $isLowFloor: Boolean, $isOneStory: Boolean, $isPetFriendly: Boolean, $isSustainableOffice: Boolean, $locationType: String, $distanceFromStation: NumberIntervalSearchInput, $distanceFromIC: NumberIntervalSearchInput, $yearBuilt: NumberIntervalSearchInput, $availableFrom: DateIntervalSearchInput, $ceilingHeight: NumberIntervalSearchInput, $floorPlate: NumberIntervalSearchInput, $closestRoads: [String!], $closestTrains: [String!], $windowRange: NumberIntervalSearchInput, $floorLoad: NumberIntervalSearchInput, $loadingDocks: NumberIntervalSearchInput, $amenities: [String!], $energyRatings: [String!], $tags: [String!], $title: String, $brokerIds: [String!], $locations: [LocationInput!]) {
+  properties(
+    market: $market
+    language: $language
+    propertyTypes: $propertyTypes
+    tenureTypes: $tenureTypes
+    price: $price
+    cities: $cities
+    districts: $districts
+    departments: $departments
+    marketArea: $marketArea
+    regions: $regions
+    state: $state
+    postcodes: $postcodes
+    postcodePrefix: $postcodePrefix
+    locations: $locations
+    isSublease: $isSublease
+    surfaceArea: $surfaceArea
+    inCircumference: $inCircumference
+    inRectangle: $inRectangle
+    searchInput: $searchInput
+    take: $take
+    skip: $skip
+    orderBy: $orderBy
+    polygonId: $polygonId
+    availableAfter: $availableAfter
+    buildingClasses: $buildingClasses
+    propertySubTypes: $propertySubTypes
+    statuses: $statuses
+    submarket: $submarket
+    withVideos: $withVideos
+    withFloorPlans: $withFloorPlans
+    withVirtualTours: $withVirtualTours
+    withView360URLs: $withView360URLs
+    wls: $wls
+    ids: $ids
+    placeId: $placeId
+    hasParking: $hasParking
+    hasRaisedFloor: $hasRaisedFloor
+    hasAllDaySecurity: $hasAllDaySecurity
+    hasAirConditioning: $hasAirConditioning
+    hasBreeamRating: $hasBreeamRating
+    hasCanteen: $hasCanteen
+    hasChargingRoom: $hasChargingRoom
+    hasColdChamber: $hasColdChamber
+    hasCrane: $hasCrane
+    hasDockAccess: $hasDockAccess
+    hasDPE: $hasDPE
+    hasEVChargingPoints: $hasEVChargingPoints
+    hasElevator: $hasElevator
+    hasEmergencyElevator: $hasEmergencyElevator
+    hasExtractionDuct: $hasExtractionDuct
+    hasFireExtinguisher: $hasFireExtinguisher
+    hasFireHydrant: $hasFireHydrant
+    hasFoodBeverage: $hasFoodBeverage
+    hasGroundLevelAccess: $hasGroundLevelAccess
+    hasIndustrialElevator: $hasIndustrialElevator
+    hasIronConnection: $hasIronConnection
+    hasLicense: $hasLicense
+    hasLoadingDock: $hasLoadingDock
+    hasOffice: $hasOffice
+    hasPlotArea: $hasPlotArea
+    hasPopupStore: $hasPopupStore
+    hasFalseCeiling: $hasFalseCeiling
+    hasSeismicStatus: $hasSeismicStatus
+    hasSolarPanels: $hasSolarPanels
+    hasSprinklers: $hasSprinklers
+    hasSunProtection: $hasSunProtection
+    hasTerrace: $hasTerrace
+    hasWellness: $hasWellness
+    hasRampway: $hasRampway
+    hasReception: $hasReception
+    isBranchable: $isBranchable
+    isCommissionFree: $isCommissionFree
+    isSingleTenant: $isSingleTenant
+    isEquippedOffice: $isEquippedOffice
+    isHighFloor: $isHighFloor
+    isJLLExclusive: $isJLLExclusive
+    isLowFloor: $isLowFloor
+    isOneStory: $isOneStory
+    isPetFriendly: $isPetFriendly
+    isSustainableOffice: $isSustainableOffice
+    locationType: $locationType
+    distanceFromStation: $distanceFromStation
+    distanceFromIC: $distanceFromIC
+    yearBuilt: $yearBuilt
+    availableFrom: $availableFrom
+    ceilingHeight: $ceilingHeight
+    floorPlate: $floorPlate
+    closestRoads: $closestRoads
+    closestTrains: $closestTrains
+    windowRange: $windowRange
+    floorLoad: $floorLoad
+    loadingDocks: $loadingDocks
+    amenities: $amenities
+    energyRatings: $energyRatings
+    tags: $tags
+    title: $title
+    brokerIds: $brokerIds
   ) {
-    properties(
-      market: $market
-      language: $language
-      propertyTypes: $propertyTypes
-      tenureTypes: $tenureTypes
-      skip: $skip
-      take: $take
-      orderBy: $orderBy
-    ) {
-      count
-      items {
-        id
-        title
-        images
-        address
-        propertyTypes
-        tenureTypes
-        rentPrice {
-          amount
-          currency
-          unit
-        }
-        salePrice {
-          amount
-          currency
-          unit
-        }
-        hidePrice
-        pageUrl
-        latitude
-        longitude
-        city
-        state
-        postcode
-        surfaceAreas {
+    count
+    items {
+      id
+      title
+      images
+      address
+      approxLocation
+      district
+      buildingClasses
+      videos
+      floorPlans
+      virtualTours
+      propertyTypes
+      tenureTypes
+      rentPrice {
+        amount
+        currency
+        unit
+      }
+      salePrice {
+        amount
+        currency
+        unit
+      }
+      hidePrice
+      pageUrl
+      labels
+      latitude
+      longitude
+      region
+      city
+      state
+      postcode
+      surfaceAreas {
+        value
+        unit
+        label
+        alternativeUnit
+        showEstimateDesks
+        metrics {
           value
           unit
-          label
-          alternativeUnit
-          showEstimateDesks
-          metrics {
-            value
-            unit
-          }
         }
+      }
+      customAttributes {
+        name
+        value
       }
     }
   }
+}
 `;
 
 export function normalizedJllListingUrl(href: string): string {

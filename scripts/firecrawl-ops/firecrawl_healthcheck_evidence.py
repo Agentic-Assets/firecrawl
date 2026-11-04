@@ -12,7 +12,7 @@ from typing import Any
 def parse_json(value: str) -> Any:
     try:
         return json.loads(value)
-    except Exception:
+    except json.JSONDecodeError:
         return value
 
 
@@ -25,6 +25,7 @@ def main() -> None:
         "image_id": os.environ.get("IMAGE_ID", ""),
         "errors": json.loads(os.environ.get("ERRORS_JSON", "[]")),
         "docker_compose_ps": os.environ.get("DOCKER_PS", ""),
+        "ingress_diagnostic": os.environ.get("INGRESS_DIAGNOSTIC", ""),
         "api_root_response": os.environ.get("ROOT_RESP", ""),
         "scrape_response": parse_json(os.environ.get("RESP", "")),
         "scrape_summary": parse_json(os.environ.get("SCRAPE_SUMMARY", "")),
@@ -32,7 +33,9 @@ def main() -> None:
 
     json_path = Path(os.environ["JSON_PATH"])
     md_path = Path(os.environ["MD_PATH"])
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    json_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
 
     lines = [
         "# Firecrawl Healthcheck Evidence",
@@ -43,6 +46,10 @@ def main() -> None:
         f"- Firecrawl dir: `{payload['firecrawl_dir']}`",
         f"- Image id: `{payload['image_id']}`",
         f"- Errors: `{len(payload['errors'])}`",
+        "",
+        "## Ingress Diagnostic",
+        "",
+        payload["ingress_diagnostic"],
         "",
         "## Scrape Summary",
         "",

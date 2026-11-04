@@ -23,6 +23,10 @@ import {
   createPerformanceRecorder,
   flushPerformance,
   performanceRecorder,
+  recordDirectProviderAttemptCompleted,
+  recordDirectProviderAttemptStarted,
+  recordDirectProviderPacingWaitCompleted,
+  recordDirectProviderPacingWaitStarted,
   recordClientAttemptCompleted,
   recordClientAttemptStarted,
   recordJllDetailCache,
@@ -291,6 +295,99 @@ test("snapshot separates request, source, cache, concurrency, and sampled resour
   }
 });
 
+test("direct-provider telemetry is separate, bounded, and reports active requests and pacing", async () => {
+  const fixture = recorderFixture();
+  setPerformanceRecorderForTests(fixture.recorder);
+  try {
+    await withPerformanceSource("essex-realty", "sale", async () => {
+      const pacing = recordDirectProviderPacingWaitStarted("detail", 12);
+      assert.ok(pacing);
+      let snapshot = fixture.fs.snapshot();
+      let detail = snapshot.metrics.direct_provider_requests.by_source_transaction_role
+        .find((row: any) => row.role === "detail");
+      assert.equal(detail.pacing_waits_active, 1);
+      assert.equal(detail.pacing_wait_ms_scheduled, 12);
+      fixture.monotonic.value = 12;
+      recordDirectProviderPacingWaitCompleted(pacing);
+
+      fixture.monotonic.value = 10_012;
+      const success = recordDirectProviderAttemptStarted("current_archive");
+      assert.ok(success);
+      fixture.monotonic.value = 10_112;
+      snapshot = fixture.fs.snapshot();
+      let current = snapshot.metrics.direct_provider_requests.by_source_transaction_role
+        .find((row: any) => row.role === "current_archive");
+      assert.equal(current.active_locally_awaited, 1);
+      recordDirectProviderAttemptCompleted(success, {
+        outcome: "succeeded",
+        status: 200,
+      });
+      recordDirectProviderAttemptCompleted(success, {
+        outcome: "failed",
+        status: 500,
+      });
+
+      fixture.monotonic.value = 20_012;
+      const httpFailure = recordDirectProviderAttemptStarted("closed_archive");
+      assert.ok(httpFailure);
+      fixture.monotonic.value = 20_112;
+      recordDirectProviderAttemptCompleted(httpFailure, {
+        outcome: "failed",
+        status: 503,
+        error: Object.assign(new Error("HTTP failure"), { status: 503 }),
+      });
+      fixture.monotonic.value = 30_012;
+      const timeout = recordDirectProviderAttemptStarted("sitemap");
+      assert.ok(timeout);
+      fixture.monotonic.value = 30_112;
+      recordDirectProviderAttemptCompleted(timeout, {
+        outcome: "failed",
+        error: new DOMException("aborted", "AbortError"),
+      });
+      fixture.monotonic.value = 40_012;
+      const oversized = recordDirectProviderAttemptStarted("detail");
+      assert.ok(oversized);
+      fixture.monotonic.value = 40_112;
+      recordDirectProviderAttemptCompleted(oversized, {
+        outcome: "failed",
+        status: 200,
+        errorCategory: "response_too_large",
+      });
+    });
+    fixture.recorder.flush(true);
+    const snapshot = fixture.fs.snapshot();
+    const direct = snapshot.metrics.direct_provider_requests.by_source_transaction_role;
+    const current = direct.find((row: any) => row.role === "current_archive");
+    const closed = direct.find((row: any) => row.role === "closed_archive");
+    const sitemap = direct.find((row: any) => row.role === "sitemap");
+    const detail = direct.find((row: any) => row.role === "detail");
+    assert.deepEqual(
+      [current.attempts_started, current.attempts_completed, current.succeeded, current.failed],
+      [1, 1, 1, 0]
+    );
+    assert.equal(current.status_counts["200"], 1);
+    assert.equal(closed.error_categories.http_5xx, 1);
+    assert.equal(closed.status_counts["503"], 1);
+    assert.equal(sitemap.error_categories.timeout, 1);
+    assert.equal(detail.error_categories.response_too_large, 1);
+    assert.equal(detail.pacing_waits_completed, 1);
+    assert.equal(detail.pacing_wait_ms_elapsed, 12);
+    assert.deepEqual(detail.latency_histogram, {
+      bounds_ms: [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000],
+      counts: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    });
+    assert.equal(snapshot.metrics.requests.attempts_started, 0);
+    assert.equal(snapshot.coverage.client_requests, "firecrawl_scrape_only");
+    assert.equal(
+      snapshot.coverage.direct_provider_requests,
+      "essex_pyramid_only_other_direct_sources_unknown"
+    );
+    assert.doesNotMatch(JSON.stringify(snapshot), /example\.invalid|private|business-body/);
+  } finally {
+    resetPerformanceRecorderForTests();
+  }
+});
+
 test("failure snapshots contain only finite categories and bounded statuses", () => {
   const fixture = recorderFixture();
   const secret = "token-super-secret";
@@ -449,7 +546,9 @@ test("snapshot output has an explicit byte cap", () => {
   assert.deepEqual(warnings, [PERFORMANCE_WARNING]);
 });
 
-test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", () => {
+test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", {
+  skip: process.platform === "win32" ? "POSIX symlink/FIFO semantics" : false,
+}, () => {
   for (const kind of ["symlink", "fifo"] as const) {
     const dir = mkdtempSync(join(tmpdir(), `cre-performance-temp-${kind}-`));
     const snapshotPath = join(dir, "snapshot.json");
@@ -489,7 +588,9 @@ test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", (
   }
 });
 
-test("existing snapshot symlinks and FIFOs are refused without replacement", () => {
+test("existing snapshot symlinks and FIFOs are refused without replacement", {
+  skip: process.platform === "win32" ? "POSIX symlink/FIFO semantics" : false,
+}, () => {
   for (const kind of ["symlink", "fifo"] as const) {
     const dir = mkdtempSync(join(tmpdir(), `cre-performance-target-${kind}-`));
     const snapshotPath = join(dir, "snapshot.json");
@@ -563,7 +664,7 @@ test("diagnostic clock failures do not turn a successful scrape into a retry", a
   }
 });
 
-test("scrape timeout telemetry records only backoffs before real retries", async () => {
+test("client deadline keeps remote settlement unknown and prevents automatic retry", async () => {
   const fixture = recorderFixture();
   const originalScrape = firecrawl.scrape;
   const originalSetTimeout = globalThis.setTimeout;
@@ -592,22 +693,22 @@ test("scrape timeout telemetry records only backoffs before real retries", async
         remote_unknown: requests.timed_out_remote_settlement_unknown,
       },
       {
-        attempts_started: 3,
-        attempts_completed: 3,
+        attempts_started: 1,
+        attempts_completed: 1,
         succeeded: 0,
-        failed: 3,
-        fresh_requested: 3,
-        timeout: 3,
-        remote_unknown: 3,
+        failed: 1,
+        fresh_requested: 1,
+        timeout: 1,
+        remote_unknown: 1,
       }
     );
     assert.deepEqual(requests.retry.http_helper, {
-      retry_attempts: 2,
-      backoff_ms: 7_500,
+      retry_attempts: 0,
+      backoff_ms: 0,
       terminal_backoff_ms: 0,
     });
     assert.equal(fixture.fs.snapshot().metrics.logical_scrape_calls.raw, 1);
-    assert.equal(existingLogs.length, 3, "telemetry does not change existing retry logging");
+    assert.equal(existingLogs.length, 1, "the terminal unknown attempt is logged once");
     assert.doesNotMatch(JSON.stringify(fixture.fs.snapshot()), /private\.example|token-super-secret/);
   } finally {
     console.error = originalConsoleError;
@@ -711,4 +812,28 @@ test("JLL cache telemetry observes accepted hits, attempted misses, and refresh 
     resetPerformanceRecorderForTests();
     rmSync(cacheDir, { recursive: true, force: true });
   }
+});
+
+test("terminal JSON rejection records no retry or terminal backoff", async t => {
+  const fixture = recorderFixture();
+  setPerformanceRecorderForTests(fixture.recorder);
+  t.after(resetPerformanceRecorderForTests);
+  const originalSetTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", ((callback: (...args: any[]) => void, _delay?: number, ...args: any[]) =>
+    originalSetTimeout(callback, 0, ...args)) as typeof setTimeout);
+  t.mock.method(console, "error", () => undefined);
+  t.mock.method(firecrawl, "scrape", async () => ({ rawHtml: "not JSON" }));
+  await assert.rejects(
+    scrapeJson("https://example.com/terminal-json", { jsonAttempts: 1 }),
+    /contained no parseable JSON object/,
+  );
+  fixture.recorder.flush(true);
+  const metrics = fixture.fs.snapshot().metrics;
+  assert.deepEqual(metrics.requests.retry.json_parse, {
+    retry_attempts: 0,
+    backoff_ms: 0,
+    terminal_backoff_ms: 0,
+  });
+  assert.equal(metrics.requests.attempts_started, 1);
+  assert.deepEqual(metrics.logical_scrape_calls, { raw: 1, doc: 0, json: 1 });
 });

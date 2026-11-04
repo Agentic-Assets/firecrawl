@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
-import fcntl
+from cre_posix import fcntl
 import hashlib
 import json
 import os

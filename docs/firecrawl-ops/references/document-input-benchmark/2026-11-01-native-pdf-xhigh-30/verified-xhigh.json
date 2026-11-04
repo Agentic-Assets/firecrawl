@@ -1,0 +1,4240 @@
+{
+  "schema": "native-pdf-legacy-inspection/v1",
+  "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "rows": [
+    {
+      "document_id": "core-01",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "intent_sha256": "54cdde92c40e34f99fc6b838b88f21735ee8c940801dfc0fad61e297ee3f362f",
+      "cost_usd": 0.0116102,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 78.8842407920165,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 22068,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 18380
+        },
+        "cost": 0.0116102,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0116102,
+        "market_cost": 0.0116102,
+        "prompt_tokens": 5762,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 27830
+      },
+      "result_sha256": "53c3f313798d0365e03339e4002080280ee31094875163f32e9ad01f19ecdd0d"
+    },
+    {
+      "document_id": "core-01",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "intent_sha256": "4951bed7ae67411eb11c1f7f33997b89d393f7cc7c54050e4348f6ce165e379e",
+      "cost_usd": 0.0019549,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 30.492771459015785,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5695,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3744
+        },
+        "cost": 0.0019549,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0019549,
+        "market_cost": 0.0019549,
+        "prompt_tokens": 8159,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13854
+      },
+      "result_sha256": "658564e58411b04e10323917986f903811e7f18b54fe9ce21d71529152bc15a6"
+    },
+    {
+      "document_id": "core-01",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "intent_sha256": "559030e3ffdf07f7dcd4da4c5948eace8a51795f8e37e95d8fd58117d6874c68",
+      "cost_usd": 0.0040508,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 61.086710167001,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9268,
+        "completion_tokens": 5784,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3553
+        },
+        "cost": 0.0040508,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0040508,
+        "market_cost": 0.0040508,
+        "prompt_tokens": 9271,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15055
+      },
+      "result_sha256": "1f8049c3d0335b537ea73310860daab116704ff0fbb60a0526ee4c184750554c"
+    },
+    {
+      "document_id": "core-02",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "intent_sha256": "2add4e774932ebe548a43f5b115268102f98c8271ed8f80cfcd11b4ff22ed017",
+      "cost_usd": 0.0053305,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.94824900000822,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9477,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6480
+        },
+        "cost": 0.0053305,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0053305,
+        "market_cost": 0.0053305,
+        "prompt_tokens": 5920,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15397
+      },
+      "result_sha256": "5a0f3be2e304366557a5ef863a8e4c4c68f774f6a8c11a222c9e7b24af2360cd"
+    },
+    {
+      "document_id": "core-02",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "intent_sha256": "66d3b413c94cdf8ae9e0d246f8d30f004077cd83384cf65939b07d96ae4f054e",
+      "cost_usd": 0.0032663,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 60.18497575001675,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 12212,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9707
+        },
+        "cost": 0.0032663,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0032663,
+        "market_cost": 0.0032663,
+        "prompt_tokens": 8239,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 20451
+      },
+      "result_sha256": "bd21490573403e8b326975d1dcb53424f467e578a382dc69aef3822faeeec15e"
+    },
+    {
+      "document_id": "core-02",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "intent_sha256": "598f5e0d27c391beed594d076fd54c53b4cf0a23a974b3fcf1dec17cc67d28f0",
+      "cost_usd": 0.0034618,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 50.422173833998386,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9376,
+        "completion_tokens": 4579,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3262
+        },
+        "cost": 0.0034618,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0034618,
+        "market_cost": 0.0034618,
+        "prompt_tokens": 9379,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13958
+      },
+      "result_sha256": "d3f691c597df7865daed316f27a60435aa6f3f772ee40c622cb5cc4b857b5dd7"
+    },
+    {
+      "document_id": "core-03",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "intent_sha256": "239d16a04c399efcb178b16cc70e461fc3bf6c643e27932164dcac1e5e900f33",
+      "cost_usd": 0.0051899,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 32.08248358400306,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9217,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6956
+        },
+        "cost": 0.0051899,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0051899,
+        "market_cost": 0.0051899,
+        "prompt_tokens": 5814,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15031
+      },
+      "result_sha256": "72c60165f844a909b4e072cb8dcfd4b661a0c3e3e5dbd84d4fe66077edf525fc"
+    },
+    {
+      "document_id": "core-03",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "intent_sha256": "031eb0b519a4abe6ac6203d0db079a9967097d1e567baaa183726926cef10d77",
+      "cost_usd": 0.0019889,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 26.058416416984983,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5857,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4258
+        },
+        "cost": 0.0019889,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0019889,
+        "market_cost": 0.0019889,
+        "prompt_tokens": 8175,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14032
+      },
+      "result_sha256": "88b2a034652cc050b532d907e50a28f6ea5490603268a2529b02a70a970b1654"
+    },
+    {
+      "document_id": "core-03",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "intent_sha256": "4cc771426511f9cac00019c7fb1a3cdf2913ac539d25b07faa2747d00b21a3d8",
+      "cost_usd": 0.0035523,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 43.684164374979446,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9296,
+        "completion_tokens": 4780,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3106
+        },
+        "cost": 0.0035523,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0035523,
+        "market_cost": 0.0035523,
+        "prompt_tokens": 9299,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14079
+      },
+      "result_sha256": "2c577310cf0494b25faef8b1ba033773028d69ed9629289d6ba4e168a7347a30"
+    },
+    {
+      "document_id": "core-04",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "intent_sha256": "62d9251b1ce8a4fb49202b0cb57a2151d1d76c2e5561a1fb6fa85acb8b479257",
+      "cost_usd": 0.0046313,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 29.795175457984442,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8466,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6248
+        },
+        "cost": 0.0046313,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0046313,
+        "market_cost": 0.0046313,
+        "prompt_tokens": 3983,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12449
+      },
+      "result_sha256": "b1652724c35337cd4cdb42e97bfde7d96cbe2cfc2d8e84b41dcbd419fadd8255"
+    },
+    {
+      "document_id": "core-04",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "intent_sha256": "cf100e8e1ab8fa5389d74e0b2d595f13a44b735bbd58b5ffe975b970fd1833b5",
+      "cost_usd": 0.0015305,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 21.053381249977974,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4903,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3325
+        },
+        "cost": 0.0015305,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0015305,
+        "market_cost": 0.0015305,
+        "prompt_tokens": 5499,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10402
+      },
+      "result_sha256": "3715af9b98a1fca30f3ab9f3137001f22cefd1159e7bff93efef709b2f61e84c"
+    },
+    {
+      "document_id": "core-04",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "intent_sha256": "ef6d83d92a9cab1f1d7e7a9df49d32a53b402093a620fd68faeeb8608f0d976d",
+      "cost_usd": 0.003232675,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 54.220701082987944,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6239,
+        "completion_tokens": 4905,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3550
+        },
+        "cost": 0.003232675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003232675,
+        "market_cost": 0.003232675,
+        "prompt_tokens": 6242,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11147
+      },
+      "result_sha256": "f0da8d154ba5cf6410e5de589d33e5e3c5a7d6510652880df0b6ac7a1677e00f"
+    },
+    {
+      "document_id": "core-05",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "intent_sha256": "0058b11657e2b6e4df163443f58d24d19ca7abc8d10930a227a3764817b15200",
+      "cost_usd": 0.017104,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 116.29705933298101,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 33006,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 26819
+        },
+        "cost": 0.017104,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.017104,
+        "market_cost": 0.017104,
+        "prompt_tokens": 6010,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 39016
+      },
+      "result_sha256": "8bc8784a1f5dc825bc5cc93af24d6c2f1d73a10781511a7aa82b9d3d077f2d7b"
+    },
+    {
+      "document_id": "core-05",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "intent_sha256": "99f185ccd70b321bb23ad3664c1102504d2f61578e6e58b6250583f96d5e3f23",
+      "cost_usd": 0.0023595,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.36205399999744,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7647,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4815
+        },
+        "cost": 0.0023595,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0023595,
+        "market_cost": 0.0023595,
+        "prompt_tokens": 8301,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15948
+      },
+      "result_sha256": "efc4f2b8b308bc186f1cbd6c3d1082dfabe1a71d42f9b0c5ca9907dc271d02fa"
+    },
+    {
+      "document_id": "core-05",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "intent_sha256": "c17d15bb62e8735e7cab8717b63de0f1c3f7edaf77545b2d3dec003e83f668bd",
+      "cost_usd": 0.004427925,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 65.81623320799554,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9393,
+        "completion_tokens": 6507,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4064
+        },
+        "cost": 0.004427925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004427925,
+        "market_cost": 0.004427925,
+        "prompt_tokens": 9396,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15903
+      },
+      "result_sha256": "fd8571f52e21e3e90e6bd4abfdb41dec345b5a23a1f5c8f3e8bc98d853dc1184"
+    },
+    {
+      "document_id": "core-06",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "intent_sha256": "3e80646b9a0d72712159ed7e7bc3c498fb106a2a05caea17d3ad0a22fc68bd55",
+      "cost_usd": 0.0079617,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 57.155618708988186,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 14784,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 12109
+        },
+        "cost": 0.0079617,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0079617,
+        "market_cost": 0.0079617,
+        "prompt_tokens": 5697,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 20481
+      },
+      "result_sha256": "9d8b86ad2e561502018c6b4bb151d9031f1168ea91fa871452d591cde0f6f956"
+    },
+    {
+      "document_id": "core-06",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "intent_sha256": "ff1b82300427bca2ad5d039edfac999bd50d81b2ad9c8e41b1506e56d4694ea1",
+      "cost_usd": 0.002874498,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 51.97476829201332,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10340,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 8279
+        },
+        "cost": 0.002874498,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002874498,
+        "market_cost": 0.002874498,
+        "prompt_tokens": 8162,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 18502
+      },
+      "result_sha256": "8f8236a41ca531195b92318781011267dc0bdab5fa765f40468668cac74a140d"
+    },
+    {
+      "document_id": "core-06",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "intent_sha256": "42ca81bd00758c7cf27e5d5b31afa25c412edc7950444558ec2e1afc029b9b06",
+      "cost_usd": 0.0049743,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 67.11207020800794,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9256,
+        "completion_tokens": 7634,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6002
+        },
+        "cost": 0.0049743,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0049743,
+        "market_cost": 0.0049743,
+        "prompt_tokens": 9259,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16893
+      },
+      "result_sha256": "7dc9b2cc21f1e81b8e652226401013665c082eae88e3da4706f7161afcc09cd5"
+    },
+    {
+      "document_id": "core-07",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "intent_sha256": "aceeda090dbcee11ad6fdac439acbe7b0a732618a48ecdba93bcf5c9eb989d71",
+      "cost_usd": 0.0045593,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.785195291013224,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8346,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6622
+        },
+        "cost": 0.0045593,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0045593,
+        "market_cost": 0.0045593,
+        "prompt_tokens": 3863,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12209
+      },
+      "result_sha256": "c08ff47e4826b28279c81bffff0bbc5d5daa096cfa9a7595748e9d4dfac0e423"
+    },
+    {
+      "document_id": "core-07",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "intent_sha256": "2a0bd26d00f0b23d7a8151f489e16ae79c289ac7aaec9a2ffc0da77d6e661e20",
+      "cost_usd": 0.0016936,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 30.988112124992767,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5729,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4567
+        },
+        "cost": 0.0016936,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0016936,
+        "market_cost": 0.0016936,
+        "prompt_tokens": 5478,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11207
+      },
+      "result_sha256": "7bed185d6d7fbda8f15e64e564f4414e2271376718daeb7d1c56662e6e34a969"
+    },
+    {
+      "document_id": "core-07",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "intent_sha256": "078ac1ad4b35b2e6ebd7a20c966ff8930394b1ad894907e361db93373d997024",
+      "cost_usd": 0.002871925,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 51.04874258299242,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6201,
+        "completion_tokens": 4193,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3403
+        },
+        "cost": 0.002871925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002871925,
+        "market_cost": 0.002871925,
+        "prompt_tokens": 6204,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10397
+      },
+      "result_sha256": "299af38960ed77b51b2db02b6a756da355a58e9743d3b040dcff905302208d46"
+    },
+    {
+      "document_id": "core-08",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "intent_sha256": "b1430274e7cccb856d68b2e12d8aa863f16077875a2f1b729c787ba0c61195db",
+      "cost_usd": 0.005192,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.011811000003945,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9255,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7267
+        },
+        "cost": 0.005192,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.005192,
+        "market_cost": 0.005192,
+        "prompt_tokens": 5645,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14900
+      },
+      "result_sha256": "53ffdf2fe429b082bc794efd5e47b75938301f068ecb3f2578a0bc8d56f93e91"
+    },
+    {
+      "document_id": "core-08",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "intent_sha256": "58a4d5669df79a30f22f06c06f298c9c93b20537930f485fd0dde7c7ff0e4c2e",
+      "cost_usd": 0.002270698,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 35.723414750013035,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7364,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5520
+        },
+        "cost": 0.002270698,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002270698,
+        "market_cost": 0.002270698,
+        "prompt_tokens": 8076,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 15440
+      },
+      "result_sha256": "d6f4fe8fedf8ca4a2ed5310ce6de9512e51dec4de244dd11e6ea189d7573fcdb"
+    },
+    {
+      "document_id": "core-08",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "intent_sha256": "967dd8cf264ec8b298a3a9f280d7752d692421ef92c4e6b9ece9139702cabcc4",
+      "cost_usd": 0.00370805,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 46.898181666008895,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9170,
+        "completion_tokens": 5123,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3493
+        },
+        "cost": 0.00370805,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00370805,
+        "market_cost": 0.00370805,
+        "prompt_tokens": 9173,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14296
+      },
+      "result_sha256": "1a9ac23d24de3de7d9458fad87757474c5707488bda8a2d71645d1a8c0920193"
+    },
+    {
+      "document_id": "core-09",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "intent_sha256": "08137adf11b19f7e89115bdd697d4d58bb17fef4c4935a2ef39de71bf91d77a5",
+      "cost_usd": 0.0085203,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 62.58607283301535,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 16267,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 13786
+        },
+        "cost": 0.0085203,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0085203,
+        "market_cost": 0.0085203,
+        "prompt_tokens": 3868,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 20135
+      },
+      "result_sha256": "7db99deba3eba9d5b7b2eff2566e2a1eda7abad4d3b9f36aa710ca4af503b4f1"
+    },
+    {
+      "document_id": "core-09",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "intent_sha256": "28c0fbefe1617bb7f2540126e2d322b3b0b2b7651d31f227662e78bc3de3bc5a",
+      "cost_usd": 0.001529,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 24.214532125013648,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4907,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3490
+        },
+        "cost": 0.001529,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001529,
+        "market_cost": 0.001529,
+        "prompt_tokens": 5476,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10383
+      },
+      "result_sha256": "f5745d3242faaa86e18d8c85d24f10b918177623c2c7f1a5b14c28a9fa9465bd"
+    },
+    {
+      "document_id": "core-09",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "intent_sha256": "d08ab536a73de7168e5918acd032332000057b82fd4fb749339e510868c40dae",
+      "cost_usd": 0.003746425,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 59.199780082999496,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6213,
+        "completion_tokens": 5939,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4685
+        },
+        "cost": 0.003746425,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003746425,
+        "market_cost": 0.003746425,
+        "prompt_tokens": 6216,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12155
+      },
+      "result_sha256": "d0850de81f2f61b2a8959417a6f5fe1fae9313827f00b9bf88370f4d346ae0e3"
+    },
+    {
+      "document_id": "core-10",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "intent_sha256": "cdb68e9eae2124362603fb34513f6242b583ea9abeea8c1fdbcf30915006f5da",
+      "cost_usd": 0.0048475,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.42001433300902,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8923,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6753
+        },
+        "cost": 0.0048475,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0048475,
+        "market_cost": 0.0048475,
+        "prompt_tokens": 3860,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12783
+      },
+      "result_sha256": "6a70295a40fbae2b8325cd01dcf528229c3f099fea37b12a018c00ec2d5cd9bd"
+    },
+    {
+      "document_id": "core-10",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "intent_sha256": "77565f6cef60f934cb14f97c3bcdefab2a3d8d15c38106bb940a813c2bc8d004",
+      "cost_usd": 0.001657098,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 36.11761337498319,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5606,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4308
+        },
+        "cost": 0.001657098,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001657098,
+        "market_cost": 0.001657098,
+        "prompt_tokens": 5456,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 11062
+      },
+      "result_sha256": "ad71087ec83244dc4fd9bca896b7e73b2aaa462c0d24dd7edbbc330032b4fe26"
+    },
+    {
+      "document_id": "core-10",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "intent_sha256": "d230970d5eca1dbd32cc1bbb02519b4f924c955454cb8c985b9322940d9cb5b8",
+      "cost_usd": 0.002772675,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 39.45351287498488,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6171,
+        "completion_tokens": 4002,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3106
+        },
+        "cost": 0.002772675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002772675,
+        "market_cost": 0.002772675,
+        "prompt_tokens": 6174,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10176
+      },
+      "result_sha256": "1cb84787fb36d943be6da2e9d6031f6b5085db9710e86daead47fd1d82965226"
+    },
+    {
+      "document_id": "core-11",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "intent_sha256": "5317e6b0cd2333c9a80bec96fdaa08fcc109457d828a07e78f5cb5ae31038353",
+      "cost_usd": 0.0131491,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 95.61828570798389,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 25163,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 21291
+        },
+        "cost": 0.0131491,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0131491,
+        "market_cost": 0.0131491,
+        "prompt_tokens": 5676,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 30839
+      },
+      "result_sha256": "5d8b83f983a1cab35183a1644525993da1664b56c4c0e8812ff12af58e6ff344"
+    },
+    {
+      "document_id": "core-11",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "intent_sha256": "994a361301845cce61ae0cc26c55d5ad88e2fda73041016c2b4a0a54d3031404",
+      "cost_usd": 0.0020161,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 37.00489775001188,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6018,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4218
+        },
+        "cost": 0.0020161,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0020161,
+        "market_cost": 0.0020161,
+        "prompt_tokens": 8125,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14143
+      },
+      "result_sha256": "6477aca9b994c55b1250d822a1882263ce8631d61ef1a68819db1526f3b1b8dd"
+    },
+    {
+      "document_id": "core-11",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "intent_sha256": "1071af7721bd1cf44898e78667d93f3b31cbeb9b13a3ea33cd398f801ec4fa05",
+      "cost_usd": 0.004692175,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 66.30447508400539,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9235,
+        "completion_tokens": 7075,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5178
+        },
+        "cost": 0.004692175,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004692175,
+        "market_cost": 0.004692175,
+        "prompt_tokens": 9238,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16313
+      },
+      "result_sha256": "93781bcbf545ba564b02904b3192e6e66ffc3c3712ad420998849e9c097d5f66"
+    },
+    {
+      "document_id": "core-13",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "intent_sha256": "c6adffa35fb85ebf3a17382c4bb83fc5fdf65063e3ee59a49cec76ed3098703e",
+      "cost_usd": 0.0043527,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 31.139741082995897,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7930,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6155
+        },
+        "cost": 0.0043527,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0043527,
+        "market_cost": 0.0043527,
+        "prompt_tokens": 3877,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11807
+      },
+      "result_sha256": "5920bc5978ec9ebedfc9c3819c50c8609ea3cd2d19dc4938a8bb27058454b887"
+    },
+    {
+      "document_id": "core-13",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "intent_sha256": "dc66d4cf3705ab805dd48cb168df1a11161b3ac755658c2fa554a3249b8a8d2e",
+      "cost_usd": 0.001420898,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 31.034743249998428,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4413,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3294
+        },
+        "cost": 0.001420898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001420898,
+        "market_cost": 0.001420898,
+        "prompt_tokens": 5480,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9893
+      },
+      "result_sha256": "9c4d986adfb2c9f848eb593eb05fe37b609ee063a94f46e810bcb367a95259b6"
+    },
+    {
+      "document_id": "core-13",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "intent_sha256": "c39657b7b6b79c52558075c0170e2bc89be1d3368c51c620361529557337cf00",
+      "cost_usd": 0.0035243,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 48.293526958994335,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6204,
+        "completion_tokens": 5497,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4255
+        },
+        "cost": 0.0035243,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0035243,
+        "market_cost": 0.0035243,
+        "prompt_tokens": 6207,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11704
+      },
+      "result_sha256": "aaa75ff8155d08413c62366aa3828b7635dec94dd9383b71adc496d953ed1cac"
+    },
+    {
+      "document_id": "core-14",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "intent_sha256": "a91f334e4516f4342628bce438ae7d208bec1d431aa712d3e8c356eac4dde4c8",
+      "cost_usd": 0.0073712,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 55.109725459013134,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 13963,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 12068
+        },
+        "cost": 0.0073712,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0073712,
+        "market_cost": 0.0073712,
+        "prompt_tokens": 3897,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 17860
+      },
+      "result_sha256": "31aad7e79e24d47445361525ab05bd6938a57b8f03ed99287cca428a549dabca"
+    },
+    {
+      "document_id": "core-14",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "intent_sha256": "04b8f7da36c85b9b6cc60590e47951084939752ce90b31fbb8a1e1a722cf7919",
+      "cost_usd": 0.001796198,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 35.4866187919979,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6283,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5176
+        },
+        "cost": 0.001796198,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001796198,
+        "market_cost": 0.001796198,
+        "prompt_tokens": 5493,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 11776
+      },
+      "result_sha256": "655c921600fcd09dc3f01befaa82638e40f9b20c8b5786178413886d999ac181"
+    },
+    {
+      "document_id": "core-14",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "intent_sha256": "2d84cfea5089fc23d17188354723e150854300e27369f2a93c3d1644bcbf0769",
+      "cost_usd": 0.00327855,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 47.154820625000866,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6218,
+        "completion_tokens": 5002,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3950
+        },
+        "cost": 0.00327855,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00327855,
+        "market_cost": 0.00327855,
+        "prompt_tokens": 6221,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11223
+      },
+      "result_sha256": "966b246044ef8c6e0c8a46825e6bbb3987b48314d87bb07844856f2f82670dc9"
+    },
+    {
+      "document_id": "core-15",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "intent_sha256": "7cd0a96130b49cf4e5cde85b4180cd09770d7d295af8d36838f7a2fa2c69660a",
+      "cost_usd": 0.0124995,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 86.94856874999823,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 23530,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 19132
+        },
+        "cost": 0.0124995,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0124995,
+        "market_cost": 0.0124995,
+        "prompt_tokens": 7345,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 30875
+      },
+      "result_sha256": "776f99dd3d8a37b5251d318a1d420a5b8c56e3ae3b5ca8f32d45f270b1ec5a87"
+    },
+    {
+      "document_id": "core-15",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "intent_sha256": "86f10aa9d8e13d45b256b006b16d533305b778a8096b2a5df2bd52e29500fd43",
+      "cost_usd": 0.002488098,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 40.39603695800179,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7137,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4903
+        },
+        "cost": 0.002488098,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002488098,
+        "market_cost": 0.002488098,
+        "prompt_tokens": 10704,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 17841
+      },
+      "result_sha256": "73891b9f59d780dceab70af62997adf230efe59588588ab40e8edae4f2e84c47"
+    },
+    {
+      "document_id": "core-15",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "intent_sha256": "6e6e9064f0b6ddebaaeb2d270090384cf8ff7e6ab0a379849913de074427d072",
+      "cost_usd": 0.005251175,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 65.36398999998346,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 12119,
+        "completion_tokens": 7472,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5332
+        },
+        "cost": 0.005251175,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.005251175,
+        "market_cost": 0.005251175,
+        "prompt_tokens": 12122,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 19594
+      },
+      "result_sha256": "483b7770c8b329abfddab4d68332bc8393a83c8ed31b50d95536856579c216f6"
+    },
+    {
+      "document_id": "core-16",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "intent_sha256": "a0338812e3e965b5d131364e5d6aa5ddb1dfc74dcafdbafe00c8c5f640967db2",
+      "cost_usd": 0.0062013,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 44.347546374978265,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 11621,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9800
+        },
+        "cost": 0.0062013,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0062013,
+        "market_cost": 0.0062013,
+        "prompt_tokens": 3908,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15529
+      },
+      "result_sha256": "43cdea1e07634552c51aa17e4fecaccb594b686a3b9fde941877de148068d57a"
+    },
+    {
+      "document_id": "core-16",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "intent_sha256": "1f5201dea1103c7fcb1b4194014d0f93875b5abe6b58eacdcbab93293ecdd5c1",
+      "cost_usd": 0.001415698,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 25.87667495800997,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4380,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3150
+        },
+        "cost": 0.001415698,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001415698,
+        "market_cost": 0.001415698,
+        "prompt_tokens": 5494,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9874
+      },
+      "result_sha256": "2852ea508a84fbdb960cc9b4cae215769a5c65cbc8826272894a70be861795f7"
+    },
+    {
+      "document_id": "core-16",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "intent_sha256": "3068541bb3e95db63926cae5b0c57e7a6e8c5a0ae0b2b8c17ff0b6453223312c",
+      "cost_usd": 0.003220675,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 45.16746141700423,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6219,
+        "completion_tokens": 4886,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4087
+        },
+        "cost": 0.003220675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003220675,
+        "market_cost": 0.003220675,
+        "prompt_tokens": 6222,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11108
+      },
+      "result_sha256": "cfdad67a94fe580d46141fdb8f716f02be54640c222355123ec8b0323e5bbd95"
+    },
+    {
+      "document_id": "core-17",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "intent_sha256": "2b8ca5077392a261ce5698e544f63e6d5bb8236b74474cf43d7bf9bc166ab1e2",
+      "cost_usd": 0.010391,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 79.7155852910073,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 19998,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 16960
+        },
+        "cost": 0.010391,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.010391,
+        "market_cost": 0.010391,
+        "prompt_tokens": 3920,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 23918
+      },
+      "result_sha256": "342df089df3ba4be5387eadea0daa86229a38b7b021e65d8a1acf250271387cd"
+    },
+    {
+      "document_id": "core-17",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "intent_sha256": "ac5cfac96d612ebde24be1285f150f059f07433bebdb1d8a28a945a3570db3d2",
+      "cost_usd": 0.001765398,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 31.375328291993355,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6118,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4579
+        },
+        "cost": 0.001765398,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001765398,
+        "market_cost": 0.001765398,
+        "prompt_tokens": 5515,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 11633
+      },
+      "result_sha256": "f4ed0b283aff02d40a3da381e9f173ef74f93b4eb628baafa4d8e9239cc73424"
+    },
+    {
+      "document_id": "core-17",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "intent_sha256": "0c612482bd15558f6d7ffeee8bbaa621533812f1736ef45bc216c1e3f0d3f63e",
+      "cost_usd": 0.0037263,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 32.328558250010246,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6240,
+        "completion_tokens": 5892,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4846
+        },
+        "cost": 0.0037263,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0037263,
+        "market_cost": 0.0037263,
+        "prompt_tokens": 6243,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12135
+      },
+      "result_sha256": "673202536e6827761e189c236527a0f0da4acfc19f9b9f4ee83a56a75e9efda3"
+    },
+    {
+      "document_id": "core-18",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "intent_sha256": "f954913721a793c51ef5dee789812b6dd9525d3e3ebf8771398f6817d478f4f4",
+      "cost_usd": 0.0052101,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 40.262385208014166,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9642,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7869
+        },
+        "cost": 0.0052101,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0052101,
+        "market_cost": 0.0052101,
+        "prompt_tokens": 3891,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13533
+      },
+      "result_sha256": "2d74dd2b932ef38bbc4ef5ef9eb39cecc92f535a4184c8ab7aa525fa409b7bab"
+    },
+    {
+      "document_id": "core-18",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "intent_sha256": "24212797f8171ab0aaf10dcd81e58ef13d7989514068d8a6f2da339e23549ebd",
+      "cost_usd": 0.001281598,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 23.266252041008556,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3710,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2571
+        },
+        "cost": 0.001281598,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001281598,
+        "market_cost": 0.001281598,
+        "prompt_tokens": 5493,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9203
+      },
+      "result_sha256": "a7f73239b66d626d31605ec437ab870fa599381527e3c36ac4fbfb25583e59aa"
+    },
+    {
+      "document_id": "core-18",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "intent_sha256": "b3bf3848ac20014f808621407e4026eefe2210b441e0ebdefeac1695416b9c7e",
+      "cost_usd": 0.0037878,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 53.46935991701321,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6236,
+        "completion_tokens": 6016,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4740
+        },
+        "cost": 0.0037878,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0037878,
+        "market_cost": 0.0037878,
+        "prompt_tokens": 6239,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12255
+      },
+      "result_sha256": "5d61052ce14a5fcfc539d709c741458e7c6738d5c968ed70a0168349515962e9"
+    },
+    {
+      "document_id": "core-20",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "intent_sha256": "c8f3f861222d8dd6739d1729bb764fb1bab57cc5c8fa8a1f8e5f4f88993e8a65",
+      "cost_usd": 0.0054038,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 39.553348041983554,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9656,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7930
+        },
+        "cost": 0.0054038,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0054038,
+        "market_cost": 0.0054038,
+        "prompt_tokens": 5758,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15414
+      },
+      "result_sha256": "09b92d51cb51ed3ab6fd48298324365f80c34a1404dd70b8010cec043aa8e1c7"
+    },
+    {
+      "document_id": "core-20",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "intent_sha256": "da59f7ef0112e2c1507814e5c08cb9b27dbbf7c2f73212dc4b3d39f8665ab489",
+      "cost_usd": 0.002080298,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 34.19544725000742,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6359,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4646
+        },
+        "cost": 0.002080298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002080298,
+        "market_cost": 0.002080298,
+        "prompt_tokens": 8182,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 14541
+      },
+      "result_sha256": "4a681d25f5ccfbee82dd8ea133dcdfe296ed0e4f0f9551d917b48824175284e5"
+    },
+    {
+      "document_id": "core-20",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "intent_sha256": "4aa2e4586bb40601c30e1e43b900d57d2580383e432017af28aaf0e31f522867",
+      "cost_usd": 0.0039098,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 51.16080429201247,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 9284,
+        "completion_tokens": 5498,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4366
+        },
+        "cost": 0.0039098,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0039098,
+        "market_cost": 0.0039098,
+        "prompt_tokens": 9287,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14785
+      },
+      "result_sha256": "13e81d67c9382d1da75392bd70fb46b9072e7cffbf58fa2528306080c4062a73"
+    },
+    {
+      "document_id": "external-01",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "intent_sha256": "237e3900e115793d490cd7540a54eb019a5b3c1774a43a944da9145a90e3065f",
+      "cost_usd": 0.005549,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 37.61469579100958,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10133,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7548
+        },
+        "cost": 0.005549,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.005549,
+        "market_cost": 0.005549,
+        "prompt_tokens": 4825,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14958
+      },
+      "result_sha256": "3312b1b174744e078513699fe4e4edc3cc33bf8e30110c7eb04c6f76cbd71d55"
+    },
+    {
+      "document_id": "external-01",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "intent_sha256": "0bbddf8ea17baf0c364aa2f3cb438351954c8f92bc8f75a9123ff7393df34eef",
+      "cost_usd": 0.0018662,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.232427833019756,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6413,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4623
+        },
+        "cost": 0.0018662,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0018662,
+        "market_cost": 0.0018662,
+        "prompt_tokens": 5836,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12249
+      },
+      "result_sha256": "251ab8a2a6f50ccb3e1843ab322ee161cfc49c687d1f17f1c4b65ca89ce34443"
+    },
+    {
+      "document_id": "external-01",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "intent_sha256": "ea748f841719e79384758b2806b0545b6dab2536bf61de4aa5ba86d0fb0c816b",
+      "cost_usd": 0.00314705,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 50.676885708002374,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6562,
+        "completion_tokens": 4653,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3337
+        },
+        "cost": 0.00314705,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00314705,
+        "market_cost": 0.00314705,
+        "prompt_tokens": 6565,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11218
+      },
+      "result_sha256": "efc735762828e26e22507ab65a5fb7161bc62b48f4ecb56a4fc2cc44a64e9ca9"
+    },
+    {
+      "document_id": "external-19",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "intent_sha256": "10e117031ce8492dad8713f318463db5e9c6001a48d032020df3a68b4522e0c5",
+      "cost_usd": 0.0111915,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 73.79725175001658,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 21224,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 14713
+        },
+        "cost": 0.0111915,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0111915,
+        "market_cost": 0.0111915,
+        "prompt_tokens": 5795,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 27019
+      },
+      "result_sha256": "24ed5fb7835147c796c93750102488a621fa71f9f5a59347750cfd38bf950fea"
+    },
+    {
+      "document_id": "external-19",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "intent_sha256": "8beaff0a25d365ec2d44228e56b21d07038050f726fcf7294363988598e4130f",
+      "cost_usd": 0.002940798,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 55.6575614589965,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 11253,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6815
+        },
+        "cost": 0.002940798,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002940798,
+        "market_cost": 0.002940798,
+        "prompt_tokens": 6999,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 18252
+      },
+      "result_sha256": "09bbbb6df77ba9a66d6879bed0e932f7b052a008c3f880b0095ccde97913430f"
+    },
+    {
+      "document_id": "external-19",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "intent_sha256": "beb18ee1a3dc17fe56f52c9fa6b776ddfbaaacff5c239758ed2940c68737ff65",
+      "cost_usd": 0.004998925,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 53.90773241702118,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6989,
+        "completion_tokens": 8250,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4189
+        },
+        "cost": 0.004998925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004998925,
+        "market_cost": 0.004998925,
+        "prompt_tokens": 6992,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15242
+      },
+      "result_sha256": "c4a715a7fa56bde5397aff059bc6f72ddc01b6e8d821e3518105817772c607e8"
+    },
+    {
+      "document_id": "external-20",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "intent_sha256": "03d8b676908baeaa000b730db885065ec8f6f0f36bf9050ab498736ea5b27250",
+      "cost_usd": 0.0037763,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 26.238868500018725,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7020,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4832
+        },
+        "cost": 0.0037763,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0037763,
+        "market_cost": 0.0037763,
+        "prompt_tokens": 2663,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9683
+      },
+      "result_sha256": "d3ce096c5858422a58968808847a8d7dd5238be7f19b2b2b5aa517c8daff1393"
+    },
+    {
+      "document_id": "external-20",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "intent_sha256": "679c6ba9af28e267236ebcd028157f348a695ce41402fa6f9cc56ae7c835bc64",
+      "cost_usd": 0.001580298,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 33.98246066601132,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6296,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4125
+        },
+        "cost": 0.001580298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001580298,
+        "market_cost": 0.001580298,
+        "prompt_tokens": 3308,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9604
+      },
+      "result_sha256": "316403e2400e669e209d4bbda9142b71af661b3794be4a90dad0e3d661673149"
+    },
+    {
+      "document_id": "external-20",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "intent_sha256": "c168ff07162fd74e1415d70c3a191f22661cc919da27ccfe607285b2bd28c94b",
+      "cost_usd": 0.002077675,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 27.808214499993483,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 2647,
+        "completion_tokens": 3493,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2186
+        },
+        "cost": 0.002077675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002077675,
+        "market_cost": 0.002077675,
+        "prompt_tokens": 2650,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6143
+      },
+      "result_sha256": "a778d927e741f591dce51e9a6b0124030a1cecd3a98dea25b190462510a2f29c"
+    },
+    {
+      "document_id": "external-21",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "intent_sha256": "7a6ba0c1de45e50311673709b019fc42210ef6c28f5c9c35404797b1396a3da6",
+      "cost_usd": 0.282638,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": false,
+      "field_object_view": null,
+      "truncated": true,
+      "finish_reason": "length",
+      "elapsed_seconds": 250.92467458397732,
+      "strict_usable": false,
+      "usable_after_fence": false,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 65000,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 65000
+        },
+        "cost": 0.282638,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.282638,
+        "market_cost": 0.282638,
+        "prompt_tokens": 240276,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 305276
+      },
+      "result_sha256": "b92ba78c577eb59df4fde2c17a7e73257d6576e42d85f3c56714efcc6269a8c3"
+    },
+    {
+      "document_id": "external-21",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "intent_sha256": "bc16324e8d278fd28ee6476fba72a1d607f63d83859561afa233a70f655b56fc",
+      "cost_usd": 0.024039298,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 103.8316343750048,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 19370,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3297
+        },
+        "cost": 0.024039298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.024039298,
+        "market_cost": 0.024039298,
+        "prompt_tokens": 201750,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 221120
+      },
+      "result_sha256": "b3c35f5853e30888461dd88a59956788b9545a2ecb162f22c64360d5c64e98dd"
+    },
+    {
+      "document_id": "external-21",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "intent_sha256": "e319eb99a56f62b379c370ae91df39663b754c651543c7930c470ecb6f954490",
+      "cost_usd": 0.0809056,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 51.846260000020266,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 306994,
+        "completion_tokens": 5542,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2756
+        },
+        "cost": 0.0809056,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0809056,
+        "market_cost": 0.0809056,
+        "prompt_tokens": 306997,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 312539
+      },
+      "result_sha256": "dbb8ebd491fd3a09f850f261800b21cecc77db14bd67c96c16f9b27f2a829d6c"
+    },
+    {
+      "document_id": "public-02",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "intent_sha256": "cbd97be5319efae16916f9cef6d9094027fecc02310bc67bf9990906a04858d0",
+      "cost_usd": 0.0119851,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 85.72406508299173,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 23127,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 19652
+        },
+        "cost": 0.0119851,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0119851,
+        "market_cost": 0.0119851,
+        "prompt_tokens": 4216,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 27343
+      },
+      "result_sha256": "0c87a2887fcbd6eca84a6c927bd1f4f77df336e874586f4cdad65b5ee3456c63"
+    },
+    {
+      "document_id": "public-02",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "intent_sha256": "5926a6ec509e4578a7dfe95440aa20249c769c2534cff194ecf5e1041709acf2",
+      "cost_usd": 0.0017834,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 42.215234625007724,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6036,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3893
+        },
+        "cost": 0.0017834,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0017834,
+        "market_cost": 0.0017834,
+        "prompt_tokens": 5762,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11798
+      },
+      "result_sha256": "9347860b00d6498dfa98049481dd3f0b120627000d96072d4bbb42040647d074"
+    },
+    {
+      "document_id": "public-02",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "intent_sha256": "590502b3d80d7cd7322f33cd4382bdea2a4e4fcb456398e9d6b9bc128d5d11e5",
+      "cost_usd": 0.00410755,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 65.33866054200917,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 6394,
+        "completion_tokens": 6616,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4926
+        },
+        "cost": 0.00410755,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00410755,
+        "market_cost": 0.00410755,
+        "prompt_tokens": 6397,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13013
+      },
+      "result_sha256": "e20f48e2bd3ba52b8724d19166f40e2f5a7bbf6684a798a754d0305fd14afdac"
+    },
+    {
+      "document_id": "public-04",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "intent_sha256": "cdf1a654b52c872c02864d2dc90fce2e54bbdf228923e72b2bd0fe20adeda596",
+      "cost_usd": 0.0125498,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 86.86260300001595,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 23619,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 20001
+        },
+        "cost": 0.0125498,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0125498,
+        "market_cost": 0.0125498,
+        "prompt_tokens": 7403,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 31022
+      },
+      "result_sha256": "c712e11d3692abeae273248325a838dba261522410d9c64b409a699b7e6586d4"
+    },
+    {
+      "document_id": "public-04",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "intent_sha256": "004723c173503e821f9d8ac1d5261eaebd1aa7cb6741a1ab65f49e5cf7fd3bbd",
+      "cost_usd": 0.0039077,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 85.69463120802538,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 14138,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 11461
+        },
+        "cost": 0.0039077,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0039077,
+        "market_cost": 0.0039077,
+        "prompt_tokens": 10801,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 24939
+      },
+      "result_sha256": "36e58cec06b91b87db6aef14b320aa1f0f7db49660e4b8a5d59d853c649ebb28"
+    },
+    {
+      "document_id": "public-04",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "intent_sha256": "07733f7f2cc4bcd58e276804c0701df95efbba06c2fe243dd52ea3d557931af1",
+      "cost_usd": 0.0051013,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 67.41138808400137,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 11824,
+        "completion_tokens": 7246,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5030
+        },
+        "cost": 0.0051013,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0051013,
+        "market_cost": 0.0051013,
+        "prompt_tokens": 11827,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 19073
+      },
+      "result_sha256": "b083b6c09abb20d669c164c95cd010dba3b4c4610fc56e8c20cdc4720d4a678f"
+    },
+    {
+      "document_id": "public-05",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "intent_sha256": "7d61d8b8c6c9b122b2f3bfdf1b6b89ccf00f582f66fbc88132c0222fddd016ac",
+      "cost_usd": 0.0057868,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 39.08357462499407,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9823,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 8080
+        },
+        "cost": 0.0057868,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0057868,
+        "market_cost": 0.0057868,
+        "prompt_tokens": 8753,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 18576
+      },
+      "result_sha256": "cae1ad33bceb4d1ef5763a198c90b1e363f8044f607dc287439d78f52e8b7443"
+    },
+    {
+      "document_id": "public-05",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "intent_sha256": "052b9d170ba04d792261397ff2ad9340411ea11f8d06fab2549e2ba947d4421b",
+      "cost_usd": 0.0025707,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 29.02735895899241,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6268,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4759
+        },
+        "cost": 0.0025707,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0025707,
+        "market_cost": 0.0025707,
+        "prompt_tokens": 13171,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 19439
+      },
+      "result_sha256": "fb57433625006e0d170e9eaacbfcaf3b369764581eb9871db6c27b7af6b42697"
+    },
+    {
+      "document_id": "public-05",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "intent_sha256": "346000b8be0a9aff90a63f8e9e826b40f40edf80cd7c5c8555e79a9d3bb9a022",
+      "cost_usd": 0.004563925,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 56.72875920799561,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 14261,
+        "completion_tokens": 5562,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4411
+        },
+        "cost": 0.004563925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004563925,
+        "market_cost": 0.004563925,
+        "prompt_tokens": 14264,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 19826
+      },
+      "result_sha256": "836f6ddaf94ff2463980f08c5ef6b157166fc18f899a3823f1ef6790a9b8f1d8"
+    },
+    {
+      "document_id": "public-07",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "intent_sha256": "ad1008cc1018eee8c7f265b11fb9fc507ce5357b8cf60bcd074033dcad675644",
+      "cost_usd": 0.0156427,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 96.36261949999607,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 28339,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 22918
+        },
+        "cost": 0.0156427,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0156427,
+        "market_cost": 0.0156427,
+        "prompt_tokens": 14732,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 43071
+      },
+      "result_sha256": "88089b1243810dec494595347c5a2bb36edbe7aaec53aac0b7f36e81fa7b0133"
+    },
+    {
+      "document_id": "public-07",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "intent_sha256": "2d97fffc1c0671ae93179f912b5f335d3f6f0af47985084991a49bd64ceb8a59",
+      "cost_usd": 0.004880198,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 59.849254166008905,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 13715,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9773
+        },
+        "cost": 0.004880198,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004880198,
+        "market_cost": 0.004880198,
+        "prompt_tokens": 21469,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 35184
+      },
+      "result_sha256": "48940e1955d0de2ff1a4ce3da3546a8ce965c042013828bfb18365b8ce965087"
+    },
+    {
+      "document_id": "public-07",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "intent_sha256": "dda84c24b3b5f87ecff9b393eb1113c3f4a320bf590161fa76415dd400022ee3",
+      "cost_usd": 0.0069513,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 66.66652116700425,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 23088,
+        "completion_tokens": 8130,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4029
+        },
+        "cost": 0.0069513,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0069513,
+        "market_cost": 0.0069513,
+        "prompt_tokens": 23091,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 31221
+      },
+      "result_sha256": "18dc25763a7fbe6512310508d2ff705b0252d01779e6428635c64c1af22cf8b2"
+    },
+    {
+      "document_id": "public-08",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "intent_sha256": "8216cac9cc19756ff5370c32f082613b7ab48e829e85521309ac7d88136308e1",
+      "cost_usd": 0.0302231,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 197.25074733397923,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 57013,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 48075
+        },
+        "cost": 0.0302231,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0302231,
+        "market_cost": 0.0302231,
+        "prompt_tokens": 17166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 74179
+      },
+      "result_sha256": "fd97461e49766244b31601c18d843194141e193ddcc9157790808857a2c2bd66"
+    },
+    {
+      "document_id": "public-08",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "intent_sha256": "52fbc98a1c3ce459b9260589c445eee862a116c6221dac6fd8596090570bb502",
+      "cost_usd": 0.0049334,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 66.03136558301048,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 13169,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6503
+        },
+        "cost": 0.0049334,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0049334,
+        "market_cost": 0.0049334,
+        "prompt_tokens": 22996,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 36165
+      },
+      "result_sha256": "9c6f5db85b7ba5bf597f24a5dc563eaaf7be56530221da444bc790873eca9929"
+    },
+    {
+      "document_id": "public-08",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "intent_sha256": "89336075ba19cb023fc80d9a70204b6d6e2826353958a339d216d5b072e381f0",
+      "cost_usd": 0.00963555,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 137.0730030409759,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 25694,
+        "completion_tokens": 12847,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7029
+        },
+        "cost": 0.00963555,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00963555,
+        "market_cost": 0.00963555,
+        "prompt_tokens": 25697,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 38544
+      },
+      "result_sha256": "b154c271591e3680441b298fedd98632715060d4a563cc12da32c2ccfbf9926a"
+    },
+    {
+      "document_id": "public-12",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "intent_sha256": "121bf71fac693fa3555ee4164eba859b3c96505ca4c92506d90a311242f231f7",
+      "cost_usd": 0.0184418,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 127.48974729099427,
+      "strict_usable": false,
+      "usable_after_fence": true,
+      "fence_recovered": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 34817,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 28712
+        },
+        "cost": 0.0184418,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0184418,
+        "market_cost": 0.0184418,
+        "prompt_tokens": 10333,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 45150
+      },
+      "result_sha256": "ce779666fd2465baaf26303269a0f4c554e8651c0c8759e7887a2d065a5beef0"
+    },
+    {
+      "document_id": "public-12",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "intent_sha256": "59967b2784f6100de4d8b22235dd1bb1f156c13d5fc0ea0edf1056a952cca882",
+      "cost_usd": 0.003588998,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 59.28571250001551,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10915,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7156
+        },
+        "cost": 0.003588998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003588998,
+        "market_cost": 0.003588998,
+        "prompt_tokens": 14157,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 25072
+      },
+      "result_sha256": "4c9db077bc3a93c5fb44798f9f37fa1c1bba275f77d785573bd937d2cdd008e9"
+    },
+    {
+      "document_id": "public-12",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "intent_sha256": "63583592b807656f6ed1c05d1d353d99631339bfefe9ce72b12b049fb656bb28",
+      "cost_usd": 0.006652925,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 86.85664454099606,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 15885,
+        "completion_tokens": 9334,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6747
+        },
+        "cost": 0.006652925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.006652925,
+        "market_cost": 0.006652925,
+        "prompt_tokens": 15888,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 25222
+      },
+      "result_sha256": "a90340eea4a8c24d41c65daa8d1a1e7a5bd1cf6b9661a5d143aae9051566c534"
+    },
+    {
+      "document_id": "public-15",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "intent_sha256": "d912b9208309721c100fb563c44d6271e5844856b1b3ffb790b7857c21d24004",
+      "cost_usd": 0.0368157,
+      "status": "incomplete",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "invalid_json",
+      "schema_validity": "unavailable",
+      "field_object_readable": false,
+      "field_object_view": null,
+      "truncated": true,
+      "finish_reason": "length",
+      "elapsed_seconds": 216.63830924997455,
+      "strict_usable": false,
+      "usable_after_fence": false,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 65000,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 53100
+        },
+        "cost": 0.0368157,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0368157,
+        "market_cost": 0.0368157,
+        "prompt_tokens": 43157,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 108157
+      },
+      "result_sha256": "70999200d346fa0148ebde67ef4f746c85e8e5b76999170a5b36575ae6941607"
+    },
+    {
+      "document_id": "public-15",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "intent_sha256": "e96bd85e76f29c5fe7baf60790551a06be1157572c11b1624f45834e783f9b2b",
+      "cost_usd": 0.0085425,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 79.86321020801552,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 15611,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5640
+        },
+        "cost": 0.0085425,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0085425,
+        "market_cost": 0.0085425,
+        "prompt_tokens": 54203,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 69814
+      },
+      "result_sha256": "8896074e9e2cbe4d9ff8cb7f43e6ac5b51bc56c4a45dda59772c45d1f1051a7b"
+    },
+    {
+      "document_id": "public-15",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "intent_sha256": "5363536b7e0c4fc4fb526158ae7069540abea2489b5013898e97f09485818c4f",
+      "cost_usd": 0.00779305,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 87.34505550001631,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 14646,
+        "completion_tokens": 11924,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2467
+        },
+        "cost": 0.00779305,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00779305,
+        "market_cost": 0.00779305,
+        "prompt_tokens": 14649,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 26573
+      },
+      "result_sha256": "3bbfb65a23909e33bae45160097729e4088c137bd2ea79cc443b33ed710858cb"
+    },
+    {
+      "document_id": "public-16",
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "intent_sha256": "243e7668d5a3058c1abb292f136a30b6d4892b5f08ae1f28f9ee3c60a1ff06ab",
+      "cost_usd": 0.0168357,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 117.30815616701148,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 32001,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 27059
+        },
+        "cost": 0.0168357,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0168357,
+        "market_cost": 0.0168357,
+        "prompt_tokens": 8352,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 40353
+      },
+      "result_sha256": "b273a9b1f5c224489e7f0783d4697db4f6fc0880d4ebad5383d312d26316f24a"
+    },
+    {
+      "document_id": "public-16",
+      "model": "meta/muse-spark-1.3-contributor",
+      "provider": "meta",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "intent_sha256": "cb6879c5a43fd06ace6aaad9cab290d570821637e565f03395e3f25c5ebab3ed",
+      "cost_usd": 0.003480498,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 50.75421325000934,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 11706,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 8101
+        },
+        "cost": 0.003480498,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003480498,
+        "market_cost": 0.003480498,
+        "prompt_tokens": 11490,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 23196
+      },
+      "result_sha256": "43321a02c453770cd676ea55662db7c2a366948933acd54168b057a3b56967ee"
+    },
+    {
+      "document_id": "public-16",
+      "model": "openai/gpt-6-luna",
+      "provider": "openai",
+      "effort": "xhigh",
+      "max_tokens": 65000,
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "intent_sha256": "f64dba28b1d028a541ffa621841c84e1a99d7177da07b17df3923d6467a83b2d",
+      "cost_usd": 0.0060608,
+      "status": "completed",
+      "http_status": 200,
+      "error_code": null,
+      "json_syntax": "valid_json",
+      "schema_validity": "valid",
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "truncated": false,
+      "finish_reason": "stop",
+      "elapsed_seconds": 80.54491862500436,
+      "strict_usable": true,
+      "usable_after_fence": true,
+      "fence_recovered": false,
+      "usage": {
+        "cache_creation_input_tokens": 13148,
+        "completion_tokens": 8834,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6167
+        },
+        "cost": 0.0060608,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0060608,
+        "market_cost": 0.0060608,
+        "prompt_tokens": 13151,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 21985
+      },
+      "result_sha256": "fa9c40c26e8b7754279cf22c49c0c6bba1e733ff67a39fe3b999ae7537199bc7"
+    }
+  ],
+  "note": "Read-only; rows cover settled results only, not completeness; null costs unknown.",
+  "intent_count": 90,
+  "result_count": 90
+}

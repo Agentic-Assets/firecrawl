@@ -71,6 +71,80 @@ with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
 
+## Ordinary checkpoint crash fence
+
+The ordinary `cre_checkpoint_refresh.py execute` owner arms the existing
+recovery-required authority before publishing its directory lease or dispatching
+any child. Its lease also carries the existing operator-recovery prefix. A
+containing-directory fsync acknowledges the new authority/lock pathnames before
+admission. A refused acquisition does not publish a manifest or report, including
+when the caller requested `--resume`; the original run evidence stays intact. A
+SIGKILL, `os._exit`, or host termination can release the advisory flock while
+detached children continue running; the durable recovery state still rejects
+a successor. A dead coordinator PID alone never authorizes reclaiming that run.
+
+The exact held owner clears the fence only after local command/cohort groups
+have settled, both watchdog threads have stopped, and its terminal manifest and
+`report.md` have been persisted. This includes a known, settled failure,
+operator interruption, or CPU stop; automatic CPU recovery still has its
+separate manifest and generation checks. Optional performance reporting remains
+best effort. A completed leader with a still-visible process group is uncertain
+and retains the fence. The post-reap check only observes group disappearance:
+it never signals a numeric PGID after the leader has been reaped.
+
+Concurrent cohort workers own a second boundary: their commands start separate
+sessions. The outer worker group's disappearance alone cannot prove those
+nested groups settled. Internal worker success remains exit 0; a known-settled
+collection failure exits 80 and a known-settled operator interruption exits 81.
+Both normal finalization and interrupted outer-worker cleanup reject every
+other exit as cleanup-unknown. Known failure retries remain available; an
+unhandled worker error or signal death requires operator investigation even
+when the outer group is gone. Original collector exit codes remain in command
+logs; the attempt's `rc` records the worker completion code.
+This is a trusted internal-worker contract, not an attestation against hostile
+worker code deliberately forging a completion exit.
+
+Publication, terminal evidence, shutdown, or recovery-clear failures retain a
+fail-closed authority/lease state. Complete storage failure cannot guarantee
+durability. Existing exact-owner partial-acquire recovery and clear operations
+remain descriptor, inode, token, and generation bound. They do not authorize a
+different process to clear an abruptly terminated owner's fence.
+
+After abrupt owner death, retain the original manifests, logs, authority and
+lease for operator investigation. Establish local descendant settlement and
+any outstanding remote or database outcome before a separately reviewed
+operator recovery. The historic `recover-quarantine` command below deliberately
+rejects this recovery-required state; it is not a crash-fence reset command.
+There is no automatic dead-PID waiver or shell-removal recovery procedure.
+
+## Interrupted process settlement
+
+The foreground checkpoint owner records each new-session process group at
+spawn. During interrupted cleanup it reserves the unreaped leader's PID through
+the last group signal. A reaped leader with a still-present group has ambiguous
+ownership and is never signalled. Repeated SIGINT/SIGTERM signals are deferred
+through bounded cleanup and required logging; the original interruption and
+resource classification remain available afterwards.
+
+Command, cohort, and series cleanup share their groups' grace deadline, followed
+by at most five seconds of bounded reaping and disappearance checks. Their
+respective grace periods remain 15, 30, and 45 seconds. On Darwin an exited,
+unreaped leader can keep its group observable for the full grace period. A
+permission-denied signal never proves settlement: fresh group disappearance
+and leader reaping are both required. Signal warnings are saved with settlement
+details. These bounds assume native calls return.
+
+Unknown settlement fences the authority as recovery-required before replacing
+its lease. The lease fence is attempted independently if authority writing fails;
+required recovery evidence failures are reported as cleanup-unknown. Complete
+local storage failure prevents a durability guarantee. A later interrupt during
+terminal logging or watchdog quiescence cannot erase recorded uncertainty.
+The affected checkpoint or series cannot resume automatically. Inspect the recorded group IDs and live processes,
+establish that all owned work has stopped, and use the governed operator
+recovery procedure. Never delete the authority sidecar or remove an uncertain
+lease to admit another run. Detached sessions, remote API/browser work, and
+database rollback are outside local process-group settlement.
+
 ## Historic pytest quarantine residue
 
 `cre_capacity_runtime.py recover-quarantine` is the only operator path for the
@@ -152,3 +226,66 @@ destructive phase stops with the guard and all forensic evidence retained. The
 protocol cannot atomically couple absence of an unrelated pathname with a
 separate guard write on both supported platforms. That direct-filesystem writer
 is outside the cooperative-process boundary above and requires manual recovery.
+
+
+## Explicit recovery of a known-settled dead owner
+
+[AGENTIC-4607](https://linear.app/agenticassets/issue/AGENTIC-4607) adds
+`cre_recover_settled_owner.py` for an operator-reviewed, exact dead armed owner.
+It does not make a dead PID sufficient for reclaim, infer database rollback,
+resume a failed command, or weaken ordinary `SharedLock` admission. Default
+inspection reads the canonical lock only and creates no synchronizer or archive:
+
+```bash
+umask 077
+python3 cre_recover_settled_owner.py > /private/new/expected-state.json
+```
+
+The inspection object is the private expected-state input, preserving its
+fingerprint. Input files must be owned mode600 regular singleton files under
+private directories. Before explicit recovery, the
+operator must establish the exact database outcome, remote-work settlement and
+fresh complete owned-descendant settlement. Bind three private immutable files
+in an evidence JSON object with keys `known_outcome`, `remote_settlement` and
+`descendant_settlement`; each value is exactly `{ "path": "/private/file",
+"sha256": "<64-lowercase-hex>" }`. The operator reviews actual content and
+freshness; the maintenance tool verifies those file bindings, not a
+source-specific success claim or a caller Boolean. This is maintenance evidence,
+not a new approval contract for already approved database work.
+The operator identifier records who performed the review: use `codex` for an
+authorized Codex agent, rather than attributing the action to a person.
+
+```bash
+python3 cre_recover_settled_owner.py --execute \
+  --expected-state /private/expected-state.json --evidence /private/evidence.json \
+  --operator cayman --reference AGENTIC-4607 \
+  --confirm 'RECOVER CRE OWNER <exact-state-fingerprint>'
+```
+
+Execute holds the existing recovery synchronizer and authority flocks, rechecks
+raw authority/PID/lease hashes and inodes, owner death and absence of interlocks.
+It saves original authority bytes, evidence copies and a prepared receipt in a
+new private `.cre-owner-recovery-forensics/<fingerprint>/` directory. It archives
+the exact canonical pid/lease directory with atomic no-replace rename, fsyncs
+the destination and original parent, then publishes `v1 neutral` through the
+**same persistent authority inode**. Neither persistent sidecar is removed or
+replaced. No task, provider, database or original operation is invoked.
+
+Unknown archive prefixes are not automatically resumed. Before neutral
+publication, faults leave an armed or malformed state blocked. Once in-place
+neutral publication begins, a short write or fsync/receipt failure is
+**ambiguous**: valid neutral bytes may already permit admission, but only after
+the forensic archive was made durable. Do not claim every failure preserves a
+fence, retry blindly, remove lock files or fabricate a `SharedLock` owner.
+Preserve exact evidence and inspect filesystem truth before a separately
+reviewed recovery decision. A successful recovery receipt is not a source
+refresh, natural-clock or database-quality certificate.
+
+For bootstrap when the reviewed new tool is merged but an older runtime is
+fenced, the operator may stage that exact merged tool as a private file and bind
+its imports using `PYTHONPATH=<reviewed-ext4-runtime>/scripts/firecrawl-ops/cre_collector`.
+Review the existing helper byte hashes and canonical path before inspection or
+execution. The tool deliberately has no arbitrary lock-path/import-resolver
+option; running it from a development or QA checkout normally targets that
+checkout's own canonical lock, not production. Never edit the fenced runtime or
+repin schedules just to load this maintenance entrypoint.
