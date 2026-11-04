@@ -343,6 +343,9 @@ try:
                     {"name": "Duplicate", "email": "FIRST@example.invalid", "isPrimary": True},
                     {"name": "Phone", "phone": "555-0123", "isPrimary": True},
                     {"name": "PHONE", "phone": "555-0123", "isPrimary": True},
+                    {"name": "Amy", "email": "bridge-a@example.invalid", "phone": "111"},
+                    {"name": "Bea", "email": "bridge-a@example.invalid", "phone": "222"},
+                    {"name": "Bea", "email": "bridge-c@example.invalid", "phone": "222"},
                 ]
                 unknown["raw_data"]["contactsDetailed"] = copy.deepcopy(unknown["contacts"])
             child_tables = ("cre_listing_images", "cre_listing_contacts",
@@ -367,14 +370,17 @@ try:
                 if case.startswith("unknown_new"):
                     contacts = children("cre_listing_contacts")
                     assert not any(c["is_primary"] for c in contacts)
-                    assert len(contacts) == 3
+                    assert len(contacts) == 5
+                    assert {c["email"] for c in contacts} >= {
+                        "bridge-a@example.invalid", "bridge-c@example.invalid"
+                    }
                     raw_after = json.loads(sql(
                         "SELECT raw_data::text FROM credeals.cre_listings "
                         "WHERE external_id='property/Synthetic-101';", db
                     ).stdout)
                     assert raw_after["contactsDetailed"] == unknown["contacts"]
                     sql(generated([row(index) for index in range(100)] + [unknown], unknown_claims), db)
-                    assert len(children("cre_listing_contacts")) == 3
+                    assert len(children("cre_listing_contacts")) == 5
                 if case.startswith("unknown_existing"):
                     raw_after = json.loads(sql(
                         "SELECT raw_data::text FROM credeals.cre_listings "

@@ -5597,21 +5597,27 @@ WHERE b.slug = 'daum-commercial'
 -- the pre-existing-row check. Existing duplicate rows are never deleted.
 UPDATE _src s
 SET contacts = (
-  SELECT COALESCE(jsonb_agg(current_contact.x ORDER BY current_contact.ordinality), '[]'::jsonb)
-  FROM jsonb_array_elements(s.contacts) WITH ORDINALITY AS current_contact(x, ordinality)
-  WHERE NOT EXISTS (
-    SELECT 1
-    FROM jsonb_array_elements(s.contacts) WITH ORDINALITY AS earlier(x, ordinality)
-    WHERE earlier.ordinality < current_contact.ordinality
-      AND (
-        (NULLIF(lower(current_contact.x->>'email'), '') IS NOT NULL
-         AND lower(earlier.x->>'email') = lower(current_contact.x->>'email'))
-        OR
-        (NULLIF(lower(current_contact.x->>'name'), '') IS NOT NULL
-         AND lower(earlier.x->>'name') = lower(current_contact.x->>'name')
-         AND COALESCE(earlier.x->>'phone', '') = COALESCE(current_contact.x->>'phone', ''))
-      )
+  WITH RECURSIVE scan(position, retained) AS (
+    SELECT 0, '[]'::jsonb
+    UNION ALL
+    SELECT scan.position + 1,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM jsonb_array_elements(scan.retained) AS prior(x)
+        WHERE (
+          (NULLIF(lower((s.contacts->scan.position)->>'email'), '') IS NOT NULL
+           AND lower(prior.x->>'email') = lower((s.contacts->scan.position)->>'email'))
+          OR
+          (NULLIF(lower((s.contacts->scan.position)->>'name'), '') IS NOT NULL
+           AND lower(prior.x->>'name') = lower((s.contacts->scan.position)->>'name')
+           AND COALESCE(prior.x->>'phone', '') = COALESCE((s.contacts->scan.position)->>'phone', ''))
+        )
+      ) THEN scan.retained
+        ELSE scan.retained || jsonb_build_array(s.contacts->scan.position)
+      END
+    FROM scan
+    WHERE scan.position < jsonb_array_length(s.contacts)
   )
+  SELECT retained FROM scan ORDER BY position DESC LIMIT 1
 )
 FROM _up u
 WHERE u.brokerage_id = s.brokerage_id AND u.external_id = s.external_id
