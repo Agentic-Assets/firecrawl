@@ -227,7 +227,7 @@ and resolve confirmed findings before shipping.
 | `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md` | Which structured fields/media/docs are stranded in `raw_data`, plus the document-corpus audit that scopes the backfills |
 | `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` | Per-column fill-rate report for `cre_listings` (drives backfill targeting); raw outputs in `reports/` |
 | `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` | Freshness/accuracy/historic-retention review (the H/M/L findings behind `009` and the ingest-written price history) |
-| `TODO.md` | Collector working TODO list |
+| `archive/2026-06-15-collector-workstream-ideas.md` | Historical ideas only; current work and decisions are tracked in [Linear](https://linear.app/agenticassets/project/firecrawl-ops-and-automation-f13a738a83bf) |
 | `data/` | Geo crosswalk reference (`zip_cbsa_crosswalk.csv` consumed by `cre_geo.py`) + `build_zip_cbsa_crosswalk.py` builder and `README.md` |
 | `reports/` | Coverage report outputs (column/brokerage/transaction CSVs + summary JSON; see `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md`) |
 | `workflows/` | Historical Workflow scripts; `cre_enrichment_worker.workflow.js` preserves build/test/review provenance and refuses database or scheduler cutover |
