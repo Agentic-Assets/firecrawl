@@ -211,7 +211,7 @@ The table above lists the foundational contract tests. The data-lift and
 freshness/history sessions added ~21 more `test_*.py` files (raw-data / media /
 geo backfills, OM parse + enrich, price-history, archive-on-retirement,
 dq-guards, transaction-type, revival stickiness, etc.) and the coverage push
-added 14 more (see the paragraph above); `HANDOFF_DATA_LIFT_2026-06-15.md`
+added 14 more (see the paragraph above); `../archive/HANDOFF_DATA_LIFT_2026-06-15.md`
 section 5 has the full list. Run `python3 -m pytest tests/ -q` for the
 authoritative current set rather than trusting this table.
 

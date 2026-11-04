@@ -1,3 +1,12 @@
+# Historical CRE collector workstream ideas
+
+This is a preserved 2026-06-15 snapshot, not a current task list, plan, status,
+or authorization to operate. Current Firecrawl work and decisions belong in
+[Linear](https://linear.app/agenticassets/project/firecrawl-ops-and-automation-f13a738a83bf).
+The original text below is unchanged; its collector file paths are relative to
+the [collector directory](../), and `docs/` paths are relative to the repository
+root.
+
 # CRE Collector TODO
 
 Forward-looking workstream ideas for the EQUIRE listing intelligence pipeline.

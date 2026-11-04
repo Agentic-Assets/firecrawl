@@ -1,5 +1,8 @@
 # CRE Listings Column Coverage Report
 
+> Historical snapshot from 2026-06-15; use current readback for present coverage.
+> Only the summary JSON listed below is tracked in this repository; the CSV files are not.
+
 **Generated:** 2026-06-15  
 **Source:** Supabase project `fhqycqubkkrdgzswccwd`, schema `credeals`, table `cre_listings`  
 **Scope:** Active board rows only (`deleted_at IS NULL`), unless noted  
@@ -9,12 +12,12 @@
 
 | File | Format | Contents |
 |------|--------|----------|
-| `reports/cre_listings_column_coverage_2026-06-15.csv` | CSV | Per-column population counts and percentages |
-| `reports/cre_listings_brokerage_coverage_2026-06-15.csv` | CSV | Per-brokerage completeness and child-table coverage |
-| `reports/cre_listings_transaction_coverage_2026-06-15.csv` | CSV | Price/size fill rates by `transaction_type` |
-| `reports/cre_listings_coverage_summary_2026-06-15.json` | JSON | Full machine-readable bundle (all sections below) |
+| `../reports/cre_listings_column_coverage_2026-06-15.csv` | CSV | Per-column population counts and percentages |
+| `../reports/cre_listings_brokerage_coverage_2026-06-15.csv` | CSV | Per-brokerage completeness and child-table coverage |
+| `../reports/cre_listings_transaction_coverage_2026-06-15.csv` | CSV | Price/size fill rates by `transaction_type` |
+| `../reports/cre_listings_coverage_summary_2026-06-15.json` | JSON | Full machine-readable bundle (all sections below) |
 
-Open the CSV files in Excel, Numbers, or Google Sheets.
+The CSV files were part of the original report but are not tracked here.
 
 ## Row inventory
 
@@ -187,4 +190,4 @@ SELECT count(*) FILTER (WHERE deleted_at IS NULL) AS active_rows
 FROM credeals.cre_listings;
 ```
 
-Re-run the full aggregate bundle via Supabase MCP `execute_sql` on project `fhqycqubkkrdgzswccwd`, or import the JSON summary and refresh dated artifacts under `reports/`.
+The original report used a read-only Supabase aggregate bundle; the summary JSON preserves its dated results.
