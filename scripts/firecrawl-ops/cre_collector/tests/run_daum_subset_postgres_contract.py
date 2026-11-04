@@ -16,6 +16,7 @@ os.umask(0o077)
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import cre_ingest as ingest  # noqa: E402 - explicit standalone collector root
+import cre_validate as validate  # noqa: E402
 
 if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--pyramid", "--pyramid-benchmark", "--unknown")):
     raise ValueError("usage: run_daum_subset_postgres_contract.py NEW_PROOF_DIR [--pyramid|--pyramid-benchmark|--unknown]")
@@ -283,7 +284,11 @@ try:
             sql(schema, db)
             sql(generated([row(index) for index in range(102)]), db)
             sql("UPDATE credeals.cre_listings SET transaction_type='lease', "
-                "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\"}'::jsonb "
+                "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\","
+                "\"inventoryObservedAt\":\"2026-10-15T00:00:00Z\","
+                "\"detailObservedAt\":\"2026-10-15T00:00:01Z\","
+                "\"freshnessProvenance\":{\"generationId\":\"old-generation\","
+                "\"detailScope\":\"detail_page\",\"cacheDisposition\":\"live\"}}'::jsonb "
                 "WHERE external_id='property/Synthetic-101';", db)
             if case == "unknown_new":
                 sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-101'; "
@@ -307,6 +312,9 @@ try:
                 "preserveChildCollections": True,
                 "detailObservedWithChildPreservation": True,
                 "daumTenureEvidence": {"inventory": "unknown", "detail": "unknown", "resolved": "unknown"},
+                "inventoryObservedAt": "2026-10-16T00:00:00Z",
+                "detailObservedAt": "2026-10-16T00:00:01Z",
+                "freshnessProvenance": {"generationId": "new-generation", "detailScope": "detail_page", "cacheDisposition": "live"},
             })
             child_tables = ("cre_listing_images", "cre_listing_contacts",
                             "cre_listing_documents", "cre_listing_media", "cre_listing_links")
@@ -334,6 +342,29 @@ try:
                     ).stdout)
                     assert raw_after.pop("latestDaumUnknownTenureObservation") == unknown["raw_data"]
                     assert raw_after == prior_raw
+                    freshness_rows = sql(validate.QUERIES["freshness_generations"], db).stdout
+                    assert "daum-commercial|strict_detail|current_strict_detail|new-generation|" in freshness_rows, freshness_rows
+                    assert "old-generation" not in freshness_rows, freshness_rows
+                    assert validate.persisted_freshness_provenance(
+                        {**prior_raw, "latestDaumUnknownTenureObservation": unknown["raw_data"]},
+                        source_key="daum-commercial",
+                    )["generation_id"] == "new-generation"
+                    other_source_payload = validate._freshness_payload_sql("l", source_key_expr="'other'")
+                    assert sql(
+                        "SELECT (" + other_source_payload + ")->'freshnessProvenance'->>'generationId' "
+                        "FROM credeals.cre_listings l WHERE external_id='property/Synthetic-101';", db
+                    ).stdout.strip() == "old-generation"
+                    daum_payload = validate._freshness_payload_sql("l", source_key_expr="'daum-commercial'")
+                    for field, value in (("sourceKey", '"other"'), ("daumUnknownTenure", "false")):
+                        tampered = (
+                            "jsonb_set(raw_data, '{latestDaumUnknownTenureObservation,"
+                            + field + "}', '" + value + "'::jsonb)"
+                        )
+                        assert sql(
+                            "SELECT (" + daum_payload + ")->'freshnessProvenance'->>'generationId' "
+                            "FROM (SELECT " + tampered + " AS raw_data FROM credeals.cre_listings "
+                            "WHERE external_id='property/Synthetic-101') l;", db
+                        ).stdout.strip() == "old-generation"
                     assert sql("SELECT title FROM credeals.cre_listings "
                                "WHERE external_id='property/Synthetic-101';", db).stdout.strip() == "Observed current title"
                     for table in child_tables:

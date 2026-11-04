@@ -240,6 +240,21 @@ def _unknown_projection(inventory, detail, *, generation, inventory_at, detail_a
     })
 
 
+def _validate_unknown_projection(listing, inventory, detail, *, generation, inventory_at, detail_at, body_hash):
+    try:
+        evidence = json.loads(listing.get("daumUnknownEvidence"))
+    except (TypeError, ValueError):
+        require(False)
+    require(evidence == {"inventory": inventory, "detail": detail})
+    require(
+        _sha({key: value for key, value in listing.items() if key != "daumUnknownEvidence"})
+        == _sha(_unknown_projection(
+            inventory, detail, generation=generation, inventory_at=inventory_at,
+            detail_at=detail_at, body_hash=body_hash,
+        ))
+    )
+
+
 def _tenure(raw):
     require(raw is None or isinstance(raw, str))
     value = " ".join((raw or "").split()).lower()
@@ -353,6 +368,120 @@ def subset_source_scope(data):
         )
     return {"entries": entries, "listings": listings}
 
+
+def checkpoint_retained_unknown_ids(data):
+    """Bind only child-preserving rows; full subset admission remains later."""
+    scope = subset_source_scope(data)
+    proofs = {
+        entry["transaction"]: entry["currentInventoryProof"]
+        for entry in scope["entries"]
+    }
+    sale, lease = proofs["sale"], proofs["lease"]
+    retained = sale.get("retainedUnknownTenure", [])
+    require(isinstance(retained, list))
+    if not retained:
+        require(
+            all(
+                not row.get("preserveChildCollections")
+                and not row.get("daumUnknownTenure")
+                for row in scope["listings"]
+            )
+        )
+        return frozenset()
+    require(
+        {key: value for key, value in sale.items() if key != "transaction"}
+        == {key: value for key, value in lease.items() if key != "transaction"}
+        and sale.get("transaction") == "sale"
+        and lease.get("transaction") == "lease"
+        and sale.get("sourceKey") == SOURCE
+        and sale.get("generationId")
+        == (data["runMeta"].get("freshness") or {}).get("generationId")
+        and len(retained) == len(set(retained))
+    )
+    held = sale.get("held")
+    require(
+        isinstance(held, list)
+        and all(isinstance(row, list) and len(row) == 2 for row in held)
+    )
+    require(
+        retained
+        == [
+            post
+            for post, reason in held
+            if reason == "unknown_inventory_and_detail_tenure"
+        ]
+    )
+    cohort, receipts = sale.get("cohort"), sale.get("details")
+    require(isinstance(cohort, list) and isinstance(receipts, list))
+    native, details = {}, {}
+    for row in cohort:
+        if not isinstance(row, list) or not row or row[0] not in retained:
+            continue  # The full admission verifies non-retained cohort members.
+        require(len(row) == 8)
+        post, url, key, inv, inv_raw, detail, detail_raw, resolved = row
+        _post(post)
+        require(post not in native and key == _path_key(url))
+        require(
+            inv == detail == resolved == "unknown"
+            and inv == _tenure(inv_raw)
+            and detail == _tenure(detail_raw)
+        )
+        native[post] = (url, key, inv, inv_raw, detail, detail_raw, resolved)
+    for row in receipts:
+        if not isinstance(row, list) or not row or row[0] not in retained:
+            continue
+        require(len(row) == 4)
+        post, canonical, clock, body_hash = row
+        require(post in native and post not in details and canonical == native[post][0])
+        _time(clock)
+        _digest(body_hash)
+        details[post] = (canonical, clock, body_hash)
+    require(set(native) == set(details) == set(retained))
+    # The same validators used by source admission check the retained evidence.
+    retained_held = [[post, "unknown_inventory_and_detail_tenure"] for post in retained]
+    observed_proof = dict(sale)
+    for name in ("heldInventoryObservations", "heldDetailObservations"):
+        values = sale.get(name)
+        require(isinstance(values, list))
+        observed_proof[name] = [
+            item
+            for item in values
+            if isinstance(item, dict) and item.get("postId") in retained
+        ]
+    _held_inventory_observations(observed_proof, retained_held, native)
+    _held_detail_observations(
+        observed_proof, retained_held, native, details, False, set()
+    )
+    inventories = {
+        item["postId"]: item["inventory"]
+        for item in observed_proof["heldInventoryObservations"]
+    }
+    observed_details = {
+        item["postId"]: item["detail"]
+        for item in observed_proof["heldDetailObservations"]
+    }
+    seen = set()
+    for row in scope["listings"]:
+        post = row.get("daumPostId")
+        if post not in retained:
+            require(
+                not row.get("preserveChildCollections")
+                and not row.get("daumUnknownTenure")
+            )
+            continue
+        require(post not in seen and row.get("transactionMode") == "sale")
+        seen.add(post)
+        _validate_unknown_projection(
+            row,
+            inventories[post],
+            observed_details[post],
+            generation=sale["generationId"],
+            inventory_at=sale["observedAt"],
+            detail_at=details[post][1],
+            body_hash=details[post][2],
+        )
+    require(seen == set(retained))
+    return frozenset(retained)
 
 def admit(artifact_path, manifest, report, **kwargs):
     return _admit(artifact_path, manifest, report, subset=False, **kwargs)
@@ -597,21 +726,10 @@ def _admit(
             require(isinstance(inventory_observations, list) and isinstance(detail_observations, list))
             inventory_by_id = {item["postId"]: item["inventory"] for item in inventory_observations}
             detail_by_id = {item["postId"]: item["detail"] for item in detail_observations}
-            try:
-                retained_evidence = json.loads(listing.get("daumUnknownEvidence"))
-            except (TypeError, ValueError):
-                require(False)
-            require(retained_evidence == {
-                "inventory": inventory_by_id.get(post),
-                "detail": detail_by_id.get(post),
-            })
-            require(
-                _sha({key: value for key, value in listing.items() if key != "daumUnknownEvidence"})
-                == _sha(_unknown_projection(
-                    inventory_by_id[post], detail_by_id[post],
-                    generation=manifest["run_id"], inventory_at=proof["observedAt"],
-                    detail_at=clock, body_hash=body_hash,
-                ))
+            _validate_unknown_projection(
+                listing, inventory_by_id[post], detail_by_id[post],
+                generation=manifest["run_id"], inventory_at=proof["observedAt"],
+                detail_at=clock, body_hash=body_hash,
             )
         provenance = listing.get("freshnessProvenance") or {}
         require(
