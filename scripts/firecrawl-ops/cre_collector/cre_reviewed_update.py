@@ -229,7 +229,7 @@ def _git_advance_inputs(git, source, before, selected):
     ]
     allowed = sorted(
         path for path in dependencies
-        if path in COLLECTOR_LOCKS or any(path.startswith(context + "/") for context in SERVICES.values())
+        if any(path.startswith(context + "/") for context in SERVICES.values())
     )
     if sorted(dependencies) != allowed:
         raise ValueError("unsupported dependency change")
@@ -405,14 +405,14 @@ def run_source_update(
         raise ValueError("selected commit is not current reviewed origin/main")
     git.clean(development, selected, tracking=selected_sha)
     image_services = set()
-    dependency_change = False
     for role in ("native", "runtime"):
         scope = classify_paths(plan[role]["changed_paths"])
         if scope["compose_changed"]:
             raise ValueError("Compose source changes are not yet supported")
         if scope["unsupported"]:
             raise ValueError("non-collector dependency change is not yet supported")
-        dependency_change = dependency_change or scope["collector_install"]
+        if scope["collector_install"]:
+            raise ValueError("collector dependency update is not yet supported")
         image_services.update(scope["image_services"])
     if "nuq-postgres" in image_services:
         raise ValueError("NuQ image update requires separately verified data compatibility")
@@ -533,16 +533,8 @@ def run_source_update(
     scratch.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="reviewed-update-", dir=scratch))
     image_plan = image_plan_path = overlay = None
-    dependency_plan = dependency_plan_path = dependency_result = None
     image_outcome = None
-    image_reconciled = False
-    if dependency_change:
-        from cre_reviewed_update_deps import prepare_current_dependencies
-
-        dependency_plan = prepare_current_dependencies(git, development, selected, runtime, output)
-        dependency_plan_path = output / "dependency-plan.json"
-        write_new(dependency_plan_path, dependency_plan)
-        dependency_plan_bytes = read_file(dependency_plan_path)
+    apply_services = set()
     if image_services:
         from cre_reviewed_update_images import prepare_image_plan
 
@@ -550,6 +542,7 @@ def run_source_update(
         image_plan, overlay = prepare_image_plan(
             git, development, selected, image_services, docker, native, override, output
         )
+        apply_services = set(image_plan["apply_services"])
         image_plan_path = output / "image-plan.json"
         write_new(image_plan_path, image_plan)
         image_plan_bytes = read_file(image_plan_path)
@@ -706,11 +699,6 @@ def run_source_update(
         try:
             preflight_checkout_paths(git, targets, selected, development)
             owner()
-            if dependency_plan is not None:
-                from cre_reviewed_update_deps import recheck_current_dependencies
-
-                recheck_current_dependencies(dependency_plan, selected, runtime, git)
-                owner()
             if image_plan is not None:
                 from cre_reviewed_update_images import (
                     assert_image_idle,
@@ -726,7 +714,8 @@ def run_source_update(
                     idle_snapshot,
                 )
 
-                assert_image_idle(docker, native, image_services, ReadOnlyLoopbackClient, idle_snapshot)
+                if apply_services:
+                    assert_image_idle(docker, native, apply_services, ReadOnlyLoopbackClient, idle_snapshot)
             if visible_linux_frontends():
                 raise ValueError("competing local CRE frontend exists")
             inspect_plan = output / "inspect-plan.json"
@@ -755,41 +744,26 @@ def run_source_update(
                 started_hold = True
                 native_stage("Hold", active_plan)
                 phase = "held-pre-advance"
-                if dependency_plan is not None:
-                    recheck_current_dependencies(dependency_plan, selected, runtime, git)
-                    owner()
                 if image_plan is not None:
                     recheck_image_plan(image_plan, selected, docker, native)
-                    assert_image_idle(docker, native, image_services, ReadOnlyLoopbackClient, idle_snapshot)
+                    if apply_services:
+                        assert_image_idle(docker, native, apply_services, ReadOnlyLoopbackClient, idle_snapshot)
                 phase = "advance"
 
                 def held():
                     native_stage("VerifyHeld", active_plan)
 
-                advance_checkouts(
-                    git, lease, runtime, targets, selected, development, bundle, held
-                )
-                if dependency_plan is not None:
-                    from cre_reviewed_update_deps import (
-                        apply_current_dependencies,
-                        verify_current_dependencies,
-                    )
-
-                    phase = "dependency-apply"
-                    owner()
-                    if read_file(dependency_plan_path) != dependency_plan_bytes:
-                        raise RuntimeError("dependency plan changed; retain recovery fence")
-                    dependency_result = apply_current_dependencies(dependency_plan, selected, runtime, owner, git)
-                    verify_current_dependencies(dependency_plan, selected, runtime)
-                    owner()
-                installed_dependencies(runtime / "scripts/firecrawl-ops/cre_collector")
                 if image_plan is not None:
                     from cre_reviewed_update_images import (
                         ComposeCompletedFailure,
+                        SelectedImageUnready,
                         expected_compose_stack,
                         install_image_override,
+                        restore_image_override,
                         run_current_compose,
                         verify_image_result,
+                        verify_original_images,
+                        wait_for_selected_images,
                     )
                     from cre_runtime_maintenance_steps import current_compose_argv
 
@@ -797,47 +771,81 @@ def run_source_update(
                         owner()
                         git.clean(development, selected, tracking=selected_sha)
                         for target in targets:
-                            git.clean(target["root"], selected, tracking=selected_sha)
+                            expected = selected if image_code_advanced else target["before"]
+                            tracking = selected_sha if image_code_advanced else target["tracking"]
+                            git.clean(target["root"], expected, tracking=tracking)
                         if read_file(image_plan_path) != image_plan_bytes:
                             raise RuntimeError("image plan changed; retain recovery fence")
-                        if dependency_plan is not None:
-                            if read_file(dependency_plan_path) != dependency_plan_bytes:
-                                raise RuntimeError("dependency plan changed; retain recovery fence")
-                            verify_current_dependencies(dependency_plan, selected, runtime)
 
+                    image_code_advanced = False
+                    held()
                     phase = "image-apply"
                     image_guard()
                     recheck_image_plan(image_plan, selected, docker, native)
-                    assert_image_idle(docker, native, image_services, ReadOnlyLoopbackClient, idle_snapshot)
-                    recheck_image_plan(image_plan, selected, docker, native)
-                    install_image_override(image_plan, overlay, owner, output)
-                    image_guard()
-                    compose_args = current_compose_argv(
-                        docker, native, image_plan["compose_stack"]["files"], image_plan["override_path"],
-                        image_services, project="firecrawl",
-                    )
-                    compose_plan = output / "compose-plan.json"
-                    write_new(compose_plan, {
-                        "release": release, "selected": selected,
-                        "image_plan": windows_path(image_plan_path),
-                        "image_plan_sha256": hashlib.sha256(image_plan_bytes).hexdigest(),
-                        "files": expected_compose_stack(image_plan),
-                        "images": [{"tag": row["tag"], "image": row["image"]}
-                                   for row in image_plan["images"].values()],
-                        "docker": windows_path(docker), "docker_sha256": image_plan["docker_sha256"],
-                        "argv": compose_args[1:],
-                    })
-                    try:
-                        run_current_compose(
-                            checkpoint, owner, lease, development, control, control_sha, compose_plan, output, powershell
+                    if apply_services:
+                        assert_image_idle(docker, native, apply_services, ReadOnlyLoopbackClient, idle_snapshot)
+                        recheck_image_plan(image_plan, selected, docker, native)
+                        install_image_override(image_plan, overlay, owner, output)
+                        image_guard()
+                        compose_args = current_compose_argv(
+                            docker, native, image_plan["compose_stack"]["files"], image_plan["override_path"],
+                            apply_services, project="firecrawl",
                         )
-                    except ComposeCompletedFailure:
-                        image_guard()
-                        image_outcome = verify_image_result(image_plan, selected, docker, native)
-                        image_reconciled = True
+                        compose_plan = output / "compose-plan.json"
+                        write_new(compose_plan, {
+                            "release": release, "selected": selected,
+                            "image_plan": windows_path(image_plan_path),
+                            "image_plan_sha256": hashlib.sha256(image_plan_bytes).hexdigest(),
+                            "files": expected_compose_stack(image_plan),
+                            "images": [{"tag": row["tag"], "image": row["image"]}
+                                       for name, row in image_plan["images"].items() if name in apply_services],
+                            "docker": windows_path(docker), "docker_sha256": image_plan["docker_sha256"],
+                            "argv": compose_args[1:],
+                        })
+                        try:
+                            run_current_compose(
+                                checkpoint, owner, lease, development, control, control_sha, compose_plan, output, powershell
+                            )
+                            image_guard()
+                            image_outcome = wait_for_selected_images(
+                                image_plan, selected, docker, native, ReadOnlyLoopbackClient, owner)
+                        except (ComposeCompletedFailure, SelectedImageUnready):
+                            image_guard()
+                            restore_image_override(image_plan, owner, output)
+                            old_stack = image_plan["compose_stack"]
+                            rollback_args = current_compose_argv(
+                                docker, native, old_stack["files"], old_stack["files"][-1],
+                                apply_services, project="firecrawl",
+                            )
+                            rollback_plan = output / "compose-rollback-plan.json"
+                            write_new(rollback_plan, {
+                                "mode": "rollback", "release": release, "selected": selected,
+                                "image_plan": windows_path(image_plan_path),
+                                "image_plan_sha256": hashlib.sha256(image_plan_bytes).hexdigest(),
+                                "files": [{"path": path, "sha256": digest} for path, digest
+                                          in zip(old_stack["files"], old_stack["sha256"], strict=True)],
+                                "images": [{"tag": row["ref"], "image": row["image"]}
+                                           for name, row in image_plan["previous_images"].items()
+                                           if name in apply_services],
+                                "docker": windows_path(docker), "docker_sha256": image_plan["docker_sha256"],
+                                "argv": rollback_args[1:],
+                            })
+                            run_current_compose(
+                                checkpoint, owner, lease, development, control, control_sha,
+                                rollback_plan, output, powershell)
+                            image_guard()
+                            verify_original_images(image_plan, selected, docker, native)
+                            phase = "held-pre-advance"
+                            raise
                     else:
-                        image_guard()
                         image_outcome = verify_image_result(image_plan, selected, docker, native)
+                phase = "advance"
+                advance_checkouts(
+                    git, lease, runtime, targets, selected, development, bundle, held
+                )
+                installed_dependencies(runtime / "scripts/firecrawl-ops/cre_collector")
+                if image_plan is not None:
+                    image_code_advanced = True
                 mid_health = observe_health()
                 owner()
                 if old != selected:
@@ -847,10 +855,6 @@ def run_source_update(
                 native_stage("Restore", active_plan)
                 native_stage("VerifyRestored", active_plan)
             owner()
-            if dependency_plan is not None:
-                if read_file(dependency_plan_path) != dependency_plan_bytes:
-                    raise RuntimeError("dependency plan changed; retain recovery fence")
-                verify_current_dependencies(dependency_plan, selected, runtime)
             if image_plan is not None:
                 image_guard()
                 image_outcome = verify_image_result(image_plan, selected, docker, native)
@@ -895,10 +899,6 @@ def run_source_update(
                     installed_dependencies(
                         runtime / "scripts/firecrawl-ops/cre_collector"
                     )
-                    if dependency_plan is not None:
-                        if read_file(dependency_plan_path) != dependency_plan_bytes:
-                            raise RuntimeError("dependency plan changed; retain recovery fence")
-                        verify_current_dependencies(dependency_plan, selected, runtime)
                     if image_plan is not None:
                         image_outcome = verify_image_result(image_plan, selected, docker, native)
                     if phase == "repin":
@@ -939,8 +939,6 @@ def run_source_update(
         "existing_image_provenance": "not established",
         "image_changes_applied": bool(image_outcome and image_outcome["images"]["replaced"]),
         "reviewed_images": image_plan["images"] if image_plan is not None else {},
-        "dependency_update": dependency_result,
-        "image_reconciled": image_reconciled,
         "reconciled_after": reconciled_after,
         "service_health_before": initial_health,
         "service_health_after_advance": mid_health,

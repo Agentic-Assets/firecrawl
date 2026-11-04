@@ -54,17 +54,19 @@ $plan=Join-Path $root 'plan.json';$receipt=Join-Path $root 'receipt.json';$marke
 $config=Join-Path $root 'fixture.yaml';[IO.File]::WriteAllText($config,'fixture')
 $imagePlan=Join-Path $root 'image-plan.json'
 $selected=@{sha=('a'*40);tree=('b'*40)}
-[IO.File]::WriteAllText($imagePlan,(@{selected=$selected}|ConvertTo-Json -Compress))
+[IO.File]::WriteAllText($imagePlan,(@{selected=$selected;previous_images=@{api=@{ref='firecrawl-api:prior';image=('sha256:'+('c'*64))}};compose_stack=@{files=@($config);sha256=@((Hash $config))}}|ConvertTo-Json -Depth 8 -Compress))
 $env:CRE_FAKE_MARKER=$marker
-function RunFixture([int]$Exit,[bool]$LoseOwner,[bool]$BadService) {
+function RunFixture([int]$Exit,[bool]$LoseOwner,[bool]$BadService,[string]$Mode='up',[bool]$BadBinding=$false) {
  if(Test-Path -LiteralPath $receipt){Remove-Item -LiteralPath $receipt -Force}
  if(Test-Path -LiteralPath $marker){Remove-Item -LiteralPath $marker -Force}
  $env:CRE_FAKE_EXIT=[string]$Exit;$env:CRE_FAKE_OWNER_FAIL=if($LoseOwner){'1'}else{'0'}
  $service=if($BadService){'nuq-postgres'}else{'api'}
- $value=@{release=@{roots=@{native='C:/firecrawl'};wsl=@{}};selected=$selected;
+ $tag=if($Mode -ceq 'rollback'){'firecrawl-api:prior'}else{'firecrawl-api:qa-reviewed-'+('a'*24)}
+ if($BadBinding) {$tag='firecrawl-api:wrong-prior'}
+ $value=@{mode=$Mode;release=@{roots=@{native='C:/firecrawl'};wsl=@{}};selected=$selected;
   image_plan=$imagePlan;image_plan_sha256=(Hash $imagePlan);
   files=@(@{path=$config;sha256=(Hash $config)});
-  images=@(@{tag=('firecrawl-api:qa-reviewed-'+('a'*24));image=('sha256:'+('c'*64))});
+  images=@(@{tag=$tag;image=('sha256:'+('c'*64))});
   docker=$docker;docker_sha256=(Hash $docker);argv=@('--host','npipe:////./pipe/dockerDesktopLinuxEngine','compose','--project-name','firecrawl','--project-directory','C:/firecrawl','-f',$config,'up','-d','--no-deps','--no-build','--pull','never',$service)}
  [IO.File]::WriteAllText($plan,($value|ConvertTo-Json -Depth 8 -Compress))
  $launcher=if($PSVersionTable.PSEdition -ceq 'Desktop'){Join-Path $PSHOME 'powershell.exe'}else{Join-Path $PSHOME 'pwsh.exe'}
@@ -83,4 +85,9 @@ $r=Get-Content -LiteralPath $receipt -Raw|ConvertFrom-Json
 if(-not $r.completed -or $r.docker_exit -ne 7){throw 'Failure receipt differs'}
 if((RunFixture 0 $true $false) -eq 0 -or (Test-Path -LiteralPath $receipt) -or -not (Test-Path -LiteralPath $marker)){throw 'Owner loss after invocation must not write a receipt'}
 if((RunFixture 0 $false $true) -eq 0 -or (Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $receipt)){throw 'Unsupported service must not invoke fake process'}
+if((RunFixture 0 $false $false 'rollback') -ne 0 -or -not (Test-Path -LiteralPath $marker)){throw 'Rollback process did not complete'}
+$r=Get-Content -LiteralPath $receipt -Raw|ConvertFrom-Json
+if($r.stage -cne 'ComposeRollback' -or -not $r.completed -or $r.docker_exit -ne 0){throw 'Rollback receipt differs'}
+if((RunFixture 0 $false $true 'rollback') -eq 0 -or (Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $receipt)){throw 'Unsupported rollback service must not invoke fake process'}
+if((RunFixture 0 $false $false 'rollback' $true) -eq 0 -or (Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $receipt)){throw 'Unbound prior image must not invoke fake process'}
 Write-Output 'CRE reviewed Compose completion fixture passed'

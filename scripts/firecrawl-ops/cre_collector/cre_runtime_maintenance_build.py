@@ -361,37 +361,8 @@ def qualify_mutable_limits(compose, host):
             "live restart policy differs")
 
 
-def existing_nuq_volume(container):
-    """Identify the exact writable NuQ volume without exposing its host path."""
-    require(isinstance(container, dict) and isinstance(container.get("Config"), dict)
-            and isinstance(container["Config"].get("Labels"), dict)
-            and container["Config"]["Labels"].get("com.docker.compose.service") == "nuq-postgres",
-            "NuQ service identity missing")
-    target = "/var/lib/postgresql/data"
-    mounts = container.get("Mounts")
-    host = container.get("HostConfig")
-    require(isinstance(mounts, list) and all(isinstance(item, dict) for item in mounts)
-            and isinstance(host, dict) and host.get("Binds") in (None, []),
-            "NuQ mounts require separate review")
-    data = [mount for mount in mounts if mount.get("Destination") == target]
-    require(len(data) == 1 and data[0].get("Type") == "volume"
-            and isinstance(data[0].get("Name"), str)
-            and re.fullmatch(r"[a-f0-9]{64}", data[0]["Name"])
-            and data[0].get("RW") is True, "live NuQ data mount differs")
-    volume = data[0]["Name"]
-    host_mounts = host.get("Mounts") or []
-    require(isinstance(host_mounts, list) and all(isinstance(item, dict) for item in host_mounts),
-            "NuQ host mounts invalid")
-    prior = [mount for mount in host_mounts if mount.get("Target") == target]
-    plain = {"Type": "volume", "Source": volume, "Target": target}
-    wanted = {**plain, "VolumeOptions": {"NoCopy": True}}
-    require(not prior or prior == [plain] or prior == [wanted], "NuQ host data mount differs")
-    return volume
-
-
 def project_expected_configuration(container, old_image, new_image, explicit_keys, allowed_changed,
-                                   explicit_labels, selected_sha, *, expected_config_files, expected_replace,
-                                   nuq_volume=None):
+                                   explicit_labels, selected_sha, *, expected_config_files, expected_replace):
     """Compute a private pre-mutation projection from actual Docker inspect data.
 
     Raw environment and mount values remain in memory. This refuses image
@@ -432,14 +403,6 @@ def project_expected_configuration(container, old_image, new_image, explicit_key
         require(key and key not in defaults, "duplicate image default")
         defaults[key] = value
     projected = copy.deepcopy(container)
-    if nuq_volume is not None:
-        require(existing_nuq_volume(container) == nuq_volume, "NuQ volume identity changed")
-        target = "/var/lib/postgresql/data"
-        host = projected["HostConfig"]
-        mounts = host.get("Mounts") or []
-        wanted = {"Type": "volume", "Source": nuq_volume, "Target": target,
-                  "VolumeOptions": {"NoCopy": True}}
-        host["Mounts"] = [mount for mount in mounts if mount.get("Target") != target] + [wanted]
     old_live = container["Config"].get("Env")
     require(isinstance(old_live, list), "live container environment missing")
     new_live = []
@@ -575,86 +538,21 @@ def qualify_fleet_projection(containers, old_images, new_images, compose, packet
             "changed_image_default_keys": {name: row["changed_keys"] for name, row in result.items()}}
 
 
-def reject_obvious_nuq_incompatibility(changed_paths, old_image, new_image):
-    """Reject known mismatches; metadata alone does not prove data compatibility."""
-    require(isinstance(changed_paths, (list, tuple))
-            and all(isinstance(path, str) for path in changed_paths),
-            "NuQ changed paths missing")
-    require("apps/nuq-postgres/nuq.sql" not in changed_paths,
-            "changed NuQ init SQL needs a separate migration")
-    majors = []
-    for image in (old_image, new_image):
-        config = image.get("Config") if isinstance(image, dict) else None
-        env = config.get("Env") if isinstance(config, dict) else None
-        require(isinstance(env, list), "NuQ image environment missing")
-        values = [value.removeprefix("PG_MAJOR=") for value in env
-                  if isinstance(value, str) and value.startswith("PG_MAJOR=")]
-        require(len(values) == 1 and re.fullmatch(r"[1-9][0-9]*", values[0]),
-                "NuQ image PostgreSQL major unavailable")
-        majors.append(values[0])
-    require(majors[0] == majors[1], "NuQ PostgreSQL major upgrade needs a separate migration")
-
-
-def reviewed_override(tags, *, nuq_volume=None):
-    """Bind selected images and, when needed, the existing NuQ data volume."""
+def reviewed_override(tags):
+    """Construct the only allowed Compose overlay: selected image and restart."""
     require(isinstance(tags, dict) and tags and set(tags) <= set(SERVICES), "invalid override services")
-    require(nuq_volume is None or ("nuq-postgres" in tags and isinstance(nuq_volume, str)
-            and re.fullmatch(r"[a-f0-9]{64}", nuq_volume)), "invalid existing NuQ volume")
     lines = ["services:"]
     for service, tag in sorted(tags.items()):
         require(isinstance(tag, str) and re.fullmatch(r"firecrawl-" + re.escape(service)
                 + r":qa-[a-z0-9][a-z0-9-]{7,80}", tag), "invalid prepared image tag")
         lines += [f"  {service}:", f"    image: {json.dumps(tag)}", "    restart: unless-stopped"]
-        if service == "nuq-postgres" and nuq_volume is not None:
-            lines += ["    volumes:", "      - type: volume", "        source: cre-reviewed-nuq-data",
-                      "        target: /var/lib/postgresql/data", "        volume:", "          nocopy: true"]
-    if nuq_volume is not None:
-        lines += ["volumes:", "  cre-reviewed-nuq-data:", "    external: true",
-                  f"    name: {json.dumps(nuq_volume)}"]
     return ("\n".join(lines) + "\n").encode()
 
 
-def compare_compose_overlay(before, after, tags, *, nuq_volume=None):
+def compare_compose_overlay(before, after, tags):
     """Refuse every resolved Compose change except reviewed image/restart."""
     old, new = copy.deepcopy(before), copy.deepcopy(after)
     require(isinstance(old, dict) and isinstance(new, dict), "resolved Compose configuration missing")
-    if nuq_volume is not None:
-        require("nuq-postgres" in tags and isinstance(nuq_volume, str)
-                and re.fullmatch(r"[a-f0-9]{64}", nuq_volume), "invalid existing NuQ volume")
-        alias = "cre-reviewed-nuq-data"
-        target = "/var/lib/postgresql/data"
-        old_service = old.get("services", {}).get("nuq-postgres")
-        new_service = new.get("services", {}).get("nuq-postgres")
-        require(isinstance(old_service, dict) and isinstance(new_service, dict),
-                "resolved NuQ service missing")
-        old_volumes = old_service.get("volumes") or []
-        new_volumes = new_service.get("volumes") or []
-        require(isinstance(old_volumes, list) and isinstance(new_volumes, list)
-                and all(isinstance(value, dict) for value in old_volumes + new_volumes),
-                "resolved NuQ volumes invalid")
-        expected_mount = {"type": "volume", "source": alias, "target": target,
-                          "volume": {"nocopy": True}}
-        old_target = [value for value in old_volumes if value.get("target") == target]
-        new_target = [value for value in new_volumes if value.get("target") == target]
-        require(new_target == [expected_mount], "resolved NuQ mount differs")
-        old_definitions = old.get("volumes") or {}
-        new_definitions = new.get("volumes") or {}
-        require(isinstance(old_definitions, dict) and isinstance(new_definitions, dict)
-                and new_definitions.get(alias) == {"name": nuq_volume, "external": True},
-                "resolved NuQ volume identity differs")
-        if old_target:
-            require(old_target == [expected_mount] and old_definitions.get(alias) == new_definitions[alias],
-                    "existing NuQ override differs")
-        else:
-            require(alias not in old_definitions, "NuQ override name already used")
-            remaining = [value for value in new_volumes if value.get("target") != target]
-            if remaining:
-                new_service["volumes"] = remaining
-            else:
-                new_service.pop("volumes", None)
-            new_definitions.pop(alias)
-            if not new_definitions:
-                new.pop("volumes", None)
     for service, tag in tags.items():
         old_service = old.get("services", {}).get(service)
         new_service = new.get("services", {}).get(service)

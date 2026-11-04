@@ -133,7 +133,9 @@ def test_native_compose_completion_requires_matching_receipt(monkeypatch, tmp_pa
     def execute(mode):
         def run(argv, log, env):
             path = Path(argv[argv.index("-Receipt") + 1])
-            receipt = {"stage": "ComposeUp", "plan_sha256": sha(plan.read_bytes()),
+            operation = json.loads(plan.read_text()).get("mode", "up")
+            receipt = {"stage": "ComposeRollback" if operation == "rollback" else "ComposeUp",
+                       "plan_sha256": sha(plan.read_bytes()),
                        "owner_pid": os.getpid(), "generation_sha256": sha(b"fixture-generation"),
                        "completed": True, "docker_exit": 0}
             if mode == "failed":
@@ -147,6 +149,9 @@ def test_native_compose_completion_requires_matching_receipt(monkeypatch, tmp_pa
         return direct.run_current_compose(checkpoint, owner, lease, tmp_path, tmp_path / "control.py",
                                           "a" * 64, plan, tmp_path, tmp_path / "powershell.exe")
     execute("success")
+    plan.write_text('{"mode":"rollback"}')
+    execute("success")
+    plan.write_text("{}")
     with pytest.raises(direct.ComposeCompletedFailure):
         execute("failed")
     for mode in ("missing", "signal", "wrong-owner"):
@@ -168,8 +173,8 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
     live = {"docker_sha256": "d" * 64, "nuq_data_sha256": "7" * 64,
             "stack": {"files": ["C:/base.yaml"], "sha256": ["e" * 64]},
             "snapshots": [{"service": service}], "compose_sha256": "f" * 64,
-            "containers": [{"Image": "old", "Config": {"Labels": {"com.docker.compose.service": service}}}],
-            "compose": {"name": "firecrawl", "services": {service: {"environment": {"SECRET": "private"}}}}}
+            "containers": [{"Image": "old", "Config": {"Labels": {"com.docker.compose.service": service, "com.docker.compose.container-number": "1"}}}],
+            "compose": {"name": "firecrawl", "services": {service: {"image": "old", "environment": {"SECRET": "private"}}}}}
     item = {"tag": "firecrawl-api:qa-synthetic-01", "image": "new",
             "source_sha": selected["sha"], "source_tree": selected["tree"], "context_sha256": "c" * 64}
     current = [copy.deepcopy(live)]
@@ -182,14 +187,24 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
             return [old_image if args[-1] == "old" else new_image]
         return {"name": "firecrawl", "services": {}}
     monkeypatch.setattr(direct, "_docker_json", docker_json)
+    monkeypatch.setattr(direct, "snapshot_container", lambda value: {"config_sha256": "2" * 64})
     monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
     monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
         "before": [{"service": service}], "expected_after_config": {service: "1" * 64}})
     plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {service}, tmp_path / "docker",
                                               tmp_path, tmp_path / "stable.yaml", tmp_path)
     assert plan["selected"] == selected and plan["override_sha256"] == sha(overlay)
+    assert plan["previous_images"] == {"api": {"ref": "old", "image": "old"}}
     assert "private" not in repr(plan)
     direct.recheck_image_plan(plan, selected, tmp_path / "docker", tmp_path)
+    def drifted(*args):
+        if args[-1] == "old":
+            return [{"Id": "different"}]
+        return docker_json(*args)
+    monkeypatch.setattr(direct, "_docker_json", drifted)
+    with pytest.raises(HandoffError, match="previous image reference changed"):
+        direct.recheck_image_plan(plan, selected, tmp_path / "docker", tmp_path)
+    monkeypatch.setattr(direct, "_docker_json", docker_json)
     wrong = {"sha": "9" * 40, "tree": selected["tree"]}
     with pytest.raises(HandoffError, match="selected source"):
         direct.recheck_image_plan(plan, wrong, tmp_path / "docker", tmp_path)
@@ -229,8 +244,8 @@ def test_prepared_plan_substitutes_stable_overlay_in_preview(monkeypatch, tmp_pa
             "stack": {"files": ["/tmp/base.yaml", str(stable)], "sha256": ["e" * 64, sha(previous)]},
             "snapshots": [{"service": "playwright-service"}], "compose_sha256": "f" * 64,
             "containers": [{"Image": "old", "Config": {"Labels": {
-                "com.docker.compose.service": "playwright-service"}}}],
-            "compose": {"name": "firecrawl", "services": {"playwright-service": {"environment": {}}}}}
+                "com.docker.compose.service": "playwright-service", "com.docker.compose.container-number": "1"}}}],
+            "compose": {"name": "firecrawl", "services": {"playwright-service": {"image": "old", "environment": {}}}}}
     item = {"tag": "firecrawl-playwright-service:qa-selected-01", "image": "new",
             "source_sha": selected["sha"], "source_tree": selected["tree"], "context_sha256": "c" * 64}
     monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(live))
@@ -245,6 +260,7 @@ def test_prepared_plan_substitutes_stable_overlay_in_preview(monkeypatch, tmp_pa
                      "Config": {"Env": [], "Labels": {"org.opencontainers.image.revision": selected["sha"]}}}]
         return {"name": "firecrawl", "services": {}}
     monkeypatch.setattr(direct, "_docker_json", docker_json)
+    monkeypatch.setattr(direct, "snapshot_container", lambda value: {"config_sha256": "2" * 64})
     monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
     monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
         "before": [{"service": "playwright-service"}], "expected_after_config": {"playwright-service": "1" * 64}})
@@ -297,7 +313,7 @@ def test_verify_image_result_binds_selected_stack_and_image(monkeypatch, tmp_pat
     import cre_reviewed_update_images as direct
 
     selected = {"sha": "a" * 40, "tree": "b" * 40}
-    plan = {"selected": selected, "services": ["api"], "images": {"api": {
+    plan = {"selected": selected, "services": ["api"], "apply_services": ["api"], "images": {"api": {
                 "source_sha": selected["sha"], "source_tree": selected["tree"], "image": "new", "tag": "tag"}},
             "compose_stack": {"files": ["C:/base.yaml"], "sha256": ["c" * 64]},
             "override_path": "C:/override.yaml", "override_sha256": "d" * 64,
@@ -313,6 +329,13 @@ def test_verify_image_result_binds_selected_stack_and_image(monkeypatch, tmp_pat
         "unchanged": [], "replaced": ["api"]})
     result = direct.verify_image_result(plan, selected, tmp_path / "docker", tmp_path)
     assert result["images"]["replaced"] == ["api"]
+    plan["services"].append("playwright-service")
+    plan["images"]["playwright-service"] = dict(plan["images"]["api"])
+    def mixed_observation(docker, native, services):
+        assert services == {"api"}
+        return copy.deepcopy(current[0])
+    monkeypatch.setattr(direct, "observe_current_project", mixed_observation)
+    direct.verify_image_result(plan, selected, tmp_path / "docker", tmp_path)
     wrong = {"sha": "9" * 40, "tree": selected["tree"]}
     with pytest.raises(HandoffError, match="selected source"):
         direct.verify_image_result(plan, wrong, tmp_path / "docker", tmp_path)
@@ -350,3 +373,156 @@ def test_nuq_data_identity_includes_volume_name_without_revealing_it():
     row["Mounts"][0]["RW"] = False
     with pytest.raises(HandoffError):
         direct.nuq_data_identity([row])
+
+
+def test_equal_built_image_id_skips_new_override_and_compose(monkeypatch, tmp_path):
+    import copy
+
+    import cre_reviewed_update_images as direct
+
+    selected = {"sha": "a" * 40, "tree": "b" * 40}
+    image = "sha256:" + "c" * 64
+    live = {"docker_sha256": "d" * 64, "nuq_data_sha256": "7" * 64,
+            "stack": {"files": ["C:/base.yaml"], "sha256": ["e" * 64]},
+            "snapshots": [{"service": "api", "status": "running"}], "compose_sha256": "f" * 64,
+            "containers": [{"Image": image, "Config": {"Labels": {"com.docker.compose.service": "api"}}}],
+            "compose": {"name": "firecrawl", "services": {"api": {}}}}
+    built = {"api": {"tag": "firecrawl-api:qa-synthetic-01", "image": image,
+                     "source_sha": selected["sha"], "source_tree": selected["tree"],
+                     "context_sha256": "c" * 64}}
+    monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(live))
+    monkeypatch.setattr(direct, "build_current_images", lambda *args: copy.deepcopy(built))
+    plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {"api"}, tmp_path / "docker",
+                                              tmp_path, tmp_path / "stable.yaml", tmp_path)
+    assert plan["apply_services"] == [] and overlay is None
+    assert not (tmp_path / "stable.yaml").exists()
+    assert not (tmp_path / "compose-preview.yaml").exists()
+    monkeypatch.setattr(direct, "_docker_json", lambda *args: [{"Id": image}])
+    result = direct.verify_image_result(plan, selected, tmp_path / "docker", tmp_path)
+    assert result["images"] == {"unchanged": ["api"], "replaced": []}
+
+def test_restore_override_restores_prior_bytes_or_removes_only_owned_file(monkeypatch, tmp_path):
+    import cre_reviewed_update_images as direct
+
+    monkeypatch.setattr(direct, "local_path", Path)
+    target = tmp_path / "stable.json"
+    backup = tmp_path / "previous-compose-override.json"
+    target.write_bytes(b"new")
+    backup.write_bytes(b"previous")
+    plan = {"override_path": str(target), "override_sha256": sha(b"new"),
+            "previous_override_sha256": sha(b"previous")}
+    direct.restore_image_override(plan, lambda: None, tmp_path)
+    assert target.read_bytes() == b"previous"
+    target.write_bytes(b"new")
+    backup.write_bytes(b"altered")
+    with pytest.raises(HandoffError, match="backup changed"):
+        direct.restore_image_override(plan, lambda: None, tmp_path)
+    assert target.read_bytes() == b"new"
+    target.write_bytes(b"foreign")
+    with pytest.raises(HandoffError, match="published Compose override changed"):
+        direct.restore_image_override(plan, lambda: None, tmp_path)
+    assert target.read_bytes() == b"foreign"
+    target.write_bytes(b"new")
+    plan["previous_override_sha256"] = None
+    direct.restore_image_override(plan, lambda: None, tmp_path)
+    assert not target.exists()
+
+def test_selected_readiness_requires_running_api_and_successful_local_queue(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    plan = {"apply_services": ["api"]}
+    states = iter([{"containers": {"api": "restarting"}}, {"containers": {"api": "running"}}])
+    monkeypatch.setattr(direct, "verify_image_result", lambda *args: next(states))
+    monkeypatch.setattr(direct.time, "sleep", lambda seconds: None)
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def get_json(self, path):
+            return {"message": "Firecrawl API"} if path == "/" else {"success": True}
+    result = direct.wait_for_selected_images(plan, {}, None, None, Client, lambda: None)
+    assert result["containers"]["api"] == "running"
+
+
+def test_selected_readiness_does_not_hide_configuration_mismatch(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    def mismatch(*args):
+        raise HandoffError("Compose configuration differs")
+    monkeypatch.setattr(direct, "verify_image_result", mismatch)
+    with pytest.raises(HandoffError, match="Compose configuration differs"):
+        direct.wait_for_selected_images({"apply_services": ["api"]}, {}, None, None, None, lambda: None)
+
+def test_selected_readiness_timeout_and_owner_loss_are_distinct(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    monkeypatch.setattr(direct, "verify_image_result",
+                        lambda *args: {"containers": {"api": "running"}})
+    times = iter([0, 31])
+    monkeypatch.setattr(direct.time, "monotonic", lambda: next(times))
+    class Unavailable:
+        def __init__(self, *args, **kwargs):
+            pass
+        def get_json(self, path):
+            raise RuntimeError("unavailable")
+    with pytest.raises(HandoffError, match="readiness timed out"):
+        direct.wait_for_selected_images({"apply_services": ["api"]}, {}, None, None,
+                                        Unavailable, lambda: None)
+    monkeypatch.setattr(direct.time, "monotonic", lambda: 0)
+    class Ready(Unavailable):
+        def get_json(self, path):
+            return {"message": "Firecrawl API"} if path == "/" else {"success": True}
+    calls = []
+    def owner():
+        calls.append(True)
+        if len(calls) == 2:
+            raise RuntimeError("owner lost")
+    with pytest.raises(RuntimeError, match="owner lost"):
+        direct.wait_for_selected_images({"apply_services": ["api"]}, {}, None, None, Ready, owner)
+
+def test_selected_browser_readiness_uses_local_health(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    monkeypatch.setattr(direct, "verify_image_result",
+                        lambda *args: {"containers": {"playwright-service": "running"}})
+    monkeypatch.setattr(direct, "local_path", Path)
+    calls = []
+    def docker_json(*args):
+        calls.append(args)
+        return {"status": "healthy", "activePages": 1}
+    monkeypatch.setattr(direct, "_docker_json", docker_json)
+    result = direct.wait_for_selected_images(
+        {"apply_services": ["playwright-service"], "docker_sha256": "a" * 64},
+        {}, "/docker", "/native", None, lambda: None)
+    assert result["containers"]["playwright-service"] == "running"
+    assert "firecrawl-playwright-service-1" in calls[0]
+
+def test_original_image_verification_rejects_unaffected_and_volume_drift(monkeypatch):
+    import copy
+
+    import cre_reviewed_update_images as direct
+
+    selected = {"sha": "a" * 40, "tree": "b" * 40}
+    before = [{"service": "api", "id": "old", "image": "old-image", "status": "running",
+               "config_sha256": "old-config", "restart_policy": "always", "started_at": "old-time"},
+              {"service": "nuq-postgres", "id": "nuq"}]
+    restored = [{"service": "api", "id": "restored", "image": "old-image", "status": "running",
+                 "config_sha256": "restored-config", "restart_policy": "always", "started_at": "new-time"},
+                {"service": "nuq-postgres", "id": "nuq"}]
+    plan = {"selected": selected, "services": ["api"], "apply_services": ["api"],
+            "before": before, "docker_sha256": "a", "compose_stack": {"files": ["base"]},
+            "nuq_data_sha256": "volume", "compose_sha256": "config",
+            "previous_images": {"api": {"ref": "old-ref", "image": "old-image"}},
+            "rollback_config": {"api": "restored-config"}}
+    observed = {"snapshots": restored, "docker_sha256": "a", "stack": {"files": ["base"]},
+                "nuq_data_sha256": "volume", "compose_sha256": "config"}
+    monkeypatch.setattr(direct, "local_path", Path)
+    monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(observed))
+    monkeypatch.setattr(direct, "_docker_json", lambda *args: [{"Id": "old-image"}])
+    assert direct.verify_original_images(plan, selected, "/docker", "/native") == {"restored": ["api"]}
+    observed["snapshots"][1]["id"] = "other"
+    with pytest.raises(HandoffError, match="unaffected container changed"):
+        direct.verify_original_images(plan, selected, "/docker", "/native")
+    observed["snapshots"][1]["id"] = "nuq"
+    observed["nuq_data_sha256"] = "other"
+    with pytest.raises(HandoffError, match="original Compose configuration differs"):
+        direct.verify_original_images(plan, selected, "/docker", "/native")

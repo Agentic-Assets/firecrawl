@@ -16,6 +16,9 @@ $receiptPath=ConvertTo-CreHandoffPath $Receipt
 if($PlanSha -cnotmatch '^[0-9a-f]{64}$' -or (Get-CreReviewedControlHash $planPath) -cne $PlanSha) {throw 'Compose plan changed'}
 $planObject=Read-CreHandoffJson ([IO.File]::ReadAllText($planPath))
 $release=$planObject.release
+$mode='up'
+if($null -ne $planObject.PSObject.Properties['mode']) {$mode=[string]$planObject.mode}
+if($mode -cnotin @('up','rollback')) {throw 'Unsupported Compose mode'}
 $docker=ConvertTo-CreHandoffPath ([string]$planObject.docker)
 $dockerSha=[string]$planObject.docker_sha256
 if($dockerSha -cnotmatch '^[0-9a-f]{64}$' -or (Get-CreReviewedControlHash $docker) -cne $dockerSha) {throw 'Docker executable changed'}
@@ -52,8 +55,23 @@ for($i=0;$i -lt $fileRows.Count;$i++) {
 $imageRows=@($planObject.images)
 if($imageRows.Count -ne $services.Count) {throw 'Image binding count differs'}
 foreach($service in $services) {
- $matching=@($imageRows|Where-Object {$_.tag -cmatch ('^firecrawl-'+[regex]::Escape($service)+':qa-reviewed-[0-9a-f]{24}$')})
+ if($mode -ceq 'up') {
+  $matching=@($imageRows|Where-Object {$_.tag -cmatch ('^firecrawl-'+[regex]::Escape($service)+':qa-reviewed-[0-9a-f]{24}$')})
+ } else {
+  $prior=$imagePlan.previous_images.PSObject.Properties[$service].Value
+  if($null -eq $prior) {throw 'Previous image binding missing'}
+  $matching=@($imageRows|Where-Object {$_.tag -ceq [string]$prior.ref -and $_.image -ceq [string]$prior.image})
+ }
  if($matching.Count -ne 1 -or [string]$matching[0].image -cnotmatch '^sha256:[0-9a-f]{64}$') {throw 'Image binding differs'}
+}
+if($mode -ceq 'rollback') {
+ $priorFiles=@($imagePlan.compose_stack.files)
+ $priorHashes=@($imagePlan.compose_stack.sha256)
+ if($priorFiles.Count -ne $fileRows.Count -or $priorHashes.Count -ne $fileRows.Count) {throw 'Previous Compose stack differs'}
+ for($i=0;$i -lt $fileRows.Count;$i++) {
+  if([IO.Path]::GetFullPath([string]$priorFiles[$i]) -ine [IO.Path]::GetFullPath([string]$fileRows[$i].path) -or
+     [string]$priorHashes[$i] -cne [string]$fileRows[$i].sha256) {throw 'Previous Compose stack differs'}
+ }
 }
 function AssertOwner {
  if((Get-CreReviewedControlHash $planPath) -cne $PlanSha -or
@@ -78,7 +96,8 @@ $dockerExit=$LASTEXITCODE
 AssertOwner
 AssertImages
 AssertOwner
-$completion=@{stage='ComposeUp';plan_sha256=$PlanSha;owner_pid=$OwnerPid;
+$stage=if($mode -ceq 'rollback') {'ComposeRollback'} else {'ComposeUp'}
+$completion=@{stage=$stage;plan_sha256=$PlanSha;owner_pid=$OwnerPid;
  generation_sha256=(Get-CreHandoffHash $Generation);completed=$true;docker_exit=[int]$dockerExit}
 Save-CreHandoffExclusive $receiptPath ($completion|ConvertTo-Json -Compress)
 if($dockerExit -ne 0) {exit 1}

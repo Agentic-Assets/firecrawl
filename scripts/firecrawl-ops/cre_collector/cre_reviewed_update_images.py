@@ -1,5 +1,6 @@
 """Direct selected-source image preparation for the reviewed updater."""
 
+import copy
 import json
 import os
 import re
@@ -214,8 +215,14 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
     executable, native = map(local_path, (docker, native_root))
     binary_hash = before["docker_sha256"]
     current = {value["Config"]["Labels"]["com.docker.compose.service"]: value for value in before["containers"]}
-    old_images, new_images, allowed = {}, {}, {}
-    for service in sorted(services):
+    changed = {name for name in services if built[name]["image"] != current[name]["Image"]}
+    if not changed:
+        return ({"selected": selected, "services": sorted(services), "apply_services": [], "images": built,
+                 "docker_sha256": binary_hash, "compose_stack": before["stack"],
+                 "nuq_data_sha256": before["nuq_data_sha256"], "compose_sha256": before["compose_sha256"],
+                 "before": sorted(before["snapshots"], key=lambda row: row["service"])}, None)
+    old_images, new_images, allowed, previous_images, rollback_config = {}, {}, {}, {}, {}
+    for service in sorted(changed):
         old_values = _docker_json(executable, native, binary_hash, "image", "inspect", current[service]["Image"])
         new_values = _docker_json(executable, native, binary_hash, "image", "inspect", built[service]["tag"])
         require(isinstance(old_values, list) and len(old_values) == 1
@@ -223,12 +230,27 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
                 and old_values[0].get("Id") == current[service]["Image"]
                 and new_values[0].get("Id") == built[service]["image"], "image inspect identity changed")
         old_images[service], new_images[service] = old_values[0], new_values[0]
+        previous_ref = before["compose"]["services"][service].get("image")
+        require(isinstance(previous_ref, str) and previous_ref and not previous_ref.startswith("-"),
+                "previous Compose image reference unavailable")
+        resolved = _docker_json(executable, native, binary_hash, "image", "inspect", previous_ref)
+        require(isinstance(resolved, list) and len(resolved) == 1
+                and resolved[0].get("Id") == current[service]["Image"],
+                "previous Compose image reference does not identify the running image")
+        previous_images[service] = {"ref": previous_ref, "image": current[service]["Image"]}
+        rollback_container = copy.deepcopy(current[service])
+        labels = rollback_container["Config"]["Labels"]
+        number = labels.get("com.docker.compose.container-number")
+        require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number),
+                "previous Compose container number unavailable")
+        labels["com.docker.compose.replace"] = service + "-" + number
+        rollback_config[service] = snapshot_container(rollback_container)["config_sha256"]
         explicit = set((before["compose"]["services"][service].get("environment") or {}).keys())
         old_env, new_env = _image_environment(old_images[service]), _image_environment(new_images[service])
         require(set(old_env) - explicit == set(new_env) - explicit, "image default keys changed")
         allowed[service] = sorted(key for key in old_env.keys() & new_env.keys()
                                   if key not in explicit and old_env[key] != new_env[key])
-    tags = {name: row["tag"] for name, row in built.items()}
+    tags = {name: built[name]["tag"] for name in changed}
     override = local_path(override_path)
     override_key = canonical_path(windows_path(override)).casefold()
     stack = before["stack"]["files"]
@@ -251,16 +273,17 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
         argv += ["-f", windows_path(local_path(path))]
     projected_compose = _docker_json(executable, native, binary_hash, *argv, "config", "--format", "json")
     compare_compose_overlay(before["compose"], projected_compose, tags)
-    packet = {"expected_images": {name: row["image"] for name, row in built.items()},
+    packet = {"expected_images": {name: built[name]["image"] for name in changed},
               "allowed_image_default_changes": allowed, "new": selected,
               "compose_files": before["stack"]["files"], "compose_override_path": str(override_path)}
     projected = qualify_fleet_projection(before["containers"], old_images, new_images, before["compose"], packet)
-    plan = {"selected": selected, "services": sorted(services), "images": built,
+    plan = {"selected": selected, "services": sorted(services), "apply_services": sorted(changed), "images": built,
             "docker_sha256": binary_hash, "compose_stack": before["stack"],
             "nuq_data_sha256": before["nuq_data_sha256"], "compose_sha256": before["compose_sha256"],
             "projected_compose_sha256": sha(json.dumps(projected_compose, sort_keys=True,
                                                        separators=(",", ":")).encode()),
-            "before": projected["before"],
+            "before": projected["before"], "previous_images": previous_images,
+            "rollback_config": rollback_config,
             "expected_after_config": projected["expected_after_config"], "override_sha256": sha(overlay),
             "override_path": windows_path(override),
             "previous_override_sha256": sha(previous) if previous is not None else None}
@@ -289,6 +312,10 @@ def recheck_image_plan(plan, selected, docker, native_root):
         values = _docker_json(executable, native, plan["docker_sha256"], "image", "inspect", item["tag"])
         require(isinstance(values, list) and len(values) == 1
                 and values[0].get("Id") == item["image"], "built image tag changed")
+    for item in plan.get("previous_images", {}).values():
+        values = _docker_json(executable, native, plan["docker_sha256"], "image", "inspect", item["ref"])
+        require(isinstance(values, list) and len(values) == 1
+                and values[0].get("Id") == item["image"], "previous image reference changed")
     return observed
 
 
@@ -311,7 +338,11 @@ def verify_image_result(plan, selected, docker, native_root):
     require(plan.get("selected") == selected and set(plan["images"]) == set(plan["services"])
             and all(item["source_sha"] == selected["sha"] and item["source_tree"] == selected["tree"]
                     for item in plan["images"].values()), "image plan selected source differs")
-    observed = observe_current_project(docker, native_root, set(plan["services"]))
+    if not plan["apply_services"]:
+        observed = recheck_image_plan(plan, selected, docker, native_root)
+        return {"images": {"unchanged": sorted(plan["services"]), "replaced": []},
+                "containers": {row["service"]: row["status"] for row in observed["snapshots"]}}
+    observed = observe_current_project(docker, native_root, set(plan["apply_services"]))
     expected_stack = expected_compose_stack(plan)
     expected_files = [row["path"] for row in expected_stack]
     expected_hashes = [row["sha256"] for row in expected_stack]
@@ -333,6 +364,80 @@ def verify_image_result(plan, selected, docker, native_root):
     outcome = qualify_current_image_transition(plan["before"], observed["snapshots"], expected_images,
                                                expected_after_config=plan["expected_after_config"])
     return {"images": outcome, "containers": {row["service"]: row["status"] for row in observed["snapshots"]}}
+
+
+def verify_original_images(plan, selected, docker, native_root):
+    """Prove original image identities, stack, data mount and unaffected containers."""
+    identity(selected)
+    require(plan.get("selected") == selected, "image plan selected source differs")
+    observed = observe_current_project(docker, native_root, set(plan["services"]))
+    require(observed["docker_sha256"] == plan["docker_sha256"]
+            and observed["stack"] == plan["compose_stack"]
+            and observed["nuq_data_sha256"] == plan["nuq_data_sha256"]
+            and observed["compose_sha256"] == plan["compose_sha256"],
+            "original Compose configuration differs")
+    previous = {row["service"]: row for row in plan["before"]}
+    actual = {row["service"]: row for row in observed["snapshots"]}
+    require(len(previous) == len(plan["before"]) and len(actual) == len(observed["snapshots"])
+            and set(previous) == set(actual), "original fleet differs")
+    executable, native = map(local_path, (docker, native_root))
+    for name, after in actual.items():
+        before = previous[name]
+        if name not in plan["apply_services"]:
+            require(before == after, "unaffected container changed")
+            continue
+        image = plan["previous_images"][name]
+        values = _docker_json(executable, native, plan["docker_sha256"], "image", "inspect", image["ref"])
+        require(isinstance(values, list) and len(values) == 1 and values[0].get("Id") == image["image"]
+                and after["image"] == image["image"] and after["status"] == "running",
+                "original image or running state differs")
+        if before["id"] == after["id"]:
+            require(before == after, "original container changed")
+        else:
+            require(after["config_sha256"] == plan["rollback_config"][name]
+                    and after["restart_policy"] == before["restart_policy"]
+                    and after["started_at"] != before["started_at"],
+                    "restored container configuration differs")
+    return {"restored": sorted(plan["apply_services"])}
+
+
+class SelectedImageUnready(HandoffError):
+    """A settled selected image transition did not become locally ready."""
+
+
+def wait_for_selected_images(plan, selected, docker, native_root, client, owner, *, timeout_seconds=30):
+    """Wait for affected services and bounded local endpoints, without claiming scrape readiness."""
+    require(type(timeout_seconds) is int and 0 < timeout_seconds <= 60, "invalid readiness timeout")
+    affected = set(plan["apply_services"])
+    require(affected and affected <= {"api", "playwright-service"}, "invalid readiness services")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        owner()
+        result = verify_image_result(plan, selected, docker, native_root)
+        try:
+            require(all(result["containers"][name] == "running" for name in affected),
+                    "selected container is not running")
+            if "api" in affected:
+                api = client("http://127.0.0.1:3002", timeout_seconds=5)
+                require(api.get_json("/").get("message") == "Firecrawl API"
+                        and api.get_json("/v2/team/queue-status").get("success") is True,
+                        "selected API is unavailable")
+            if "playwright-service" in affected:
+                executable, native = map(local_path, (docker, native_root))
+                script = ("fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/health',"
+                          "{signal:AbortSignal.timeout(3000)}).then(async r=>{if(!r.ok)throw Error('health');"
+                          "process.stdout.write(await r.text())}).catch(()=>process.exit(1))")
+                value = _docker_json(executable, native, plan["docker_sha256"], "exec",
+                                     "firecrawl-playwright-service-1", "node", "-e", script)
+                require(isinstance(value, dict) and value.get("status") == "healthy",
+                        "selected Playwright is unavailable")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            if time.monotonic() >= deadline:
+                raise SelectedImageUnready("selected image readiness timed out")
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+        else:
+            owner()
+            return result
 
 
 def install_image_override(plan, overlay, owner, output):
@@ -381,6 +486,39 @@ def install_image_override(plan, overlay, owner, output):
             os.unlink(temp_name)
 
 
+def restore_image_override(plan, owner, output):
+    """Restore only the exact prior override after a settled Compose outcome."""
+    path = local_path(plan["override_path"])
+    require(path.is_absolute() and all(not parent.is_symlink() for parent in (path, *path.parents)),
+            "Compose override path alias")
+    owner()
+    require(sha(read_file(path)) == plan["override_sha256"], "published Compose override changed")
+    expected = plan["previous_override_sha256"]
+    if expected is None:
+        owner()
+        require(sha(read_file(path)) == plan["override_sha256"], "published Compose override changed")
+        path.unlink()
+        owner()
+        require(not os.path.lexists(path), "Compose override restoration differs")
+        return
+    previous = read_file(Path(output) / "previous-compose-override.json")
+    require(sha(previous) == expected, "previous Compose override backup changed")
+    fd, temp_name = tempfile.mkstemp(prefix=".reviewed-compose-restore-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(previous)
+            stream.flush()
+            os.fsync(stream.fileno())
+        owner()
+        require(sha(read_file(path)) == plan["override_sha256"], "published Compose override changed")
+        os.replace(temp_name, path)
+        owner()
+        require(sha(read_file(path)) == expected, "Compose override restoration differs")
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 class ComposeCompletedFailure(RuntimeError):
     """The native Compose process finished and reported a nonzero exit."""
 
@@ -389,6 +527,9 @@ def run_current_compose(checkpoint, owner, lease, development, control, control_
     """Run one owner-bound native Compose step; unknown outcomes retain the fence."""
     owner()
     raw = read_file(plan_path)
+    plan = json_bytes(raw)
+    mode = plan.get("mode", "up")
+    require(mode in {"up", "rollback"}, "invalid Compose mode")
     plan_sha = sha(raw)
     stamp = str(time.time_ns())
     receipt_path = Path(output) / ("compose-" + stamp + ".json")
@@ -410,7 +551,8 @@ def run_current_compose(checkpoint, owner, lease, development, control, control_
         rc = checkpoint.run_command(argv, log_path, env=checkpoint.safe_process_env())
     owner()
     require(read_file(plan_path) == raw, "Compose plan changed; retain recovery fence")
-    expected = {"stage": "ComposeUp", "plan_sha256": plan_sha, "owner_pid": os.getpid(),
+    expected = {"stage": "ComposeRollback" if mode == "rollback" else "ComposeUp",
+                "plan_sha256": plan_sha, "owner_pid": os.getpid(),
                 "generation_sha256": sha(lease.authority_generation.encode()), "completed": True}
     try:
         data = read_file(receipt_path)
