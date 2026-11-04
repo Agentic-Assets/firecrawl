@@ -80,7 +80,7 @@ def test_build_current_images_failure_stops_before_inspection(monkeypatch, tmp_p
     assert len(calls) == 2
 
 
-def test_observe_current_project_retains_exact_file_stack_without_logging_secrets(monkeypatch):
+def test_observe_current_project_retains_exact_file_stack_without_logging_secrets(monkeypatch, tmp_path):
     import cre_reviewed_update_images as direct
     import cre_runtime_maintenance_build as build
 
@@ -91,6 +91,7 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
         return {"Id": service, "Image": "image-" + service, "State": {"Status": "running", "StartedAt": "time"},
                 "Config": {"Env": ["SECRET=private"], "Labels": {
                     "com.docker.compose.service": service, "com.docker.compose.project": "firecrawl",
+                    "com.docker.compose.container-number": "1",
                     "com.docker.compose.project.working_dir": "C:/firecrawl",
                     "com.docker.compose.project.config_files": ",".join(files)},
                     "User": "", "Entrypoint": None, "Cmd": None, "WorkingDir": ""},
@@ -105,7 +106,12 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
     calls = []
     def run(argv, **kwargs):
         calls.append(argv)
-        value = [row(name) for name in services] if "inspect" in argv else {"name": "firecrawl", "services": {}}
+        if "image" in argv and "inspect" in argv:
+            image_id = "image-new" if argv[-1] in {"fixture-selected", "firecrawl-api:qa-synthetic-02"} else "image-api"
+            value = [{"Id": image_id, "Config": {"Env": [], "Labels": {}}}]
+        else:
+            value = [row(name) for name in services] if "inspect" in argv else {
+                "name": "firecrawl", "services": {"api": {"image": "fixture-old", "environment": {}}}}
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(value).encode())
     monkeypatch.setattr(direct, "read_file", lambda path: b"binary")
     monkeypatch.setattr(build, "read_file", lambda path: str(path).encode())
@@ -115,6 +121,73 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
     assert [calls[1][i + 1] for i, item in enumerate(calls[1]) if item == "-f"] == files
     assert "private" not in repr(result["snapshots"])
     assert len(result["compose_sha256"]) == 64
+
+    # Exercise the real preparation-to-observation path with the Path object
+    # supplied by the coordinator; only the image build is faked.
+    selected = {"sha": "a" * 40, "tree": "b" * 40}
+    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+        "api": {"tag": "fixture", "image": "image-api",
+                "source_sha": selected["sha"], "source_tree": selected["tree"]}})
+    plan, overlay = direct.prepare_image_plan(
+        None, Path("C:/firecrawl"), selected, {"api"}, "C:/docker.exe", "C:/firecrawl",
+        Path("/mnt/c/fixture-override.yaml"), Path("C:/output"))
+    assert plan["apply_services"] == [] and overlay is None
+    assert plan["override_path"] == "C:/fixture-override.yaml"
+
+    # A changed image must also plan a new overlay using the normalized path.
+    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+        "api": {"tag": "fixture-selected", "image": "image-new",
+                "source_sha": selected["sha"], "source_tree": selected["tree"]}})
+    original_overlay = direct.updated_image_override
+    monkeypatch.setattr(direct, "updated_image_override", lambda previous, tags: b"fixture-overlay")
+    monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
+    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
+        "before": [], "expected_after_config": {"api": "1" * 64}})
+    absent_path = Path("/mnt/c/Users/CSEAGRAVES2018/AppData/Local/Temp") / (tmp_path.name + "-override.json")
+    output = tmp_path / "absent"
+    output.mkdir()
+    original_windows_path = direct.windows_path
+    def windows_path(value):
+        if str(value).startswith(str(tmp_path)):
+            return "C:/fixture-output/" + Path(value).name
+        return original_windows_path(value)
+    monkeypatch.setattr(direct, "windows_path", windows_path)
+    plan, overlay = direct.prepare_image_plan(
+        None, Path("C:/firecrawl"), selected, {"api"}, "C:/docker.exe", "C:/firecrawl", absent_path, output)
+    assert plan["apply_services"] == ["api"] and overlay == b"fixture-overlay"
+    assert plan["override_path"].startswith("C:/Users/") and plan["previous_override_sha256"] is None
+
+    # The existing, updater-owned overlay is resolved and verified too.
+    monkeypatch.setattr(direct, "updated_image_override", original_overlay)
+    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+        "api": {"tag": "fixture", "image": "image-api",
+                "source_sha": selected["sha"], "source_tree": selected["tree"]}})
+    tag = "firecrawl-api:qa-synthetic-01"
+    previous = direct.updated_image_override(None, {"api": tag})
+    monkeypatch.setattr(direct, "read_file", lambda path:
+                        previous if str(path).replace("\\", "/").endswith("/fixture-override.yaml") else b"binary")
+    files.append("C:/fixture-override.yaml")
+    plan, overlay = direct.prepare_image_plan(
+        None, Path("C:/firecrawl"), selected, {"api"}, "C:/docker.exe", "C:/firecrawl",
+        Path("/mnt/c/fixture-override.yaml"), Path("C:/output"))
+    assert plan["apply_services"] == [] and overlay is None
+    assert plan["override_path"] == "C:/fixture-override.yaml"
+
+    monkeypatch.setattr(build, "read_file", lambda path:
+                        previous if str(path).replace("\\", "/").endswith("/fixture-override.yaml")
+                        else str(path).encode())
+    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+        "api": {"tag": "firecrawl-api:qa-synthetic-02", "image": "image-new",
+                "source_sha": selected["sha"], "source_tree": selected["tree"]}})
+    output = tmp_path / "existing"
+    output.mkdir()
+    plan, overlay = direct.prepare_image_plan(
+        None, Path("C:/firecrawl"), selected, {"api"}, "C:/docker.exe", "C:/firecrawl",
+        Path("/mnt/c/fixture-override.yaml"), output)
+    assert plan["apply_services"] == ["api"]
+    assert plan["previous_override_sha256"] == sha(previous)
+    assert json.loads(overlay)["services"]["api"]["image"] == "firecrawl-api:qa-synthetic-02"
+
     with pytest.raises(HandoffError, match="NuQ"):
         direct.observe_current_project("C:/docker.exe", "C:/firecrawl", {"nuq-postgres"})
 

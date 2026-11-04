@@ -222,6 +222,7 @@ def updated_image_override(previous, tags):
 
 def prepare_image_plan(git, source, selected, services, docker, native_root, override_path, output):
     """Build and project selected images before any scheduled task is held."""
+    override_path = windows_path(local_path(override_path))
     before = observe_current_project(docker, native_root, services, override_path)
     built = build_current_images(git, source, selected, services, docker, native_root, before["compose"], output)
     after = observe_current_project(docker, native_root, services, override_path)
