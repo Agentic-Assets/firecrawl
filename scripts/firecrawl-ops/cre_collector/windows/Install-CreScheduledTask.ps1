@@ -25,6 +25,7 @@ param(
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
     [switch]$AcknowledgeDatabaseWrites,
+    [switch]$AdmitDaumVerifiedSubset,
     [ValidateSet('interra-realty','faris-lee','fortis-net-lease','unique-properties','kiser-group','pinnacle-rea','cawley-chicago','bradford-allen','hudson-peters','gibson-commercial','leibsohn','nai-hiffman','nai-martens','bull-realty','tri-commercial','berger-commercial','nai-bergman','nai-isaac','trinity-partners','metro-commercial','33-realty','nai-hallmark','nai-plotkin','greysteel','nai-talcor','nai-dominion')][string]$AdmitCurrentInventorySource,
     [switch]$Apply,
     [string]$AlertWebhookFile,
@@ -89,6 +90,13 @@ foreach ($key in $selectedAdmissionKeys) {
     }
 }
 $selectedSourceArgument = if ($Sources) { $Sources } else { $Source }
+if ($AdmitDaumVerifiedSubset -and ($Tier -cne 'series' -or $Source -cne 'daum-commercial' -or
+    $Sources -or $Pipeline -or $selectedAdmissionKeys.Count -ne 0 -or $TaskName -cne 'DAUM Verified Subset')) {
+    throw 'DAUM subset requires its named singleton series and no other admission.'
+}
+if ($TaskName -ceq 'DAUM Verified Subset' -and -not $AdmitDaumVerifiedSubset) {
+    throw 'DAUM subset task requires its explicit admission.'
+}
 
 if ($ExpectedSha -cnotmatch '^[0-9a-f]{40}\z') { throw 'ExpectedSha must be a full lowercase commit SHA.' }
 if ($Enable -and -not $Register) { throw '-Enable requires -Register; existing tasks are never changed.' }
@@ -177,6 +185,7 @@ if ($Tier -eq 'series') {
     $arguments += @('-WorkDeadlineSeconds',"$WorkDeadlineSeconds",'-AcknowledgeDatabaseWrites')
     if ($PSBoundParameters.ContainsKey('Concurrency')) { $arguments += @('-Concurrency',"$Concurrency") }
     if ($AdmitCurrentInventorySource) { $arguments += @('-AdmitCurrentInventorySource',$AdmitCurrentInventorySource) }
+    if ($AdmitDaumVerifiedSubset) { $arguments += '-AdmitDaumVerifiedSubset' }
 } else {
     $arguments += @('-Batch',"$Batch",'-DeadlineSeconds',"$DeadlineSeconds")
     if ($Apply) { $arguments += '-Apply' }

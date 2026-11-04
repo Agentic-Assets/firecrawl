@@ -323,6 +323,37 @@ Invoke-CreReviewedTaskDefinitionUpdate $service $rows[0] '<task/>' $fixtureSid
 # Optional source-bound task: use only fake definitions and scheduler functions.
 foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
 $fixture.successor=$false;$fixture.events.Clear()
+$daum=@{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'}
+$rows=@($rows)+@($daum)
+$daumXml=Set-CreHandoffEnabledXml (([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "daum-commercial" "-AdmitDaumVerifiedSubset"')) $true
+$fixture.tasks[$daum.key]=@{xml=$daumXml;enabled=$true}
+$daumRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
+$daumSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $daumRelease $old $new)
+if($daumSnapshot.Count -ne 4 -or $daumSnapshot[3].key -cne 'daum-subset') {throw 'DAUM task discovery failed'}
+foreach($mutation in @(
+  @('"-AdmitDaumVerifiedSubset"',''),
+  @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitDaumVerifiedSubset"'),
+  @('"-AcknowledgeDatabaseWrites"',''),
+  @('"-Source" "daum-commercial"','"-Source" "newmark"'),
+  @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-Pipeline"'),
+  @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitCurrentInventorySource" "daum-commercial"')
+)) {
+ $fixture.tasks[$daum.key].xml=$daumXml.Replace($mutation[0],$mutation[1])
+ try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'invalid DAUM task accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM task accepted'){throw}}
+}
+$fixture.tasks[$daum.key].xml=$daumXml
+$fixture.tasks['newmark'].xml=([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "newmark" "-AdmitDaumVerifiedSubset"')
+try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'DAUM admission on another task accepted'} catch {if($_.Exception.Message -ceq 'DAUM admission on another task accepted'){throw}}
+$fixture.tasks['newmark'].xml=[string]$snapshot[1].xml
+$daumDigest=Get-CreReviewedSnapshotDigest $daumRelease $daumSnapshot $old $new
+Invoke-CreReviewedTaskHold $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
+Invoke-CreReviewedTaskRepin $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
+if($fixture.tasks[$daum.key].xml -cnotmatch $new) {throw 'DAUM task not repinned'}
+Invoke-CreReviewedTaskRestore $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
+if(-not $fixture.tasks[$daum.key].enabled) {throw 'DAUM task enabled state not restored'}
+$fixture.tasks.Remove($daum.key);$rows=@($rows[0..2])
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$fixture.successor=$false;$fixture.events.Clear()
 $extra=@{key='enrich:newmark';task_path='\Agentic Assets\CRE\';task_name='Enrichment - newmark'}
 $rows=@($rows)+@($extra)
 $base=[string]$snapshot[1].xml
