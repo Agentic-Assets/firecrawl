@@ -983,6 +983,16 @@ def test_serial_child_requires_bound_partial_scope(tmp_path, monkeypatch):
     assert not series._child_succeeded(bad, manifest["config"])
 
 
+def write_mock_pyramid_commit(log, run, manifest, argv):
+    from cre_pyramid_rollback_result import PREFIX, SCHEMA, expected_binding
+
+    attempt = argv[argv.index("--checkpoint-ingest-attempt") + 1]
+    binding = expected_binding(run, manifest, attempt)
+    Path(log).write_text(PREFIX + json.dumps({
+        "schema": SCHEMA, "source_key": SOURCE, "outcome": "committed", "binding": binding,
+    }) + "\n")
+
+
 def test_serial_current_admission_runs_gates_claimed_ingest_and_partial_status(tmp_path, monkeypatch):
     import cre_pipeline_artifact_worker as worker
     import cre_checkpoint_series as series
@@ -1013,6 +1023,8 @@ def test_serial_current_admission_runs_gates_claimed_ingest_and_partial_status(t
             sql_dir = Path(argv[argv.index("--keep-artifacts") + 1])
             sql_dir.mkdir(parents=True, exist_ok=True)
             (sql_dir / "ingest.sql").write_text("synthetic SQL; no database connection")
+        else:
+            write_mock_pyramid_commit(log, run, manifest, argv)
         return 0
     monkeypatch.setattr(cp, "run_command", command)
     mock_clear_pyramid_probe(monkeypatch)
@@ -1354,6 +1366,8 @@ def test_v2_serial_gate_worker_and_ingest_keep_bound_partition(tmp_path, monkeyp
         if "--dry-run" in argv:
             sql_dir = Path(argv[argv.index("--keep-artifacts") + 1]); sql_dir.mkdir(parents=True, exist_ok=True)
             (sql_dir / "ingest.sql").write_text("offline fixture")
+        else:
+            write_mock_pyramid_commit(log, run, manifest, argv)
         return 0
     monkeypatch.setattr(cp, "run_command", command)
     cp.gate_source(run, manifest, SOURCE, path, None)

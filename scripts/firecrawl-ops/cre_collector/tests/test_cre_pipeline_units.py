@@ -178,6 +178,7 @@ def test_pipeline_scoped_gate_uses_only_sealed_members_and_unique_evidence(
     assert commands[0][1] == root / "logs" / "unit-0001-aggregate-gate.log"
     assert str(root / "sources" / "savills.json") in commands[0][0]
     assert str(root / "sources" / "transwestern.json") not in commands[0][0]
+    assert "--update-baseline" not in commands[0][0]
     with pytest.raises(refresh.GlobalStageError):
         refresh.run_aggregate_gate(root, manifest, None, sources=("foreign",))
 

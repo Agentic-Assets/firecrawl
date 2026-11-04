@@ -5306,6 +5306,49 @@ def test_recover_interrupted_ingest_marks_exact_rollback_replayable(
     assert checkpoint["ingest_recovery"]["replay_safe"] is True
 
 
+def test_pyramid_refusal_crash_after_exact_rollback_save_cannot_replay(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir, git_sha="abc", git_dirty=False, sources=("pyramid-brokerage",),
+        page_cap=400, concurrency=3,
+        database_target={"algorithm": "sha256", "value": "a" * 64},
+    )
+    checkpoint = manifest["sources"]["pyramid-brokerage"]
+    checkpoint.update({
+        "artifact": strict_artifact_info(),
+        "ingest": {"rc": 0, "attempt_id": "d" * 32},
+        "ingest_recovery": {"reason": "pyramid_historical_guard_refusal", "subprocess_rc": 0},
+        "state": "ingest_recovery_required",
+    })
+    validation = {"queries": {
+        "source_counts": [], "freshness_generations": [], "inventory_only_index": [],
+        "artifact_run_jobs": [{"matching_jobs": "0"}],
+    }}
+
+    def fake_run(argv, _log, **_kwargs):
+        refresh.atomic_write_json(Path(argv[argv.index("--out") + 1]), validation)
+        return 0
+
+    real_save = refresh.save_manifest
+
+    def save_then_crash(run, candidate):
+        real_save(run, candidate)
+        if candidate["sources"]["pyramid-brokerage"]["ingest_recovery"].get("outcome") == "exact_rollback":
+            raise SystemExit("simulated interruption after durable recovery save")
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    monkeypatch.setattr(refresh, "save_manifest", save_then_crash)
+    with pytest.raises(SystemExit, match="simulated interruption"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "pyramid-brokerage", None)
+
+    saved = json.loads((run_dir / "manifest.json").read_text())
+    assert saved["sources"]["pyramid-brokerage"]["state"] == "ingest_recovery_required"
+    monkeypatch.setattr(refresh, "run_command", lambda *a, **k: pytest.fail("must not replay"))
+    with pytest.raises(refresh.GlobalStageError, match="reviewed ingest recovery"):
+        refresh.advance_source(run_dir, saved, "pyramid-brokerage", page_cap=400,
+                               concurrency=3, attempts_this_run=1, env_file=None)
+
+
 def test_recover_interrupted_ingest_blocks_partial_job_footprint(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -6733,3 +6776,54 @@ def test_avison_pipeline_terminal_marker_is_failed_and_not_ingested(
     assert refresh._cohort_needs_collection(
         run_dir, manifest, "avison-young", attempts_before=0, attempts_this_run=3
     ) is False
+
+
+def test_serial_resume_never_replays_held_immutable_artifact(tmp_path, monkeypatch):
+    manifest = {"config": {"transactions": ["sale", "lease"]},
+                "sources": {"pyramid-brokerage": {"state": "pyramid_historical_guard_refused"}}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    monkeypatch.setattr(refresh, "collect_source", lambda *a, **k: pytest.fail("recollection"))
+    monkeypatch.setattr(refresh, "ingest_source", lambda *a, **k: pytest.fail("replay"))
+    with pytest.raises(refresh.GlobalStageError, match="cannot be replayed"):
+        refresh.advance_source(tmp_path, manifest, "pyramid-brokerage", page_cap=1,
+                               concurrency=1, attempts_this_run=1, env_file=None)
+
+
+@pytest.mark.parametrize("singleton", [True, False])
+def test_serial_guard_only_certifies_single_source_child(tmp_path, monkeypatch, singleton):
+    import cre_pyramid_rollback_result as outcome
+
+    sources = ["pyramid-brokerage"] if singleton else ["pyramid-brokerage", "savills"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: True)
+    calls = []
+    def ingest(run, owner, source, artifact, env):
+        calls.append(source)
+        raise refresh.PyramidHistoricalGuardRefusal("typed")
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    error = refresh.PyramidHistoricalGuardRefusal if singleton else refresh.GlobalStageError
+    with pytest.raises(error):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: None)
+    assert calls == ["pyramid-brokerage"]
+    assert manifest.get("serial_guard_holds") == (["pyramid-brokerage"] if singleton else None)
+
+
+def test_serial_multi_source_guard_remains_global_after_an_earlier_commit(tmp_path, monkeypatch):
+    sources = ["savills", "pyramid-brokerage", "hanley"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    calls = []
+    def ingest(run, owner, source, artifact, env):
+        calls.append(source)
+        if source == "pyramid-brokerage":
+            raise refresh.PyramidHistoricalGuardRefusal("typed")
+        owner["sources"][source]["state"] = "ingested"
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    with pytest.raises(refresh.GlobalStageError, match="multi-source serial rollback"):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: None)
+    assert calls == ["savills", "pyramid-brokerage"]
+    assert manifest["sources"]["savills"]["state"] == "ingested"
+    assert "serial_guard_holds" not in manifest

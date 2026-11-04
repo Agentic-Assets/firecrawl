@@ -41,6 +41,9 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
             self.held = True
             return self
 
+        def _require_authority(self):
+            assert self.held
+
         def clear_recovery_requirement(self):
             assert events[-1] == "report_saved"
             events.append("fence_clear")
@@ -137,7 +140,7 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
     monkeypatch.setattr(refresh, "record_scope_from_validation", lambda *_args: None)
     monkeypatch.setattr(refresh, "prepare_sources_cohort", lambda *_a, **_kw: [])
     monkeypatch.setattr(refresh, "run_aggregate_gate", lambda *_args: None)
-    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_args: None)
+    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(refresh, "run_final_validation", lambda *_args: None)
     argv = ["--out-root", str(tmp_path / "runs"), "--sources", "cbre"]
     if outcome == "health_failure":

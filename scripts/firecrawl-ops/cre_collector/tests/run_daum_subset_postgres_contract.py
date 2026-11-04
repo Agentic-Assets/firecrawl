@@ -636,11 +636,19 @@ try:
             "binding": {"scope": "pyramid_verified_subset_v1", "artifact_sha256": "a" * 64,
                 "inventory_count": 102, "emitted_count": 99, "held_count": 3,
                 "members_sha256": member_digest}, "members": pyramid_members}
-        def pyramid_sql(rows, subset=False, claims=None):
+        from cre_pyramid_rollback_result import read_result
+        result_binding = {"artifact_sha256": "a" * 64, "artifact_bytes": 123,
+            "artifact_run_key": ingest.artifact_run_identity_from_digests(["a" * 64])[0],
+            "generation_id": "2026-10-16T000000Z", "generation_started_at": "2026-10-16T00:00:00Z",
+            "database_target_sha256": "c" * 64, "attempt_id": "d" * 32,
+            "collector_git_sha": "e" * 40}
+        def pyramid_sql(rows, subset=False, claims=None, result=False):
             return ingest.build_sql(rows, [{"slug": "pyramid-brokerage", "discovered": len(rows),
                 "saved": len(rows), "errors": 0, "notes": "synthetic fixture"}],
                 "2026-10-16T00:00:00Z", set(),
-                pyramid_verified_subset_claims=(claims or pyramid_claims) if subset else None)
+                pyramid_verified_subset_claims=(claims or pyramid_claims) if subset else None,
+                artifact_run_key=result_binding["artifact_run_key"] if result else None,
+                pyramid_guard_binding=result_binding if result else None)
         held_ids = "('listings/fixture-100','listings/fixture-101','listings/fixture-102')"
         for number, case in enumerate(("success", "deleted_emitted", "held_collision", "transition", "transition_mismatch", "transition_ambiguous", "transition_inactive", "transition_held", "transition_no_index", "transition_cross_path", "transition_old_collision", "transition_malformed", "transition_missing_fact")):
             db = "pyramid_fixture_" + str(number)
@@ -786,6 +794,40 @@ try:
         sql("DROP DATABASE " + db + ";")
         sql("CHECKPOINT;")
 
+        # An old literal-path contradiction with no historical native ID
+        # reaches the typed guard after the complete-path classification guard.
+        for case in ("historical_conflict", "early_error", "late_error"):
+            db = "pyramid_result_" + case
+            sql("CREATE DATABASE " + db + ";")
+            sql(schema, db)
+            sql(pyramid_sql([pyramid_row(i) for i in range(1, 103)]), db)
+            if case == "historical_conflict":
+                sql("UPDATE credeals.cre_listings SET source_url='https://www.pyramidbrokerage.com/listings/old-path/', raw_data=raw_data - 'wordpressRecord' WHERE external_id='listings/fixture-1';", db)
+            before = all_tables()
+            text = pyramid_sql([pyramid_row(i, fresh=True) for i in range(1, 103)], result=True)
+            if case == "early_error":
+                text = text.replace("SELECT EXISTS (\nWITH incoming_pyramid AS MATERIALIZED", "SELECT 1/0;\nSELECT EXISTS (\nWITH incoming_pyramid AS MATERIALIZED", 1)
+            if case == "late_error":
+                text = text.replace("-- Pyramid preserves historical literal path identities.", "SELECT 1/0;\n-- Pyramid preserves historical literal path identities.", 1)
+            result = sql(text, db, check=False)
+            assert all_tables() == before, case
+            path = out / ("result-" + case + ".log")
+            path.write_text(result.stdout)
+            if case == "historical_conflict":
+                assert result.returncode == 0, result.stderr
+                assert read_result(path, result_binding)["outcome"]["outcome"] == "historical_identity_refused"
+            else:
+                assert result.returncode != 0, (case, result.stderr)
+                try:
+                    read_result(path, result_binding)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(case + " emitted a typed result")
+            checks.append({"case": "pyramid_" + case, "all_tables_unchanged": True})
+            sql("DROP DATABASE " + db + ";")
+            sql("CHECKPOINT;")
+
         # One changed-ID record with insufficient historical facts is held;
         # two independently valid transitions and incomplete peers still apply.
         db = "pyramid_identity_hold_fixture"
@@ -793,7 +835,9 @@ try:
         sql(schema, db)
         sql(pyramid_sql([pyramid_row(i, transition=i <= 3) for i in range(1, 103)]), db)
         sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', to_jsonb(900 + split_part(external_id, '-', 2)::int)) WHERE external_id IN ('listings/fixture-1','listings/fixture-2','listings/fixture-3');", db)
-        sql("UPDATE credeals.cre_listings SET address=NULL WHERE external_id='listings/fixture-1';", db)
+        # This held row also has a historical literal-path contradiction.
+        # The typed guard must inspect only emitted rows after the v2 partition.
+        sql("UPDATE credeals.cre_listings SET address=NULL,source_url='https://www.pyramidbrokerage.com/listings/old-held-path/' WHERE external_id='listings/fixture-1';", db)
         snapshot_sql = "SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='listings/fixture-1';"
         held_before = sql(snapshot_sql, db).stdout
         def identity_held_children():
@@ -851,8 +895,11 @@ try:
         assert refused.returncode != 0 and "Pyramid" in refused.stderr, refused.stderr
         assert all_tables() == before_drift
         sql("UPDATE credeals.cre_listings SET address='1 Main Street',raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', '902'::jsonb) WHERE external_id='listings/fixture-2';", db)
-        result = sql(pyramid_sql(rows, subset=True, claims=claims), db, check=False)
+        result = sql(pyramid_sql(rows, subset=True, claims=claims, result=True), db, check=False)
         assert result.returncode == 0, result.stderr
+        result_path = out / "result-identity-hold.log"
+        result_path.write_text(result.stdout)
+        assert read_result(result_path, result_binding)["outcome"]["outcome"] == "committed"
         assert sql(snapshot_sql, db).stdout == held_before
         assert identity_held_children() == held_children_before
         assert sql("SELECT status || ':' || listings_saved FROM credeals.cre_scrape_jobs WHERE status='partial' ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial:101"

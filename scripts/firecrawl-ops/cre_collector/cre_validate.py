@@ -8,6 +8,7 @@ transactions and only inspect the `credeals` listing tables/views.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -1776,6 +1777,7 @@ def main():
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument("--expected-ingest-attempt", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out", default=None, help="optional output path")
     parser.add_argument("--transwestern-image-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
@@ -1786,6 +1788,12 @@ def main():
         help="full by default; checkpoint-preflight is a reduced before-collection audit only",
     )
     args = parser.parse_args()
+    if args.expected_ingest_attempt is not None and (
+        not re.fullmatch(r"[a-f0-9]{32}", args.expected_ingest_attempt)
+        or not args.expected_artifact_run_key or not args.expected_db_target_sha256
+        or args.profile != FULL_VALIDATION_PROFILE
+    ):
+        parser.error("ingest attempt requires bound full validation")
     if args.transwestern_image_state and (
         args.profile != FULL_VALIDATION_PROFILE or not args.expected_artifact_run_key
         or not args.expected_db_target_sha256
@@ -1814,6 +1822,12 @@ def main():
         "query_timings": {},
         "psql_warnings": [],
     }
+    if args.expected_ingest_attempt is not None:
+        report["artifact_run_probe"] = {
+            "database_target_sha256": args.expected_db_target_sha256,
+            "artifact_run_key_sha256": hashlib.sha256(args.expected_artifact_run_key.encode("utf-8")).hexdigest(),
+            "attempt_id": args.expected_ingest_attempt,
+        }
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries
     )

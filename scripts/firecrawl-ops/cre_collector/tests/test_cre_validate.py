@@ -1385,3 +1385,27 @@ def test_main_terminates_transwestern_fragment_in_timed_batch(monkeypatch, capsy
         "transwestern_image_state": expected_transwestern,
     }
     assert report["transwestern_image_state"] == [{"value": "1"}]
+
+
+def test_recovery_report_binds_attempt_target_and_exact_job_probe(monkeypatch, capsys):
+    import hashlib
+    _patch_main(monkeypatch)
+    monkeypatch.setattr(cre_validate, "assert_expected_database_target", lambda *_: None)
+    run_key = "ingest:v1:" + "a" * 64
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "json",
+        "--expected-artifact-run-key", run_key,
+        "--expected-db-target-sha256", "b" * 64,
+        "--expected-ingest-attempt", "c" * 32])
+    cre_validate.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["artifact_run_probe"] == {"database_target_sha256": "b" * 64,
+        "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
+        "attempt_id": "c" * 32}
+    assert "artifact_run_jobs" in report["queries"]
+
+
+def test_recovery_report_refuses_unbound_attempt_before_database(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--expected-ingest-attempt", "c" * 32])
+    monkeypatch.setattr(cre_validate, "load_db_url", lambda *_: pytest.fail("database access"))
+    with pytest.raises(SystemExit):
+        cre_validate.main()

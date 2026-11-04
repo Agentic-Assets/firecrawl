@@ -3949,6 +3949,7 @@ def build_sql(
     daum_verified_subset_claims=None,
     pyramid_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
+    pyramid_guard_binding=None,
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -3998,6 +3999,12 @@ def build_sql(
     else:
         from cre_pyramid_subset_sql import unclassified_complete_guard_sql
         pyramid_subset_guard = unclassified_complete_guard_sql()
+    from cre_pyramid_subset_sql import historical_conflict_rows_sql
+    pyramid_historical_rows = historical_conflict_rows_sql()
+    pyramid_guard_sql = ""
+    if pyramid_guard_binding is not None:
+        from cre_pyramid_rollback_result import build_guard_sql
+        pyramid_guard_sql = build_guard_sql(pyramid_guard_binding)
     finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
@@ -4009,6 +4016,8 @@ def build_sql(
         artifact_run_key = (
             "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
         )
+    if pyramid_guard_binding is not None and pyramid_guard_binding.get("artifact_run_key") != artifact_run_key:
+        raise ValueError("Pyramid guard artifact run key changed")
     tw_parts = None
     if transwestern_image_transition_binding is not None:
         if (not isinstance(transwestern_image_transition_binding, dict)
@@ -4670,6 +4679,7 @@ BEGIN
     END IF;
 END $$;
 
+
 -- DAUM keeps historical literal property-path keys. Refuse contradictory
 -- staged/historical associations before DML, including soft-deleted parents.
 -- Only explicitly preserved positive WordPress IDs are comparable. Missing old
@@ -4805,7 +4815,8 @@ CREATE TEMP TABLE _pyramid_native_transitions (
   brokerage_id uuid NOT NULL, external_id text NOT NULL,
   PRIMARY KEY (brokerage_id, external_id)
 ) ON COMMIT DROP;
-{daum_subset_guard}{pyramid_subset_guard}-- Pyramid preserves historical literal path identities. Inspect the actual
+{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}
+-- Pyramid preserves historical literal path identities. Inspect the actual
 -- staged cohort and every historical parent, including soft-deleted rows,
 -- before an upsert can overwrite a contradictory URL or create a duplicate.
 -- Literal comparisons deliberately do not invent aliases or repair old keys.
@@ -4813,21 +4824,9 @@ DO $$
 DECLARE
     conflicting_rows bigint;
 BEGIN
-    WITH incoming_pyramid AS MATERIALIZED (
-      SELECT s.brokerage_id, s.external_id, s.source_url
-      FROM _src s
-      WHERE jsonb_path_exists(
-        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
-      )
-    )
-    SELECT count(*) INTO conflicting_rows
-    FROM incoming_pyramid s
-    JOIN credeals.cre_listings t
-      ON t.brokerage_id = s.brokerage_id
-     AND (
-       (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
-       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
-     );
+    SELECT count(*) INTO conflicting_rows FROM (
+{pyramid_historical_rows}
+    ) AS pyramid_historical_conflicts;
     IF conflicting_rows > 0 THEN
       RAISE EXCEPTION
         'Pyramid identity contradiction in % historical row(s); refusing mutation',
@@ -5377,6 +5376,8 @@ END $$;
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
+        .replace("{pyramid_guard_sql}", pyramid_guard_sql)
+        .replace("{pyramid_historical_rows}", pyramid_historical_rows)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
         .replace("{targeted_guard}", targeted_guard)
@@ -6396,6 +6397,9 @@ END $$;
 
 COMMIT;
 """)
+    if pyramid_guard_binding is not None:
+        from cre_pyramid_rollback_result import build_commit_sql
+        w(build_commit_sql(pyramid_guard_binding))
     if tw_parts:
         w(tw_parts["emit"])
     if image_transition_binding is not None:
@@ -6964,6 +6968,7 @@ def main():
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -7445,6 +7450,16 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Transwestern image transition: {exc}")
+    pyramid_guard_binding = None
+    if args.checkpoint_pyramid_code_sha is not None:
+        from cre_pyramid_rollback_result import bind_input
+        try:
+            pyramid_guard_binding = bind_input(
+                args, data, image_transition_input, artifact_run_key,
+                activate_status=activate_status,
+            )
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            sys.exit(f"refusing Pyramid guard outcome: {exc}")
     sql = build_sql(
         rows,
         job_meta,
@@ -7462,6 +7477,7 @@ def main():
         daum_verified_subset_claims=daum_subset_claims,
         pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
+        pyramid_guard_binding=pyramid_guard_binding,
     )
 
     print(
@@ -7495,6 +7511,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
+            *(["-X"] if pyramid_guard_binding is not None else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -7506,10 +7523,10 @@ def main():
         stderr=sys.stderr,
     )
     if not args.keep_artifacts:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
-    print("ingest complete", file=sys.stderr)
+    print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None else "ingest complete", file=sys.stderr)
 
 
 if __name__ == "__main__":
