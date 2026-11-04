@@ -88,6 +88,10 @@ def cases():
              after=[{**listing("a", [PHOTO, OTHER]), "preserveChildCollections": True}], duplicate=True),
         dict(name="additive_detail_error_null", before=old,
              after=[{**listing("a", [PHOTO, OTHER]), "detailError": None}], duplicate=True),
+        dict(name="resurrection_refresh", before=old + [listing("offstage", [OTHER])],
+             after=[listing("a", [PHOTO])], resurrect=True, duplicate=True),
+        dict(name="resurrection_additive", before=old + [listing("offstage", [OTHER])],
+             after=[{**listing("a", [PHOTO]), "preserveChildCollections": True}], resurrect=True, duplicate=True),
         dict(name="image_trigger_rolls_back_all_tables", before=old, after=fresh, fail_trigger=True, refuses=True),
         dict(name="job_trigger_rolls_back_all_tables", before=old, after=fresh, fail_job=True, refuses=True),
     ]
@@ -149,14 +153,15 @@ def main():
         parts = [f"SELECT {ingest.sql_lit(name)} name,coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) rows FROM credeals.{name} t" for name in names]
         return json.loads(sql("SELECT jsonb_object_agg(name,rows)::text FROM (" + " UNION ALL ".join(parts) + ") s;").stdout)
 
-    def images():
+    def images(*, active_only=True):
+        active_filter = "AND l.deleted_at IS NULL" if active_only else ""
         return json.loads(sql("""SELECT coalesce(jsonb_agg(jsonb_build_object(
           'id',i.id,'listing_id',l.id,'external_id',l.external_id,'url',i.url,
           'is_primary',i.is_primary,'display_order',i.display_order,'alt_text',i.alt_text)
           ORDER BY l.external_id,i.url,i.is_primary,i.display_order,i.id),'[]')::text
           FROM credeals.cre_listings l JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
           JOIN credeals.cre_listing_images i ON i.listing_id=l.id
-          WHERE b.slug='transwestern' AND l.deleted_at IS NULL;""").stdout)
+          WHERE b.slug='transwestern' """ + active_filter + ";").stdout)
 
     def generated(listings, name, *, bound=True, mutation=None):
         rows = [ingest.to_row(value, {}, LATER) for value in listings]
@@ -235,10 +240,12 @@ def main():
                 sql("UPDATE credeals.cre_listing_images SET is_primary=true WHERE url=" + ingest.sql_lit(OTHER) + ";")
             if case.get("null_primary"):
                 sql("UPDATE credeals.cre_listing_images SET is_primary=NULL WHERE url=" + ingest.sql_lit(OTHER) + ";")
+            if case.get("resurrect"):
+                sql("UPDATE credeals.cre_listings SET deleted_at=now() WHERE external_id IN ('a','offstage');")
             if case.get("fail_trigger") or case.get("fail_job"):
                 table = "cre_scrape_jobs" if case.get("fail_job") else "cre_listing_images"
                 sql(f"CREATE FUNCTION credeals.fixture_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture terminal write failure'; END $$; CREATE TRIGGER fixture_fail BEFORE INSERT ON credeals.{table} FOR EACH ROW EXECUTE FUNCTION credeals.fixture_fail();")
-            before, old_images = snapshot(), images()
+            before, old_images, all_old_images = snapshot(), images(), images(active_only=False)
             rows, binding, query = generated(case["after"], case["name"], bound=case.get("bound", True))
             if not case.get("bound", True):
                 jobs = [{"slug": "transwestern", "discovered": len(rows), "saved": len(rows), "errors": 0, "notes": case["name"]}]
@@ -258,7 +265,7 @@ def main():
                 observed = images()
                 for row in rows:
                     children = [image for image in observed if image["external_id"] == row["external_id"]]
-                    old = [prior for prior in old_images if prior["external_id"] == row["external_id"]]
+                    old = [prior for prior in all_old_images if prior["external_id"] == row["external_id"]]
                     current = collections.Counter(image["url"] for image in row["images"])
                     raw = next(item for item in case["after"] if item["id"] == row["external_id"])
                     additive = raw.get("preserveChildCollections") is True or "detailError" in raw

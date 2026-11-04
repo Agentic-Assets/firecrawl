@@ -43,7 +43,7 @@ def test_parts_have_explicit_transaction_boundaries_and_do_not_mutate_input():
     assert "UPDATE credeals.cre_listing_images" not in parts["project"]
     assert "EXCEPT ALL" in parts["verify"]
     assert "INTERSECT ALL" in parts["verify"]
-    assert "_retained_child_scope_after" in parts["verify"]
+    assert "JOIN _tw_image_parents_before p USING(listing_id)" in parts["verify"]
     assert "INSERT INTO _tw_image_outcome" in parts["verify"]
     assert "CRE_TRANSWESTERN_IMAGE_TRANSITION " in parts["emit"]
     assert "CRE_TRANSWESTERN_IMAGE_TRANSITION " not in "".join(parts[key] for key in ("before", "project", "verify"))
