@@ -5580,6 +5580,18 @@ JOIN _prior_vals p
 WHERE {staged_source_key_sql} IN ({buildout_source_keys_sql})
   AND s.contacts = '[]'::jsonb;
 
+-- Unknown DAUM tenure is an explicitly admitted partial observation. Keep
+-- existing contact facts when they conflict; the full new observation remains
+-- in raw_data, and missing fields/new contacts can still be added.
+CREATE TEMP TABLE _daum_unknown_contacts ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+WHERE b.slug = 'daum-commercial'
+  AND s.raw_data->>'sourceKey' = 'daum-commercial'
+  AND s.raw_data->'daumUnknownTenure' = 'true'::jsonb;
+
 CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
 SELECT id FROM _child_refresh
 EXCEPT
@@ -5685,6 +5697,7 @@ JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
 WHERE u.id IN (SELECT id FROM _contact_additive)
   AND c.listing_id = u.id
+  AND u.id NOT IN (SELECT id FROM _daum_unknown_contacts)
   AND jsonb_typeof(s.contacts) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
 
@@ -5700,7 +5713,8 @@ DO $$ BEGIN
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
-             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5708,20 +5722,21 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = COALESCE(i.x->>'name', c.name),
-      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+                   WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      license = COALESCE(i.x->>'license', c.license),
-      email = COALESCE(i.x->>'email', c.email),
-      phone = COALESCE(i.x->>'phone', c.phone),
-      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
-      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
-      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
-      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
-      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+      license = CASE WHEN i.daum_unknown THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
+      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -5745,7 +5760,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5779,7 +5795,8 @@ DO $$ BEGIN
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
-             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5787,19 +5804,20 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = COALESCE(i.x->>'name', c.name),
-      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+                   WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      email = COALESCE(i.x->>'email', c.email),
-      phone = COALESCE(i.x->>'phone', c.phone),
-      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
-      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
-      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
-      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
-      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -5823,7 +5841,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5863,6 +5882,7 @@ WITH ranked_primary_contacts AS (
   FROM credeals.cre_listing_contacts c
   JOIN _up u ON u.id = c.listing_id
   WHERE c.is_primary
+    AND c.listing_id NOT IN (SELECT id FROM _daum_unknown_contacts)
 )
 UPDATE credeals.cre_listing_contacts c
 SET is_primary = false
