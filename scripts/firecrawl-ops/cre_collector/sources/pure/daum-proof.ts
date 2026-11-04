@@ -44,6 +44,7 @@ export function daumProof(
     return {
       schema: "daum-verified-subset-v2", ...identity, kind: "verified_subset_with_holds", ...base,
       subsetPolicy: "tenure-and-empty-title-v2", cohort: members, details, titleObservations,
+      retainedUnknownTenure: held.filter(row => row[1] === "unknown_inventory_and_detail_tenure").map(row => row[0]),
       held, ...heldObservations(held),
     };
   }
@@ -53,6 +54,7 @@ export function daumProof(
     return {
       schema: "daum-verified-subset-v1", ...identity, kind: "verified_subset_with_holds", ...base,
       cohort: members, details,
+      retainedUnknownTenure: held.map(row => row[0]),
       held, ...heldObservations(held),
     };
   }

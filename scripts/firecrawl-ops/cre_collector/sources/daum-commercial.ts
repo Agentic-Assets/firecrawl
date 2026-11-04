@@ -568,10 +568,7 @@ export function mapDaumListing(
   detailObservedAt: string
 ): any {
   const resolvedTenure = resolveDaumTenure(inventory.tenure, detail.tenure);
-  if (resolvedTenure === "unknown") {
-    throw new Error(`DAUM ${inventory.url} has unresolved transaction tenure`);
-  }
-  if (!daumBelongsToTx(resolvedTenure, tx)) {
+  if (resolvedTenure !== "unknown" && !daumBelongsToTx(resolvedTenure, tx)) {
     throw new Error(`DAUM ${inventory.url} does not belong to requested ${tx} inventory`);
   }
   const observed = detailObservation("daum_direct_detail_html", "live", detailObservedAt);
@@ -599,6 +596,7 @@ export function mapDaumListing(
     )
     .filter((value): value is number => value !== null);
   const tenure =
+    resolvedTenure === "unknown" ? undefined :
     resolvedTenure === "sale_or_lease"
       ? "Sale/Lease"
       : resolvedTenure === "sale"
@@ -610,6 +608,12 @@ export function mapDaumListing(
     daumPostId: String(detail.postId),
     name: detail.title ?? inventory.title,
     transactionType: tenure,
+    ...(resolvedTenure === "unknown" ? {
+      daumUnknownTenure: true,
+      daumUnknownEvidence: JSON.stringify({ inventory, detail }),
+      preserveChildCollections: true,
+      detailObservedWithChildPreservation: true,
+    } : {}),
     assetType: detail.facts["Property Type"] ?? inventory.assetType,
     propertySubtype: detail.facts["Primary Use"],
     description: detail.description,
@@ -620,9 +624,9 @@ export function mapDaumListing(
     postalCode: detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude,
     longitude: inventory.longitude,
-    salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
-    salePriceText: tx === "sale" ? salePriceText : null,
-    leaseRateText: tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
+    salePriceUsd: resolvedTenure !== "unknown" && tx === "sale" ? parseMoney(salePriceText) : null,
+    salePriceText: resolvedTenure !== "unknown" && tx === "sale" ? salePriceText : null,
+    leaseRateText: resolvedTenure !== "unknown" && tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
     sizeText: detail.sizeText ?? inventory.sizeText,
     availableSf: positiveNumber(
       detail.facts["Total Space Available"] ?? detail.sizeText ?? inventory.sizeText
@@ -732,7 +736,8 @@ export async function srcDaumCommercial(
     const cohort = await completeDaumCohort(JSON.stringify([mode, generationId, generationStartedAt, subsetPolicy]), transport, mode);
     const proof = daumProof(cohort, tx, generationId, generationStartedAt, mode);
     const held = new Set(proof.schema === "daum-strict-detail-v1" ? [] : proof.held.map(row => row[0]));
-    const listings = cohort.details.filter(row => !held.has(String(row.detail.postId)) && daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx))
+    const retainedUnknown = new Set(proof.schema !== "daum-strict-detail-v1" ? proof.retainedUnknownTenure : []);
+    const listings = cohort.details.filter(row => (tx === "sale" && retainedUnknown.has(String(row.detail.postId))) || (!held.has(String(row.detail.postId)) && daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx)))
       .map(row => {
         if ("emptyRequiredTitle" in row.detail) throw new Error("DAUM empty-title observation cannot enter listing mapping");
         return { ...mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt), daumDetailResponseSha256: row.bodySha256 };

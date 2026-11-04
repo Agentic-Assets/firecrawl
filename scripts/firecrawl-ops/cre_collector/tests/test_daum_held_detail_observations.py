@@ -185,12 +185,14 @@ def test_actual_v1_producer_audit_roundtrips_through_both_gates(
     artifact, binding = roundtrip_producer_artifact(tmp_path, produced)
     assert artifact == produced[0]
     assert held_ids == {"50000", "50090"}
-    assert not held_ids.intersection(
+    assert held_ids == {
         str(row["daumPostId"]) for row in artifact["listings"]
-    )
-    assert len(held_ids) == binding["held_count"] == 2
+        if row.get("daumUnknownTenure") is True
+    }
+    assert binding["held_count"] == 0
+    assert binding["retained_unknown_tenure_count"] == len(held_ids) == 2
     assert binding["inventory_count"] == 102
-    assert binding["emitted_count"] == binding["staged_count"] == 100
+    assert binding["emitted_count"] == binding["staged_count"] == 102
     detail_by_post = {
         str(item["postId"]): item["detail"]
         for entry in artifact["sources"]
@@ -223,12 +225,14 @@ def test_actual_v2_unknown_detail_producer_audit_roundtrips_through_both_gates(
     artifact, binding = roundtrip_producer_artifact(tmp_path, produced)
     assert artifact == produced[0]
     assert held_ids == {"50000", "50090"}
-    assert not held_ids.intersection(
+    assert held_ids == {
         str(row["daumPostId"]) for row in artifact["listings"]
-    )
-    assert len(held_ids) == binding["held_count"] == 2
+        if row.get("daumUnknownTenure") is True
+    }
+    assert binding["held_count"] == 0
+    assert binding["retained_unknown_tenure_count"] == len(held_ids) == 2
     assert binding["inventory_count"] == 102
-    assert binding["emitted_count"] == binding["staged_count"] == 100
+    assert binding["emitted_count"] == binding["staged_count"] == 102
     detail_by_post = {
         str(item["postId"]): item["detail"]
         for entry in artifact["sources"]

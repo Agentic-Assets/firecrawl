@@ -1266,7 +1266,19 @@ def inventory_only_full_scopes(data):
     return scopes
 
 
+def is_daum_unknown_tenure(listing):
+    evidence = listing.get("daumTenureEvidence")
+    return (
+        listing.get("sourceKey") == "daum-commercial"
+        and listing.get("daumUnknownTenure") is True
+        and isinstance(evidence, dict)
+        and all(evidence.get(key) == "unknown" for key in ("inventory", "detail", "resolved"))
+    )
+
+
 def transaction_type_of(listing):
+    if is_daum_unknown_tenure(listing):
+        return None
     tt = (listing.get("transactionType") or "").lower()
     if "sale" in tt and ("lease" in tt or "let" in tt):
         return "sale_or_lease"
@@ -2033,6 +2045,9 @@ def validate_strict_artifact_freshness(
             and (listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
             and listing.get("detailObservedWithChildPreservation") is True
             and bool((listing.get("missingFieldEvidence") or {}).get("fields"))
+        ) and not (
+            is_daum_unknown_tenure(listing)
+            and listing.get("detailObservedWithChildPreservation") is True
         ):
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
@@ -3139,6 +3154,12 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         photo_url = http_url_or_none(p)
         if photo_url:
             images.append({"url": photo_url, "isPrimary": i == 0, "order": i})
+
+    # DAUM orders these arrays, but that ordering is not an explicit primary
+    # witness. Preserve an existing primary while retaining observed children.
+    if is_daum_unknown_tenure(listing):
+        for child in contacts + images:
+            child.pop("isPrimary", None)
 
     # Media (video / virtual-tour / matterport / 360) and outbound links harvested
     # from detail pages (lib/harvest.ts). Bare strings normalize to the default
@@ -5175,6 +5196,10 @@ WITH ins AS (
                               ELSE EXCLUDED.scraped_at
                             END,
         raw_data          = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.daumUnknownTenure ? (@ == true)')
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages db WHERE db.id=EXCLUDED.brokerage_id AND db.slug='daum-commercial')
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                  'latestDaumUnknownTenureObservation', EXCLUDED.raw_data)
                               WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(

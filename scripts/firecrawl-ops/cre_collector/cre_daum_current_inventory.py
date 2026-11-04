@@ -485,14 +485,21 @@ def _admit(
         )
         _held_inventory_observations(proof, held, native)
         _held_detail_observations(proof, held, native, details, v2, empty_titles)
-    held_ids = {post for post, _ in held}
-    emitted_total = total - len(held)
+    retained = proof.get("retainedUnknownTenure", []) if subset else []
+    require(isinstance(retained, list))
+    require(not retained or retained == [post for post, reason in held
+                                       if reason == "unknown_inventory_and_detail_tenure"])
+    retained_ids = set(retained)
+    if retained_ids:
+        reason = "verified subset admitted additively with retained unknown-tenure records; whole source remains unqualified"
+    held_ids = {post for post, _ in held} - retained_ids
+    emitted_total = total - len(held_ids)
     require(emitted_total >= 100)
     listings = scope["listings"]
     staged, emitted = {}, {"sale": set(), "lease": set()}
     expected = {
         tx: {post for post, row in native.items()
-             if post not in held_ids and row[-1] in {tx, "sale_or_lease"}}
+             if post not in held_ids and (row[-1] in {tx, "sale_or_lease"} or (tx == "sale" and post in retained_ids))}
         for tx in ("sale", "lease")
     }
     for listing in listings:
@@ -518,18 +525,32 @@ def _admit(
             and listing.get("canonicalUrl") == canonical
             and listing.get("daumObservedCanonicalUrl") == canonical
             and listing.get("transactionType")
-            == {"sale": "Sale", "lease": "Lease", "sale_or_lease": "Sale/Lease"}[
-                resolved
-            ]
+            == {"sale": "Sale", "lease": "Lease", "sale_or_lease": "Sale/Lease", "unknown": None}[resolved]
             and listing.get("inventoryObservedAt") == proof["observedAt"]
             and listing.get("detailObservedAt") == clock
             and listing.get("daumDetailResponseSha256") == body_hash
         )
         require(
-            not listing.get("preserveChildCollections")
+            listing.get("preserveChildCollections", False) is (post in retained_ids)
+            and (post in retained_ids or not listing.get("daumUnknownTenure"))
+            and (post not in retained_ids or (listing.get("daumUnknownTenure") is True and listing.get("detailObservedWithChildPreservation") is True))
             and not listing.get("detailError")
             and listing.get("inventoryOnly") is None
         )
+        if post in retained_ids:
+            inventory_observations = proof.get("heldInventoryObservations")
+            detail_observations = proof.get("heldDetailObservations")
+            require(isinstance(inventory_observations, list) and isinstance(detail_observations, list))
+            inventory_by_id = {item["postId"]: item["inventory"] for item in inventory_observations}
+            detail_by_id = {item["postId"]: item["detail"] for item in detail_observations}
+            try:
+                retained_evidence = json.loads(listing.get("daumUnknownEvidence"))
+            except (TypeError, ValueError):
+                require(False)
+            require(retained_evidence == {
+                "inventory": inventory_by_id.get(post),
+                "detail": detail_by_id.get(post),
+            })
         provenance = listing.get("freshnessProvenance") or {}
         require(
             provenance.get("generationId") == manifest["run_id"]
@@ -617,13 +638,15 @@ def _admit(
     if subset:
         binding.update(
             inventory_count=total,
-            held_count=len(held),
+            held_count=len(held_ids),
             held_sha256=_sha(held),
-            sale_count=len(expected["sale"]),
+            sale_count=len(expected["sale"] - retained_ids),
             lease_count=len(expected["lease"]),
             whole_source_coverage=False,
             whole_lease_coverage="unknown" if held else "proved",
         )
+        if "retainedUnknownTenure" in proof:
+            binding["retained_unknown_tenure_count"] = len(retained_ids)
         if v2:
             binding.update(subset_policy=SUBSET_POLICY_V2,
                            title_observations_sha256=_sha(proof["titleObservations"]))
@@ -706,7 +729,7 @@ def ingest_subset_context(
     raw = Path(artifact_path).read_bytes()
     require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
     proof = json.loads(raw)["sources"][0]["currentInventoryProof"]
-    held = {member[0] for member in proof["held"]}
+    held = {member[0] for member in proof["held"]} - set(proof.get("retainedUnknownTenure", []))
     result = {
         "schema": proof["schema"],
         "binding": binding,
