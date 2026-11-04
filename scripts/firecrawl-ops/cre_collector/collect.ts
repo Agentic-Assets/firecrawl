@@ -434,7 +434,7 @@ async function main() {
   const json = JSON.stringify(out);
   const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
-  const franklinFallback = sources.some(source => source.sourceKey === "franklin-street" &&
+  const franklinFallback = !partialCaptureAttached && sources.some(source => source.sourceKey === "franklin-street" &&
       Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
     !sources.some(source => source.sourceKey !== "franklin-street" &&
       Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
