@@ -157,7 +157,7 @@ def foreground_ready_case(qualified_ready_case, monkeypatch):
     monkeypatch.setattr(transition, "validate_maintenance_dependency_history", lambda *args: None)
     monkeypatch.setattr(transition, "validate_maintenance_tracking_history", lambda *args: None)
     checkpoint = SimpleNamespace(safe_process_env=dict,
-                                 run_command=lambda argv, log, env: (log.write_bytes(b"settled synthetic output\n") and 0))
+                                 _run_logged_command=lambda argv, log, env: (log.write_bytes(b"settled synthetic output\n") and 0))
     monkeypatch.setattr(operation, "Git", lambda _: SimpleNamespace(clean=lambda *args, **kwargs: None))
     monkeypatch.setattr(operation, "windows_path", lambda value: "C:/synthetic/" + Path(str(value)).name)
     times = iter(case.now + timedelta(seconds=index) for index in range(30))

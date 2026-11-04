@@ -37,7 +37,7 @@ def produce_partial_failure(tmp_path, prior, prior_path, observation, authorizat
         failed = "-Mode" in argv and argv[argv.index("-Mode") + 1] == "Repin"
         log.write_bytes(b"maintenance observation expired/future\n" if failed else b"synthetic closed log\n")
         return 1 if failed else 0
-    checkpoint = SimpleNamespace(safe_process_env=dict, run_command=run_command)
+    checkpoint = SimpleNamespace(safe_process_env=dict, _run_logged_command=run_command)
     runner = handoff.Foreground(prior, checkpoint, output)
     prior_raw = prior_path.read_bytes()
     runner.native("Hold", prior_path, sha(prior_raw), observation, authorization)
