@@ -24,6 +24,7 @@ test("writes private page observations with exact sealed digest", () => {
     assert.equal(result.sha256, createHash("sha256").update(bytes).digest("hex"));
     assert.equal(result.pages, 1);
     const lines = bytes.toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(lines[1].kind, "validated_page");
     assert.deepEqual(lines[1].documents[0], { "Common.PrimaryKey": "abc", value: null, empty: [] });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

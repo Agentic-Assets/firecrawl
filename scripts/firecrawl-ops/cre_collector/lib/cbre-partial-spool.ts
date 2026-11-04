@@ -65,7 +65,7 @@ export class CbrePartialSpool {
 
   record(page: CbrePageObservation): void {
     if (this.failed) return;
-    this.write({ kind: "validated_page", ...page });
+    this.write({ kind: this.sourceKey === "colliers" ? "parsed_page" : "validated_page", ...page });
     if (!this.failed) this.pages++;
   }
 

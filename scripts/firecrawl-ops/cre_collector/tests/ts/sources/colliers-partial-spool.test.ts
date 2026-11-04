@@ -17,6 +17,7 @@ test("Colliers page retains provisional card fields without detail", () => {
     assert.equal(spool.finish().state, "sealed");
     const lines = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
     assert.equal(lines[0].sourceKey, "colliers");
+    assert.equal(lines[1].kind, "parsed_page");
     assert.deepEqual(lines[1].documents[0], { id: "salestracker:card:123", name: "Property", sizeText: "10 SF" });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -783,12 +783,12 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
     console.error(
       `  colliers/sale: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed cards (${selected.length}/${total ?? "?"})`
     );
+    onPage?.(page, start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")));
     const numProjects = colliersAssertPageCount(
       listData.numProjects,
       providerCardCount,
       start
     );
-    onPage?.(page, start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")));
     if (numProjects === 0) {
       exhausted = true;
       break;
