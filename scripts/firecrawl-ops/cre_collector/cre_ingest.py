@@ -5147,12 +5147,9 @@ WITH ins AS (
         -- sole authority: never retain a prior title/highlight when a sparse
         -- withheld pass omits it, because the row builder has already applied
         -- the narrow title redaction and omitted all highlights.
-        title             = CASE WHEN {newmark_guarded_generic_sql}
-                                      AND t.title ~ '[^[:space:]]'
-                                 THEN t.title
-                                 WHEN {jll_price_withheld_row_sql}
+        title             = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN EXCLUDED.title
-                                 ELSE COALESCE(EXCLUDED.title, t.title) END,
+                                 {newmark_generic_title_case}ELSE COALESCE(EXCLUDED.title, t.title) END,
         address           = COALESCE(EXCLUDED.address, t.address),
         city              = COALESCE(EXCLUDED.city, t.city),
         state             = COALESCE(EXCLUDED.state, t.state),
@@ -5248,12 +5245,9 @@ WITH ins AS (
                                  THEN EXCLUDED.highlights
                                  ELSE COALESCE(EXCLUDED.highlights, t.highlights) END,
         amenities         = COALESCE(EXCLUDED.amenities, t.amenities),
-        description       = CASE WHEN {newmark_guarded_generic_sql}
-                                      AND t.description ~ '[^[:space:]]'
-                                 THEN t.description
-                                 WHEN {jll_price_withheld_row_sql}
+        description       = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.description, t.description) END,
+                                 {newmark_generic_description_case}ELSE COALESCE(EXCLUDED.description, t.description) END,
         -- markdown reuses the existing (currently-empty) column; NULLIF guards a
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
         markdown          = CASE
@@ -5598,7 +5592,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{newmark_guarded_generic_sql}", "TRUE" if newmark_page_attempt and not newmark_page_requires_witness else "FALSE")
+""".replace("{newmark_generic_title_case}", "WHEN t.title ~ '[^[:space:]]' THEN t.title " if newmark_page_attempt and not newmark_page_requires_witness else "")
+        .replace("{newmark_generic_description_case}", "WHEN t.description ~ '[^[:space:]]' THEN t.description " if newmark_page_attempt and not newmark_page_requires_witness else "")
         .replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
         .replace("{newmark_partial_context_sql}", newmark_context_sql("(EXCLUDED.raw_data->'latestInventoryObservation')"))
         .replace("{newmark_generic_context_sql}", newmark_context_sql("EXCLUDED.raw_data"))
