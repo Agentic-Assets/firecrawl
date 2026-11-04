@@ -1611,7 +1611,7 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
 @pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing",
                                     "artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed",
                                     "parent_complete", "parent_complete_bad_report", "zero_held_readback_marker",
-                                    "zero_held_gate_marker", "zero_held_report_marker"])
+                                    "zero_held_gate_marker", "zero_held_report_marker", "excluded_identities"])
 def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="jll-investor")
     source = "jll-investor"
@@ -1692,6 +1692,8 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tam
                 parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
     elif tamper == "coverage":
         binding["whole_source_coverage"] = True
+    elif tamper == "excluded_identities":
+        binding["excluded_source_identities"] = "none"
     elif tamper in {"artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed"}:
         key, variant = tamper.split("_")
         if variant == "missing":

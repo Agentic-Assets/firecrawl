@@ -1143,6 +1143,7 @@ def verified_pipeline_summary(
                     jll_proven = (
                         parent_entry.get("state") == "qualified_partial_subset"
                         and jll_partial_child(child)
+                        and checkpoint["gate"]["current_inventory_proof"].get("excluded_source_identities") == "unknown"
                         and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
                         and type(count) is int and 0 < count <= 500000
                         and isinstance(artifact.get("sha256"), str)
