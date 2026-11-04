@@ -99,5 +99,17 @@ test("real Colliers adapter seals recovered page evidence while remaining failed
     assert.ok(rows.some(row => row.kind === "parsed_page" && row.start === 201 && row.documents.length === 3));
     assert.deepEqual(rows.filter(row => row.kind === "recovery_hole").map(row => [row.start, row.pageSize, row.reason]), [[101, 1, "provider_failure"]]);
     assert.ok(rows.some(row => row.kind === "unqualified_response_pair" && row.start === 101 && row.pageSize === 1));
+    const limitedCapture = join(captureDir, "attempt-2.jsonl"), limitedOut = join(dir, "limited.json");
+    const limited = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
+      "--source=colliers", "--transaction=both", "--max-items=203", "--page-cap=2", `--out=${limitedOut}`], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 40000,
+      env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: limitedCapture, CRE_COLLIERS_PARTIAL_ATTEMPT: "2",
+        CRE_REFRESH_GENERATION: dir.split("/").at(-1)! },
+    });
+    assert.equal(limited.status, 1, limited.stderr);
+    const limitedRows = readFileSync(limitedCapture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(limitedRows.some(row => row.kind === "recovery_hole" && row.start === 201
+      && row.pageSize === 3 && row.reason === "page_cap"));
+    assert.ok(!limitedRows.some(row => row.kind === "parsed_page" && row.start === 201));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

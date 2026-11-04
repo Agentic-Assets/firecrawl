@@ -1311,7 +1311,9 @@ hidden. Changed totals, page/count parity failures,
 duplicate map IDs, capture failure, denial, Retry-After and other errors stop
 recovery. After a settled singleton provider-failure hole, remaining pages may
 be captured sequentially in the same private spool, subject to the existing page
-cap and request pacing. Denial, drift, invalid pairs or capture failure stop that
+cap and request pacing; this tail bound is separate from the 20-pair subdivision
+budget. Requested-limit and page-cap ranges remain explicitly unexamined.
+Denial, drift, invalid pairs or capture failure stop that
 continuation and leave the remaining range unexamined. The original source
 failure remains terminal; no detail calls, new listing admission or
 complete-inventory claim follow. Abrupt interruptions still leave the existing

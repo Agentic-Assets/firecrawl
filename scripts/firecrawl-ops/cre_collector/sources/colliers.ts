@@ -721,7 +721,7 @@ const COLLIERS_RECOVERY_MAX_PAIRS = 20;
 export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   onPage?: (page: number, start: number, cards: any[], pageSize?: number) => void,
   onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }, pageSize?: number) => void,
-  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped") => void,
+  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "requested_limit" | "page_cap") => void,
   captureWritable?: () => boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
@@ -777,7 +777,8 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
     } catch (original) {
       if (!(original instanceof ColliersPageFailure) || !onPage || !onResponses || !onHole || !captureWritable?.() ||
           !Number.isSafeInteger(total) || total === null || total < start) throw original;
-      const rangeSize = Math.min(pageSize, total - start + 1);
+      const knownTotal = total;
+      const rangeSize = Math.min(pageSize, knownTotal - start + 1);
       const recordPage = onPage;
       const isCaptureWritable = captureWritable;
       const retainValidatedPair = (pageNo: number, offset: number, size: number, list: any, map: any, tail: boolean): void => {
@@ -804,6 +805,15 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       let providerHole = false;
       let budgetExhausted = false;
       let tailAccounted = false;
+      let requestedRemainderAccounted = false;
+      const recordRequestedRemainder = (): void => {
+        const lastRequested = Math.min(knownTotal, want);
+        if (lastRequested < knownTotal) {
+          onHole(page + 1, lastRequested + 1, knownTotal - lastRequested, "requested_limit");
+          if (!captureWritable()) throw new Error("Colliers tail capture failed");
+        }
+        requestedRemainderAccounted = true;
+      };
       // Evidence only: this attempt remains failed and never enters detail or ingest.
       try {
         if (rangeSize === 1) {
@@ -869,7 +879,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
             tailPage++;
           }
           if (tailStart <= last) {
-            onHole(tailPage, tailStart, last - tailStart + 1, "recovery_stopped");
+            onHole(tailPage, tailStart, last - tailStart + 1, "page_cap");
             if (!captureWritable()) throw new Error("Colliers tail capture failed");
           }
         } else {
@@ -880,13 +890,18 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
             if (!captureWritable()) throw new Error("Colliers tail capture failed");
           }
         }
+        recordRequestedRemainder();
       } catch (error) {
         const tailStart = start + rangeSize;
         const last = Math.min(total, want);
-        if (!tailAccounted && tailStart <= last && captureWritable()) {
-          onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
-        }
-        const capture = captureWritable() ? "" : "; recovery capture failed and evidence is unverified";
+        let accountingFailed = false;
+        try {
+          if (!tailAccounted && tailStart <= last && captureWritable()) {
+            onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
+          }
+          if (!requestedRemainderAccounted && captureWritable()) recordRequestedRemainder();
+        } catch { accountingFailed = true; }
+        const capture = captureWritable() && !accountingFailed ? "" : "; recovery capture failed and evidence is unverified";
         throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}${capture}`);
       }
       throw original;

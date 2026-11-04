@@ -186,3 +186,69 @@ test("a tail denial or total drift stops immediately and records the unexamined 
     assert.ok(!calls.some(x => x.startsWith("301:")), "no page follows a stop signal");
   }
 });
+
+
+test("tail stops on rate limits, map drift, duplicates, capture loss, or a second failed page", async t => {
+  const priorTimer = globalThis.setTimeout;
+  (globalThis as any).setTimeout = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) =>
+    priorTimer(callback, ms === 1000 ? 0 : ms, ...args);
+  t.after(() => { globalThis.setTimeout = priorTimer; });
+  let mode: "429" | "retry-after" | "map-total" | "duplicate" | "capture" | "semantic" | "accounting" = "429";
+  let writable = true;
+  const calls: string[] = [], holes: any[] = [];
+  install(t, url => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start")), size = Number(url.searchParams.get("PageSize"));
+    const list = url.pathname.endsWith("GetListingsHtml"); calls.push(`${start}:${size}`);
+    if (start !== 1 && start <= 101 && start + size > 101)
+      return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
+    if (start === 201) {
+      if (mode === "429") return response({}, 429);
+      if (mode === "accounting") return response({}, 403);
+      if (mode === "retry-after" && list) return response({}, 200, { "retry-after": "60" });
+      if (mode === "semantic") return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
+      const result = page(mode === "duplicate" ? 1 : start, size, 303);
+      if (mode === "map-total") (result.map as any).total = 304;
+      return response(result[list ? "list" : "map"]);
+    }
+    return response(page(start, size, 303)[list ? "list" : "map"]);
+  });
+  for (mode of ["429", "retry-after", "map-total", "duplicate", "capture", "semantic", "accounting"] as const) {
+    calls.length = 0; holes.length = 0; writable = true;
+    await assert.rejects(srcColliers("sale", mode === "accounting" ? 250 : 303, false, () => {},
+      (_page, start) => { if (mode === "capture" && start === 201) writable = false; },
+      (pageNo, start, size, reason) => {
+        holes.push({ pageNo, start, size, reason });
+        if (mode === "accounting" && reason === "requested_limit") writable = false;
+      }, () => writable), mode === "accounting" ? /success=false; recovery stopped:.*403.*evidence is unverified/ : /success=false; recovery stopped/);
+    assert.ok(!calls.some(value => value.startsWith("301:")), mode);
+    if (mode === "capture" || mode === "accounting") assert.equal(writable, false);
+    else if (mode === "semantic") {
+      assert.ok(holes.some(x => x.start === 201 && x.size === 100 && x.reason === "provider_failure"));
+      assert.ok(holes.some(x => x.start === 301 && x.size === 3 && x.reason === "recovery_stopped"));
+    } else {
+      assert.ok(holes.some(x => x.start === 201 && x.size === 103 && x.reason === "recovery_stopped"), mode);
+    }
+  }
+});
+
+test("finite maximum uses absolute offsets and records the unrequested remainder", async t => {
+  const priorTimer = globalThis.setTimeout;
+  (globalThis as any).setTimeout = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) =>
+    priorTimer(callback, ms === 1000 ? 0 : ms, ...args);
+  t.after(() => { globalThis.setTimeout = priorTimer; });
+  const holes: any[] = [], calls: string[] = [];
+  install(t, url => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start")), size = Number(url.searchParams.get("PageSize"));
+    const list = url.pathname.endsWith("GetListingsHtml"); calls.push(`${start}:${size}`);
+    if (start !== 1 && start <= 101 && start + size > 101)
+      return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
+    return response(page(start, size, 203)[list ? "list" : "map"]);
+  });
+  await assert.rejects(srcColliers("sale", 150, false, () => {}, () => {},
+    (pageNo, start, size, reason) => holes.push({ pageNo, start, size, reason }), () => true), /success=false/);
+  assert.ok(holes.some(x => x.start === 101 && x.size === 1 && x.reason === "provider_failure"));
+  assert.ok(holes.some(x => x.start === 151 && x.size === 53 && x.reason === "requested_limit"));
+  assert.ok(!calls.some(value => Number(value.split(":")[0]) > 150));
+});
