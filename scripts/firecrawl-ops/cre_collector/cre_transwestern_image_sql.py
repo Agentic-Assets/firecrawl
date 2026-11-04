@@ -23,6 +23,7 @@ def build_parts(rows, binding):
     """Return before/project/verify fragments and an AFTER-COMMIT emit fragment."""
     from cre_ingest import sql_lit
     from cre_transwestern_image_outcome import valid_binding
+    from cre_transwestern_rollback_result import result_sql
 
     if not valid_binding(binding) or not rows:
         raise ValueError("unbound Transwestern image SQL")
@@ -56,11 +57,17 @@ DO $$ BEGIN
 END $$;
 CREATE TEMP TABLE _tw_image_parents_before ON COMMIT DROP AS
 SELECT l.id AS listing_id,l.external_id,l.source_url,l.canonical_url,
-       input.external_id IS NOT NULL AS staged
+       l.deleted_at IS NULL AS active_before,
+       input.external_id IS NOT NULL AS staged,
+       (input.external_id IS NOT NULL AND (
+         jsonb_path_exists(s.raw_data, '$.**.detailError') OR
+         jsonb_path_exists(s.raw_data, '$.**.preserveChildCollections ? (@ == true || @ == "true")')
+       )) AS additive
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
 LEFT JOIN _tw_image_input input ON input.external_id=l.external_id
-WHERE b.slug='transwestern' AND l.deleted_at IS NULL;
+LEFT JOIN _src s ON s.brokerage_id=l.brokerage_id AND s.external_id=l.external_id
+WHERE b.slug='transwestern' AND (l.deleted_at IS NULL OR input.external_id IS NOT NULL);
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM _tw_image_parents_before GROUP BY external_id HAVING count(*)>1)
      OR EXISTS (
@@ -81,8 +88,8 @@ CREATE TEMP TABLE _tw_image_excluded ON COMMIT DROP AS
 SELECT DISTINCT input.external_id,x->>'url' AS url
 FROM _tw_image_input input CROSS JOIN LATERAL jsonb_array_elements(input.excluded) x;
 CREATE TEMP TABLE _tw_images_before ON COMMIT DROP AS
-SELECT i.id AS image_id,i.listing_id,i.url,i.is_primary,i.display_order,i.alt_text,p.staged,
-  (p.staged AND current.url IS NULL AND (
+SELECT i.id AS image_id,i.listing_id,i.url,i.is_primary,i.display_order,i.alt_text,p.staged,p.active_before,
+  (p.staged AND NOT p.additive AND current.url IS NULL AND (
      i.url ~ '^https://mapsresources-pa\.googleapis\.com/v1/tiles([?#].*)?$'
      OR i.url='https://transwestern.com/assets/images/transwestern-mapmarker.png'
      OR excluded.url IS NOT NULL
@@ -92,50 +99,52 @@ JOIN credeals.cre_listing_images i ON i.listing_id=p.listing_id
 LEFT JOIN _tw_image_urls current ON current.external_id=p.external_id AND current.url=i.url
 LEFT JOIN _tw_image_excluded excluded ON excluded.external_id=p.external_id AND excluded.url=i.url;
 DO $$ BEGIN
-  IF (SELECT count(*) FROM _tw_images_before) <> (
+  IF (SELECT count(*) FROM _tw_images_before WHERE active_before) <> (
     SELECT coalesce(sum(child_count),0) FROM _child_counts_by_listing_before
     WHERE source_key='transwestern' AND child_type='images'
   ) THEN RAISE EXCEPTION 'Transwestern raw image baseline mismatch'; END IF;
 END $$;
 """
     project = r"""CREATE TEMP TABLE _tw_image_history ON COMMIT DROP AS
-SELECT p.external_id,prior.url,min(nullif(prior.alt_text,'')) AS alt_text,
-       count(DISTINCT nullif(prior.alt_text,'')) AS alt_versions
+SELECT p.external_id,prior.*,
+       row_number() OVER (PARTITION BY p.external_id,prior.url
+         ORDER BY (prior.is_primary IS TRUE) DESC,prior.image_id) AS occurrence
 FROM _tw_images_before prior JOIN _tw_image_parents_before p USING(listing_id)
-WHERE prior.staged GROUP BY p.external_id,prior.url;
-DO $$ BEGIN
-  IF EXISTS (
-    SELECT 1 FROM _tw_images_before WHERE staged AND is_primary IS TRUE
-    GROUP BY listing_id HAVING count(*)>1
-  ) THEN RAISE EXCEPTION 'ambiguous Transwestern prior primaries'; END IF;
-  IF EXISTS (
-    SELECT 1 FROM _tw_image_history history JOIN _tw_image_urls USING(external_id,url)
-    WHERE history.alt_versions>1
-  ) THEN RAISE EXCEPTION 'ambiguous Transwestern useful alt text'; END IF;
-END $$;
+WHERE prior.staged AND NOT prior.removable;
 CREATE TEMP TABLE _tw_image_choice ON COMMIT DROP AS
 SELECT input.external_id,
-  CASE WHEN input.witness IS NOT NULL THEN input.witness->>'url'
-       WHEN retained.url IS NOT NULL
-       THEN old.url ELSE NULL END AS primary_url,
+  input.witness->>'url' AS primary_url,
   CASE WHEN input.witness IS NOT NULL THEN 'current_source_primary'
-       WHEN retained.url IS NOT NULL
+       WHEN old.has_primary
        THEN 'historical_primary' ELSE 'unassigned_primary' END AS primary_basis
 FROM _tw_image_input input
-LEFT JOIN _tw_image_parents_before p USING(external_id)
-LEFT JOIN _tw_images_before old ON old.listing_id=p.listing_id AND old.is_primary IS TRUE
-LEFT JOIN _tw_image_urls retained ON retained.external_id=input.external_id AND retained.url=old.url;
+LEFT JOIN (SELECT external_id,bool_or(is_primary IS TRUE) AS has_primary
+           FROM _tw_image_history GROUP BY external_id) old USING(external_id);
 CREATE TEMP TABLE _tw_image_projection ON COMMIT DROP AS
+WITH current_ranked AS (
+  SELECT current.*,row_number() OVER (PARTITION BY external_id,url ORDER BY display_order) AS occurrence
+  FROM _tw_image_current current
+)
 SELECT current.external_id,current.url,current.display_order,
-  (current.url=choice.primary_url AND current.display_order=urls.first_order) IS TRUE AS is_primary,
-  history.alt_text,current.original
-FROM _tw_image_current current JOIN _tw_image_choice choice USING(external_id)
-JOIN _tw_image_urls urls USING(external_id,url)
-LEFT JOIN _tw_image_history history USING(external_id,url);
+  CASE WHEN choice.primary_basis='current_source_primary'
+       THEN (current.url=choice.primary_url AND current.occurrence=1) IS TRUE
+       WHEN history.image_id IS NOT NULL THEN history.is_primary
+       ELSE false END AS is_primary,
+  history.alt_text,current.original,0 AS sort_group,current.display_order AS sort_order,
+  history.image_id
+FROM current_ranked current JOIN _tw_image_choice choice USING(external_id)
+LEFT JOIN _tw_image_history history USING(external_id,url,occurrence)
+UNION ALL
+SELECT history.external_id,history.url,history.display_order,
+  CASE WHEN choice.primary_basis='current_source_primary' THEN false ELSE history.is_primary END,
+  history.alt_text,jsonb_build_object('url',history.url),1,history.occurrence::int,history.image_id
+FROM _tw_image_history history JOIN _tw_image_choice choice USING(external_id)
+LEFT JOIN current_ranked current USING(external_id,url,occurrence)
+WHERE current.external_id IS NULL;
 WITH grouped AS (
   SELECT external_id,jsonb_agg(projection.original || jsonb_build_object(
     'isPrimary',projection.is_primary,'order',projection.display_order,'altText',projection.alt_text
-  ) ORDER BY projection.display_order) AS images
+  ) ORDER BY projection.sort_group,projection.sort_order,projection.url) AS images
   FROM _tw_image_projection projection GROUP BY external_id
 )
 UPDATE _src s SET images=coalesce(grouped.images,'[]'::jsonb)
@@ -145,14 +154,22 @@ WHERE s.slug='transwestern' AND s.external_id=input.external_id;
     verify = r"""DO $$ BEGIN
   IF EXISTS (
     SELECT p.listing_id FROM _tw_image_parents_before p
-    EXCEPT SELECT listing_id FROM _retained_child_scope_after WHERE source_key='transwestern'
+    LEFT JOIN credeals.cre_listings l ON l.id=p.listing_id
+    WHERE l.id IS NULL OR l.deleted_at IS NOT NULL
   ) THEN RAISE EXCEPTION 'Transwestern transition retired a prior parent'; END IF;
-  IF EXISTS (
+END $$;
+SELECT EXISTS (
     SELECT prior.listing_id,prior.url FROM _tw_images_before prior WHERE NOT removable
     EXCEPT ALL
     SELECT i.listing_id,i.url FROM credeals.cre_listing_images i
-    JOIN _retained_child_scope_after a ON a.listing_id=i.listing_id WHERE a.source_key='transwestern'
-  ) THEN RAISE EXCEPTION 'Transwestern protected image multiplicity lost'; END IF;
+    JOIN _tw_image_parents_before p USING(listing_id)
+    JOIN credeals.cre_listings l ON l.id=i.listing_id WHERE l.deleted_at IS NULL
+) AS transwestern_image_refused \gset
+\if :transwestern_image_refused
+ROLLBACK;
+""" + result_sql(binding) + r"""\quit
+\endif
+DO $$ BEGIN
   IF EXISTS (
     (SELECT listing_id,url,is_primary,display_order,alt_text FROM _tw_images_before WHERE NOT staged
      EXCEPT ALL
@@ -190,18 +207,18 @@ INSERT INTO _tw_image_outcome(payload)
 SELECT jsonb_build_object(
   'schema','transwestern-image-transition-v1','source_key','transwestern',
   'binding',BINDING,
-  'raw_before',(SELECT count(*) FROM _tw_images_before),
-  'raw_retained_after',(SELECT count(*) FROM credeals.cre_listing_images i JOIN _tw_image_parents_before p USING(listing_id)),
-  'raw_new_after',state.image_count-(SELECT count(*) FROM credeals.cre_listing_images i JOIN _tw_image_parents_before p USING(listing_id)),
+  'raw_before',(SELECT count(*) FROM _tw_images_before WHERE active_before),
+  'raw_retained_after',(SELECT count(*) FROM credeals.cre_listing_images i JOIN _tw_image_parents_before p USING(listing_id) WHERE p.active_before),
+  'raw_new_after',state.image_count-(SELECT count(*) FROM credeals.cre_listing_images i JOIN _tw_image_parents_before p USING(listing_id) WHERE p.active_before),
   'raw_after',state.image_count,'raw_retired_before',0,
-  'protected_before',(SELECT count(*) FROM _tw_images_before WHERE NOT removable),
+  'protected_before',(SELECT count(*) FROM _tw_images_before WHERE active_before AND NOT removable),
   'protected_retained_after',(SELECT count(*) FROM (
-    SELECT listing_id,url FROM _tw_images_before WHERE NOT removable
+    SELECT listing_id,url FROM _tw_images_before WHERE active_before AND NOT removable
     INTERSECT ALL
     SELECT i.listing_id,i.url FROM credeals.cre_listing_images i
-    JOIN _retained_child_scope_after a ON a.listing_id=i.listing_id WHERE a.source_key='transwestern'
+    JOIN _tw_image_parents_before p USING(listing_id) WHERE p.active_before
   ) protected),
-  'excluded_before',(SELECT count(*) FROM _tw_images_before WHERE removable),
+  'excluded_before',(SELECT count(*) FROM _tw_images_before WHERE active_before AND removable),
   'staged_current',(SELECT count(*) FROM _tw_image_input),
   'current_source_primary',(SELECT count(*) FROM _tw_image_choice WHERE primary_basis='current_source_primary'),
   'historical_primary',(SELECT count(*) FROM _tw_image_choice WHERE primary_basis='historical_primary'),
