@@ -368,6 +368,22 @@ def _load_child(
 
 
 def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, source_key=None):
+    if source_key == "jll-investor" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
+        from cre_checkpoint_series import jll_partial_child
+        try:
+            source = _source_checkpoint(child, source_key)
+            readback = _mapping(source.get("readback"))
+            start, observed, finished = (_parse_timestamp(value) for value in
+                (child.get("started_at"), observation, child.get("finished_at")))
+            return (jll_partial_child(child) and child.get("status") == "qualified_partial_subset"
+                    and _mapping(child.get("scope")).get("whole_source_coverage") is False
+                    and source.get("state") == "ingested" and readback.get("ok") is True
+                    and readback.get("kind") == "jll_investor_partial"
+                    and readback.get("generation_id") == child.get("run_id")
+                    and None not in (start, observed, finished) and start <= observed <= finished
+                    and _within_clock_skew(observation, computed_at))
+        except (KeyError, TypeError, ValueError):
+            return False
     if source_key != "daum-commercial" or checkpoint.get("state") != "qualified_partial_subset" or not isinstance(child, Mapping):
         return False
     from cre_current_inventory_admission import is_verified_subset, admission_configuration

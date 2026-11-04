@@ -1220,17 +1220,34 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     if (!id || exactIds.has(id)) duplicateExactIdentities++;
     if (id) exactIds.add(id);
   }
-  const requestedRows = resolvedRows.slice(0, Math.min(max, resolvedRows.length));
-  const listings = [...requestedRows, ...unresolvedRows];
+  const identityCounts = new Map<string, number>();
+  const urlCounts = new Map<string, number>();
+  for (const row of resolvedRows) {
+    const id = clean(row?.id);
+    const url = clean(row?.canonicalUrl ?? row?.url);
+    if (id) identityCounts.set(id, (identityCounts.get(id) ?? 0) + 1);
+    if (url) urlCounts.set(url, (urlCounts.get(url) ?? 0) + 1);
+  }
+  const ambiguousRows = resolvedRows.filter((row) => {
+    const id = clean(row?.id);
+    const url = clean(row?.canonicalUrl ?? row?.url);
+    return !id || !url || (identityCounts.get(id) ?? 0) > 1 || (urlCounts.get(url) ?? 0) > 1;
+  });
+  const ambiguous = new Set(ambiguousRows);
+  const validRows = resolvedRows.filter((row) => !ambiguous.has(row));
+  const requestedRows = validRows.slice(0, Math.min(max, validRows.length));
+  const listings = requestedRows;
+  const heldRows = [...unresolvedRows, ...ambiguousRows];
   const incompleteEnumeration = candidates.length !== searchInventory.length;
-  const requestedLimitApplied = requestedRows.length !== resolvedRows.length;
+  const requestedLimitApplied = requestedRows.length !== validRows.length;
   const truncated =
     incompleteEnumeration ||
     requestedLimitApplied ||
     detailErrors > 0 ||
     notFoundRows.length > 0 ||
-    duplicateExactIdentities > 0;
-  if (!listings.length) {
+    duplicateExactIdentities > 0 ||
+    ambiguousRows.length > 0;
+  if (!listings.length && !heldRows.length && !notFoundRows.length) {
     throw new Error(
       "no United States listing details or unresolved search candidates found in JLL Investor Center"
     );
@@ -1242,6 +1259,7 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     totalAvailable: searchInventory.length,
     listings,
     truncated,
+    ...(heldRows.length ? { jllInvestorHeldObservations: heldRows } : {}),
     ...(notFoundRows.length ? {
       jllInvestorNotFoundObservations: notFoundRows.map((row) => ({
         searchId: typeof row.jllInvestorSearchRow?.id === "string" ? row.jllInvestorSearchRow.id : null,
