@@ -937,6 +937,15 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
 
     assert.equal(result.truncated, true);
     assert.equal(result.listings.length, 2);
+    assert.deepEqual(result.jllInvestorNotFoundObservations, [{
+      searchId: "006P500000t0mbsIAA",
+      searchAlias: "office/provider-tombstone",
+      sourceUrl: "https://invest.jll.com/us/en/listings/office/provider-tombstone",
+      inventoryObservedAt: result.listings[0].inventoryObservedAt,
+      embeddedProviderErrorStatusCode: 404,
+      confirmation: "live_current_build_json_and_public_page",
+    }]);
+    assert.ok(result.listings.every((row) => row.id !== "006P500000t0mbsIAA"));
     const accepted = result.listings.find((row) => row.id === "006P500000f2tXYIAY");
     assert.match(accepted.inventoryObservedAt, /^20\d\d-/);
     assert.match(accepted.detailObservedAt, /^20\d\d-/);
@@ -959,6 +968,7 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
     includeTombstone = false;
     const complete = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
     assert.equal(complete.truncated, false);
+    assert.equal(complete.jllInvestorNotFoundObservations, undefined);
     assert.deepEqual(complete.listings.map((row) => row.id), [
       "006P500000f2tXYIAY",
       "006080000100J8bAAE",

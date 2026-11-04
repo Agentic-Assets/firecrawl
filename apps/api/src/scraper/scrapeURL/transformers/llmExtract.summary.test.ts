@@ -38,6 +38,7 @@ vi.mock("../../../lib/generic-ai", () => ({
 }));
 
 import { performSummary } from "./llmExtract";
+import { CostLimitExceededError } from "../../../lib/cost-tracking";
 
 function completion(object: unknown) {
   return {
@@ -73,7 +74,7 @@ function fencedUnparseableOutputError() {
   });
 }
 
-function summaryMeta() {
+function summaryMeta(addCall: () => void = vi.fn()) {
   const childLogger = {
     debug: vi.fn(),
     error: vi.fn(),
@@ -92,7 +93,7 @@ function summaryMeta() {
     options: { formats: [{ type: "summary" }] },
     internalOptions: { zeroDataRetention: false, teamId: "test-team" },
     logger,
-    costTracking: { addCall: vi.fn() },
+    costTracking: { addCall },
     id: "test-scrape",
   } as any;
 }
@@ -363,5 +364,113 @@ describe("performSummary structured-output compatibility", () => {
     expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
       ignoreModelOverride: true,
     });
+  });
+});
+
+// Pins key presence, error propagation, and the primary-plus-one-fallback
+// bound, so refactors of the fallback module are proven behavior-preserving.
+describe("performSummary structured-output fallback bounds", () => {
+  const FALLBACK_MODEL = "deepseek/deepseek-v4-pro-0813";
+  const throwCostLimit = () => {
+    throw new CostLimitExceededError();
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    generateObjectMock.mockReset();
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      FALLBACK_MODEL;
+  });
+
+  it("leaves summary unset when the fallback is also unusable", async () => {
+    generateObjectMock
+      .mockResolvedValueOnce(completion({ type: "object" }))
+      .mockResolvedValueOnce(completion({ summary: "   " }));
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(Object.hasOwn(result, "summary")).toBe(false);
+  });
+
+  it("leaves summary unset for an unusable primary without a fallback", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
+    generateObjectMock.mockResolvedValueOnce(completion({ summary: "" }));
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(Object.hasOwn(result, "summary")).toBe(false);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables AI SDK repair on the primary and the fallback", async () => {
+    generateObjectMock
+      .mockResolvedValueOnce(completion({ type: "object" }))
+      .mockResolvedValueOnce(completion({ summary: "Example summary." }));
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(result.summary).toBe("Example summary.");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    for (const [config] of generateObjectMock.mock.calls) {
+      expect(config.experimental_repairText).toBeUndefined();
+    }
+  });
+
+  it("keeps the upstream repair callback without a fallback", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
+    generateObjectMock.mockResolvedValueOnce(
+      completion({ summary: "Example summary." }),
+    );
+
+    await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(
+      generateObjectMock.mock.calls[0][0].experimental_repairText,
+    ).toBeTypeOf("function");
+  });
+
+  it("makes no internal retry for a rate-limited fallback", async () => {
+    generateObjectMock
+      .mockResolvedValueOnce(completion({ type: "object" }))
+      .mockRejectedValueOnce(new Error("rate limit"));
+
+    await expect(
+      performSummary(summaryMeta(), { markdown: "# Example Domain" } as any),
+    ).rejects.toThrow("rate limit");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a cost-limit failure on the primary without a fallback call", async () => {
+    generateObjectMock.mockResolvedValueOnce(
+      completion({ summary: "Example summary." }),
+    );
+
+    await expect(
+      performSummary(summaryMeta(throwCostLimit), {
+        markdown: "# Example Domain",
+      } as any),
+    ).rejects.toBeInstanceOf(CostLimitExceededError);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a cost-limit failure on the fallback", async () => {
+    generateObjectMock
+      .mockRejectedValueOnce(truncatedStructuredOutputError())
+      .mockResolvedValueOnce(completion({ summary: "Example summary." }));
+
+    await expect(
+      performSummary(summaryMeta(throwCostLimit), {
+        markdown: "# Example Domain",
+      } as any),
+    ).rejects.toBeInstanceOf(CostLimitExceededError);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 });
