@@ -5148,7 +5148,7 @@ WITH ins AS (
         -- withheld pass omits it, because the row builder has already applied
         -- the narrow title redaction and omitted all highlights.
         title             = CASE WHEN {newmark_guarded_generic_sql}
-                                      AND NULLIF(btrim(t.title), '') IS NOT NULL
+                                      AND t.title ~ '[^[:space:]]'
                                  THEN t.title
                                  WHEN {jll_price_withheld_row_sql}
                                  THEN EXCLUDED.title
@@ -5249,7 +5249,7 @@ WITH ins AS (
                                  ELSE COALESCE(EXCLUDED.highlights, t.highlights) END,
         amenities         = COALESCE(EXCLUDED.amenities, t.amenities),
         description       = CASE WHEN {newmark_guarded_generic_sql}
-                                      AND NULLIF(btrim(t.description), '') IS NOT NULL
+                                      AND t.description ~ '[^[:space:]]'
                                  THEN t.description
                                  WHEN {jll_price_withheld_row_sql}
                                  THEN NULL

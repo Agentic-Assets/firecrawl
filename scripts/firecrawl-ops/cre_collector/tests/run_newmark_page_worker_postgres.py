@@ -63,7 +63,7 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -83,8 +83,12 @@ def main():
             sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) "
                 "SELECT id,'newmark',"+ingest.sql_lit(external)+","+ingest.sql_lit(url)+",'new' "
                 "FROM credeals.cre_brokerages WHERE slug='newmark';")
+            if kind == "generic-success":
+                sql("UPDATE credeals.cre_listings SET title=E'\\tOriginal title\\n', description=E' Original long description\\t' WHERE external_id="+ingest.sql_lit(external)+";")
             if kind == "generic-empty":
                 sql("UPDATE credeals.cre_listings SET title='', description=NULL WHERE external_id="+ingest.sql_lit(external)+";")
+            if kind == "generic-whitespace":
+                sql("UPDATE credeals.cre_listings SET title=E'\\t\\n', description=E' \\n\\t ' WHERE external_id="+ingest.sql_lit(external)+";")
             if kind == "duplicate-before":
                 duplicate=ingest.to_row({"sourceKey":"newmark","id":"duplicate-before-other","url":url}, {}, ts)
                 sql(ingest.build_sql([duplicate],job,ts,set()))
@@ -168,12 +172,12 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 worker.subprocess.run=run
                 worker._psql_query=original_query
             queue=sql("SELECT attempts || '|' || (claimed_at IS NULL)::text FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
-            if kind in {"generic-success", "generic-empty"}:
+            if kind in {"generic-success", "generic-empty", "generic-whitespace"}:
                 assert rc==0 and queue=="", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="t"
                 values = json.loads(sql("SELECT json_build_object('title',title,'description',description,'evidence',raw_data->'newmarkGenericPageObservation')::text FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";"))
-                assert values["title"] == ("Original title" if kind == "generic-success" else "Fixture listing"), values
-                assert values["description"] == ("Original long description" if kind == "generic-success" else "Fixture description"), values
+                assert values["title"] == ("\tOriginal title\n" if kind == "generic-success" else "Fixture listing"), values
+                assert values["description"] == (" Original long description\t" if kind == "generic-success" else "Fixture description"), values
                 assert values["evidence"]["name"] == "Fixture listing" and values["evidence"]["description"] == "Fixture description", values
             elif kind == "generic-stale":
                 assert rc==21 and queue=="0|false", (kind,rc,queue)
