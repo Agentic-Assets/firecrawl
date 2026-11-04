@@ -43,7 +43,7 @@ def test_parts_have_explicit_transaction_boundaries_and_do_not_mutate_input():
     assert "UPDATE credeals.cre_listing_images" not in parts["project"]
     assert "EXCEPT ALL" in parts["verify"]
     assert "INTERSECT ALL" in parts["verify"]
-    assert "_retained_child_scope_after" in parts["verify"]
+    assert "JOIN _tw_image_parents_before p USING(listing_id)" in parts["verify"]
     assert "INSERT INTO _tw_image_outcome" in parts["verify"]
     assert "CRE_TRANSWESTERN_IMAGE_TRANSITION " in parts["emit"]
     assert "CRE_TRANSWESTERN_IMAGE_TRANSITION " not in "".join(parts[key] for key in ("before", "project", "verify"))
@@ -54,6 +54,9 @@ def test_multiplicity_refusal_rolls_back_before_bound_receipt_and_exit():
     parts = build_parts([row()], binding())
     sql = parts["verify"]
     assert sql.index("Transwestern transition retired a prior parent") < sql.index("AS transwestern_image_refused")
+    guard = sql[sql.index("SELECT EXISTS ("):sql.index("AS transwestern_image_refused")]
+    assert "JOIN _tw_image_parents_before p USING(listing_id)" in guard
+    assert "l.deleted_at IS NULL" in guard
     assert sql.index("ROLLBACK;") < sql.index("CRE_TRANSWESTERN_GUARD_RESULT ") < sql.index("\\quit")
     assert 'protected_image_multiplicity_refused' in sql
     assert "CRE_TRANSWESTERN_GUARD_RESULT " not in parts["emit"]
@@ -104,11 +107,11 @@ def test_role_and_alt_projection_are_explicit_without_reordering_source_images()
     parts = build_parts([row()], binding())
     assert "WITH ORDINALITY" in parts["before"]
     assert "current.display_order" in parts["project"]
-    assert "ORDER BY projection.display_order" in parts["project"]
+    assert "ORDER BY projection.sort_group,projection.sort_order,projection.url" in parts["project"]
     assert "historical_primary" in parts["project"]
     assert "current_source_primary" in parts["project"]
     assert "unassigned_primary" in parts["project"]
-    assert "ambiguous" in parts["project"]
+    assert "history.is_primary" in parts["project"]
     assert "altText" in parts["project"]
     assert "alt_text" in parts["verify"]
 
@@ -117,9 +120,9 @@ def test_projection_groups_history_and_stage_once_instead_of_per_image_scans():
     parts = build_parts([row()], binding())
     assert parts["before"].count("jsonb_array_elements(input.images)") == 1
     assert "GROUP BY external_id,url" in parts["before"]
-    assert "GROUP BY p.external_id,prior.url" in parts["project"]
-    assert "LEFT JOIN _tw_image_history history USING(external_id,url)" in parts["project"]
-    assert "current.display_order=urls.first_order" in parts["project"]
+    assert "PARTITION BY p.external_id,prior.url" in parts["project"]
+    assert "LEFT JOIN _tw_image_history history USING(external_id,url,occurrence)" in parts["project"]
+    assert "current.occurrence=1" in parts["project"]
     assert "GROUP BY external_id" in parts["project"]
     assert "(SELECT min(" not in parts["project"]
     assert "projection.external_id=s.external_id" not in parts["project"]
