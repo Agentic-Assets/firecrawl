@@ -1611,7 +1611,8 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
 @pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing",
                                     "artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed",
                                     "parent_complete", "parent_complete_bad_report", "zero_held_readback_marker",
-                                    "zero_held_gate_marker", "zero_held_report_marker", "excluded_identities"])
+                                    "zero_held_gate_marker", "zero_held_report_marker", "excluded_identities",
+                                    "inventory_malformed", "inventory_readback_bad", "source_state", "ingest_rc"])
 def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="jll-investor")
     source = "jll-investor"
@@ -1694,6 +1695,14 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tam
         binding["whole_source_coverage"] = True
     elif tamper == "excluded_identities":
         binding["excluded_source_identities"] = "none"
+    elif tamper == "inventory_malformed":
+        artifact["inventory_only"] = "malformed"
+    elif tamper == "inventory_readback_bad":
+        checkpoint["readback"]["inventory_only"] = {"expected_active": 1, "ok": True}
+    elif tamper == "source_state":
+        checkpoint["state"] = "gated"
+    elif tamper == "ingest_rc":
+        checkpoint["ingest"] = {"rc": "bad"}
     elif tamper in {"artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed"}:
         key, variant = tamper.split("_")
         if variant == "missing":
