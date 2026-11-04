@@ -5242,6 +5242,15 @@ WITH ins AS (
                                     THEN t.raw_data ELSE '{}'::jsonb END
                                   || ((EXCLUDED.raw_data->'latestInventoryObservation')
                                       - 'inventoryObservedAt' - 'latestInventoryObservation')
+                                  || CASE WHEN (EXCLUDED.raw_data->'latestInventoryObservation') ?|
+                                       ARRAY['inventoryObservedAt', 'latestInventoryObservation']
+                                    THEN jsonb_build_object('newmarkUnqualifiedInventoryContext', (
+                                      SELECT jsonb_object_agg(key, value)
+                                      FROM jsonb_each(EXCLUDED.raw_data->'latestInventoryObservation')
+                                      WHERE key IN ('inventoryObservedAt', 'latestInventoryObservation',
+                                                    'newmarkUnqualifiedInventoryContext')
+                                    )) ELSE '{}'::jsonb END
+                                  || jsonb_build_object('detailObservedWithChildPreservation', true)
                                 )
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
@@ -5297,6 +5306,15 @@ WITH ins AS (
                                             WHERE sb.id=EXCLUDED.brokerage_id AND {inventory_preserve_sql})
                                 THEN (
                                   (EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation')
+                                  || CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    AND EXCLUDED.raw_data ?| ARRAY['inventoryObservedAt', 'latestInventoryObservation']
+                                    THEN jsonb_build_object('newmarkUnqualifiedInventoryContext', (
+                                      SELECT jsonb_object_agg(key, value) FROM jsonb_each(EXCLUDED.raw_data)
+                                      WHERE key IN ('inventoryObservedAt', 'latestInventoryObservation',
+                                                    'newmarkUnqualifiedInventoryContext')
+                                    )) ELSE '{}'::jsonb END
                                   || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
                                     AND t.raw_data ? 'inventoryObservedAt'
                                     THEN jsonb_build_object('inventoryObservedAt', t.raw_data->'inventoryObservedAt')

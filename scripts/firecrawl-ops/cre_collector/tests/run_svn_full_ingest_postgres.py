@@ -65,7 +65,10 @@ def main():
         for preserve_children in (False, True):
             listing = {"sourceKey": "newmark", "id": "nm-synthetic",
                        "url": "https://example.test/newmark", "name": "Synthetic",
-                       "transactionType": "sale", "markdown": "newmark detail"}
+                       "transactionType": "sale", "markdown": "newmark detail",
+                       "inventoryObservedAt": "2030-01-01T00:00:00Z",
+                       "latestInventoryObservation": {"reported": "unqualified"},
+                       "newmarkUnqualifiedInventoryContext": {"source": "original"}}
             if preserve_children:
                 listing["preserveChildCollections"] = True
             newmark = ingest.to_row(listing, {}, "2026-11-04T00:00:00Z")
@@ -80,7 +83,21 @@ def main():
             assert current["inventoryObservedAt"] == "old"
             assert current["latestInventoryObservation"] == {"latitude": 1.0000000000000001}
             assert current["markdown"] == "newmark detail"
+            assert current["newmarkUnqualifiedInventoryContext"] == {
+                "inventoryObservedAt": "2030-01-01T00:00:00Z",
+                "latestInventoryObservation": {"reported": "unqualified"},
+                "newmarkUnqualifiedInventoryContext": {"source": "original"}}
             assert sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings WHERE external_id='nm-synthetic';") == "1.0000000000000001"
+            if preserve_children:
+                inventory = ingest.to_row({"sourceKey": "newmark", "id": "nm-synthetic",
+                    "url": "https://example.test/newmark", "name": "Inventory card",
+                    "transactionType": "sale", "preserveChildCollections": True},
+                    {}, "2026-11-04T00:05:00Z")
+                sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:05:00Z", set()))
+                after_inventory = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+                assert after_inventory["markdown"] == "newmark detail"
+                assert after_inventory["newmarkUnqualifiedInventoryContext"] == current["newmarkUnqualifiedInventoryContext"]
+                assert after_inventory["inventoryObservedAt"] != "old"
             sql("UPDATE credeals.cre_listings SET raw_data='{}'::jsonb WHERE external_id='nm-synthetic';")
             sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:04:00Z", set(),
                 inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
