@@ -109,7 +109,8 @@ const UNSUPPORTED: Record<string, string> = {};
 // ---------- main ----------
 
 async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
-  cbreSpool: CbrePartialSpool | null): Promise<SourceResult> {
+  spools: Partial<Record<"cbre" | "colliers", CbrePartialSpool>>): Promise<SourceResult> {
+  const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
     return srcBuildout(
@@ -140,7 +141,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
     case "cushman-wakefield":
       return srcCushman(tx, max, monitor);
     case "colliers":
-      return srcColliers(tx, max, monitor);
+      return srcColliers(tx, max, monitor, spools.colliers
+        ? (page, start, documents) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              observedAt: observationNow(), documents }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined);
     case "colliers-main":
       return srcColliersMain(tx, max, monitor);
     case "newmark":
@@ -198,11 +205,16 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
 
 async function main() {
   const startedAt = observationNow();
-  const cbrePath = process.env.CRE_CBRE_PARTIAL_PATH;
-  const cbreAttempt = Number(process.env.CRE_CBRE_PARTIAL_ATTEMPT);
-  const cbreSpool = !MONITOR && OUT_PATH && requestedSources.includes("cbre") && cbrePath
-    ? new CbrePartialSpool(cbrePath, refreshGenerationId() ?? "", cbreAttempt)
-    : null;
+  const spools: Partial<Record<"cbre" | "colliers", CbrePartialSpool>> = {};
+  const attempts: Partial<Record<"cbre" | "colliers", number>> = {};
+  for (const key of ["cbre", "colliers"] as const) {
+    const path = process.env[`CRE_${key.toUpperCase()}_PARTIAL_PATH`];
+    const attempt = Number(process.env[`CRE_${key.toUpperCase()}_PARTIAL_ATTEMPT`]);
+    if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
+      spools[key] = new CbrePartialSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
+      attempts[key] = attempt;
+    }
+  }
   const sources: any[] = [];
   const listings: any[] = [];
   const avisonTerminalFailures: Array<{
@@ -231,7 +243,7 @@ async function main() {
       recordSourceStarted(key, tx);
       try {
         const res = await withPerformanceSource(key, tx, () =>
-          runSource(key, tx, MAX_ITEMS, MONITOR, cbreSpool)
+          runSource(key, tx, MAX_ITEMS, MONITOR, spools)
         );
         const freshness = summarizeListingFreshness(res.listings);
         sources.push({
@@ -320,18 +332,20 @@ async function main() {
     }
   }
 
-  let cbreCaptureAttached = false;
-  let cbrePartialFailed = false;
-  if (cbreSpool) {
-    const receipt = cbreSpool.finish();
-    const failed = sources.find((source) => source.sourceKey === "cbre" && source.error);
-    const source = failed ?? sources.find((entry) => entry.sourceKey === "cbre");
+  let partialCaptureAttached = false;
+  let partialSourceFailed = false;
+  for (const key of ["cbre", "colliers"] as const) {
+    const spool = spools[key];
+    if (!spool) continue;
+    const receipt = spool.finish();
+    const failed = sources.find((source) => source.sourceKey === key && source.error);
+    const source = failed ?? sources.find((entry) => entry.sourceKey === key);
     if (source) {
-      cbreCaptureAttached = true;
-      cbrePartialFailed = Boolean(failed);
-      source.partialCapture = { ...receipt, sourceKey: "cbre",
-        generationId: refreshGenerationId(), attempt: cbreAttempt,
-        path: `cbre-partial/attempt-${cbreAttempt}.jsonl`,
+      partialCaptureAttached = true;
+      partialSourceFailed ||= Boolean(failed);
+      source.partialCapture = { ...receipt, sourceKey: key,
+        generationId: refreshGenerationId(), attempt: attempts[key],
+        path: `${key}-partial/attempt-${attempts[key]}.jsonl`,
         coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
     }
   }
@@ -339,7 +353,7 @@ async function main() {
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
   const evidenceOnly = !MONITOR && listings.length === 0 &&
-    (cbrePartialFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
+    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -418,7 +432,7 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  const privateEvidence = cbreCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+  const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);

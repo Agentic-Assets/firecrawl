@@ -9,6 +9,7 @@ export type CbrePageObservation = {
   page: number;
   observedAt: string;
   documents: unknown[];
+  start?: number;
 };
 
 export class CbrePartialSpool {
@@ -27,6 +28,7 @@ export class CbrePartialSpool {
       sync: (fd: number) => void;
     } = { write: (fd, buffer, offset, length) => writeSync(fd, buffer, offset, length),
       sync: (fd) => fsyncSync(fd) },
+    readonly sourceKey: "cbre" | "colliers" = "cbre",
   ) {
     try {
       const directory = lstatSync(dirname(path));
@@ -39,7 +41,7 @@ export class CbrePartialSpool {
       const file = fstatSync(this.fd);
       if (!file.isFile() || file.uid !== process.getuid() || file.nlink !== 1
           || (file.mode & 0o777) !== 0o600) throw new Error();
-      this.write({ schema: "cbre-partial-pages/v1", sourceKey: "cbre", generation, attempt });
+      this.write({ schema: `${sourceKey}-partial-pages/v1`, sourceKey, generation, attempt });
     } catch { this.fail(); }
   }
 

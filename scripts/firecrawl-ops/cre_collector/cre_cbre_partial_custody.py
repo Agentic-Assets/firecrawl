@@ -6,14 +6,14 @@ import stat
 from pathlib import Path
 
 
-def expected_path(run_dir: Path, attempt: int) -> Path:
-    if type(attempt) is not int or attempt < 1:
+def expected_path(run_dir: Path, attempt: int, source: str = "cbre") -> Path:
+    if source not in {"cbre", "colliers"} or type(attempt) is not int or attempt < 1:
         raise ValueError("invalid CBRE attempt")
-    return run_dir / "cbre-partial" / f"attempt-{attempt}.jsonl"
+    return run_dir / f"{source}-partial" / f"attempt-{attempt}.jsonl"
 
 
-def prepare(run_dir: Path, attempt: int) -> dict:
-    path = expected_path(run_dir, attempt)
+def prepare(run_dir: Path, attempt: int, source: str = "cbre") -> dict:
+    path = expected_path(run_dir, attempt, source)
     result = {"path": str(path.relative_to(run_dir)), "state": "unavailable"}
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -27,13 +27,13 @@ def prepare(run_dir: Path, attempt: int) -> dict:
     return result
 
 
-def settle(run_dir: Path, attempt: dict, main: Path | None) -> None:
+def settle(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre") -> None:
     """Bind a settled worker's receipt to its exact main and sidecar bytes."""
-    state = attempt.get("cbre_partial")
+    state = attempt.get(f"{source}_partial")
     if not isinstance(state, dict) or state.get("state") != "pending":
         return
     try:
-        path = expected_path(run_dir, attempt["number"])
+        path = expected_path(run_dir, attempt["number"], source)
         if state["path"] != str(path.relative_to(run_dir)):
             raise ValueError()
         if not os.path.lexists(path):
@@ -52,7 +52,7 @@ def settle(run_dir: Path, attempt: dict, main: Path | None) -> None:
         if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
             raise TypeError()
         entries = [e for e in data["sources"] if isinstance(e, dict)
-                   and e.get("sourceKey") == "cbre" and e.get("partialCapture")]
+                   and e.get("sourceKey") == source and e.get("partialCapture")]
         if len(entries) != 1 or not isinstance(entries[0]["partialCapture"], dict):
             raise ValueError()
         receipt = entries[0]["partialCapture"]
@@ -60,7 +60,7 @@ def settle(run_dir: Path, attempt: dict, main: Path | None) -> None:
                 or receipt.get("coverage") != "unverified"
                 or receipt.get("outcome") not in {"source_error", "source_returned"}
                 or (receipt["outcome"] == "source_error") != bool(entries[0].get("error"))
-                or receipt.get("sourceKey") != "cbre"
+                or receipt.get("sourceKey") != source
                 or receipt.get("generationId") != run_dir.name
                 or receipt.get("attempt") != attempt["number"]
                 or receipt.get("path") != state["path"]
@@ -88,8 +88,8 @@ def settle(run_dir: Path, attempt: dict, main: Path | None) -> None:
             if lines != receipt["pages"] + 1 or last_byte != b"\n":
                 raise ValueError()
             first_line = header.split(b"\n", 1)[0]
-            if json.loads(first_line) != {"schema": "cbre-partial-pages/v1",
-                    "sourceKey": "cbre", "generation": run_dir.name,
+            if json.loads(first_line) != {"schema": f"{source}-partial-pages/v1",
+                    "sourceKey": source, "generation": run_dir.name,
                     "attempt": attempt["number"]}:
                 raise ValueError()
             after = os.fstat(fd)
@@ -110,18 +110,18 @@ def settle(run_dir: Path, attempt: dict, main: Path | None) -> None:
         state["state"] = "unverified"
 
 
-def reconcile(run_dir: Path, manifest: dict) -> None:
+def reconcile(run_dir: Path, manifest: dict, source: str = "cbre") -> None:
     """Preserve interrupted attempts without inferring worker settlement."""
-    checkpoint = (manifest.get("sources") or {}).get("cbre") or {}
+    checkpoint = (manifest.get("sources") or {}).get(source) or {}
     for attempt in checkpoint.get("attempts") or []:
-        state = attempt.get("cbre_partial")
+        state = attempt.get(f"{source}_partial")
         if not isinstance(state, dict) or state.get("state") != "pending":
             continue
         if not attempt.get("finished_at") or type(attempt.get("rc")) is not int:
             state["state"] = "unverified"
             continue
         candidates = []
-        rejected = run_dir / "rejected" / f"cbre-attempt-{attempt['number']}.json"
+        rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
         if rejected.is_file() and not rejected.is_symlink():
             candidates.append(rejected)
         temp = attempt.get("temporary_artifact")
@@ -140,4 +140,4 @@ def reconcile(run_dir: Path, manifest: dict) -> None:
                     path = run_dir / rel_path
                     if path.is_file() and not path.is_symlink():
                         candidates.append(path)
-        settle(run_dir, attempt, candidates[0] if len(candidates) == 1 else None)
+        settle(run_dir, attempt, candidates[0] if len(candidates) == 1 else None, source)

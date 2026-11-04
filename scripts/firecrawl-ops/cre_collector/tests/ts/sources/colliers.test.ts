@@ -574,6 +574,26 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
   );
 });
 
+test("Colliers keeps prior provisional cards when a later map page fails", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? first.list : first.map);
+    return jsonResponse(isList ? first.list : { success: false });
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /success=false/);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].cards.length, 2);
+  assert.equal(captured[0].cards[0].inventoryOnly.reason, "detail_not_attempted");
+  assert.equal(captured[0].cards[0].provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.notEqual(captured[0].cards[0].detailUnavailable.publicPageObserved, true);
+});
+
 test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
   const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
   const pageStarts: number[] = [];
