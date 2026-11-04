@@ -318,6 +318,17 @@ $zeroHold.held_count = 0; $zeroHold.inventory_count = 560; $zeroHold.whole_lease
 Save-Summary $zeroHold
 $zeroRead = Get-CreVerifiedSummary (New-Record) 'subset-zero-hold'
 Assert-Cre ($null -ne $zeroRead -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $zeroRead).Contains('whole brokerage incomplete')) 'No holds still retains explicit partial scope.'
+$unknown = New-DaumSubsetSummary
+$unknown.held_count = 0; $unknown.inventory_count = 560; $unknown.whole_lease_coverage = 'unknown'
+$unknown['retained_unknown_tenure_count'] = 5
+$unknown.transaction_breakdown.sale = 369
+Save-Summary $unknown
+$unknownRead = Get-CreVerifiedSummary (New-Record) 'subset-unknown'
+$unknownText = Get-CreNotificationText (New-Record) 'Terminal' 0 $unknownRead
+Assert-Cre ($null -ne $unknownRead -and $unknownText.Contains('Unknown tenure:* 5') -and $unknownText.Contains('whole lease coverage unknown')) 'Retained unknowns are distinct and keep lease coverage unknown without holds.'
+$unknown.whole_lease_coverage = 'proved'
+Save-Summary $unknown
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'subset-unknown-false-coverage')) 'Unknown tenure cannot claim proved lease coverage.'
 $AdmitDaumVerifiedSubset = $false
 Save-Summary (New-DaumSubsetSummary)
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'subset-unbound')) 'Subset summary cannot borrow complete admission.'
@@ -338,6 +349,15 @@ Save-Summary $mixedSubset
 $mixedRead = Get-CreVerifiedSummary (New-Record) 'subset-mixed-pipeline'
 $mixedText = Get-CreNotificationText (New-Record) 'Terminal' 0 $mixedRead
 Assert-Cre ($null -ne $mixedRead -and $mixedText.Contains('*Complete brokerages:* 1 | *Qualified subsets:* 1') -and $mixedText.Contains('*Both:* 186') -and $mixedText.Contains('whole brokerage incomplete') -and $mixedText -notmatch 'Completed|did not finish successfully') 'Mixed pipeline counts qualified subsets separately from complete brokerages.'
+$unknownRow = New-DaumSubsetSummary
+$unknownRow['source_key'] = 'daum-commercial'; $unknownRow.held_count = 0; $unknownRow.inventory_count = 560
+$unknownRow['retained_unknown_tenure_count'] = 5; $unknownRow.transaction_breakdown.sale = 369
+$mixedSubset.per_source_summaries = @($unknownRow, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+Save-Summary $mixedSubset
+$unknownMixedRead = Get-CreVerifiedSummary (New-Record) 'subset-unknown-mixed'
+$unknownMixedText = Get-CreNotificationText (New-Record) 'Terminal' 0 $unknownMixedRead
+Assert-Cre ($null -ne $unknownMixedRead -and $unknownMixedText.Contains('*Unknown tenure:* 5') -and $unknownMixedText.Contains('whole lease coverage unknown')) 'Mixed pipeline retains the unknown partition and truthful lease scope.'
+$mixedSubset.per_source_summaries = @($subsetRow, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
 foreach ($bad in @('complete','partition','duplicate','string-partition','low-floor','no-opt-in')) {
     $value = $mixedSubset | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     switch ($bad) {
