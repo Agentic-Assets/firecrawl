@@ -20,7 +20,7 @@ class ColliersPartialCustodyTest(unittest.TestCase):
             path.chmod(0o600)
             receipt = {"state": "sealed", "coverage": "unverified", "outcome": "source_error",
                        "sourceKey": "colliers", "generationId": root.name, "attempt": 1,
-                       "path": attempt["colliers_partial"]["path"], "pages": 1,
+                       "path": attempt["colliers_partial"]["path"], "observationRecords": 1,
                        "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
             main = root / "main.json"
             main.write_text(json.dumps({"sources": [{"sourceKey": "colliers", "error": "failed",

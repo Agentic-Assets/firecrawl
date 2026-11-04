@@ -22,7 +22,7 @@ test("writes private page observations with exact sealed digest", () => {
     if (result.state !== "sealed") throw new Error();
     assert.equal(result.bytes, bytes.length);
     assert.equal(result.sha256, createHash("sha256").update(bytes).digest("hex"));
-    assert.equal(result.pages, 1);
+    assert.equal(result.observationRecords, 1);
     const lines = bytes.toString("utf8").trim().split("\n").map(line => JSON.parse(line));
     assert.equal(lines[1].kind, "validated_page");
     assert.deepEqual(lines[1].documents[0], { "Common.PrimaryKey": "abc", value: null, empty: [] });
@@ -98,7 +98,7 @@ test("collector preserves failed CBRE error, sidecar and healthy sibling", async
     const failure = artifact.sources.find((row: any) => row.sourceKey === "cbre" && row.error);
     assert.match(failure.error, /synthetic lease failure/);
     assert.equal(failure.partialCapture.state, "sealed");
-    assert.equal(failure.partialCapture.pages, 2);
+    assert.equal(failure.partialCapture.observationRecords, 2);
     assert.ok(artifact.listings.some((row: any) => row.id === "other-ok"));
     assert.ok(artifact.listings.some((row: any) => row.id === "sale-ok"));
     assert.equal(statSync(out).mode & 0o777, 0o600);
@@ -166,7 +166,7 @@ test("later partial write failure seals the complete prefix only", () => {
       observedAt: "2026-01-01T00:00:01.000Z", documents: [{ id: "unwritten" }] });
     const receipt = spool.finish();
     assert.equal(receipt.state, "sealed_partial");
-    assert.equal(receipt.state === "sealed_partial" ? receipt.pages : -1, 1);
+    assert.equal(receipt.state === "sealed_partial" ? receipt.observationRecords : -1, 1);
     const bytes = readFileSync(path);
     assert.doesNotMatch(bytes.toString("utf8"), /unwritten/);
     assert.equal(receipt.state === "sealed_partial" ? receipt.sha256 : "",

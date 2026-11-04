@@ -14,10 +14,14 @@ test("Colliers page retains provisional card fields without detail", () => {
     spool.record({ transaction: "sale", pass: 1, page: 1,
       observedAt: "2026-01-01T00:00:00Z",
       documents: [{ id: "salestracker:card:123", name: "Property", sizeText: "10 SF" }] });
+    spool.record({ transaction: "sale", pass: 1, page: 1, start: 1, pairAttempt: 1, kind: "unqualified_response_pair",
+      observedAt: "2026-01-01T00:00:00Z", documents: [{list: "raw-list", map: "raw-map"}] });
     assert.equal(spool.finish().state, "sealed");
     const lines = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
     assert.equal(lines[0].sourceKey, "colliers");
     assert.equal(lines[1].kind, "parsed_page");
+    assert.equal(lines[2].kind, "unqualified_response_pair");
+    assert.deepEqual(lines[2].documents, [{list:"raw-list", map:"raw-map"}]);
     assert.deepEqual(lines[1].documents[0], { id: "salestracker:card:123", name: "Property", sizeText: "10 SF" });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -30,8 +34,9 @@ test("failed Colliers keeps its source error and healthy sibling", () => {
     const capture = join(captureDir, "attempt-1.jsonl");
     const out = join(dir, "main.json");
     const preload = join(dir, "preload.mjs");
-    const colliers = `export async function srcColliers(tx,max,monitor,onPage) {
+    const colliers = `export async function srcColliers(tx,max,monitor,onPage,onResponses) {
       if(tx === "lease") return {company:"Colliers",sourceUrl:"https://example.test",method:"skipped",totalAvailable:0,listings:[]};
+      onResponses(1,1,1,{list:"RAW_LIST",map:"RAW_MAP"});
       onPage(1,1,[{id:"salestracker:card:123",name:"Property",inventoryOnly:{reason:"detail_not_attempted"}}]);
       throw new Error("synthetic page failure"); }`;
     const other = `export async function srcNewmark() { return {company:"Other",sourceUrl:"https://example.test",method:"fixture",totalAvailable:1,listings:[{id:"peer",url:"https://example.test/peer"}]}; }`;
@@ -45,7 +50,7 @@ test("failed Colliers keeps its source error and healthy sibling", () => {
       "--source=colliers,newmark", "--transaction=both", `--out=${out}`], {
       cwd: process.cwd(), encoding: "utf8", timeout: 20000,
       env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: capture,
-        CRE_COLLIERS_PARTIAL_ATTEMPT: "1", CRE_REFRESH_GENERATION: "test-generation" },
+        CRE_COLLIERS_PARTIAL_ATTEMPT: "1", CRE_REFRESH_GENERATION: dir.split("/").at(-1)! },
     });
     assert.equal(run.status, 0, run.stderr);
     const artifact = JSON.parse(readFileSync(out, "utf8"));
@@ -53,7 +58,14 @@ test("failed Colliers keeps its source error and healthy sibling", () => {
     assert.match(failed.error, /synthetic page failure/);
     assert.equal(failed.partialCapture.outcome, "source_error");
     assert.equal(failed.partialCapture.coverage, "unverified");
+    assert.equal(failed.partialCapture.observationRecords, 2);
     assert.ok(artifact.listings.some((listing: any) => listing.id === "peer"));
-    assert.equal(JSON.parse(readFileSync(capture, "utf8").trim().split("\n")[1]!).documents[0].name, "Property");
+    const records = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(records[1].kind, "unqualified_response_pair");
+    assert.equal(records[1].documents[0].list, "RAW_LIST");
+    assert.equal(records[2].documents[0].name, "Property");
+    const verify = spawnSync("python3", ["-c", `import json,sys; from pathlib import Path; from cre_partial_page_custody import settle; a={"number":1,"colliers_partial":{"state":"pending","path":"colliers-partial/attempt-1.jsonl"}}; settle(Path(sys.argv[1]),a,Path(sys.argv[2]),"colliers"); print(json.dumps(a))`, dir, out], {cwd:process.cwd(),encoding:"utf8"});
+    assert.equal(verify.status, 0, verify.stderr);
+    assert.equal(JSON.parse(verify.stdout).colliers_partial.state, "sealed_local");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

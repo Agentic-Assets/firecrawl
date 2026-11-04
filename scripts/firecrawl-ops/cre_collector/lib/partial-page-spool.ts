@@ -10,13 +10,16 @@ export type PartialPageObservation = {
   observedAt: string;
   documents: unknown[];
   start?: number;
+  kind?: "unqualified_response_pair";
+  pairAttempt?: number;
 };
 
 export class PartialPageSpool {
   private fd: number | null = null;
   private hash = createHash("sha256");
   private bytes = 0;
-  private pages = 0;
+  // Counts JSONL observations, including retries and raw plus parsed records, not unique pages.
+  private observationRecords = 0;
   private failed = false;
 
   constructor(
@@ -65,25 +68,25 @@ export class PartialPageSpool {
 
   record(page: PartialPageObservation): void {
     if (this.failed) return;
-    this.write({ kind: this.sourceKey === "colliers" ? "parsed_page" : "validated_page", ...page });
-    if (!this.failed) this.pages++;
+    this.write({ ...page, kind: page.kind ?? (this.sourceKey === "colliers" ? "parsed_page" : "validated_page") });
+    if (!this.failed) this.observationRecords++;
   }
 
   markFailure(): void { this.failed = true; }
 
   private fail(): void { this.markFailure(); }
 
-  finish(): { state: "sealed" | "sealed_partial"; bytes: number; pages: number; sha256: string } | { state: "failed" } {
+  finish(): { state: "sealed" | "sealed_partial"; bytes: number; observationRecords: number; sha256: string } | { state: "failed" } {
     if (this.fd === null) return { state: "failed" };
     let partial = this.failed;
     try {
       if (partial) {
-        if (this.pages === 0) throw new Error();
+        if (this.observationRecords === 0) throw new Error();
         ftruncateSync(this.fd, this.bytes);
       }
       try { this.io.sync(this.fd); }
       catch {
-        if (partial || this.pages === 0) throw new Error();
+        if (partial || this.observationRecords === 0) throw new Error();
         partial = true;
         ftruncateSync(this.fd, this.bytes);
         this.io.sync(this.fd);
@@ -93,7 +96,7 @@ export class PartialPageSpool {
       const directory = openSync(dirname(this.path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { fsyncSync(directory); } finally { closeSync(directory); }
       return { state: partial ? "sealed_partial" : "sealed", bytes: this.bytes,
-        pages: this.pages, sha256: this.hash.digest("hex") };
+        observationRecords: this.observationRecords, sha256: this.hash.digest("hex") };
     } catch {
       if (this.fd !== null) {
         try { closeSync(this.fd); } catch { /* leave unverified bytes in place */ }

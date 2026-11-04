@@ -612,6 +612,36 @@ test("Colliers retains both parsed pages when the later page count mismatches", 
   assert.deepEqual(captured[1].cards.map((card: any) => card.mapProjectId), ["P3", "P4"]);
 });
 
+
+for (const mode of ["parity", "malformed", "omission", "one-side"] as const) test(`Colliers retains received responses before ${mode} failure`, async (t) => {
+  const data = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  if (mode === "parity") data.map.projectLocations.pop();
+  if (mode === "omission") data.list.html = '<ul><li class="item"></li><li class="item">Property</li></ul>';
+  const observations: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (mode === "one-side" && !isList) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return new Response("denied", {status: 403});
+    }
+    if (mode === "malformed" && isList) return new Response("NOT_JSON_BODY");
+    return jsonResponse(isList ? data.list : data.map);
+  });
+  const expected = mode === "parity" ? /card\/map-group parity/ : mode === "malformed" ? /non-JSON/ :
+    mode === "omission" ? /parsed-card\/map-group parity/ : /HTTP 403/;
+  await assert.rejects(srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  }), expected);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].page, 1);
+  assert.equal(observations[0].attempt, 1);
+  if (mode === "malformed") assert.equal(observations[0].responses.list, "NOT_JSON_BODY");
+  else assert.match(observations[0].responses.list, /Property|class=/);
+  if (mode === "one-side") assert.equal("map" in observations[0].responses, false);
+  else assert.ok(observations[0].responses.map);
+});
+
 test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
   const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
   const pageStarts: number[] = [];

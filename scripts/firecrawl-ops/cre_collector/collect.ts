@@ -147,6 +147,12 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
               observedAt: observationNow(), documents }); }
             catch { spools.colliers!.markFailure(); }
           }
+        : undefined, spools.colliers
+        ? (page, start, pairAttempt, responses) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              pairAttempt, kind: "unqualified_response_pair", observedAt: observationNow(), documents: [responses] }); }
+            catch { spools.colliers!.markFailure(); }
+          }
         : undefined);
     case "colliers-main":
       return srcColliersMain(tx, max, monitor);
@@ -440,6 +446,7 @@ async function main() {
       Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
     !listings.some(listing => listing.sourceKey !== "franklin-street" &&
       (listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention));
+  let outputCollision = false;
   const writeFranklinProjection = () => {
     let sidecar = "written";
     const sidecarJson = JSON.stringify({ ...out, runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_private_sidecar" } });
@@ -463,7 +470,9 @@ async function main() {
         return projection;
       }),
     };
-    writeCollectorArtifact(OUT_PATH, JSON.stringify(projection), false);
+    if (outputCollision) process.exitCode = 1;
+    writeCollectorArtifact(outputCollision ? undefined : OUT_PATH, JSON.stringify(projection), false);
+    if (outputCollision) console.error("existing output unchanged; Franklin projection written to stdout");
   };
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
@@ -472,11 +481,14 @@ async function main() {
   else {
     try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
     catch (error) {
-      if (franklinFallback && (error as NodeJS.ErrnoException).code === "EEXIST") writeFranklinProjection();
+      if (franklinFallback && (error as NodeJS.ErrnoException).code === "EEXIST") {
+        outputCollision = true;
+        writeFranklinProjection();
+      }
       else throw error;
     }
   }
-  if (OUT_PATH) {
+  if (OUT_PATH && !outputCollision) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }
   if (terminalCaptureFailure) process.exitCode = 1;

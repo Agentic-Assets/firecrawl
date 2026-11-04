@@ -5,20 +5,32 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-for (const mode of ['stdout', 'existing', 'fresh', 'sidecar-failure'] as const) test(`both-mode ${mode} keeps healthy lease and private Franklin evidence`, () => {
+for (const mode of ['stdout', 'existing', 'fresh', 'sidecar-failure', 'projection-failure'] as const) test(`both-mode ${mode} keeps healthy lease and private Franklin evidence`, () => {
   const dir = mkdtempSync(join(tmpdir(), 'franklin-cli-'));
   const preload = join(dir, 'preload.mjs');
   const output = join(dir, 'existing.json');
   const html = '<html><script>PRIVATE_PAGE_MARKER</script><article data-listing-card="true" data-listing-id="card-1" data-listing-price="123">Private card</article></html>';
   const saleKey = 'a234450b432b2b2bebc1ace7e6f692e4489bde70';
   const leaseKey = '2f82fcd26667c4b0126d0084938ffa265f05fa4a';
-  writeFileSync(preload, `${mode === 'sidecar-failure' ? "import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module'; const old=fs.mkdtempSync; fs.mkdtempSync=(prefix,...args)=>String(prefix).includes('cre-terminal-partial-') ? (()=>{throw Error('test sidecar failure')})() : old(prefix,...args); syncBuiltinESMExports();" : ''} globalThis.fetch = async input => { const url=String(input); if (url.includes('franklinst.com/properties/for-sale')) return new Response(${JSON.stringify(html)}, {headers:{'content-type':'text/html'}}); if (url.includes(${JSON.stringify(saleKey)})) return new Response('{}'); if (url.includes(${JSON.stringify(leaseKey)})) return new Response(JSON.stringify({inventory:[{id:42,sale:false,closed:false,show_link:'https://www.franklinst.com/properties/?propertyId=42-lease',display_name:'Healthy lease', index_attributes:[]}],meta:{total:1,limit:100}})); throw new Error('unexpected URL '+url); };`);
-  if (mode === 'existing') writeFileSync(output, 'previous contents');
+  writeFileSync(preload, `${mode === 'projection-failure' ? "process.stdout.write=()=>{throw Error('projection write failed')};" : ''} ${mode === 'sidecar-failure' ? "import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module'; const old=fs.mkdtempSync; fs.mkdtempSync=(prefix,...args)=>String(prefix).includes('cre-terminal-partial-') ? (()=>{throw Error('test sidecar failure')})() : old(prefix,...args); syncBuiltinESMExports();" : ''} globalThis.fetch = async input => { const url=String(input); if (url.includes('franklinst.com/properties/for-sale')) return new Response(${JSON.stringify(html)}, {headers:{'content-type':'text/html'}}); if (url.includes(${JSON.stringify(saleKey)})) return new Response('{}'); if (url.includes(${JSON.stringify(leaseKey)})) return new Response(JSON.stringify({inventory:[{id:42,sale:false,closed:false,show_link:'https://www.franklinst.com/properties/?propertyId=42-lease',display_name:'Healthy lease', index_attributes:[]}],meta:{total:1,limit:100}})); throw new Error('unexpected URL '+url); };`);
+  if (['existing','projection-failure'].includes(mode)) writeFileSync(output, 'previous contents');
   try {
-    const args = ['--import','tsx','--import',preload,'collect.ts','--source','franklin-street','--transaction','both','--max-items','0',...(['existing','fresh'].includes(mode) ? ['--out',output] : [])];
+    const args = ['--import','tsx','--import',preload,'collect.ts','--source','franklin-street','--transaction','both','--max-items','0',...(['existing','fresh','projection-failure'].includes(mode) ? ['--out',output] : [])];
     const result = spawnSync(process.execPath,args,{cwd:process.cwd(),encoding:'utf8',timeout:60000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1',...(mode === 'sidecar-failure' ? {TMPDIR:join(dir,'missing')} : {})}});
-    assert.equal(result.status,mode === 'sidecar-failure' ? 1 : 0,result.stderr);
-    const text = ['stdout','sidecar-failure'].includes(mode) ? result.stdout : readFileSync(output,'utf8');
+    assert.equal(result.status,['existing','sidecar-failure','projection-failure'].includes(mode) ? 1 : 0,result.stderr);
+    if (mode === 'existing') { assert.equal(readFileSync(output,'utf8'),'previous contents'); assert.match(result.stderr,/existing output unchanged; Franklin projection written to stdout/); }
+    if (mode === 'projection-failure') {
+      assert.equal(readFileSync(output,'utf8'),'previous contents');
+      assert.match(result.stderr,/projection write failed/);
+      assert.doesNotMatch(result.stderr,/projection written to stdout/);
+      const sidecar = /Franklin private sidecar: (.+)/.exec(result.stderr);
+      assert.ok(sidecar,result.stderr);
+      const path = sidecar[1].trim();
+      assert.match(readFileSync(path,'utf8'),/PRIVATE_PAGE_MARKER/);
+      rmSync(path.substring(0,path.lastIndexOf('/')),{recursive:true,force:true});
+      return;
+    }
+    const text = ['stdout','existing','sidecar-failure'].includes(mode) ? result.stdout : readFileSync(output,'utf8');
     if (mode === 'fresh') {
       const data=JSON.parse(text);
       assert.equal(data.sources[0].retainedObservations[0].decodedHtml,html);
@@ -85,8 +97,10 @@ for (const sibling of ['interra-realty', 'svn'] as const) test(`mixed ${sibling}
       assert.equal(listing.buildoutRawRetention.status,'complete');
       return;
     }
-    assert.equal(child.status,0,child.stderr);
-    const data=JSON.parse(readFileSync(output,'utf8'));
+    assert.equal(child.status,1,child.stderr);
+    assert.equal(readFileSync(output,'utf8'),'previous');
+    assert.match(child.stderr,/existing output unchanged; Franklin projection written to stdout/);
+    const data=JSON.parse(child.stdout);
     assert.equal(data.runMeta.evidenceOnly,true);
     assert.ok(data.listings.some((x: any)=>x.name==='Healthy lease'));
     assert.ok(data.listings.some((x: any)=>x.name==='Healthy Interra'));

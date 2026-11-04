@@ -65,7 +65,7 @@ def settle(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre"
                 or receipt.get("attempt") != attempt["number"]
                 or receipt.get("path") != state["path"]
                 or type(receipt.get("bytes")) is not int or receipt["bytes"] <= 0
-                or type(receipt.get("pages")) is not int or receipt["pages"] <= 0):
+                or type(receipt.get("observationRecords")) is not int or receipt["observationRecords"] <= 0):
             raise ValueError()
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
@@ -85,7 +85,7 @@ def settle(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre"
                 lines += chunk.count(b"\n")
                 last_byte = chunk[-1:]
                 digest.update(chunk)
-            if lines != receipt["pages"] + 1 or last_byte != b"\n":
+            if lines != receipt["observationRecords"] + 1 or last_byte != b"\n":
                 raise ValueError()
             first_line = header.split(b"\n", 1)[0]
             if json.loads(first_line) != {"schema": f"{source}-partial-pages/v1",
@@ -103,7 +103,7 @@ def settle(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre"
         if size != receipt["bytes"] or digest.hexdigest() != receipt.get("sha256"):
             raise ValueError()
         state.update(state="sealed_local_partial" if receipt["state"] == "sealed_partial" else "sealed_local",
-                     coverage="unverified", outcome=receipt["outcome"], bytes=size, pages=receipt["pages"],
+                     coverage="unverified", outcome=receipt["outcome"], bytes=size, observationRecords=receipt["observationRecords"],
                      sha256=digest.hexdigest(),
                      main_sha256=hashlib.sha256(main_bytes).hexdigest())
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
