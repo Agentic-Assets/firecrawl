@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
@@ -36,6 +37,14 @@ def _synthetic_clock(monkeypatch: pytest.MonkeyPatch, *values: float) -> None:
     )
     monkeypatch.setattr(performance.time, "monotonic", lambda: next(monotonic))
     monkeypatch.setattr(performance, "utc_now", lambda: next(observed))
+
+
+def test_collector_command_still_records_performance_with_real_subprocess(tmp_path, capsys):
+    log_path = _log_path(tmp_path)
+    assert refresh.run_command([sys.executable, "-c", "print('collector control')"], log_path) == 0
+    assert "collector control" in log_path.read_text()
+    assert [row["event"] for row in _records(log_path)] == ["started", "finished"]
+    assert "CRE performance telemetry degraded" not in capsys.readouterr().err
 
 
 def test_collect_success_emits_bounded_start_and_finish_and_injects_metrics_env(

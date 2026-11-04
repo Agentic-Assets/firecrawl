@@ -456,7 +456,8 @@ class Foreground:
                                FIRECRAWL_API_URL="http://127.0.0.1:3002")
         try:
             with command_poll_hook(poll):
-                rc = self.checkpoint.run_command(argv, log, env=environment)
+                # Maintenance logs are not collector performance evidence.
+                rc = self.checkpoint._run_logged_command(argv, log, env=environment)
         finally:
             if self.boundary is not None:
                 from cre_owned_handoff_boundary import deactivate_preserving_error

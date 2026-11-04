@@ -1,5 +1,7 @@
 # CRE Collector Start Here
 
+For a short map of active code, tests, operations, and historical material, see [README.md](README.md).
+
 For a reviewed Windows/Ubuntu **code-only handoff**, follow the maintained
 [checkout and runtime handoff procedure](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#moving-a-reviewed-build-to-a-runtime).
 The foreground tooling defaults to offline preview. Observation, independent
@@ -221,8 +223,13 @@ PSI, `MemAvailable`, swap totals, and unified cgroup v2 memory-controller
 evidence. A start
 requires normal pressure. Warning pressure sustained for 20 seconds or any
 critical sample stops the checkpoint through the same owned-process cleanup
-path. Missing, malformed, timed-out or stale pressure readings and failed
-required evidence also stop it. `--memory-sustain-seconds` (maximum 30) and
+path. A combined journal and scheduling interval longer than the greater of one second
+or 1.5 sample intervals resets the warning window; the one-second floor permits
+ordinary journal overhead at subsecond sampling cadences; the missing interval is not treated as observed pressure. A gap
+longer than the greater of the warning sustain period or three sample intervals
+stops on telemetry failure, except that a fresh critical reading trips immediately.
+Missing, malformed, timed-out or stale pressure readings and failed required
+evidence also stop it. Exceptional sample gaps are recorded in the guard log. `--memory-sustain-seconds` (maximum 30) and
 `--memory-sample-seconds` (default 2, maximum 5) are recorded and passed from
 series to children. `logs/host-memory-guard.jsonl` stores compact bounded samples;
 policy and the terminal reason are saved in the manifest. Memory stops never

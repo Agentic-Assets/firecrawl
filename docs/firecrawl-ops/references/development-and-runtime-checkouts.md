@@ -32,12 +32,17 @@ python3 -B scripts/firecrawl-ops/cre_collector/cre_reviewed_update.py --selected
 
 It checks the current task definitions, holds their existing flags under the
 shared writer lock, advances the native and WSL checkouts, repins, and restores
-the original flags. For changed API or Playwright build inputs, it builds from
-the selected tree, holds tasks, and checks local queue and browser idleness before
-replacing only changed image IDs. That check is a point-in-time observation, not
-a drain: another local API client can start work immediately afterward and its
-request can be interrupted by recreation. Selected images run briefly with the
-old collector checkout before code advances. Local API identity and queue response
+the original flags. Optional `Enrichment - <source-key>` and `DAUM Verified
+Subset` tasks join the same captured fleet and pin update when present. Unknown
+CRE tasks or invalid actions stop the update. Task support does not itself
+establish source-specific pilot or recurring operation readiness.
+
+For changed API or Playwright build inputs, the updater builds from the selected
+tree, holds tasks, and checks local queue and browser idleness before replacing
+only changed image IDs. That check is a point-in-time observation, not a drain:
+another local API client can start work immediately afterward and its request
+can be interrupted by recreation. Selected images run briefly with the old
+collector checkout before code advances. Local API identity and queue response
 or browser health are bounded readiness checks, not proof that a scrape succeeds.
 A settled image failure restores the previous images and overlay when the
 observed fleet remains within the captured old/selected transition. A mismatched

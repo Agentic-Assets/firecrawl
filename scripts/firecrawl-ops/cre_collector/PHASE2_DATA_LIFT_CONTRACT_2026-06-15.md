@@ -14,7 +14,7 @@ workstreams (WS1 free raw_data scalar backfill, WS2 OM/PDF parse tier, WS3 new
 high-value columns, WS4 geo-derivation + DQ guards).
 
 Inputs read to author this contract: `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md`
-(gap source of truth), `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` (fill rates),
+(gap source of truth), `archive/CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` (fill rates),
 `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` (the just-shipped media build, NOT to be
 duplicated or undone), and the live code (`cre_ingest.py`, `types.ts`,
 `lib/harvest.ts`, `lib/util.ts`, `lib/scrape.ts`, `lib/enrich.ts`, `cre_enrich.py`,

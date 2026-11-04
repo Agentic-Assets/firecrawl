@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { ScrapedDoc } from "../../../types.js";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { jllCohortSha256 } from "../../../sources/jll-direct-benchmark.js";
 import { withOfflineJllProjection } from "../../../sources/jll-direct-projection.js";
 import {
@@ -204,7 +205,7 @@ async function fixture(run: (f: any) => Promise<void>) {
       const index = members.findIndex((member) => member.canonicalUrl === url);
       const doc = structuredClone(docs[index]!);
       doc.detailObservation = {
-        observedAt: new Date().toISOString(),
+        observedAt: observationNow(),
         generationId: "direct-gen",
         method: "jll_direct_candidate",
         cacheDisposition: "live",

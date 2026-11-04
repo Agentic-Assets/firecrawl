@@ -42,6 +42,8 @@ database (EQUIRE feed). It supersedes the per-broker Python scrapers in
 `../cre_scrapers/` for bulk collection (`../cre_scrapers/brokers/*/scraper.py`
 is **stale** for production; README/archive there is reference-only).
 
+For a compact directory map and links to the active entrypoints, see [README.md](README.md).
+
 ## Agent routing: where to edit
 
 | Task | Edit here (ACTIVE) | Do NOT use (STALE) |
@@ -217,17 +219,17 @@ and resolve confirmed findings before shipping.
 | `BROKERAGE_STATUS_2026-06-12.md` | Historical per-broker coverage snapshot |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
-| `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
+| `archive/SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
 | `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retained for rollback). Implemented in code; live scheduler recovery remains gated. |
 | `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
 | `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` | Phase-2 data-lift implementation contract: the spec the `011`-`014` DDL, the backfills, and the `cre_parse`/`cre_geo`/`om_*` modules implement |
-| `HANDOFF_DATA_LIFT_2026-06-15.md` | Phase-2 data-lift handoff: what shipped (DDL, three additive backfills, OM-parse tier), the prod apply log, and test counts |
+| `archive/HANDOFF_DATA_LIFT_2026-06-15.md` | Phase-2 data-lift handoff: what shipped (DDL, three additive backfills, OM-parse tier), the prod apply log, and test counts |
 | `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md` | Which structured fields/media/docs are stranded in `raw_data`, plus the document-corpus audit that scopes the backfills |
-| `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` | Per-column fill-rate report for `cre_listings` (drives backfill targeting); raw outputs in `reports/` |
+| `archive/CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` | Historical per-column fill-rate snapshot for `cre_listings`; the tracked summary JSON is in `reports/` |
 | `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` | Freshness/accuracy/historic-retention review (the H/M/L findings behind `009` and the ingest-written price history) |
-| `TODO.md` | Collector working TODO list |
+| `archive/2026-06-15-collector-workstream-ideas.md` | Historical ideas only; current work and decisions are tracked in [Linear](https://linear.app/agenticassets/project/firecrawl-ops-and-automation-f13a738a83bf) |
 | `data/` | Geo crosswalk reference (`zip_cbsa_crosswalk.csv` consumed by `cre_geo.py`) + `build_zip_cbsa_crosswalk.py` builder and `README.md` |
-| `reports/` | Coverage report outputs (column/brokerage/transaction CSVs + summary JSON; see `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md`) |
+| `reports/` | Historical coverage summary JSON; see `archive/CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` |
 | `workflows/` | Historical Workflow scripts; `cre_enrichment_worker.workflow.js` preserves build/test/review provenance and refuses database or scheduler cutover |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |

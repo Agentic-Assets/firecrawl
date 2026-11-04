@@ -107,8 +107,9 @@ export async function colliersGetText(url: string, signal?: AbortSignal): Promis
   return res.text();
 }
 
-export async function colliersGetJson(url: string, signal?: AbortSignal): Promise<any> {
+export async function colliersGetJson(url: string, signal?: AbortSignal, onText?: (text: string) => void): Promise<any> {
   const text = await colliersGetText(url, signal);
+  onText?.(text);
   const parsed = parseJsonBody(text);
   if (parsed === null) throw new Error(`Colliers GET ${url} returned non-JSON`);
   if (parsed?.success === false) throw new Error(`Colliers GET ${url} returned success=false`);
@@ -145,14 +146,16 @@ function colliersSiblingAbort(error: unknown, firstFailure: unknown): boolean {
 
 async function colliersFetchPagePair(
   listUrl: string,
-  mapUrl: string
+  mapUrl: string,
+  onResponses?: (attempt: number, responses: { list?: string; map?: string }) => void,
 ): Promise<[any, any]> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const controller = new AbortController();
     let firstFailure: unknown;
-    const request = async (url: string): Promise<any> => {
+    const responses: { list?: string; map?: string } = {};
+    const request = async (url: string, kind: "list" | "map"): Promise<any> => {
       try {
-        return await colliersGetJson(url, controller.signal);
+        return await colliersGetJson(url, controller.signal, text => { responses[kind] = text; });
       } catch (error) {
         if (!controller.signal.aborted) {
           firstFailure = error;
@@ -161,7 +164,8 @@ async function colliersFetchPagePair(
         throw error;
       }
     };
-    const settled = await Promise.allSettled([request(listUrl), request(mapUrl)]);
+    const settled = await Promise.allSettled([request(listUrl, "list"), request(mapUrl, "map")]);
+    if (Object.keys(responses).length) onResponses?.(attempt, responses);
     const failures = settled
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason)
@@ -543,7 +547,7 @@ export function colliersStrandedStructured(detail: any, details: any): Record<st
 
 export function colliersInventoryOnlyCard(
   card: ColliersCard,
-  reason: "card_not_linked" | "detail_request_failed"
+  reason: "card_not_linked" | "detail_request_failed" | "detail_not_attempted"
 ): any {
   return prune({
     ...card,
@@ -562,7 +566,7 @@ export function colliersInventoryOnlyCard(
     detailUnavailable: {
       reason,
       publicCardObserved: true,
-      publicPageObserved: Boolean(card.detailPv),
+      publicPageObserved: reason !== "detail_not_attempted" && Boolean(card.detailPv),
     },
     colliersSalesTrackerDetail: {
       skipped: reason,
@@ -695,7 +699,9 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   }
 }
 
-export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcColliers(tx: Tx, max: number, monitor: boolean,
+  onPage?: (page: number, start: number, cards: any[]) => void,
+  onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }) => void): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Colliers",
@@ -742,7 +748,8 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
     const [listData, mapData] = await colliersFetchPagePair(
       colliersListUrl(engineKey, start, pageSize),
-      colliersMapUrl(engineKey, start, pageSize)
+      colliersMapUrl(engineKey, start, pageSize),
+      (attempt, responses) => onResponses?.(page, start, attempt, responses),
     );
     const reportedTotal = Number.isFinite(Number(listData.total))
       ? Number(listData.total)
@@ -782,6 +789,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     console.error(
       `  colliers/sale: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed cards (${selected.length}/${total ?? "?"})`
     );
+    onPage?.(page, start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")));
     const numProjects = colliersAssertPageCount(
       listData.numProjects,
       providerCardCount,

@@ -10,7 +10,7 @@ import cre_memory_guard as memory
 @pytest.mark.parametrize(
     "kind,clocks,previous,category",
     [
-        ("sample_gap", [3.28, 3.29], 0.0, "sample_gap"),
+        ("sample_gap", [21.28, 21.29], 0.0, "sample_gap"),
         ("read_stale", [0.0, 1.01], None, "read_stale"),
         ("read_error", [0.0, 0.01], None, "read_unavailable"),
     ],
