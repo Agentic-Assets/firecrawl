@@ -45,6 +45,7 @@ def verified_members(data, generation_id):
                 or not isinstance(native_id, str) or not re.fullmatch(r"006[A-Za-z0-9]{15}", native_id)
                 or search.get("id") != native_id or detail.get("id") != native_id
                 or row.get("sourceKey") != "jll-investor" or row.get("transactionMode") != "sale"
+                or "latestJllPartialObservation" in row
                 or row.get("transactionType") != "Sale (investment)"
                 or row.get("jllInvestorUsSearchMembership") is not True
                 or provenance.get("generationId") != generation_id

@@ -72,7 +72,8 @@ def main():
                     contactsDetailed=[{"name":"Existing Broker","email":"broker@example.test","title":"New title","isPrimary":True},
                                       {"name":"Additional Broker","email":"new@example.test","isPrimary":True}],
                     preserveChildCollections=True, detailObservedWithChildPreservation=True,
-                    jllInvestorDetail={"id": identity, "scrape": {"rawHtmlLength":0,"markdownLength":0,"linkCount":0}},
+                    jllInvestorDetail={"id": identity, "customAttributes":{"detailError":"source field, not a failed scrape"},
+                                       "scrape": {"rawHtmlLength":0,"markdownLength":0,"linkCount":0}},
                     freshnessProvenance={"generationId":"new","detailScope":"detail_page",
                                          "method":"jll_investor_next_data_detail","cacheDisposition":"live"})
         row = ingest.to_row(item, {}, "2026-11-04T00:01:00Z")
@@ -84,12 +85,27 @@ def main():
         actual = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings;"))
         for key, value in json.loads(before_raw).items():
             assert actual.get(key) == value
+        assert actual["latestJllPartialObservation"] == row["raw_data"]
         assert actual["latestJllPartialObservation"]["freshnessProvenance"]["generationId"] == "new"
+        assert sql("SELECT (scraped_at IS NOT NULL)::text FROM credeals.cre_listings;") == "true"
         assert sql("SELECT count(*) FROM credeals.cre_listing_images;") == "2"
         assert sql("SELECT url FROM credeals.cre_listing_images WHERE is_primary;") == "https://example.test/old.jpg"
         assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE email='broker@example.test';") == "Old title"
         assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE email='new@example.test';") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE is_primary;") == "1"
+        # A later ordinary full observation retains the last partial source
+        # payload without inventing a longer history.
+        full_item = dict(item, jllInvestorDetail={"id":identity, "scrape":{"rawHtmlLength":0,"markdownLength":0,"linkCount":0}},
+                         freshnessProvenance={"generationId":"full","detailScope":"detail_page",
+                                              "method":"jll_investor_next_data_detail","cacheDisposition":"live"})
+        full = ingest.to_row(full_item, {}, "2026-11-04T00:01:10Z")
+        sql(ingest.build_sql([full], job, "2026-11-04T00:01:10Z", set()))
+        later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings;"))
+        assert later_raw["latestJllPartialObservation"] == row["raw_data"]
+        assert later_raw["freshnessProvenance"]["generationId"] == "full"
+        # Restore only disposable fixture lifecycle for the collision scenario.
+        sql("UPDATE credeals.cre_listings SET status='inactive', deleted_at='2026-11-03T01:02:03Z' "
+            "WHERE external_id='investor:" + identity + "';")
         # A partial update does not revive a deleted parent and therefore does
         # not create a collision with an active ordinary JLL counterpart.
         other = ingest.to_row({"sourceKey": "jll", "id": "ordinary", "url": source_url,
@@ -232,6 +248,14 @@ def main():
                         "WHERE external_id='investor:" + new_id + "';")
         assert new_state == "<null>|sale", new_state
         assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='investor:" + new_id + "';") == "0"
+        first_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='investor:" + new_id + "';"))
+        assert first_raw["latestJllPartialObservation"] == new["raw_data"]
+        next_item = dict(full_item, id=new_id, url=source_url+"-new", canonicalUrl=source_url+"-new",
+                         jllInvestorDetail={"id":new_id, "scrape":{"rawHtmlLength":0,"markdownLength":0,"linkCount":0}})
+        next_full = ingest.to_row(next_item, {}, "2026-11-04T00:03:00Z")
+        sql(ingest.build_sql([next_full], job, "2026-11-04T00:03:00Z", set()))
+        next_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='investor:" + new_id + "';"))
+        assert next_raw["latestJllPartialObservation"] == new["raw_data"]
         print("JLL partial SQL building blocks passed")
     finally:
         subprocess.run(["docker", "stop", "--time", "2", name], capture_output=True, check=False)

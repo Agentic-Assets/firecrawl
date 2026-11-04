@@ -40,6 +40,7 @@ def test_member_proof_does_not_infer_absent_identities():
     lambda d: d["listings"][0]["freshnessProvenance"].update(generationId="other"),
     lambda d: d["listings"][0]["freshnessProvenance"].update(identityMethod="url_only"),
     lambda d: d["listings"][0].update(transactionType="For Lease"),
+    lambda d: d["listings"][0].update(latestJllPartialObservation={"sourceKey":"jll-investor"}),
     lambda d: d["listings"][0].update(jllInvestorUsSearchMembership=False),
     lambda d: d["listings"][0].update(detailObservedWithChildPreservation=False),
     lambda d: d["sources"][0].update(truncated=False),
@@ -313,6 +314,22 @@ export async function srcJllInvestor(tx) {
                     start, set(), jll_partial_ids=tuple(item["external_id"] for item in claims["staged"]),
                     jll_partial_claims=claims)
     assert "JLL partial identity partition changed" in sql
+    # Exercise the actual CLI and guarded claims reader, replacing only Git
+    # identity with this fixture's synthetic clean producer identity.
+    import sys
+    dry = tmp_path / "dryrun"
+    driver = ("import runpy,sys,cre_checkpoint_refresh as c;"
+              "c.git_identity=lambda:('a'*40,False);"
+              "sys.argv=['cre_ingest.py']+sys.argv[1:];"
+              "runpy.run_module('cre_ingest',run_name='__main__')")
+    cli = subprocess.run([sys.executable, "-c", driver, "--in", str(output), "--dry-run",
+                          "--keep-artifacts", str(dry), "--require-strict-freshness",
+                          "--jll-partial-claims", aggregate_result["subset_claims"]["path"],
+                          "--checkpoint-ingest-attempt", "c"*32,
+                          "--expected-db-target-sha256", "b"*64],
+                         cwd=root, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert cli.returncode == 0, cli.stderr
+    assert "JLL partial identity partition changed" in (dry / "ingest.sql").read_text()
     assert binding["whole_source_coverage"] is False
     assert binding["excluded_source_identities"] == "unknown"
 
