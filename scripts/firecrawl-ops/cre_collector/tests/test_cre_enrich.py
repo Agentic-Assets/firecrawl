@@ -223,7 +223,7 @@ def test_empty_listings_enriched_artifact_advances_retry_without_ingest(
                                 "https://x/a", "new", "0")],
                       collect_rc=0, write_enriched={"listings": []})
     rc = cre_enrich.run(_Args(env_file=None))
-    assert rc == 0
+    assert rc == 21
     assert calls["ingest_called"] is False
     assert any(
         "attempts = attempts + 1" in sql for sql in calls["exec_sql"]
@@ -400,7 +400,7 @@ def test_happy_path_deletes_done_and_increments_absent(monkeypatch, tmp_path):
         write_enriched={"listings": [{"id": "usa1", "url": "https://x/a"}]},
     )
     rc = cre_enrich.run(_Args(env_file=None))
-    assert rc == 0
+    assert rc == 20
     assert calls["ingest_called"] is True
     exec_sql = "\n".join(calls["exec_sql"])
     assert "DELETE FROM credeals.cre_enrichment_queue" in exec_sql

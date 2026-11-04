@@ -4,7 +4,7 @@ import { scrapeDoc, type CollectorScrapeOpts } from "../lib/scrape.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { requireFreshDetails } from "../lib/freshness.js";
 import { possibleChallengeHeader } from "../lib/page-observations/index.js";
-import { captureEnrichmentEvidence, failedEnrichmentEvidence, limitEnrichmentObservations } from "../lib/enrichment-evidence/index.js";
+import { captureEnrichmentEvidence, failedEnrichmentEvidence, createEnrichmentObservationAccumulator } from "../lib/enrichment-evidence/index.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { resolveNewmarkDetailLink } from "./pure/newmark-detail-link.js";
 import { extractNewmarkRcmDetail, matchNewmarkRcmProperty } from "./pure/newmark-rcm-detail.js";
@@ -14,16 +14,20 @@ import { mapNewmarkRcmFields } from "./pure/newmark-rcm-fields.js";
 export function createNewmarkPublishedDetailEnricher(fetchDoc: (url: string, options?: CollectorScrapeOpts) => Promise<ScrapedDoc> = scrapeDoc,
   clock: () => string = observationNow): SourceEnricher {
   async function batch(items: EnrichItem[]) {
-    const outcomes: Array<{ listing: any | null; observation: unknown }> = [];
+    const evidence = createEnrichmentObservationAccumulator();
+    const listings: any[] = [];
+    function keep(outcome: { listing: any | null; observation: unknown }) {
+      if (evidence.append(outcome.observation) && outcome.listing) listings.push(outcome.listing);
+    }
     let stop: "access_denial" | "possible_challenge_header" | "uncertain_settlement" | null = null;
     for (const item of items) {
       if (stop) {
-        outcomes.push({ listing: null, observation: { ...failedEnrichmentEvidence(item), failure: `not_attempted_after_${stop}`, newmarkRcmObservation: true } });
+        keep({ listing: null, observation: { ...failedEnrichmentEvidence(item), failure: `not_attempted_after_${stop}`, newmarkRcmObservation: true } });
         continue;
       }
       const resolution = resolveNewmarkDetailLink(item);
       if (resolution.state !== "resolved") {
-        outcomes.push({ listing: null, observation: { ...failedEnrichmentEvidence(item, "native_redirect_not_listing"), resolution: "unresolved", newmarkRcmObservation: true } });
+        keep({ listing: null, observation: { ...failedEnrichmentEvidence(item, "native_redirect_not_listing"), resolution: "unresolved", newmarkRcmObservation: true } });
         continue;
       }
       let doc: ScrapedDoc;
@@ -35,7 +39,7 @@ export function createNewmarkPublishedDetailEnricher(fetchDoc: (url: string, opt
         const status = (error as { status?: unknown })?.status;
         if ([401, 403, 429, 451].includes(status as number)) stop = "access_denial";
         else if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status >= 300) stop = "uncertain_settlement";
-        outcomes.push({ listing: null, observation: { ...failedEnrichmentEvidence(item), resolution: "resolved", requestedPageUrl: resolution.pageUrl,
+        keep({ listing: null, observation: { ...failedEnrichmentEvidence(item), resolution: "resolved", requestedPageUrl: resolution.pageUrl,
           ...(typeof status === "number" ? { localApiStatus: status } : {}), ...(stop ? { stopReason: stop } : {}), newmarkRcmObservation: true } });
         continue;
       }
@@ -60,19 +64,19 @@ export function createNewmarkPublishedDetailEnricher(fetchDoc: (url: string, opt
       if ([401, 403, 429, 451].includes(status as number)) stop = "access_denial";
       else if (possibleChallengeHeader(doc.rawHtml)) stop = "possible_challenge_header";
       else if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status >= 300) stop = "uncertain_settlement";
-      if (stop) { outcomes.push({ listing: null, observation: { ...(observation as object), stopReason: stop } }); continue; }
+      if (stop) { keep({ listing: null, observation: { ...(observation as object), stopReason: stop } }); continue; }
       if (!evidenceRetained || match !== "matched" || !detail.parsedSerializable || status < 200 || status >= 300) {
-        outcomes.push({ listing: null, observation }); continue;
+        keep({ listing: null, observation }); continue;
       }
       const fields = mapNewmarkRcmFields(detail.parsed, resolution.pageUrl, item.transaction ?? "sale");
       const substantive = !!fields.description || fields.salePriceUsd !== undefined || !!fields.photos?.length ||
         !!fields.contactsDetailed?.length || !!fields.documents?.length;
-      if (!substantive) { outcomes.push({ listing: null, observation }); continue; }
-      outcomes.push({ listing: { id: item.externalId, url: item.url, canonicalUrl: item.url,
+      if (!substantive) { keep({ listing: null, observation }); continue; }
+      keep({ listing: { id: item.externalId, url: item.url, canonicalUrl: item.url,
         transactionMode: null, preserveChildCollections: true, ...fields }, observation });
     }
-    const bounded = limitEnrichmentObservations(outcomes.map(outcome => outcome.observation));
-    return { listings: outcomes.slice(0, bounded.retainedObservations.length).map(outcome => outcome.listing).filter(Boolean), ...bounded,
+    const bounded = evidence.result();
+    return { listings, ...bounded, ...(stop ? { stopReason: stop } : {}),
       ...(stop && !bounded.evidenceError ? { evidenceError: `newmark_detail_${stop}` } : {}) };
   }
   return { async enrich(items) { return (await batch(items)).listings; }, async enrichWithEvidence(items) { return batch(items); } };

@@ -378,7 +378,7 @@ def stop_run(run_id, wait_seconds=45, *, _out_root=None, _lock_path=None):
                     raise StopRefused("owner exited before stop")
                 signal.pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
                 result["signal_sent"] = True
-        elif receipt.get("status") != "complete":
+        elif receipt.get("status") not in {"complete", "partial", "failed"}:
             raise StopRefused("run is already terminal")
         remaining = max(0, int((deadline - time.monotonic()) * 1000))
         if not _exited(pidfd, remaining):
@@ -392,6 +392,8 @@ def stop_run(run_id, wait_seconds=45, *, _out_root=None, _lock_path=None):
             or terminal.get("status")
             not in {
                 "complete",
+                "partial",
+                "failed",
                 "interrupted",
                 "resource_guard_interrupted",
                 "deadline_interrupted",
@@ -410,6 +412,16 @@ def stop_run(run_id, wait_seconds=45, *, _out_root=None, _lock_path=None):
         result["terminal_status"] = terminal["status"]
         if terminal["status"] == "complete":
             result["outcome"] = "completed"
+            return 0, result
+        if terminal["status"] in {"partial", "failed"}:
+            expected_rc = {"partial": 20, "failed": 21}[terminal["status"]]
+            if (terminal.get("recovery_clear_eligible") is not True
+                    or terminal.get("canonical_enrichment") != {
+                        "state": terminal["status"], "returncode": expected_rc,
+                    } or local["state"] != "confirmed"):
+                result["outcome"] = "stop_outcome_unverified"
+                return 2, result
+            result["outcome"] = terminal["status"]
             return 0, result
         retained = _authority(lock_path)
         for key in (

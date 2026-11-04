@@ -345,6 +345,7 @@ def run_guarded_tier(
         }
         terminal_saved = False
         success = False
+        settled_enrichment_rc = 0
         native_work_started = False
         native_command_active = False
         tier_worker_started = False
@@ -391,7 +392,7 @@ def run_guarded_tier(
             persist()
 
         def execute(phase: str, argv: Sequence[str]) -> None:
-            nonlocal native_work_started, native_command_active, tier_worker_started
+            nonlocal native_work_started, native_command_active, tier_worker_started, settled_enrichment_rc
             receipt["phase"] = phase
             checkpoint.set_cpu_guard_context(
                 cpu, phase=phase, source=args.source, active_operation=phase
@@ -435,8 +436,13 @@ def run_guarded_tier(
             receipt["local_settlement"] = {"state": "confirmed", "phase": phase}
             settle_enrichment_artifact(phase)
             if phase == "enrich_apply":
-                receipt["canonical_enrichment"] = {"state": "completed" if command_rc == 0 else "failed",
+                # These worker-only codes are emitted after every queue disposition
+                # settles. Other failures and unknown outcomes remain fenced.
+                states = {0: "completed", 20: "partial", 21: "failed"}
+                receipt["canonical_enrichment"] = {"state": states.get(command_rc, "failed"),
                                                    "returncode": command_rc}
+                if command_rc in (20, 21):
+                    settled_enrichment_rc = command_rc
                 persist()
             if phase == "enrich_apply" and "source_evidence" in receipt:
                 from source_evidence import guarded_evidence
@@ -454,7 +460,7 @@ def run_guarded_tier(
                         receipt["source_evidence"]["status"] = "incomplete"
                         receipt["source_evidence"]["reason"] = type(exc).__name__
                     persist()
-            if command_rc != 0:
+            if command_rc != 0 and not (phase == "enrich_apply" and command_rc in (20, 21)):
                 if phase.startswith("git_"):
                     raise PreflightRefused("checkout identity could not be verified")
                 raise GuardedTierError("tier command did not complete successfully")
@@ -534,8 +540,8 @@ def run_guarded_tier(
                                 run_dir / "monitor.json", args.source
                             )
             success = True
-            receipt["status"] = "complete"
-            rc = 0
+            receipt["status"] = {0: "complete", 20: "partial", 21: "failed"}[settled_enrichment_rc]
+            rc = settled_enrichment_rc
         except TierDeadline as exc:
             settlement_unknown = checkpoint._cleanup_unknown_in_chain(exc)
             receipt["status"] = "deadline_interrupted"

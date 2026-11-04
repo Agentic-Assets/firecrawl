@@ -65,7 +65,7 @@ export interface SourceEnricher {
   // leaves that claimed row queued and the weekly full scrape refreshes it.
   enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]>;
   enrichWithEvidence?(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<{
-    listings: any[]; retainedObservations: readonly unknown[]; evidenceError?: string;
+    listings: any[]; retainedObservations: readonly unknown[]; evidenceError?: string; stopReason?: string;
   }>;
 }
 
@@ -485,7 +485,7 @@ export async function runEnrichGroups(
     const company = companyFor(key);
     console.error(`enriching ${key} (${groupItems.length} item(s), enricher=${label})...`);
     try {
-      const result: { listings: any[]; retainedObservations?: readonly unknown[]; evidenceError?: string } = enricher.enrichWithEvidence
+      const result: { listings: any[]; retainedObservations?: readonly unknown[]; evidenceError?: string; stopReason?: string } = enricher.enrichWithEvidence
         ? await enricher.enrichWithEvidence(groupItems, context)
         : { listings: context ? await enricher.enrich(groupItems, context) : await enricher.enrich(groupItems) };
       const rows = result.listings;
@@ -522,6 +522,7 @@ export async function runEnrichGroups(
         listingsCollected: emitted,
         ...(evidence !== undefined ? { retainedObservations: evidence.retainedObservations } : {}),
         ...(evidenceError ? { evidenceIncomplete: true, evidenceError } : {}),
+        ...(result.stopReason ? { stopReason: result.stopReason } : {}),
       });
       console.error(`  ${key}: ${emitted}/${groupItems.length} enriched (enricher=${label})`);
     } catch (err) {

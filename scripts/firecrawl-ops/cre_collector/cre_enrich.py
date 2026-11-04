@@ -279,13 +279,29 @@ def deferred_claim_ids(claimed_rows, artifact):
             continue
         source_key = source.get("sourceKey")
         evidence_error = source.get("evidenceError")
-        if source.get("error") or (isinstance(evidence_error, str) and
-                                    evidence_error.startswith("newmark_detail_")):
+        stop_reason = source.get("stopReason")
+        if source.get("error") or (source_key == "newmark" and isinstance(stop_reason, str) and stop_reason in {
+            "access_denial", "possible_challenge_header", "uncertain_settlement",
+        }) or (isinstance(evidence_error, str) and evidence_error.startswith("newmark_detail_")):
             deferred.update(row["id"] for row in claimed_rows if row.get("source_key") == source_key)
             continue
         observations = source.get("retainedObservations")
         if not isinstance(observations, list):
-            continue
+            observations = []
+        if source_key == "newmark" and isinstance(evidence_error, str) and evidence_error in {
+            "enrichment evidence count exceeds bound", "enrichment evidence bytes exceed bound",
+        }:
+            retained = set()
+            for obs in observations:
+                if isinstance(obs, dict) and isinstance(obs.get("claim"), dict):
+                    claim = obs["claim"]
+                    if (claim.get("sourceKey") == source_key and isinstance(claim.get("externalId"), str)
+                            and isinstance(claim.get("url"), str)):
+                        retained.add((source_key, claim["externalId"], claim["url"]))
+            for row in claimed_rows:
+                key = (row.get("source_key"), row.get("external_id"), row.get("url"))
+                if row.get("source_key") == source_key and key not in retained:
+                    deferred.add(row["id"])
         for obs in observations:
             if not isinstance(obs, dict):
                 continue
@@ -295,7 +311,8 @@ def deferred_claim_ids(claimed_rows, artifact):
             ):
                 continue
             claim = obs.get("claim")
-            if not isinstance(claim, dict) or claim.get("sourceKey") != source_key:
+            if (not isinstance(claim, dict) or claim.get("sourceKey") != source_key
+                    or not isinstance(claim.get("externalId"), str) or not isinstance(claim.get("url"), str)):
                 continue
             key = (source_key, claim.get("externalId"), claim.get("url"))
             deferred.update(claimed.get(key, ()))
@@ -895,13 +912,11 @@ def run(args):
             [i for i in claims["items"] if i["claimId"] in absent], "retry",
             last_error="claimed but absent from enriched artifact") if targeted else build_retry_increment_sql(
             absent, last_error="claimed but absent from enriched artifact"))
-    print(
-        f"enrich complete: {len(done_ids)} done (deleted), "
-        f"{len(absent)} absent after collection, {len(deferred_ids)} deferred without established attempt",
-        file=sys.stderr,
-    )
-
-    return 0
+    state = "completed" if not absent and not deferred_ids else ("partial" if done_ids else "failed")
+    code = {"completed": 0, "partial": 20, "failed": 21}[state]
+    print(f"enrich {state}: {len(done_ids)} done, {len(absent)} retry, "
+          f"{len(deferred_ids)} deferred without established attempt", file=sys.stderr)
+    return code
 
 
 def main():
