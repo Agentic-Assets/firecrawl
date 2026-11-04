@@ -1242,7 +1242,17 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     totalAvailable: searchInventory.length,
     listings,
     truncated,
+    ...(notFoundRows.length ? {
+      jllInvestorNotFoundObservations: notFoundRows.map((row) => ({
+        searchId: typeof row.jllInvestorSearchRow?.id === "string" ? row.jllInvestorSearchRow.id : null,
+        searchAlias: typeof row.jllInvestorSearchRow?.alias === "string" ? row.jllInvestorSearchRow.alias : null,
+        sourceUrl: row.url ?? null,
+        inventoryObservedAt: row.inventoryObservedAt ?? null,
+        embeddedProviderErrorStatusCode: row.jllInvestorTombstone.statusCode,
+        confirmation: row.jllInvestorTombstone.confirmation,
+      })),
+    } : {}),
     note:
-      `The exact United States search filter stabilized at ${searchSnapshot.count} unique provider identities across ${searchSnapshot.pages} pages in two consecutive complete passes. Excluded ${nonUsSearchRows.length} row(s) carrying explicit non-U.S. country or recognized non-U.S. region evidence before enrichment. The search snapshot is authoritative because JLL's sitemap can lag newly published search inventory; every retained row must instead pass exact Salesforce ID and alias reconciliation against live structured detail. Enriched ${candidates.length}/${searchInventory.length} U.S.-compatible search row(s), excluded ${notFoundRows.length} provider 404 tombstone(s) independently confirmed by live current-build JSON and public-page observations, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Detail country evidence must not conflict with the United States search membership. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
+      `The exact United States search filter stabilized at ${searchSnapshot.count} unique provider identities across ${searchSnapshot.pages} pages in two consecutive complete passes. Excluded ${nonUsSearchRows.length} row(s) carrying explicit non-U.S. country or recognized non-U.S. region evidence before enrichment. The search snapshot is authoritative because JLL's sitemap can lag newly published search inventory; every retained row must instead pass exact Salesforce ID and alias reconciliation against live structured detail. Enriched ${candidates.length}/${searchInventory.length} U.S.-compatible search row(s), excluded ${notFoundRows.length} embedded provider 404 error(s) independently confirmed in live current-build JSON and public-page data, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Detail country evidence must not conflict with the United States search membership. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
   };
 }

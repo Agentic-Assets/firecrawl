@@ -5054,6 +5054,27 @@ WITH ins AS (
              ELSE scraped_at
            END,
            CASE
+             -- A first-seen Newmark detail is not an inventory observation.
+             -- Preserve its sparse source facts without manufacturing a feed
+             -- clock or nesting them under latestInventoryObservation. Existing
+             -- parents retain the established conflict/update reconciliation.
+             WHEN {detail_source_insert_sql}
+               AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                           WHERE nb.id=s.brokerage_id AND nb.slug='newmark')
+               AND NOT EXISTS (SELECT 1 FROM _prior_vals prior
+                               WHERE prior.brokerage_id=s.brokerage_id
+                                 AND prior.external_id=s.external_id)
+               THEN (raw_data - 'inventoryObservedAt' - 'latestInventoryObservation'
+                            - 'newmarkUnqualifiedInventoryContext')
+                    || CASE WHEN raw_data ?| ARRAY['inventoryObservedAt', 'latestInventoryObservation',
+                                                   'newmarkUnqualifiedInventoryContext']
+                         THEN jsonb_build_object('newmarkUnqualifiedInventoryContext',
+                           jsonb_build_object('reported', (SELECT jsonb_object_agg(key, value)
+                             FROM jsonb_each(raw_data)
+                             WHERE key IN ('inventoryObservedAt', 'latestInventoryObservation',
+                                           'newmarkUnqualifiedInventoryContext'))))
+                         ELSE '{}'::jsonb END
+                    || jsonb_build_object('newmarkEnrichmentRetained', true)
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
                OR (
                  jsonb_path_exists(
