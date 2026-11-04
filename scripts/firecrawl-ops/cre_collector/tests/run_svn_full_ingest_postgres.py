@@ -62,7 +62,33 @@ def main():
         assert value["markdown"] == "new detail"
         exact = sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings;")
         assert exact == "1.0000000000000001"
-        print("PASS: complete generated SVN ingest transaction preserves exact prior inventory and new detail")
+        for preserve_children in (False, True):
+            listing = {"sourceKey": "newmark", "id": "nm-synthetic",
+                       "url": "https://example.test/newmark", "name": "Synthetic",
+                       "transactionType": "sale", "markdown": "newmark detail"}
+            if preserve_children:
+                listing["preserveChildCollections"] = True
+            newmark = ingest.to_row(listing, {}, "2026-11-04T00:00:00Z")
+            nm_job = [{"slug": "newmark", "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}]
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:02:00Z", set()))
+            sql("""UPDATE credeals.cre_listings SET raw_data=
+                  '{"inventoryObservedAt":"old","latestInventoryObservation":{"latitude":1.0000000000000001}}'::jsonb
+                  WHERE external_id='nm-synthetic';""")
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:03:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
+            current = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert current["inventoryObservedAt"] == "old"
+            assert current["latestInventoryObservation"] == {"latitude": 1.0000000000000001}
+            assert current["markdown"] == "newmark detail"
+            assert sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings WHERE external_id='nm-synthetic';") == "1.0000000000000001"
+            sql("UPDATE credeals.cre_listings SET raw_data='{}'::jsonb WHERE external_id='nm-synthetic';")
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:04:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
+            without_prior = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert "inventoryObservedAt" not in without_prior
+            assert "latestInventoryObservation" not in without_prior
+            assert without_prior["markdown"] == "newmark detail"
+        print("PASS: full generated SVN and Newmark generic/partial transactions preserve prior inventory and new detail")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

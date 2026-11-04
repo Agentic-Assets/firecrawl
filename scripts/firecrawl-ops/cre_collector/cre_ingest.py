@@ -3984,6 +3984,7 @@ def build_sql(
     transwestern_image_transition_binding=None,
     pyramid_guard_binding=None,
     svn_enrichment_ids=(),
+    inventory_preserve_enrichment_ids=(),
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -4100,9 +4101,24 @@ WHERE p.image_id IS NULL;
     svn_enrichment_ids = set(svn_enrichment_ids)
     if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
         raise ValueError("invalid SVN enrichment identity")
-    svn_enrichment_sql = (
-        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
-        if svn_enrichment_ids else "FALSE"
+    # Only source contracts reviewed for inventory/detail separation belong here.
+    # JLL visibility and Matthews targeted freshness have separate policies.
+    inventory_preserve_enrichment_ids = set(inventory_preserve_enrichment_ids)
+    inventory_preserve_enrichment_ids.update(("svn", value) for value in svn_enrichment_ids)
+    if any(not isinstance(pair, tuple) or len(pair) != 2
+           or pair[0] not in {"svn", "newmark"} or not isinstance(pair[1], str) or not pair[1]
+           for pair in inventory_preserve_enrichment_ids):
+        raise ValueError("invalid inventory-preserving enrichment identity")
+    newmark_enrichment_ids = sorted(value for slug, value in inventory_preserve_enrichment_ids if slug == "newmark")
+    newmark_enrichment_sql = (
+        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in newmark_enrichment_ids) + ")"
+        if newmark_enrichment_ids else "FALSE"
+    )
+    inventory_preserve_sql = (
+        "(sb.slug, EXCLUDED.external_id) IN (" +
+        ", ".join("(" + sql_lit(slug) + ", " + sql_lit(value) + ")"
+                  for slug, value in sorted(inventory_preserve_enrichment_ids)) + ")"
+        if inventory_preserve_enrichment_ids else "FALSE"
     )
     lines = []
     w = lines.append
@@ -5212,6 +5228,21 @@ WITH ins AS (
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
                                      'avisonRetainedPrior', EXCLUDED.raw_data->'avisonRetainedPrior')
+                              -- Published Newmark detail preserves child collections but does not
+                              -- establish a new inventory observation. Unwrap that detail without
+                              -- replacing the prior inventory clock or its paired observation.
+                              WHEN {newmark_enrichment_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                            WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                AND jsonb_typeof(EXCLUDED.raw_data->'latestInventoryObservation') = 'object'
+                                AND EXCLUDED.raw_data#>>'{latestInventoryObservation,preserveChildCollections}' = 'true'
+                                AND NOT jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                THEN (
+                                  CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    THEN t.raw_data ELSE '{}'::jsonb END
+                                  || ((EXCLUDED.raw_data->'latestInventoryObservation')
+                                      - 'inventoryObservedAt' - 'latestInventoryObservation')
+                                )
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -5261,10 +5292,9 @@ WITH ins AS (
                                           to_jsonb(EXCLUDED.scraped_at)
                                         )
                                       )
-                              WHEN {svn_enrichment_sql}
-                                AND jsonb_typeof(EXCLUDED.raw_data) = 'object'
+                              WHEN jsonb_typeof(EXCLUDED.raw_data) = 'object'
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND {inventory_preserve_sql})
                                 THEN (
                                   (EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation')
                                   || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
@@ -5448,7 +5478,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{svn_enrichment_sql}", svn_enrichment_sql)
+""".replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
+        .replace("{inventory_preserve_sql}", inventory_preserve_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
@@ -7163,8 +7194,8 @@ def main():
     finished_at = None
     finished_at_by_slug = {}
     colliers_transition_inputs = []
-    svn_enrichment_ids = set()
-    svn_non_enrichment_ids = set()
+    inventory_enrichment_ids = set()
+    inventory_non_enrichment_ids = set()
 
     daum_subset_claims = None
     if args.daum_verified_subset_claims:
@@ -7415,11 +7446,12 @@ def main():
                 skipped_no_url += 1
                 continue
             key = (row["slug"], row["external_id"])
-            if row["slug"] == "svn":
+            if row["slug"] in {"svn", "newmark"}:
+                identity = (row["slug"], row["external_id"])
                 if mode == "enrich":
-                    svn_enrichment_ids.add(row["external_id"])
+                    inventory_enrichment_ids.add(identity)
                 else:
-                    svn_non_enrichment_ids.add(row["external_id"])
+                    inventory_non_enrichment_ids.add(identity)
             if key in merged:
                 try:
                     validate_duplicate_identity_before_merge(merged[key], row)
@@ -7622,7 +7654,7 @@ def main():
         pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
-        svn_enrichment_ids=svn_enrichment_ids - svn_non_enrichment_ids,
+        inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
     )
 
     print(
