@@ -75,7 +75,7 @@ test("duplicate keys or source-observation overflow cannot complete a claim",asy
 test("group evidence overflow never completes claims whose observations were dropped",async()=>{
   const data=JSON.parse(literal);data.photos=[{type:"image",imageUrl:"/image.jpg"}];
   const e=createNewmarkPublishedDetailEnricher(async()=>({rawHtml:`<script>var data = ${JSON.stringify(data)}</script>`,markdown:"x".repeat(180000),links:[],metadata:{statusCode:200}}));
-  const items=Array.from({length:50},(_,i)=>{const slug=`example-${i}`;return {...item,externalId:slug,url:`https://www.nmrk.com/properties/${slug}`,
+  const items=Array.from({length:60},(_,i)=>{const slug=`example-${i}`;return {...item,externalId:slug,url:`https://www.nmrk.com/properties/${slug}`,
     sourcePublishedDetail:{...item.sourcePublishedDetail,recordId:`native-${i}`,slug,url:`https://my.rcm1.com/handler/modern.aspx?pv=opaque_${i}`}};});
   const result=await e.enrichWithEvidence!(items);
   assert.ok(result.evidenceError);assert.ok(result.retainedObservations.length < items.length);
@@ -105,7 +105,7 @@ test('challenge and access denial stop further source dispatch with partial evid
 });
 
 test('unknown settlement stops dispatch and creates explicit not-attempted evidence',async()=>{
- let calls=0;const e=createNewmarkPublishedDetailEnricher(async()=>{calls++;throw new Error('unknown transport');});const r=await e.enrichWithEvidence!([item,item]);assert.equal(calls,1);assert.equal((r.retainedObservations[0] as any).stopReason,'uncertain_settlement');assert.equal((r.retainedObservations[1] as any).failure,'not_attempted_after_uncertain_settlement');
+ let calls=0;const e=createNewmarkPublishedDetailEnricher(async()=>{calls++;throw new Error('unknown transport');});const r=await e.enrichWithEvidence!([item,item]);assert.equal(calls,1);assert.equal((r.retainedObservations[0] as any).stopReason,'uncertain_settlement');assert.equal((r.retainedObservations[1] as any).failure,'not_attempted_after_uncertain_settlement');assert.equal(r.stopReason,'uncertain_settlement');assert.equal(r.evidenceError,'newmark_detail_uncertain_settlement');
 });
 
 test('script-only text is not substantive and additive output clears synthetic transaction mode',async()=>{
@@ -113,4 +113,24 @@ test('script-only text is not substantive and additive output clears synthetic t
  const {runEnrichGroups}=await import('../../../lib/enrich.js');const emptyGroup=await runEnrichGroups(new Map([['newmark',[item]]]),()=>({enricher:e,label:'test'}),()=> 'Newmark');assert.equal(emptyGroup.listings.length,0);assert.equal(emptyGroup.sources[0].retainedObservations.length,1);
  data.photos=[{type:'image',imageUrl:'/image.jpg'}];html=`<script>var data = ${JSON.stringify(data).replace(/</g,'\\u003c')}</script>`;const withFields=await e.enrichWithEvidence!([item]);assert.equal(withFields.listings.length,1);assert.equal(withFields.listings[0].transactionMode,null);
  const result=await runEnrichGroups(new Map([['newmark',[item]]]),()=>({enricher:e,label:'test'}),()=> 'Newmark');assert.equal(result.listings.length,1);assert.equal(Object.hasOwn(result.listings[0],'transactionMode'),false);
+});
+
+test("overflow and stop are preserved as independent source-level signals",async()=>{
+  const data=JSON.parse(literal);data.photos=[{type:"image",imageUrl:"/image.jpg"}];
+  let calls=0;
+  const e=createNewmarkPublishedDetailEnricher(async()=>{
+    calls++;
+    if(calls===49) throw Object.assign(new Error("denied"),{status:403});
+    return {rawHtml:`<script>var data = ${JSON.stringify(data)}</script>`,markdown:"x".repeat(180000),links:[],metadata:{statusCode:200}};
+  });
+  const items=Array.from({length:60},(_,i)=>{const slug=`example-${i}`;return {...item,externalId:slug,url:`https://www.nmrk.com/properties/${slug}`,
+    sourcePublishedDetail:{...item.sourcePublishedDetail,recordId:`native-${i}`,slug,url:`https://my.rcm1.com/handler/modern.aspx?pv=opaque_${i}`}};});
+  const {runEnrichGroups}=await import('../../../lib/enrich.js');
+  const result=await runEnrichGroups(new Map([['newmark',items]]),()=>({enricher:e,label:'test'}),()=> 'Newmark');
+  const source=result.sources[0];
+  assert.ok(source.evidenceError);
+  assert.equal(source.stopReason,'access_denial');
+  assert.ok(result.listings.length>0);
+  assert.ok(result.listings.length<48);
+  assert.equal(calls,49);
 });

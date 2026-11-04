@@ -348,7 +348,7 @@ def test_unmatched_hanley_claims_remain_retryable(
         ],
         write_enriched={**backed_artifact, "listings": rows[:1]},
     )
-    assert enrich.run(_Args(source="hanley", batch=2)) == 0
+    assert enrich.run(_Args(source="hanley", batch=2)) == 20
     sql = "\n".join(calls["exec_sql"])
     assert "WHERE id IN ('done'::uuid)" in sql
     assert "attempts = attempts + 1" in sql
