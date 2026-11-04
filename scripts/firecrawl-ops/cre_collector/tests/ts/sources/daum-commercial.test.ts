@@ -318,17 +318,19 @@ test("DAUM mapper rejects unresolved tenure so ingest cannot fall back to sale",
     detailHtml.replace("Sale- Investment", ""),
     "https://daumcommercial.com/property/main-street/"
   );
-  assert.throws(
-    () =>
-      mapDaumListing(
-        inventory({ tenure: "unknown", tenureText: null }),
-        detail,
-        "sale",
-        "2026-07-30T18:00:00.000Z",
-        "2026-07-30T18:01:00.000Z"
-      ),
-    /unresolved transaction tenure/
-  );
+  for (const tx of ["sale", "lease"] as const) {
+    assert.throws(
+      () =>
+        mapDaumListing(
+          inventory({ tenure: "unknown", tenureText: null }),
+          detail,
+          tx,
+          "2026-07-30T18:00:00.000Z",
+          "2026-07-30T18:01:00.000Z"
+        ),
+      /unresolved transaction tenure/
+    );
+  }
   assert.equal(daumBelongsToTx("unknown", "sale"), false);
   assert.equal(daumBelongsToTx("unknown", "lease"), false);
 });

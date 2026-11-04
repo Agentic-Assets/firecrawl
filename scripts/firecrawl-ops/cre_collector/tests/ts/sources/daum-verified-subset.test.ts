@@ -59,7 +59,7 @@ test("saved 52023 visible empty title is only a V2 identity observation, never h
 });
 
 // Without the opt-in branch the real strict producer rejects the first hold.
-test("subset exhaustively proves 562 members and emits 560 with two typed holds", async t => {
+test("subset proves 562 members and retains two unknown-tenure records", async t => {
   const state = offline(t, 562);
   const progress: string[] = [];
   t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
@@ -75,16 +75,26 @@ test("subset exhaustively proves 562 members and emits 560 with two typed holds"
   assert.equal(proof.kind, "verified_subset_with_holds");
   assert.equal(proof.total, 562); assert.equal(proof.cohort.length, 562); assert.equal(proof.details.length, 562);
   assert.deepEqual(proof.held, [["50293", "unknown_inventory_and_detail_tenure"], ["50007", "unknown_inventory_and_detail_tenure"]]);
-  assert.equal(new Set([...sale.listings, ...lease.listings].map(row => row.id)).size, 560);
-  assert.equal(sale.listings.length, 374); assert.equal(lease.listings.length, 372);
-  assert.equal(sale.totalAvailable, 374); assert.equal(lease.totalAvailable, 372);
+  assert.equal(new Set([...sale.listings, ...lease.listings].map(row => row.id)).size, 562);
+  assert.equal(sale.listings.length, 376); assert.equal(lease.listings.length, 372);
+  assert.equal(sale.totalAvailable, 376); assert.equal(lease.totalAvailable, 372);
   assert.equal(sale.truncated, true); assert.equal(lease.truncated, true);
+  assert.ok(sale.listings.some(row => row.daumPostId === "50002"));
+  assert.ok(lease.listings.some(row => row.daumPostId === "50002"));
+  for (const id of ["50007", "50293"]) {
+    const retained = sale.listings.filter(row => row.daumPostId === id);
+    assert.equal(retained.length, 1);
+    assert.equal(retained[0].daumUnknownTenure, true);
+    assert.equal(retained[0].transactionType, undefined);
+    assert.equal(retained[0].daumTenureEvidence.resolved, "unknown");
+    assert.equal(lease.listings.filter(row => row.daumPostId === id).length, 0);
+  }
   assert.equal(state.posts, 14); assert.equal(state.gets.length, 562);
   assert.deepEqual(state.gets.slice(0, 4), [7, 293, 0, 1]);
   assert.deepEqual(proof.details.map(row => row[0]), proof.cohort.map(row => row[0]));
   assert.equal(proof.cohort.filter(row => row[7] === "unknown").length, 2);
   const emitted = Array.from({ length: 562 }, (_, index) => index).filter(index => index !== 7 && index !== 293);
-  assert.deepEqual(sale.listings.map(row => row.id), emitted.filter(index => index % 3 !== 1).map(index => `property/Synthetic-${index}`));
+  assert.deepEqual(sale.listings.map(row => row.id), Array.from({ length: 562 }, (_, index) => index).filter(index => index === 7 || index === 293 || index % 3 !== 1).map(index => `property/Synthetic-${index}`));
   assert.deepEqual(lease.listings.map(row => row.id), emitted.filter(index => index % 3 !== 0).map(index => `property/Synthetic-${index}`));
   assert.deepEqual(proof.cohort.map(row => row[1]), proof.cohort.map(row => row[1]).sort());
   assert.deepEqual(proof.held, (lease.currentInventoryProof as typeof proof).held);
@@ -253,8 +263,15 @@ test("v2 holds an identity-proved empty visible title without erasing recognized
   assert.equal(proof.cohort.find((row: string[]) => row[0] === "50100")[7], "lease");
   assert.deepEqual({ ...proof, transaction: "lease" }, lease.currentInventoryProof);
   const emitted = [...sale.listings, ...lease.listings];
-  assert.equal(new Set(emitted.map(row => row.daumPostId)).size, 100);
-  assert.equal(emitted.some(row => ["50100", "50101"].includes(String(row.daumPostId))), false);
+  assert.equal(new Set(emitted.map(row => row.daumPostId)).size, 101);
+  assert.equal(emitted.some(row => String(row.daumPostId) === "50100"), false);
+  const unknown = emitted.filter(row => String(row.daumPostId) === "50101");
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].transactionType, undefined);
+  assert.equal(unknown[0].daumUnknownTenure, true);
+  assert.equal(unknown[0].preserveChildCollections, true);
+  assert.equal(unknown[0].salePriceUsd, undefined);
+  assert.equal(unknown[0].leaseRateText, undefined);
   assert.equal(state.gets.length, 102);
 });
 
@@ -313,7 +330,7 @@ test("v2 preserves the existing full parser for nonempty multiple title containe
 });
 
 for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
-  test(`${policy} retains complete parsed cards for exactly held members without emitting them`, async t => {
+  test(`${policy} retains parsed cards and admits identity-proved unknown-tenure records`, async t => {
     const state = offline(t, 102);
     process.env.DAUM_SUBSET_POLICY = policy;
     state.unknownInventory.add(101); state.unknownDetail.add(101);
@@ -340,8 +357,9 @@ for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
     assert.deepEqual(proof.heldInventoryObservations, (lease.currentInventoryProof as any).heldInventoryObservations);
     assert.deepEqual(proof.held.map((row: string[]) => row[0]), ["50100", "50101"]);
     const emitted = [...sale.listings, ...lease.listings];
-    assert.equal(new Set(emitted.map(row => row.daumPostId)).size, 100);
-    assert.equal(emitted.some(row => ["50100", "50101"].includes(row.daumPostId)), false);
+    assert.equal(new Set(emitted.map(row => row.daumPostId)).size, policy === "tenure-only-v1" ? 102 : 101);
+    assert.equal(emitted.some(row => row.daumPostId === "50100"), policy === "tenure-only-v1");
+    assert.equal(emitted.filter(row => row.daumPostId === "50101").length, 1);
     assert.equal(state.gets.length, 102);
     proof.heldInventoryObservations[0].inventory.title = "caller mutation";
     assert.equal((lease.currentInventoryProof as any).heldInventoryObservations[0].inventory.title, "Synthetic 100");
@@ -410,7 +428,7 @@ function richHeldDetailHtml(body: string): string {
 }
 
 for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
-  test(`${policy} retains full parsed held details without listing or request changes`, async t => {
+  test(`${policy} retains full parsed held details and admits unknown-tenure records`, async t => {
     const state = offline(t, 102);
     process.env.DAUM_SUBSET_POLICY = policy;
     state.unknownInventory.add(101);
@@ -458,8 +476,9 @@ for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
     assert.deepEqual(leaseProof.heldDetailObservations, expected);
     assert.deepEqual(proof.held.map((row: string[]) => row[0]), ["50100", "50101"]);
     assert.deepEqual(proof.heldDetailObservations.map((row: any) => row.postId), proof.held.map((row: string[]) => row[0]));
-    assert.equal(new Set([...sale.listings, ...lease.listings].map(row => row.daumPostId)).size, 100);
-    assert.equal([...sale.listings, ...lease.listings].some(row => ["50100", "50101"].includes(row.daumPostId)), false);
+    assert.equal(new Set([...sale.listings, ...lease.listings].map(row => row.daumPostId)).size, policy === "tenure-only-v1" ? 102 : 101);
+    assert.equal([...sale.listings, ...lease.listings].some(row => row.daumPostId === "50100"), policy === "tenure-only-v1");
+    assert.equal([...sale.listings, ...lease.listings].filter(row => row.daumPostId === "50101").length, 1);
     assert.equal(sale.truncated, true);
     assert.equal(lease.truncated, true);
     assert.equal(state.gets.length, 102);

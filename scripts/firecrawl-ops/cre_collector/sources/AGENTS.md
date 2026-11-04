@@ -369,24 +369,30 @@ Progress includes no listing identifiers or URLs and changes no pacing or proof.
 The separate `--admit-daum-verified-subset` permission uses versioned
 `daum-verified-subset-v1` proof, never the complete proof above. It still proves
 two matching complete inventories and valid fresh details for every member;
-only inventory-unknown AND detail-unknown tenure may become a typed hold.
+inventory-unknown AND detail-unknown tenure is retained once with a null
+transaction type when identity and title are proved. Parsed audit holds remain
+in the proof; the separate retained-ID list binds the canonical emitted rows.
+Historical proofs without that list preserve their original hold-only behavior.
 The distinct `tenure-and-empty-title-v2` policy additionally holds an exactly
 one-container empty visible title after canonical/native identity and tenure
 conflict checks. It preserves resolved tenure and excludes that held ID from
 both transaction sets. Empty-only typed observations bind to complete detail
-receipts; V1/default behavior is unchanged. No title fallback or placeholder
+receipts; this empty-title policy does not apply to V1. No title fallback or placeholder
 listing is permitted. Policy joins scope, generation and start in cache identity.
 Conflicts, malformed details, ownership or identity uncertainty fail the attempt.
 All-member historical compatibility and emitted lifecycle preconditions run
-before unchanged upserts. Held parents/children/index remain untouched; this
-scope stays partial even with zero holds and grants no complete watermark,
+before upserts. Empty-title held parents/children/index remain untouched.
+Unknown-tenure rows preserve existing tenure and source evidence and add
+children without deleting existing ones or inferring primary contacts/images.
+This scope stays partial even with zero holds and grants no complete watermark,
 baseline or certificate. Cache identity includes scope, generation and start.
 Use the [DAUM subset contract](../../../../docs/firecrawl-ops/references/daum-verified-subset.md)
 for exact counts, preservation and qualification requirements.
 Subset V1/V2 proofs retain parsed cards in `heldInventoryObservations` and
 parsed details in `heldDetailObservations` for exactly the held IDs in URL order.
 Historical proofs may omit either audit field. These are not raw HTML or
-fallback/admission sources and change no holds, listings, counts, SQL or coverage.
+independent fallback sources. Retained unknown-tenure rows are separately bound
+by the proof; neither audit changes whole-source coverage.
 See the linked contract's held inventory and detail observations boundary.
 
 ## Transport & Scrape Primitives
