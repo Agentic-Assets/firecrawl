@@ -21,6 +21,8 @@ from cre_code_handoff_git import (
 )
 from cre_runtime_maintenance_build import (
     ENGINE,
+    SERVICES,
+    expected_overlay_config_files,
     verify_native_compose,
     verify_native_docker,
 )
@@ -48,14 +50,33 @@ def _git_observation(git, root):
             "tracking": git.text(root, "rev-parse", "refs/remotes/origin/main")}
 
 
+def current_compose_argv(docker, native_root, current_files, override, services, *, project):
+    """Build a targeted Compose command from the observed current file stack."""
+    require(isinstance(current_files, list) and current_files
+            and all(isinstance(path, str) and path for path in current_files)
+            and isinstance(services, set) and services and services <= set(SERVICES)
+            and isinstance(project, str) and project and project[0] in "abcdefghijklmnopqrstuvwxyz0123456789"
+            and all(ch in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in project),
+            "Compose file, project or affected-service scope invalid")
+    native = windows_path(local_path(native_root))
+    override_path = windows_path(local_path(override))
+    files = expected_overlay_config_files(",".join(current_files), override_path).split(",")
+    argv = [str(local_path(docker)), "--host", ENGINE, "compose", "--project-name", project,
+            "--project-directory", native]
+    for path in files:
+        argv.extend(["-f", windows_path(local_path(path))])
+    return argv + ["up", "-d", "--no-deps", "--no-build", "--pull", "never", *sorted(services)]
+
+
 def compose_argv(packet, evidence):
     """Use the existing Windows project and its private environment lookup."""
     native = windows_path(local_path(packet["roots"]["native"]))
-    override = windows_path(local_path(evidence.inputs["compose_override"]["path"]))
-    return [str(local_path(packet["programs"]["native_docker"])), "--host", ENGINE,
-            "compose", "--project-name", "firecrawl", "--project-directory", native,
-            "-f", native + "/docker-compose.yaml", "-f", native + "/docker-compose.override.yaml", "-f", override,
-            "up", "-d", "--no-deps", "--no-build", "--pull", "never", *sorted(packet["expected_images"])]
+    return current_compose_argv(
+        packet["programs"]["native_docker"], native,
+        [native + "/docker-compose.yaml", native + "/docker-compose.override.yaml"],
+        evidence.inputs["compose_override"]["path"], set(packet["expected_images"]),
+        project="firecrawl",
+    )
 
 
 def run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output, admitted, boundary=None):

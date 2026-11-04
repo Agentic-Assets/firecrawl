@@ -36,8 +36,23 @@ import pytest
         "repin_reconcile_failure",
         "restore_settled_failure",
         "restore_reconcile_failure",
-        "image_change",
+        "image_success",
+        "image_noop",
+        "image_mixed",
+        "image_lock_success",
+        "image_completed_failure",
+        "image_unready",
+        "image_unready_rollback_degraded",
+        "image_degraded_after_advance",
+        "image_rollback_unknown",
+        "image_unknown",
+        "image_build_failure",
+        "image_idle_after_hold",
+        "image_drift_prehold",
+        "nuq_change",
+        "compose_change",
         "dependency_change",
+        "collector_dependency_change",
         "ignored_collision",
         "selected_incompatible",
         "health_before",
@@ -56,6 +71,7 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
     import cre_checkpoint_refresh as checkpoint
     import cre_code_handoff as handoff
     import cre_reviewed_update as update
+    import cre_reviewed_update_images as direct
     import cre_runtime_maintenance_images as image_helpers
 
     development, native, runtime = (
@@ -85,11 +101,23 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
             capture_output=True,
         )
     (development / "value").write_text("after")
-    if failure == "image_change":
+    if failure.startswith("image_"):
         (development / "apps/api").mkdir(parents=True)
-        (development / "apps/api/input.txt").write_text("image input")
+        name = "package.json" if failure == "image_lock_success" else "input.txt"
+        (development / "apps/api" / name).write_text("image input")
+        if failure == "image_mixed":
+            (development / "apps/playwright-service-ts").mkdir(parents=True)
+            (development / "apps/playwright-service-ts/input.txt").write_text("image input")
+    if failure == "nuq_change":
+        (development / "apps/nuq-postgres").mkdir(parents=True)
+        (development / "apps/nuq-postgres/nuq.sql").write_text("fixture")
+    if failure == "compose_change":
+        (development / "docker-compose.yaml").write_text("fixture")
     if failure == "dependency_change":
         (development / "package-lock.json").write_text("{}")
+    if failure == "collector_dependency_change":
+        (development / "scripts/firecrawl-ops/cre_collector").mkdir(parents=True)
+        (development / "scripts/firecrawl-ops/cre_collector/package-lock.json").write_text("{}")
     git(development, "add", ".")
     if failure == "ignored_collision":
         (development / "blocked").write_text("selected")
@@ -345,6 +373,7 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
             return {"message": "other" if failure == "api_before" else "Firecrawl API"}
 
     fake_probe.ReadOnlyLoopbackClient = Client
+    fake_probe.idle_snapshot = lambda client: {}
     monkeypatch.setitem(sys.modules, "firecrawl_operator_handoff", fake_probe)
     monkeypatch.setattr(subprocess, "run", fake_subprocess)
     if failure != "real_logged_native":
@@ -353,6 +382,83 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
     monkeypatch.setattr(update, "installed_dependencies", lambda root: {})
     monkeypatch.setattr(update, "windows_path", lambda value: str(value))
     monkeypatch.setattr(image_helpers, "snapshot_container", lambda row: row)
+    if failure.startswith("image_"):
+        import cre_reviewed_update_images as direct
+        import cre_runtime_maintenance_steps as steps
+
+        state["image_calls"] = []
+        state["idle_calls"] = 0
+
+        def prepare(git_object, source, identity, affected, docker_path, native_path, override, output):
+            state["image_calls"].append("build")
+            if failure == "image_build_failure":
+                raise RuntimeError("synthetic image build failure")
+            assert affected == ({"api", "playwright-service"} if failure == "image_mixed" else {"api"})
+            images = {"api": {"image": "fixture", "tag": "fixture-tag"}}
+            if failure == "image_mixed":
+                images["playwright-service"] = {"image": "unchanged", "tag": "other-tag"}
+            return ({"selected": identity, "apply_services": [] if failure == "image_noop" else ["api"],
+                     "images": images, "previous_images": {"api": {"ref": "prior", "image": "old-image"}},
+                     "compose_stack": {"files": ["C:/base.yaml"], "sha256": ["c" * 64]},
+                     "override_path": "C:/stable.json", "override_sha256": hashlib.sha256(b"override").hexdigest(),
+                     "docker_sha256": "d" * 64}, b"override")
+
+        def recheck(*args):
+            state["image_calls"].append("recheck")
+            if failure == "image_drift_prehold":
+                raise RuntimeError("synthetic image drift")
+
+        def idle(*args):
+            state["idle_calls"] += 1
+            if failure == "image_idle_after_hold" and state["idle_calls"] == 2:
+                raise RuntimeError("synthetic queue activity")
+
+        def install(*args):
+            state["image_calls"].append("install")
+            assert state["held"] and git(runtime, "rev-parse", "HEAD") == old
+
+        def compose(*args):
+            state["image_calls"].append("compose")
+            if failure in {"image_completed_failure", "image_rollback_unknown"} and state["image_calls"].count("compose") == 1:
+                raise direct.ComposeCompletedFailure("synthetic completed failure")
+            if failure == "image_rollback_unknown" and state["image_calls"].count("compose") == 2:
+                raise RuntimeError("synthetic unknown rollback outcome")
+            if failure == "image_unknown":
+                raise RuntimeError("synthetic unknown outcome")
+
+        def verify(*args):
+            state["image_calls"].append("verify")
+            return {"images": {"unchanged": ["api"] if failure == "image_noop" else [],
+                               "replaced": [] if failure == "image_noop" else ["api"]},
+                    "containers": {"api": "running"}}
+
+        monkeypatch.setattr(direct, "prepare_image_plan", prepare)
+        monkeypatch.setattr(direct, "recheck_image_plan", recheck)
+        monkeypatch.setattr(direct, "assert_image_idle", idle)
+        monkeypatch.setattr(direct, "install_image_override", install)
+        monkeypatch.setattr(direct, "run_current_compose", compose)
+        monkeypatch.setattr(direct, "verify_image_result", verify)
+        def ready(*args):
+            if failure in {"image_unready", "image_unready_rollback_degraded"}:
+                raise direct.SelectedImageUnready("synthetic readiness timeout")
+            return verify(*args)
+        monkeypatch.setattr(direct, "wait_for_selected_images", ready)
+        monkeypatch.setattr(direct, "restore_image_override", lambda *args: state["image_calls"].append("restore"))
+        monkeypatch.setattr(direct, "qualify_settled_partial_fleet", lambda *args: state["image_calls"].append("qualify-partial"))
+        def original(*args):
+            state["image_calls"].append("verify-original")
+            return {"containers": {"api": "running"}}
+        monkeypatch.setattr(direct, "verify_original_images", original)
+        def readiness(plan, docker, native, client, owner, observe):
+            result = observe()
+            if failure in {"image_unready_rollback_degraded", "image_degraded_after_advance"}:
+                return None
+            return result
+        monkeypatch.setattr(direct, "wait_for_service_readiness", readiness)
+        def compose_argv(*args, **kwargs):
+            assert args[4] == {"api"}
+            return ["docker", "fixture"]
+        monkeypatch.setattr(steps, "current_compose_argv", compose_argv)
     lock = checkpoint.canonical_shared_lock_dir(runtime)
     args = {
         "development": development,
@@ -399,7 +505,53 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
         assert git(runtime, "rev-parse", "HEAD") == selected
         assert state["successor"] and not lock.exists()
         assert ("Repin" in state["calls"]) == (failure == "native_current")
-    elif failure in {"image_change", "dependency_change"}:
+    elif failure == "image_noop":
+        result = update.run_source_update(selected, **args)
+        assert result["image_changes_applied"] is False
+        assert state["idle_calls"] == 0 and "install" not in state["image_calls"] and "compose" not in state["image_calls"]
+        assert state["successor"] and not lock.exists()
+    elif failure in {"image_success", "image_mixed", "image_lock_success"}:
+        result = update.run_source_update(selected, **args)
+        assert result["image_changes_applied"] is True
+        assert state["successor"] and not lock.exists()
+        assert state["image_calls"].index("build") < state["image_calls"].index("install")
+        assert state["image_calls"].index("install") < state["image_calls"].index("compose")
+        assert state["image_calls"].count("verify") >= 2
+    elif failure == "image_rollback_unknown":
+        with pytest.raises(RuntimeError, match="unknown rollback outcome"):
+            update.run_source_update(selected, **args)
+        assert lock.exists() and state["held"]
+        assert git(native, "rev-parse", "HEAD") == old and git(runtime, "rev-parse", "HEAD") == old
+        assert "ReconcileHold" not in state["calls"] and "verify-original" not in state["image_calls"]
+    elif failure == "image_degraded_after_advance":
+        result = update.run_source_update(selected, **args)
+        assert result["status"] == "completed_with_warnings" and result["image_readiness"] == "degraded"
+        assert state["successor"] and not lock.exists()
+    elif failure in {"image_completed_failure", "image_unready", "image_unready_rollback_degraded"}:
+        with pytest.raises(RuntimeError):
+            update.run_source_update(selected, **args)
+        assert not lock.exists() and not state["held"]
+        assert git(native, "rev-parse", "HEAD") == old and git(runtime, "rev-parse", "HEAD") == old
+        assert state["image_calls"].count("compose") == 2
+        assert "restore" in state["image_calls"] and "verify-original" in state["image_calls"]
+        assert "ReconcileHold" in state["calls"]
+    elif failure in {"image_build_failure", "image_drift_prehold", "image_idle_after_hold"}:
+        with pytest.raises(RuntimeError):
+            update.run_source_update(selected, **args)
+        assert not lock.exists()
+        assert git(native, "rev-parse", "HEAD") == old
+        assert git(runtime, "rev-parse", "HEAD") == old
+        if failure == "image_idle_after_hold":
+            assert "ReconcileHold" in state["calls"] and not state["held"]
+        else:
+            assert state["calls"] == []
+    elif failure in {"nuq_change", "compose_change"}:
+        with pytest.raises(ValueError):
+            update.run_source_update(selected, **args)
+        assert not lock.exists() and state["calls"] == []
+        assert git(native, "rev-parse", "HEAD") == old
+        assert git(runtime, "rev-parse", "HEAD") == old
+    elif failure in {"dependency_change", "collector_dependency_change"}:
         with pytest.raises(ValueError, match="not yet supported"):
             update.run_source_update(selected, **args)
         assert not lock.exists()
@@ -479,6 +631,9 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
     if failure in {"hold_noop", "hold_partial"}:
         assert not state["held"] and not lock.exists()
         assert state["calls"][-2:] == ["ReconcileHold", "VerifyOriginal"]
+    if failure == "image_unknown":
+        assert lock.exists() and state["held"]
+        assert "Repin" not in state["calls"] and "Restore" not in state["calls"]
     if failure == "advance_partial":
         assert lock.exists() and git(native, "rev-parse", "HEAD") == selected
         assert git(runtime, "rev-parse", "HEAD") == old

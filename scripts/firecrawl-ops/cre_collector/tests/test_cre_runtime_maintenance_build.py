@@ -8,7 +8,6 @@ import subprocess
 import tarfile
 
 import pytest
-
 from cre_code_handoff_evidence import HandoffError, sha
 
 
@@ -141,6 +140,9 @@ def test_projection_binds_reviewed_overlay_config_files_label():
     expected["Config"]["Labels"]["com.docker.compose.replace"] = "api-1"
     assert projected["config_sha256"] == snapshot_container(expected)["config_sha256"]
     prior = copy.deepcopy(container)
+    prior["Config"]["Labels"]["com.docker.compose.replace"] = "api-1"
+    assert project_expected_configuration(prior, old, new, set(), set(), set(), "a" * 40,
+                                          expected_config_files=expected_files, expected_replace="api-1") == projected
     prior["Config"]["Labels"]["com.docker.compose.replace"] = "earlier"
     with pytest.raises(HandoffError):
         project_expected_configuration(prior, old, new, set(), set(), set(), "a" * 40,
@@ -266,3 +268,95 @@ def test_docker_failure_remains_primary_when_postcheck_also_fails(monkeypatch):
     monkeypatch.setattr(build.subprocess, "run", timeout)
     with pytest.raises(subprocess.TimeoutExpired):
         build._docker_run({"programs": {"native_docker": "C:/docker.exe"}}, ["info"], check=False)
+
+
+def test_compose_config_files_reuse_final_override_without_history_growth():
+    from cre_runtime_maintenance_build import expected_overlay_config_files
+
+    before = "C:/base.yaml,C:/overlay.yaml,C:/maintenance.yaml"
+    override = "C:/reviewed-current.yaml"
+    selected = expected_overlay_config_files(before, override)
+    assert selected == before + "," + override
+    assert expected_overlay_config_files(selected, override) == selected
+    with pytest.raises(HandoffError, match="not the final"):
+        expected_overlay_config_files(override + "," + before, override)
+    with pytest.raises(HandoffError, match="duplicate"):
+        expected_overlay_config_files(before + "," + override + "," + override, override)
+
+
+def test_current_compose_files_bind_actual_overlay_stack(monkeypatch):
+    import cre_runtime_maintenance_build as build
+
+    root = "C:/firecrawl"
+    files = "C:/firecrawl/docker-compose.yaml,C:/firecrawl/docker-compose.override.yaml,C:/temp/maintenance.yaml"
+    def row(service):
+        return {"Config": {"Labels": {
+            "com.docker.compose.service": service, "com.docker.compose.project": "firecrawl",
+            "com.docker.compose.project.working_dir": root, "com.docker.compose.project.config_files": files,
+        }}}
+    containers = [row("api"), row("nuq-postgres")]
+    monkeypatch.setattr(build, "read_file", lambda path: path.encode())
+    result = build.current_compose_files(containers, {"api", "nuq-postgres"}, root)
+    assert result["files"] == files.split(",")
+    assert len(result["sha256"]) == 3
+    assert files not in repr(result["sha256"])
+
+    for change in ("stack", "project", "root", "duplicate"):
+        bad = copy.deepcopy(containers)
+        labels = bad[1]["Config"]["Labels"]
+        if change == "stack":
+            labels["com.docker.compose.project.config_files"] = files + ",C:/other.yaml"
+        elif change == "project":
+            labels["com.docker.compose.project"] = "other"
+        elif change == "root":
+            labels["com.docker.compose.project.working_dir"] = "C:/other"
+        else:
+            labels["com.docker.compose.project.config_files"] = files + ",C:/temp/maintenance.yaml"
+        with pytest.raises(HandoffError):
+            build.current_compose_files(bad, {"api", "nuq-postgres"}, root)
+
+
+def test_compose_stack_accepts_only_owned_final_override_divergence(monkeypatch):
+    import cre_runtime_maintenance_build as build
+
+    root = "C:/firecrawl"
+    base = "C:/firecrawl/base.yaml,C:/firecrawl/third.yaml"
+    override = "C:/private/reviewed.yaml"
+    def row(service, files):
+        return {"Config": {"Labels": {
+            "com.docker.compose.service": service, "com.docker.compose.project": "firecrawl",
+            "com.docker.compose.project.working_dir": root, "com.docker.compose.project.config_files": files,
+        }}}
+    monkeypatch.setattr(build, "read_file", lambda path: path.encode())
+    fleet = [row("api", base + "," + override), row("playwright-service", base)]
+    result = build.current_compose_files(fleet, {"api", "playwright-service"}, root, override_path=override)
+    assert result["files"] == (base + "," + override).split(",")
+    fleet[1]["Config"]["Labels"]["com.docker.compose.project.config_files"] = "C:/other.yaml"
+    with pytest.raises(HandoffError, match="stacks differ"):
+        build.current_compose_files(fleet, {"api", "playwright-service"}, root, override_path=override)
+
+
+def test_current_compose_argv_preserves_stack_and_scopes_recreation():
+    from cre_runtime_maintenance_steps import current_compose_argv
+
+    root = "C:/firecrawl"
+    files = ["C:/firecrawl/docker-compose.yaml", "C:/firecrawl/docker-compose.override.yaml",
+             "C:/temp/maintenance.yaml"]
+    override = "C:/temp/reviewed-current.yaml"
+    args = current_compose_argv("C:/docker.exe", root, files, override, {"nuq-postgres"}, project="firecrawl")
+    assert [args[i + 1] for i, arg in enumerate(args) if arg == "-f"] == [*files, override]
+    assert args[-7:] == ["up", "-d", "--no-deps", "--no-build", "--pull", "never", "nuq-postgres"]
+    again = current_compose_argv("C:/docker.exe", root, [*files, override], override, {"api"}, project="firecrawl")
+    assert [again[i + 1] for i, arg in enumerate(again) if arg == "-f"] == [*files, override]
+    with pytest.raises(HandoffError):
+        current_compose_argv("C:/docker.exe", root, files, override, {"rabbitmq"}, project="firecrawl")
+    with pytest.raises(HandoffError):
+        current_compose_argv("C:/docker.exe", root, [override, *files], override, {"api"}, project="firecrawl")
+
+
+def test_current_compose_argv_rejects_invalid_project():
+    from cre_runtime_maintenance_steps import current_compose_argv
+
+    with pytest.raises(HandoffError):
+        current_compose_argv("C:/docker.exe", "C:/firecrawl", ["C:/base.yaml"], "C:/next.yaml",
+                             {"api"}, project="../other")

@@ -20,8 +20,8 @@ active Compose overlay and unaffected image pins. Do not pull blindly under an
 active writer or run an unattended pull. No Mac change is needed for this
 Windows procedure.
 
-For an operations-code-only or documentation-only change, the foreground
-source-only updater accepts an exact reviewed current `origin/main` SHA from the
+For source changes and supported API or Playwright image changes, the foreground
+reviewed updater accepts an exact reviewed current `origin/main` SHA from the
 clean Windows development checkout, run as the configured Ubuntu user. Fetch
 and review that SHA first; the command does not fetch the remote:
 
@@ -32,13 +32,29 @@ python3 -B scripts/firecrawl-ops/cre_collector/cre_reviewed_update.py --selected
 
 It checks the current task definitions, holds their existing flags under the
 shared writer lock, advances the native and WSL checkouts, repins, and restores
-the original flags. Optional enrichment tasks use the exact name
-`Enrichment - <source-key>` and are included in the same captured fleet and
-pin update. Unknown CRE tasks or invalid enrichment actions block the update.
-This naming and update support does not establish source-specific pilot or
-recurring enrichment readiness. It refuses image, Compose, or dependency input changes
-before holding tasks; those updates still need the reviewed image/dependency
-procedure. It reports existing image provenance as unknown and records bounded
+the original flags. Optional `Enrichment - <source-key>` and `DAUM Verified
+Subset` tasks join the same captured fleet and pin update when present. Unknown
+CRE tasks or invalid actions stop the update. Task support does not itself
+establish source-specific pilot or recurring operation readiness.
+
+For changed API or Playwright build inputs, the updater builds from the selected
+tree, holds tasks, and checks local queue and browser idleness before replacing
+only changed image IDs. That check is a point-in-time observation, not a drain:
+another local API client can start work immediately afterward and its request
+can be interrupted by recreation. Selected images run briefly with the old
+collector checkout before code advances. Local API identity and queue response
+or browser health are bounded readiness checks, not proof that a scrape succeeds.
+A settled image failure restores the previous images and overlay when the
+observed fleet remains within the captured old/selected transition. A mismatched
+fleet or unknown native outcome retains the fence. After a verified rollback,
+temporarily unavailable endpoints are reported as degraded while original task
+flags are restored. If selected services become unready after code advances, the
+command reports `completed_with_warnings` and does not claim service recovery;
+the collector preflight continues to gate actual work.
+
+The command refuses NuQ, Compose configuration, or collector dependency
+changes before holding tasks; those updates need a separate reviewed procedure.
+It reports existing image provenance as unknown and records bounded
 service-health observations; a temporary unavailable service does not by
 itself keep tasks disabled. The collector's own preflight remains responsible
 for checking service health before collection. A failed native step is reconciled under the same owner only when it reports a
@@ -63,7 +79,7 @@ they are not a general requirement for a settled current-state resume. Those
 existing commands continue to enforce their own checks until changed. Their
 forensic records remain available when an actual uncertain operation needs them.
 A saved task definition may still be used to check today's task settings without
-adopting its historical admission requirements. The source-only command above does not implement the general image or dependency updater.
+adopting its historical admission requirements. The command above does not implement a general image or dependency updater.
 
 The CRE collector is one shared pipeline. A development branch, Windows launcher checkout, Linux
 runtime checkout, and temporary test clone have different jobs; they are not separate pipeline
