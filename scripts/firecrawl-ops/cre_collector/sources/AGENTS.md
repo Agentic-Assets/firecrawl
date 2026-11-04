@@ -1312,3 +1312,9 @@ and is not an identity crosswalk, lease inventory or canonical listing input.
 The collector preserves the source error and normally archives the rejected
 attempt under its checkpoint run; no database storage is implied. Serialization
 can expand the output beyond separate evidence-store limits.
+For a Franklin-only fallback with stdout or an existing output file, the full
+private artifact goes to a uniquely created private sidecar whose path is
+reported on stderr. The ordinary output is an evidence-only projection that
+omits Franklin observations and Buildout raw-retention fields. If sidecar
+publication fails, the projection remains available and the process exits
+nonzero. Fresh output files keep the normal private artifact path.

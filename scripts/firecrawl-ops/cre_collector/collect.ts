@@ -392,10 +392,36 @@ async function main() {
   const json = JSON.stringify(out);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
+  const franklinFallback = requestedSources.length === 1 && requestedSources[0] === "franklin-street" &&
+    sources.some(source => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  const writeFranklinProjection = () => {
+    let sidecar = "written";
+    const sidecarJson = JSON.stringify({ ...out, runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_private_sidecar" } });
+    try { console.error(`Franklin private sidecar: ${writeTerminalCollectorArtifact(undefined, sidecarJson)}`); }
+    catch {
+      sidecar = "failed";
+      console.error("Franklin private sidecar failed; private evidence was not retained");
+      process.exitCode = 1;
+    }
+    const projection = {
+      ...out,
+      runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_sidecar_projection", franklinSidecar: sidecar },
+      sources: sources.map(({ retainedObservations, ...source }) => source),
+      listings: listings.map(({ rawBuildout, buildoutRawRetention, ...listing }) => listing),
+    };
+    writeCollectorArtifact(OUT_PATH, JSON.stringify(projection), false);
+  };
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
-  } else writeCollectorArtifact(OUT_PATH, json, privateEvidence);
+  } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
+  else {
+    try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
+    catch (error) {
+      if (franklinFallback && (error as NodeJS.ErrnoException).code === "EEXIST") writeFranklinProjection();
+      else throw error;
+    }
+  }
   if (OUT_PATH) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }
@@ -520,7 +546,8 @@ async function dispatch(): Promise<void> {
   try {
     const enrichInput = flags["enrich-input"];
     if (flags["observe-input"] === undefined && !enrichInput && !OUT_PATH &&
-        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || key === "newmark" || allBuildoutFeeds.some((feed) => feed.sourceKey === key))) {
+        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || key === "newmark" || allBuildoutFeeds.some((feed) => feed.sourceKey === key)) &&
+        !(requestedSources.length === 1 && requestedSources[0] === "franklin-street")) {
       throw new Error("SRS, Kidder, Newmark and Buildout collection require a private --out file");
     }
     if (enrichInput && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1" && !OUT_PATH)
