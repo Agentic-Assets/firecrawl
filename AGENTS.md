@@ -61,8 +61,7 @@ Merge each coherent, valuable phase into `Agentic-Assets/firecrawl` main promptl
 once its applicable review, local proof, and merge gates pass. Do not merge
 unnecessary or incorrect changes merely to clear a branch. For obsolete or
 superseded work, check ownership and unique changes before closing its PR or
-cleaning its branch; preserve valuable unmerged work and coordinate with its
-owner. Merging the fork does not authorize an upstream merge or deployment.
+cleaning its branch; preserve valuable unmerged work and respect its ownership. Merging the fork does not authorize an upstream merge or deployment.
 
 ## Shared CRE data ownership
 
