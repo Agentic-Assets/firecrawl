@@ -155,13 +155,16 @@ def _subset_summary_fields(child, source, count):
         require(isinstance(missing, dict) and set(missing) == {"state", "city", "assetType"}
                 and all(type(value) is int and 0 <= value <= binding["incomplete_count"] for value in missing.values())
                 and sum(missing.values()) >= binding["incomplete_count"])
-    lease_coverage = "unknown" if binding["held_count"] or (pyramid and (binding.get("incomplete_count") or binding.get("transition_count"))) else "proved"
+    unknown = binding.get("retained_unknown_tenure_count", 0)
+    require(type(unknown) is int and 0 <= unknown <= count and (not pyramid or unknown == 0))
+    lease_coverage = "unknown" if binding["held_count"] or unknown or (pyramid and (binding.get("incomplete_count") or binding.get("transition_count"))) else "proved"
     require(binding.get("whole_lease_coverage") == lease_coverage)
     return {"measurement": "generation_exact_verified_subset",
             "qualification": "qualified_partial_subset", "partial": True,
             "whole_source_coverage": False,
             **{key: binding[key] for key in ("inventory_count", "emitted_count", "held_count")},
             "whole_lease_coverage": lease_coverage,
+            **({"retained_unknown_tenure_count": unknown} if "retained_unknown_tenure_count" in binding else {}),
             **({"incomplete_count": binding["incomplete_count"], "transition_count": binding["transition_count"],
                 "missing_field_counts": binding["missing_field_counts"]} if pyramid and "incomplete_count" in binding else {})}
 
@@ -180,6 +183,22 @@ def _pyramid_emitted_breakdown(child, source, count):
     require(all(type(x) is int and 0 <= x <= count for x in (sale, lease, both))
             and both <= min(sale, lease) and sale + lease - both == count)
     return {**value, "measurement": "current_staged_inventory_transaction_types"}
+
+
+def _daum_unknown_breakdown(child, source, count):
+    if source != "daum-commercial":
+        return None
+    binding = child["sources"][source].get("gate", {}).get("current_inventory_proof", {})
+    if "retained_unknown_tenure_count" not in binding:
+        return None
+    require(_subset_summary_fields(child, source, count).get("partial") is True)
+    sale, lease, unknown = (binding.get(key) for key in
+                            ("sale_count", "lease_count", "retained_unknown_tenure_count"))
+    require(all(type(value) is int and 0 <= value <= count for value in (sale, lease, unknown)))
+    both = sale + lease + unknown - count
+    require(0 <= both <= min(sale, lease))
+    return {"sale": sale, "lease": lease, "both": both,
+            "measurement": "current_staged_inventory_transaction_types"}
 
 
 def _artifact_expected_count(child, source, count):
@@ -554,7 +573,11 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         breakdown_basis = "none"
         breakdown_reason = "staging_stats_absent"
         staged_stats = artifact.get("transaction_breakdown")
-        if _pyramid_emitted_breakdown(child, source, count) is not None:
+        if _daum_unknown_breakdown(child, source, count) is not None:
+            transaction_breakdown = _daum_unknown_breakdown(child, source, count)
+            breakdown_basis = "bound_emitted_partition"
+            breakdown_reason = None
+        elif _pyramid_emitted_breakdown(child, source, count) is not None:
             transaction_breakdown = _pyramid_emitted_breakdown(child, source, count)
             breakdown_basis = "bound_emitted_partition"
             breakdown_reason = None
@@ -1100,7 +1123,11 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if _pyramid_emitted_breakdown(child, source, count) is not None:
+            if _daum_unknown_breakdown(child, source, count) is not None:
+                breakdown = _daum_unknown_breakdown(child, source, count)
+                breakdown_basis = "bound_emitted_partition"
+                breakdown_reason = None
+            elif _pyramid_emitted_breakdown(child, source, count) is not None:
                 breakdown = _pyramid_emitted_breakdown(child, source, count)
                 breakdown_basis = "bound_emitted_partition"
                 breakdown_reason = None

@@ -2913,6 +2913,7 @@ def _validate_source_artifact_local(
     data = _load_json(path)
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
+    daum_retained_unknown_ids = frozenset()
     if daum_verified_subset:
         if (
             expected_source != "daum-commercial"
@@ -2921,10 +2922,10 @@ def _validate_source_artifact_local(
             raise ArtifactValidationError(
                 "DAUM subset requires exact DAUM both-transaction scope"
             )
-        from cre_daum_current_inventory import subset_source_scope
+        from cre_daum_current_inventory import checkpoint_retained_unknown_ids
 
         try:
-            subset_source_scope(data)
+            daum_retained_unknown_ids = checkpoint_retained_unknown_ids(data)
         except (KeyError, TypeError, ValueError) as exc:
             raise ArtifactValidationError(
                 "DAUM subset structural evidence refused"
@@ -3145,6 +3146,10 @@ def _validate_source_artifact_local(
                     f"{expected_source}/{tx} lacks current inventory observations"
                 )
             child_preservation_rows = metrics.get("childPreservationRows")
+            if daum_verified_subset and type(child_preservation_rows) is not int:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} has an invalid child-preservation count"
+                )
             if property_detail_freshness:
                 incomplete_rows = len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial else 0
                 if child_preservation_rows not in ({0, canonical_count, incomplete_rows} if pyramid_partial else {0, canonical_count}):
@@ -3167,7 +3172,11 @@ def _validate_source_artifact_local(
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
-            elif child_preservation_rows != (len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial else 0):
+            elif child_preservation_rows != (
+                len(daum_retained_unknown_ids) if daum_verified_subset and tx == "sale"
+                else len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial
+                else 0
+            ):
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} must not preserve child collections"
                 )
@@ -3331,9 +3340,11 @@ def _validate_source_artifact_local(
                             f"listings[{index}] must preserve child collections"
                         )
                 elif preserves_children and not (
-                    (listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
-                    and listing.get("detailObservedWithChildPreservation") is True
-                    and bool((listing.get("missingFieldEvidence") or {}).get("fields"))
+                    ((listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
+                     and listing.get("detailObservedWithChildPreservation") is True
+                     and bool((listing.get("missingFieldEvidence") or {}).get("fields")))
+                    or (daum_verified_subset and listing.get("transactionMode") == "sale"
+                        and listing.get("daumPostId") in daum_retained_unknown_ids)
                 ):
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
