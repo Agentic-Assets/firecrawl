@@ -95,6 +95,14 @@ not apply to another source. Code merge and isolated QA do not establish
 runtime promotion or fresh full-source production acceptance; inspect the
 current evidence on [AGENTIC-4576](https://linear.app/agenticassets/issue/AGENTIC-4576).
 
+Avison Young's optional `avisonPageMapObservation` retains a finite, in-range
+paired point from the unique property-map element of the already identity-validated
+registered official page. It identifies the source URL and map method; it is a
+separate observation from feed coordinates, not a replacement or a precision
+claim. Missing, invalid or ambiguous maps do not block the listing. It does not
+combine axes or authorize reconciliation of conflicting observations. Current
+raw-data replacement does not establish a historical observation archive.
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,
