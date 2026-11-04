@@ -173,6 +173,14 @@ SELECT t.brokerage_id, t.external_id, t.source_url, t.status, t.deleted_at,
              FROM jsonb_path_query(t.raw_data, '$.**.wordpressRecord.id') n(value)) AS native_ids
 FROM credeals.cre_listings t
 WHERE t.brokerage_id IN (SELECT brokerage_id FROM _pyramid_subset_members);
+-- Give the planner usable cardinalities and identity lookups for this locked
+-- source partition. These indexes and statistics exist only for this transaction.
+CREATE INDEX ON _pyramid_subset_members (brokerage_id, external_id);
+CREATE INDEX ON _pyramid_subset_history (brokerage_id, external_id);
+CREATE INDEX ON _src (brokerage_id, external_id);
+ANALYZE _pyramid_subset_members;
+ANALYZE _pyramid_subset_history;
+ANALYZE _src;
 -- Only emitted, exactly matched active parents and current source-index rows
 -- can transition. This table also selects additive child preservation.
 INSERT INTO _pyramid_native_transitions (brokerage_id, external_id)
