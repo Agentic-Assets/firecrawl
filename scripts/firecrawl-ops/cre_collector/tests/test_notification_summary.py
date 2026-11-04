@@ -1610,7 +1610,8 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
 
 @pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing",
                                     "artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed",
-                                    "parent_complete", "parent_complete_bad_report"])
+                                    "parent_complete", "parent_complete_bad_report", "zero_held_readback_marker",
+                                    "zero_held_gate_marker", "zero_held_report_marker"])
 def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="jll-investor")
     source = "jll-investor"
@@ -1659,7 +1660,26 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tam
     assert result["complete"] is False
     assert result["qualified_subset_source_keys"] == [source]
     assert any(row["source_key"] == setup["source2"] for row in result["per_source_summaries"])
-    if tamper in {"parent_complete", "parent_complete_bad_report"}:
+    if tamper in {"zero_held_readback_marker", "zero_held_gate_marker", "zero_held_report_marker"}:
+        parent["sources"][source]["state"] = "complete"
+        artifact["jll_partial"] = False
+        artifact["staged_unique"] = 3
+        binding.update(held=[], held_count=0)
+        observation["held"] = []
+        if tamper == "zero_held_readback_marker":
+            checkpoint["gate"] = {}
+        else:
+            checkpoint["readback"].pop("kind")
+            if tamper == "zero_held_report_marker":
+                checkpoint["gate"] = {}
+        raw = json.dumps(validation, separators=(",", ":")).encode()
+        validation_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        child["pipeline"]["units"][0]["validation_sha256"] = digest
+        for key in (source, setup["source2"]):
+            child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+            parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    elif tamper in {"parent_complete", "parent_complete_bad_report"}:
         parent["sources"][source]["state"] = "complete"
         if tamper == "parent_complete_bad_report":
             validation["jll_partial_readback"] = {**observation, "generation_id": "other"}

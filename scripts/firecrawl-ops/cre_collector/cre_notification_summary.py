@@ -1056,10 +1056,22 @@ def verified_pipeline_summary(
                 continue
             require(state == "verified")
             source_artifact = checkpoint.get("artifact")
+            source_readback = checkpoint.get("readback")
+            source_gate = checkpoint.get("gate")
+            source_binding = source_gate.get("current_inventory_proof") if isinstance(source_gate, dict) else None
             jll_partial_candidate = (
                 source == "jll-investor"
                 and (parent_entry.get("state") == "qualified_partial_subset"
-                     or (isinstance(source_artifact, dict) and source_artifact.get("jll_partial") is True))
+                     or (isinstance(source_artifact, dict) and source_artifact.get("jll_partial") is True)
+                     or (isinstance(source_readback, dict) and source_readback.get("kind") == "jll_investor_partial")
+                     or (isinstance(source_gate, dict) and (
+                         source_gate.get("verdict") == "ok_additive_verified_subset"
+                         or source_gate.get("admission_scope") == "jll_investor_partial_v1"
+                         or source_gate.get("qualification") == "qualified_partial_subset"))
+                     or (isinstance(source_binding, dict) and (
+                         source_binding.get("schema") == "jll-investor-partial-v1"
+                         or source_binding.get("scope") == "jll_investor_partial_v1"
+                         or source_binding.get("qualification") == "qualified_partial_subset")))
             )
             require(
                 interrupted or ((jll_partial_candidate and parent_entry.get("state") in {"complete", "qualified_partial_subset"}
@@ -1117,6 +1129,8 @@ def verified_pipeline_summary(
                 require_full_validation_report(validation)
                 require(validation.get("ok") is True)
                 validated_units[unit_id] = validation
+            if source == "jll-investor" and "jll_partial_readback" in validated_units[unit_id]:
+                jll_partial_candidate = True
             checkpoint = checkpoints[source]
             require(checkpoint.get("state") == "ingested")
             require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
