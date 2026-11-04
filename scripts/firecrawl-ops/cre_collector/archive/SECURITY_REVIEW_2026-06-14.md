@@ -40,11 +40,11 @@ markdown, archived JSON/HTML capture artifacts, and test-run output, which were
 out of scope.
 
 - Python (shells out to `psql`, builds SQL):
-  `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`, `cre_validate.py`.
-- TypeScript (web scrapers): `collect.ts`, `types.ts`, `lib/*.ts`
-  (`config`, `scrape`, `util`, `broker`, `html`), `sources/*.ts` (15 sources).
-- Shell: `cre_daily_update.sh`, `run_colliers_main_full.sh`,
-  `launchd/cre_run_tier.sh`.
+  `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`, `../cre_validate.py`.
+- TypeScript (web scrapers): `../collect.ts`, `../types.ts`, `../lib/*.ts`
+  (`config`, `scrape`, `util`, `broker`, `html`), `../sources/*.ts` (15 sources).
+- Shell: `../cre_daily_update.sh`, `../run_colliers_main_full.sh`,
+  `../launchd/cre_run_tier.sh`.
 - SQL migrations: `../../sql/001`..`../../sql/008`, `000_run_all.sql`,
   `005_cre_views.sql`, and `../../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
 - PowerShell: `apps/api/scripts/check-domains.ps1`.
