@@ -49,6 +49,7 @@ import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidde
 import type { ScrapedDoc, SourceKey } from "../types.js";
 import type { NewmarkDetailWitness } from "../sources/pure/newmark-detail-link.js";
 import { createNewmarkPublishedDetailEnricher } from "../sources/newmark-published-enrich.js";
+import { extractNewmarkPage, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
 
 export type EnrichItem = {
   sourceKey: string;
@@ -56,6 +57,7 @@ export type EnrichItem = {
   url: string;
   transaction?: "sale" | "lease";
   sourcePublishedDetail?: NewmarkDetailWitness | { status: "unresolved"; reason: string };
+  sourcePageWitness?: NewmarkPageWitness;
 };
 
 export interface SourceEnricher {
@@ -297,11 +299,23 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
       let capturedAt: string | null = null;
       try { capturedAt = clock(); } catch { /* Preserve an unavailable capture clock explicitly. */ }
       let observation: unknown;
-      try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl }); }
+      let evidenceCaptured = false;
+      try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl }); evidenceCaptured = true; }
       catch { observation = failedEnrichmentEvidence(item, "evidence_capture_failed"); }
       try {
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
-        return { listing: genericHasSubstantiveFields(row) ? row : null, observation };
+        if (genericHasSubstantiveFields(row)) return { listing: row, observation };
+        if (item.sourceKey === "newmark" && item.sourcePageWitness && evidenceCaptured &&
+            doc.metadata?.url === item.url && doc.metadata?.sourceURL === item.url) {
+          const page = extractNewmarkPage(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode);
+          if (page && capturedAt) return { listing: {
+            id: item.externalId, url: item.url, preserveChildCollections: true,
+            newmarkPageObservation: { schema: "newmark-page-observation/v1", observedAt: capturedAt,
+              sourceUrl: item.url, prose: page.prose, witness: item.sourcePageWitness },
+            contactsDetailed: page.contacts,
+          }, observation };
+        }
+        return { listing: null, observation };
       } catch {
         console.error("  enrich/generic: parsing failed; retained source observation");
         return { listing: null, observation };

@@ -66,8 +66,10 @@ enrichment.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -75,12 +77,14 @@ import uuid
 from datetime import datetime, timezone
 
 import newmark_claim_witness
+from cre_newmark_page_guard import parse_output
 
 # Reuse cre_ingest verbatim so env-file discovery, SQL escaping, and psql
 # discovery are identical to the production ingest path. The worker imports these
 # symbols; it never re-implements credential loading or quote-doubling.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
+    artifact_run_identity,
     assert_expected_database_target,
     find_psql,
     generic_enrichment_substantive,
@@ -142,7 +146,7 @@ def _normalize_source_filter(source):
     return source
 
 
-def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False, source_detail_witness=False):
+def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False, source_detail_witness=False, source_page_witness=False):
     """Atomically claim up to `batch` pending rows and return their fields.
 
     Mirrors cre_monitor.build_write_sql GUC pins (ON_ERROR_STOP +
@@ -163,6 +167,8 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
     source = _normalize_source_filter(source)
     if source_detail_witness and (source not in (None, "newmark") or targeted):
         raise ValueError("source detail witness requires mixed or Newmark-only non-targeted claims")
+    if source_page_witness and (source != "newmark" or batch != 1 or targeted or source_detail_witness):
+        raise ValueError("Newmark page witness requires a Newmark-only one-item claim")
     where_source = []
     if source is not None:
         # This predicate lives inside the locked claim CTE. Consequently a
@@ -199,7 +205,8 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         "  FROM claimed WHERE q.id = claimed.id",
         "RETURNING q.id, q.source_key, q.external_id, q.url, q.reason, q.attempts"
         + (", q.claimed_at" if targeted else "")
-        + ((", NULL::text, CASE WHEN q.source_key = 'newmark' THEN " + newmark_claim_witness.returning_sql() + " ELSE NULL END") if source_detail_witness else "") + ";",
+        + ((", NULL::text, CASE WHEN q.source_key = 'newmark' THEN " + newmark_claim_witness.returning_sql() + " ELSE NULL END") if source_detail_witness else "")
+        + ((", q.claimed_at, " + newmark_claim_witness.page_returning_sql() + ", q.brokerage_id") if source_page_witness else "") + ";",
         "COMMIT;",
     ])
 
@@ -406,6 +413,26 @@ def build_retry_increment_sql(retry_ids, last_error=None):
     ])
 
 
+def build_newmark_page_disposition_sql(row, outcome):
+    """Settle only the exact claimed generation; uncertainty must stay fenced."""
+    if outcome not in {"complete", "retry"} or not row.get("claimed_at"):
+        raise ValueError("invalid Newmark page claim disposition")
+    predicate = (
+        "id=" + sql_lit(row["id"]) + "::uuid AND source_key='newmark'"
+        + " AND brokerage_id IS NOT DISTINCT FROM " + _lit_or_null(row.get("brokerage_id")) + "::uuid"
+        + " AND external_id IS NOT DISTINCT FROM " + _lit_or_null(row.get("external_id"))
+        + " AND url IS NOT DISTINCT FROM " + _lit_or_null(row.get("url"))
+        + " AND claimed_at=" + sql_lit(row["claimed_at"]) + "::timestamptz"
+        + " AND attempts=" + str(int(row["attempts"])) + " AND done_at IS NULL"
+    )
+    statement = ("DELETE FROM credeals.cre_enrichment_queue WHERE " + predicate if outcome == "complete"
+                 else "UPDATE credeals.cre_enrichment_queue SET attempts=attempts+1, claimed_at=NULL, "
+                      "last_error='Newmark page identity changed or ambiguous' WHERE " + predicate)
+    return "\\set ON_ERROR_STOP on\nBEGIN;\n" + lifecycle_transaction_lock_sql() + (
+        "\nDO $$ DECLARE n integer; BEGIN " + statement + "; GET DIAGNOSTICS n = ROW_COUNT; "
+        "IF n <> 1 THEN RAISE EXCEPTION 'Newmark page claim changed'; END IF; END $$;\nCOMMIT;\n")
+
+
 def claim_rows_to_items(claimed_rows, *, targeted=False):
     """Shape claimed rows into the claim.json `items` collect.ts --enrich-input reads.
 
@@ -427,6 +454,8 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
             item.update(claimId=r["id"], claimedAt=r["claimed_at"])
         if r.get("source_key") == "newmark" and r.get("source_published_detail") is not None:
             item["sourcePublishedDetail"] = r["source_published_detail"]
+        if r.get("source_key") == "newmark" and r.get("source_page_witness") is not None:
+            item["sourcePageWitness"] = r["source_page_witness"]
         items.append(item)
     return {"items": items}
 
@@ -500,7 +529,7 @@ def _psql_exec(db_url, sql):
         sys.exit(f"psql exec failed ({proc.returncode})")
 
 
-def _parse_claimed(rows, *, source_detail_witness=False):
+def _parse_claimed(rows, *, source_detail_witness=False, source_page_witness=False):
     """Parse RETURNING tuples (id, source_key, external_id, url, reason, attempts)."""
     claimed = []
     for t in rows:
@@ -517,6 +546,9 @@ def _parse_claimed(rows, *, source_detail_witness=False):
             **({"claimed_at": t[6]} if len(t) > 6 and t[6] else {}),
             **({"source_published_detail": newmark_claim_witness.parse(t[7])}
                if source_detail_witness and len(t) > 7 else {}),
+            **({"source_page_witness": newmark_claim_witness.parse_page(t[7])}
+               if source_page_witness and len(t) > 7 else {}),
+            **({"brokerage_id": t[8] or None} if source_page_witness and len(t) > 8 else {}),
         })
     return claimed
 
@@ -562,6 +594,12 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             "external_id"
         ):
             raise ValueError("Hanley enrichment native identity differs from its claim")
+        if "newmarkPageObservation" in listing and (
+            listing.get("sourceKey") != "newmark" or listing.get("id") != claimed.get("external_id")
+            or not isinstance(listing["newmarkPageObservation"], dict)
+            or listing["newmarkPageObservation"].get("witness") != claimed.get("source_page_witness")
+        ):
+            raise ValueError("Newmark page observation does not match its claim witness")
         identity = (listing.get("sourceKey"), url)
         if identity in seen_urls:
             raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
@@ -726,7 +764,11 @@ def run(args):
     evidence_witness = (os.environ.get("CRE_NEWMARK_PUBLISHED_DETAIL") == "1"
                         and getattr(args, "artifact_out", None) is not None and not targeted
                         and source in (None, "newmark"))
-    claim_sql = build_claim_sql(batch, source=source, targeted=targeted, source_detail_witness=evidence_witness)
+    page_witness = (source == "newmark" and batch == 1 and not targeted
+                    and not evidence_witness and getattr(args, "artifact_out", None) is not None
+                    and getattr(args, "expected_db_target_sha256", None) is not None)
+    claim_sql = build_claim_sql(batch, source=source, targeted=targeted, source_detail_witness=evidence_witness,
+                                source_page_witness=page_witness)
 
     if args.dry_run:
         # Never connect; print the claim SQL so the shape is auditable. No url.
@@ -767,7 +809,7 @@ def run(args):
     print(f"credentials: {env_path}", file=sys.stderr)
 
     # (1) Claim a batch atomically.
-    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql), source_detail_witness=evidence_witness)
+    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql), source_detail_witness=evidence_witness, source_page_witness=page_witness)
     if not claimed_rows:
         print("0 claimed: queue empty, nothing to enrich", file=sys.stderr)
         return 0
@@ -804,6 +846,11 @@ def run(args):
         validate_matthews_targeted_claims(claims)
 
     claimed_ids = [r["id"] for r in claimed_rows]
+    if page_witness and claimed_rows[0].get("source_page_witness") == {"refused": True}:
+        require_owner()
+        _psql_exec(db_url, build_newmark_page_disposition_sql(claimed_rows[0], "retry"))
+        print("enrich failed: 0 done, 1 retry, ambiguous Newmark URL association", file=sys.stderr)
+        return 21
 
     # (3) Targeted-detail collect. No full/monitor flags.
     collect_env = dict(os.environ)
@@ -856,13 +903,34 @@ def run(args):
         # original artifact. Retaining that private file is not evidence-store
         # database admission or proof of a successful write.
         require_owner()
+        page_rows = [row for row in enriched_listings if "newmarkPageObservation" in row]
+        page_attempt = None
+        if page_rows:
+            if not page_witness or len(claimed_rows) != 1 or len(enriched_listings) != 1:
+                print("Newmark page requires one bound Newmark-only claim", file=sys.stderr)
+                return 1
+            code_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True, check=True).stdout.strip()
+            if not re.fullmatch(r"[0-9a-f]{40}", code_sha):
+                raise ValueError("invalid Newmark page code binding")
+            def stable_digest(path):
+                with open(path, "rb") as stream:
+                    return hashlib.sha256(stream.read()).hexdigest()
+            artifact_digest = stable_digest(enriched_path)
+            claim_digest = stable_digest(claim_path)
+            page_nonce = uuid.uuid4().hex
+            page_attempt = hashlib.sha256(
+                (page_nonce + artifact_digest + claim_digest + expected_target + code_sha).encode()
+            ).hexdigest()
         ingest = subprocess.run(
             [sys.executable, os.path.join(HERE, "cre_ingest.py"),
              *build_ingest_argv(enriched_path, targeted_claims=claim_path if targeted else None)]
             + (["--env-file", args.env_file] if args.env_file else [])
             + (["--expected-db-target-sha256", expected_target]
-               if expected_target is not None else []),
-            cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
+               if expected_target is not None else [])
+            + (["--newmark-page-attempt", page_attempt, "--skip-post-commit-summary"]
+               if page_attempt else []),
+            cwd=HERE, stdout=subprocess.PIPE if page_attempt else sys.stderr, stderr=sys.stderr,
+            text=bool(page_attempt), check=False,
         )
         if ingest.returncode != 0:
             if expected_target is not None:
@@ -879,6 +947,32 @@ def run(args):
             print(f"ingest failed rc={ingest.returncode}; released "
                   f"{len(claimed_ids)} claim(s)", file=sys.stderr)
             return 1
+        if page_attempt:
+            if stable_digest(enriched_path) != artifact_digest or stable_digest(claim_path) != claim_digest:
+                print("Newmark page artifact changed; claim retained for recovery", file=sys.stderr)
+                return 1
+            try:
+                outcome = parse_output(ingest.stdout, page_attempt)
+            except ValueError:
+                print("Newmark page outcome unknown; claim retained for recovery", file=sys.stderr)
+                return 1
+            if outcome == "committed":
+                print("Newmark page commit proof:", page_attempt, "nonce", page_nonce,
+                      "artifact", artifact_digest, "claim", claim_digest, "target", expected_target,
+                      "code", code_sha, file=sys.stderr)
+            if outcome == "refused":
+                run_key, _ = artifact_run_identity([enriched_path])
+                count = _psql_query(db_url, "SELECT count(*) FROM credeals.cre_scrape_jobs WHERE artifact_run_key=" + sql_lit(run_key) + ";")
+                if count != [("0",)]:
+                    print("Newmark page rollback not confirmed; claim retained", file=sys.stderr)
+                    return 1
+                print("Newmark page rollback proof:", page_attempt, "nonce", page_nonce,
+                      "artifact", artifact_digest, "claim", claim_digest, "target", expected_target,
+                      "code", code_sha, "zero_jobs", file=sys.stderr)
+                require_owner()
+                _psql_exec(db_url, build_newmark_page_disposition_sql(claimed_rows[0], "retry"))
+                print("enrich failed: 0 done, 1 retry, confirmed Newmark identity refusal", file=sys.stderr)
+                return 21
     else:
         print(
             "0 admitted listings: skipping ingest and classifying queue outcomes",
@@ -899,7 +993,8 @@ def run(args):
     _psql_exec(db_url, build_targeted_queue_sql(
         [i for i in claims["items"] if i["claimId"] in done_ids], "complete",
         artifact=artifact, claims=claims)
-        if targeted else build_complete_sql(done_ids))
+        if targeted else (build_newmark_page_disposition_sql(claimed_rows[0], "complete")
+                          if enriched_listings and page_attempt else build_complete_sql(done_ids)))
     deferred = deferred_claim_ids(claimed_rows, artifact)
     absent = [claim_id for claim_id in retry_ids + dead_ids if claim_id not in deferred]
     deferred_ids = [claim_id for claim_id in retry_ids + dead_ids if claim_id in deferred]

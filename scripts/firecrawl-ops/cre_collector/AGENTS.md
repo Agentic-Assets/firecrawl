@@ -402,6 +402,15 @@ Key behavior:
   queue acceptance, inventory freshness, lifecycle authority, or a prior-history archive.
   A new parent from generic or published Newmark detail stores its detail without inventing
   an inventory observation or clock; a later admitted inventory may add both.
+  The guarded Newmark-only batch-one worker can additionally retain a
+  source-bound property-page observation and add contacts when a unique URL and
+  exact single non-unit native address match. Existing prose and populated
+  contact fields remain unchanged. The ingest transaction rechecks the full
+  brokerage URL association under the lifecycle lock. A bound explicit
+  rollback plus zero-job check permits retry; missing/invalid outcomes or
+  uncertain queue disposition retain the recovery fence. This is not inventory
+  freshness or lifecycle authority, and unsupported or ambiguous pages remain
+  held.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:
