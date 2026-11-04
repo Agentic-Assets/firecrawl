@@ -370,7 +370,11 @@ def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
             "from pathlib import Path\n"
             "args = sys.argv\n"
             "stage = args[args.index('-Stage') + 1]\n"
-            "result = {'qualified_sources': 'interra-realty,newmark', 'snapshot': [], 'digest': 'a' * 64} if stage == 'Inspect' else {'stage': stage, 'complete': True}\n"
+            "plan = json.loads(Path(args[args.index('-Plan') + 1]).read_text())\n"
+            "fleet = plan['release']['task_baseline']\n"
+            "extra = {'key': 'enrich:newmark', 'task_path': chr(92) + 'Agentic Assets' + chr(92) + 'CRE' + chr(92), 'task_name': 'Enrichment - newmark'}\n"
+            "if stage != 'Inspect': assert fleet[-1] == extra and plan['release']['reviewed_fleet'] is True\n"
+            "result = {'qualified_sources': 'interra-realty,newmark', 'task_baseline': fleet + [extra], 'snapshot': [], 'digest': 'a' * 64} if stage == 'Inspect' else {'stage': stage, 'complete': True}\n"
             "Path(args[args.index('-Output') + 1]).write_text(json.dumps(result))\n"
             "print('synthetic native ' + stage)\n"
         )
