@@ -12,7 +12,7 @@ export type PartialPageObservation = {
   start?: number;
   pageSize?: number;
   kind?: "unqualified_response_pair" | "recovery_hole";
-  reason?: "provider_failure" | "budget_exhausted";
+  reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped";
   pairAttempt?: number;
 };
 

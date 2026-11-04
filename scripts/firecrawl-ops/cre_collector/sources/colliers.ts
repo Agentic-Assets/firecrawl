@@ -155,8 +155,9 @@ async function colliersFetchPagePair(
   listUrl: string,
   mapUrl: string,
   onResponses?: (attempt: number, responses: { list?: string; map?: string }) => void,
+  maxAttempts = 2,
 ): Promise<[any, any]> {
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
     let firstFailure: unknown;
     const responses: { list?: string; map?: string } = {};
@@ -165,7 +166,8 @@ async function colliersFetchPagePair(
       try {
         return await colliersGetJson(url, controller.signal, text => { responses[kind] = text; }, value => { if (value !== null) retryAfter = true; });
       } catch (error) {
-        if (!controller.signal.aborted) {
+        // A semantic page failure must not hide a later denial from its sibling.
+        if (!(error instanceof ColliersPageFailure) && !controller.signal.aborted) {
           firstFailure = error;
           controller.abort(error);
         }
@@ -200,7 +202,7 @@ async function colliersFetchPagePair(
       }
       throw nonRetryable;
     }
-    if (attempt === 2) throw failures[0];
+    if (attempt === maxAttempts) throw failures[0];
 
     const waitStarted = performance.now();
     await new Promise<void>((resolve) => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
@@ -719,7 +721,7 @@ const COLLIERS_RECOVERY_MAX_PAIRS = 20;
 export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   onPage?: (page: number, start: number, cards: any[], pageSize?: number) => void,
   onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }, pageSize?: number) => void,
-  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted") => void,
+  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped") => void,
   captureWritable?: () => boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
@@ -776,22 +778,27 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       if (!(original instanceof ColliersPageFailure) || !onPage || !onResponses || !onHole || !captureWritable?.() ||
           !Number.isSafeInteger(total) || total === null || total < start) throw original;
       const rangeSize = Math.min(pageSize, total - start + 1);
-      const pending: Array<{ start: number; size: number }> = [{ start, size: rangeSize }];
+      const pending: Array<{ start: number; size: number }> = [];
+      if (rangeSize > 1) {
+        const left = Math.floor(rangeSize / 2);
+        pending.push({ start, size: left }, { start: start + left, size: rangeSize - left });
+      }
       let requests = 0;
       // Evidence only: this attempt remains failed and never enters detail or ingest.
       try {
+        if (rangeSize === 1) {
+          onHole(page, start, 1, "provider_failure");
+          if (!captureWritable()) throw new Error("Colliers recovery capture failed");
+        }
         while (pending.length) {
-          const range = pending.shift()!;
-          if (range.size === 1) { onHole(page, range.start, range.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
-          const left = Math.floor(range.size / 2);
-          for (const part of [{ start: range.start, size: left }, { start: range.start + left, size: range.size - left }]) {
+          const part = pending.shift()!;
             if (requests >= COLLIERS_RECOVERY_MAX_PAIRS) { onHole(page, part.start, part.size, "budget_exhausted"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
             requests++;
             await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
             try {
               const [list, map] = await colliersFetchPagePair(
                 colliersListUrl(engineKey, part.start, part.size), colliersMapUrl(engineKey, part.start, part.size),
-                (attempt, responses) => { onResponses(page, part.start, attempt, responses, part.size); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); });
+                (attempt, responses) => { onResponses(page, part.start, attempt, responses, part.size); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }, 1);
               if (Number(list.total) !== total) throw new Error("Colliers recovery total changed");
               if (totalAvail !== null && Number(list.totalAvail) !== totalAvail) throw new Error("Colliers recovery totalAvail changed");
               const html = String(list.html ?? "");
@@ -805,14 +812,26 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
               onPage(page, part.start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")), part.size);
               if (!captureWritable()) throw new Error("Colliers recovery capture failed");
             } catch (error) {
-              if (!(error instanceof ColliersPageFailure)) throw error;
+              if (!(error instanceof ColliersPageFailure)) {
+                if (captureWritable()) {
+                  onHole(page, part.start, part.size, "recovery_stopped");
+                  for (const remaining of pending) {
+                    if (!captureWritable()) break;
+                    onHole(page, remaining.start, remaining.size, "recovery_stopped");
+                  }
+                }
+                throw error;
+              }
               if (part.size === 1) { onHole(page, part.start, part.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }
-              else pending.push(part);
+              else {
+                const left = Math.floor(part.size / 2);
+                pending.push({ start: part.start, size: left }, { start: part.start + left, size: part.size - left });
+              }
             }
-          }
         }
       } catch (error) {
-        throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}`);
+        const capture = captureWritable() ? "" : "; recovery capture failed and evidence is unverified";
+        throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}${capture}`);
       }
       throw original;
     }

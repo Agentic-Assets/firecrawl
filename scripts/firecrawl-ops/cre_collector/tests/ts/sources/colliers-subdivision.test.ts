@@ -46,7 +46,7 @@ test("retains verified subdivisions and one explicit hole, preserving the origin
 });
 
 test("recovery stops on an observed denial, changing total, or duplicate identity", async t => {
-  let mode: "denial" | "rate" | "retry-after" | "total" | "available" | "duplicate" | "count" | "parity" | "capture" = "denial";
+  let mode: "denial" | "rate" | "retry-after" | "transient" | "total" | "available" | "duplicate" | "count" | "parity" | "capture" = "denial";
   let requests = 0;
   install(t, url => {
       if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
@@ -56,6 +56,7 @@ test("recovery stops on an observed denial, changing total, or duplicate identit
       if (size === 4) return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
       if (mode === "denial") return response({}, 403);
       if (mode === "rate") return response({}, 429);
+      if (mode === "transient") return response({}, 503);
       if (mode === "retry-after") return response({ success: false, error: "Failure retrieving listing HTML." }, 200, { "retry-after": "120" });
       const result = page(mode === "duplicate" ? 1 : start, size, mode === "total" ? 7 : 6);
       if (mode === "available") result.list.totalAvail = 7;
@@ -63,13 +64,15 @@ test("recovery stops on an observed denial, changing total, or duplicate identit
       if (mode === "parity") result.map.projectLocations.pop();
       return response(result[list ? "list" : "map"]);
   });
-  for (mode of ["denial", "rate", "retry-after", "total", "available", "duplicate", "count", "parity", "capture"] as const) {
+  for (mode of ["denial", "rate", "retry-after", "transient", "total", "available", "duplicate", "count", "parity", "capture"] as const) {
     requests = 0;
     const records: unknown[] = [];
     let writable = true;
-    await assert.rejects(srcColliers("sale", 6, false, () => {}, (page) => { if (mode === "capture" && page === 2 && requests >= 6) writable = false; }, (...x) => records.push(x), () => writable), /success=false; recovery stopped/);
+    await assert.rejects(srcColliers("sale", 6, false, () => {}, (page) => { if (mode === "capture" && page === 2 && requests >= 6) writable = false; }, (...x) => records.push(x), () => writable), mode === "capture" ? /success=false; recovery stopped:.*capture failed and evidence is unverified/ : /success=false; recovery stopped/);
     assert.equal(requests, 6, `${mode} must not issue a further pair`);
-    assert.equal(records.length, 0);
+    if (mode === "capture") assert.equal(records.length, 0);
+    else assert.deepEqual(records.map((row: any) => [row[1], row[2], row[3]]),
+      [[3, 2, "recovery_stopped"], [5, 2, "recovery_stopped"]]);
   }
 });
 
@@ -103,5 +106,26 @@ test("initial page denial or unrecognized application failure never triggers sub
     requests = 0;
     await assert.rejects(srcColliers("sale", 6, false, () => {}, () => {}, () => {}, () => true), mode === "mixed-denial" ? /HTTP 403/ : /success=false/);
     assert.equal(requests, 4);
+  }
+});
+
+test("semantic failure waits for delayed sibling denial or Retry-After before deciding", async t => {
+  const prior = globalThis.fetch; t.after(() => { globalThis.fetch = prior; });
+  let mode: "403" | "429" | "retry-after" = "403", requests = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start")), list = url.pathname.endsWith("GetListingsHtml"); requests++;
+    if (start === 1) return response(page(1, 2)[list ? "list" : "map"]);
+    if (list) return response({ success: false, error: "Failure retrieving listing HTML." });
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+    assert.equal(init?.signal?.aborted, false, "semantic failure must not cancel the sibling");
+    if (mode === "retry-after") return response({ success: true, projectLocations: [] }, 200, { "retry-after": "60" });
+    return response({}, Number(mode));
+  }) as typeof fetch;
+  for (mode of ["403", "429", "retry-after"] as const) {
+    requests = 0;
+    await assert.rejects(srcColliers("sale", 6, false, () => {}, () => {}, () => {}, () => true), mode === "retry-after" ? /Retry-After/ : new RegExp(`HTTP ${mode}`));
+    assert.equal(requests, 4, "no recovery pair follows a delayed stop signal");
   }
 });
