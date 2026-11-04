@@ -144,6 +144,32 @@ def main():
             assert "inventoryObservedAt" not in without_prior
             assert "latestInventoryObservation" not in without_prior
             assert without_prior["markdown"] == "newmark detail"
+        # Realistic NIM wrapper -> generic detail -> NIM inventory, with no
+        # manually manufactured prior wrapper or freshness marker.
+        base = {"sourceKey": "newmark", "id": "nm-sequence",
+                "url": "https://example.test/nm-sequence", "name": "NIM card",
+                "transactionType": "sale", "preserveChildCollections": True}
+        inventory1 = ingest.to_row(base, {}, "2026-11-04T00:10:00Z")
+        sql(ingest.build_sql([inventory1], nm_job, "2026-11-04T00:10:00Z", set()))
+        original = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert original["latestInventoryObservation"]["preserveChildCollections"] is True
+        detail = ingest.to_row({"sourceKey": "newmark", "id": "nm-sequence",
+            "url": "https://example.test/nm-sequence", "name": "Detail",
+            "transactionType": "sale", "markdown": "generic detail",
+            "inventoryObservedAt": "2035-01-01T00:00:00Z"}, {}, "2026-11-04T00:11:00Z")
+        sql(ingest.build_sql([detail], nm_job, "2026-11-04T00:11:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", detail["external_id"])}))
+        enriched = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert enriched["markdown"] == "generic detail"
+        assert enriched["inventoryObservedAt"] == original["inventoryObservedAt"]
+        assert enriched.get("detailObservedWithChildPreservation") is not True
+        inventory2 = ingest.to_row({**base, "name": "new NIM card"}, {}, "2026-11-04T00:12:00Z")
+        sql(ingest.build_sql([inventory2], nm_job, "2026-11-04T00:12:00Z", set()))
+        final = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert final["markdown"] == "generic detail"
+        assert final["newmarkUnqualifiedInventoryContext"] == enriched["newmarkUnqualifiedInventoryContext"]
+        assert final["inventoryObservedAt"] != original["inventoryObservedAt"]
+        assert final.get("detailObservedWithChildPreservation") is not True
         print("PASS: full generated SVN and Newmark generic/partial transactions preserve prior inventory and new detail")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -5349,6 +5349,11 @@ WITH ins AS (
                                     AND t.raw_data ? 'latestInventoryObservation'
                                     THEN jsonb_build_object('latestInventoryObservation', t.raw_data->'latestInventoryObservation')
                                     ELSE '{}'::jsonb END
+                                  || CASE WHEN {newmark_enrichment_sql}
+                                    AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                                                WHERE nb.id=EXCLUDED.brokerage_id AND nb.slug='newmark')
+                                    THEN jsonb_build_object('newmarkEnrichmentRetained', true)
+                                    ELSE '{}'::jsonb END
                                 )
                               ELSE EXCLUDED.raw_data
                             END,
