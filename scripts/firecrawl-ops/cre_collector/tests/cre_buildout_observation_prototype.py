@@ -11,9 +11,13 @@ import json
 import math
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
+
+# The fixture planner remains directly executable from any working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from buildout_observation_io import read_consistent
 from cre_ingest import BUILDOUT_SOURCE_KEYS
