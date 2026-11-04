@@ -16,7 +16,7 @@ def test_owned_collector_command_uses_maintenance_new_identity(tmp_path, monkeyp
     packet = {"schema": "cre-runtime-maintenance-v1", "new": selected, "roots": {"runtime": str(runtime)},
               "programs": {"native_git": "unused"}}
     checkpoint = SimpleNamespace(safe_process_env=dict,
-                                 run_command=lambda argv, log, env: (log.write_bytes(b"complete\n") and 0))
+                                 _run_logged_command=lambda argv, log, env: (log.write_bytes(b"complete\n") and 0))
     monkeypatch.setattr(operation, "Git", lambda _: SimpleNamespace(clean=lambda *args, **kwargs: None))
     runner = operation.Foreground(packet, checkpoint, tmp_path)
     receipt = runner.run("npm-ls", ["npm", "ls"], effective_cwd=collector)
@@ -32,7 +32,7 @@ def test_command_reader_uses_actual_foreground_receipt_and_rejects_changed_bytes
     packet = {"schema": "cre-runtime-maintenance-v1", "new": selected,
               "roots": {"runtime": str(tmp_path / "runtime")}, "programs": {"native_git": "unused"}}
     checkpoint = SimpleNamespace(safe_process_env=dict,
-                                 run_command=lambda argv, log, env: (log.write_bytes(b"complete\n") and 0))
+                                 _run_logged_command=lambda argv, log, env: (log.write_bytes(b"complete\n") and 0))
     monkeypatch.setattr(operation, "Git", lambda _: SimpleNamespace(clean=lambda *args, **kwargs: None))
     operation.Foreground(packet, checkpoint, tmp_path).run("npm-ls", ["npm", "ls"], effective_cwd=collector)
     log, receipt = tmp_path / "01-npm-ls.log", tmp_path / "01-npm-ls.json"

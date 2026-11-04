@@ -255,12 +255,32 @@ def test_paths_accept_equivalent_separator_forms():
     assert str(local_path("C:\\Users\\Owner\\source")).replace("\\", "/").endswith("/Users/Owner/source")
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_maintenance_command_logs_without_collector_telemetry(tmp_path, capsys, exit_code):
+    import cre_checkpoint_refresh as checkpoint
+
+    runner = operation.Foreground({}, checkpoint, tmp_path)
+    argv = [sys.executable, "-c", f"print('maintenance output'); exit({exit_code})"]
+    if exit_code:
+        with pytest.raises(HandoffError, match=r"fixture failed \(7\)"):
+            runner.run("fixture", argv)
+    else:
+        runner.run("fixture", argv)
+
+    log = next(tmp_path.glob("*.log"))
+    assert "maintenance output" in log.read_text()
+    assert f"rc={exit_code}" in log.read_text()
+    assert json.loads(log.with_suffix(".json").read_text())["exit_code"] == exit_code
+    assert not list(tmp_path.glob("*.performance.jsonl"))
+    assert "CRE performance telemetry degraded" not in capsys.readouterr().err
+
+
 def test_uncertain_owned_command_keeps_actual_error_and_no_success_receipt(tmp_path):
     class Uncertain(RuntimeError):
         pass
     def command(*args, **kwargs):
         raise Uncertain("group settlement unknown")
-    checkpoint = SimpleNamespace(run_command=command, safe_process_env=dict)
+    checkpoint = SimpleNamespace(_run_logged_command=command, safe_process_env=dict)
     runner = operation.Foreground({}, checkpoint, tmp_path)
     with pytest.raises(Uncertain, match="settlement unknown"):
         runner.run("fixture", ["fixture"])
@@ -560,7 +580,7 @@ def apply_case(complete_case,tmp_path,monkeypatch):
         log_path.write_text("mocked dependency command; no process was dispatched\n")
         return 0
     checkpoint=SimpleNamespace(SharedLock=Lease,canonical_shared_lock_dir=lock_path,
-        safe_process_env=dict,run_command=command,COLLECTOR_DIR=tmp_path/"tooling-collector")
+        safe_process_env=dict,_run_logged_command=command,COLLECTOR_DIR=tmp_path/"tooling-collector")
     git=SimpleNamespace(development=lambda _:state["calls"].append("development"),
                         clean=lambda *args,**kwargs:None,
                         fast_forward=lambda root,_release,_bundle:state["calls"].append("ff:"+root))
