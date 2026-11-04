@@ -632,7 +632,8 @@ def run_source_update(
                     raise TimeoutError("native update step timed out")
 
             with command_poll_hook(poll):
-                rc = checkpoint.run_command(
+                # Maintenance logs are not collector performance evidence.
+                rc = checkpoint._run_logged_command(
                     argv, log, env=checkpoint.safe_process_env()
                 )
             owner()

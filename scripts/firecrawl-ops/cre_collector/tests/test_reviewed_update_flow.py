@@ -329,7 +329,7 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
     fake_probe.ReadOnlyLoopbackClient = Client
     monkeypatch.setitem(sys.modules, "firecrawl_operator_handoff", fake_probe)
     monkeypatch.setattr(subprocess, "run", fake_subprocess)
-    monkeypatch.setattr(checkpoint, "run_command", fake_native)
+    monkeypatch.setattr(checkpoint, "_run_logged_command", fake_native)
     monkeypatch.setattr(handoff, "visible_linux_frontends", list)
     monkeypatch.setattr(update, "installed_dependencies", lambda root: {})
     monkeypatch.setattr(update, "windows_path", lambda value: str(value))
