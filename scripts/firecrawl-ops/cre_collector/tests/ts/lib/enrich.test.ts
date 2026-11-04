@@ -11,6 +11,7 @@ import {
   resolveEnricher,
   runEnrichGroups,
   parseGenericJsonLd,
+  createGenericEnricher,
   jllInvestorEnricher,
   type EnrichItem,
   type SourceEnricher,
@@ -182,6 +183,34 @@ test("runEnrichGroups produces the enrich artifact shape; every listing echoes i
   assert.equal(byUrl.get("https://x/a").transactionMode, "sale");
   assert.equal(byUrl.get("https://x/b").transactionMode, "lease");
   assert.equal(byUrl.get("https://x/c").transactionMode, "sale"); // default
+});
+
+test("real generic Newmark enrichment does not invent sale tenure", async () => {
+  const items: EnrichItem[] = [{ sourceKey: "newmark", externalId: "nm", url: "https://example.test/nm" }];
+  const enricher = createGenericEnricher(async () => ({
+    rawHtml: '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Synthetic detail"}</script>',
+    markdown: "", links: [],
+  }), () => "2026-11-04T00:00:00Z");
+  const result = await runEnrichGroups(groupEnrichItems(items),
+    () => ({ enricher, label: "generic" }), () => "Newmark");
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].name, "Synthetic detail");
+  assert.equal(Object.hasOwn(result.listings[0], "transactionMode"), false);
+});
+
+test("SVN detail without observed transaction does not invent sale", async () => {
+  const groups = groupEnrichItems([
+    { sourceKey: "svn", externalId: "unknown", url: "https://x/unknown" },
+    { sourceKey: "svn", externalId: "known", url: "https://x/known", transaction: "lease" },
+    { sourceKey: "newmark", externalId: "nm", url: "https://x/nm" },
+    { sourceKey: "src-a", externalId: "other", url: "https://x/other" },
+  ]);
+  const { listings } = await runEnrichGroups(groups, () => ({ enricher: fakeEnricher(), label: "fake" }), (key) => key);
+  const byUrl = new Map(listings.map((row) => [row.url, row]));
+  assert.equal(byUrl.get("https://x/unknown").transactionMode, undefined);
+  assert.equal(byUrl.get("https://x/known").transactionMode, "lease");
+  assert.equal(byUrl.get("https://x/nm").transactionMode, undefined);
+  assert.equal(byUrl.get("https://x/other").transactionMode, "sale");
 });
 
 test("runEnrichGroups records a per-source error when an enricher throws (matches full-path)", async () => {
