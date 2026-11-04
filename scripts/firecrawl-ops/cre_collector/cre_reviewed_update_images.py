@@ -659,7 +659,7 @@ def run_current_compose(checkpoint, owner, lease, development, control, control_
             raise TimeoutError("Compose process timed out; retain recovery fence")
 
     with command_poll_hook(poll):
-        rc = checkpoint.run_command(argv, log_path, env=checkpoint.safe_process_env())
+        rc = checkpoint._run_logged_command(argv, log_path, env=checkpoint.safe_process_env())
     owner()
     require(read_file(plan_path) == raw, "Compose plan changed; retain recovery fence")
     expected = {"stage": "ComposeRollback" if mode == "rollback" else "ComposeUp",

@@ -246,7 +246,11 @@ def test_native_compose_completion_requires_matching_receipt(monkeypatch, tmp_pa
             if mode != "missing":
                 path.write_text(json.dumps(receipt))
             return {"success": 0, "failed": 1, "missing": 1, "signal": -15, "wrong-owner": 0}[mode]
-        checkpoint = SimpleNamespace(run_command=run, safe_process_env=dict)
+        checkpoint = SimpleNamespace(
+            _run_logged_command=run,
+            run_command=lambda *a, **k: pytest.fail("collector telemetry wrapper used for Compose"),
+            safe_process_env=dict,
+        )
         return direct.run_current_compose(checkpoint, owner, lease, tmp_path, tmp_path / "control.py",
                                           "a" * 64, plan, tmp_path, tmp_path / "powershell.exe")
     execute("success")
