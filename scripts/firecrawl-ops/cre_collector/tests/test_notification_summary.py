@@ -1606,3 +1606,42 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
     assert result["failed_source_keys"] == ["pyramid-brokerage"]
     assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
     assert "verified_listings" not in result
+
+
+def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence):
+    setup = pipeline_evidence(evidence, primary_source="jll-investor")
+    source = "jll-investor"
+    parent, child = setup["parent"], setup["child"]
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    child["preflight"]["database_target"] = {"algorithm": "sha256", "value": "d" * 64}
+    parent["database_target"] = child["preflight"]["database_target"]
+    artifact.update(jll_partial=True, staged_unique=4)
+    binding = {"schema": "jll-investor-partial-v1", "scope": "jll_investor_partial_v1",
+               "artifact_sha256": artifact["sha256"], "generation_id": RUN,
+               "collector_git_sha": SHA, "database_target_sha256": "d" * 64,
+               "staged_sha256": "e" * 64, "held": ["investor:held"], "held_count": 1,
+               "emitted_count": 3, "excluded_source_identities": "unknown",
+               "whole_source_coverage": False}
+    observation = {"artifact_sha256": artifact["sha256"], "generation_id": RUN,
+                   "staged_sha256": "e" * 64, "expected": 3, "held": ["investor:held"],
+                   "invalid": [], "ok": True}
+    checkpoint["gate"] = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                          "current_inventory_proof": binding}
+    checkpoint["readback"].update(kind="jll_investor_partial", observation=observation,
+                                  whole_source_coverage=False)
+    parent["sources"][source]["state"] = "qualified_partial_subset"
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    jll = next(row for row in result["per_source_summaries"] if row["source_key"] == source)
+    assert jll["partial"] is True
+    assert jll["whole_source_coverage"] is False
+    assert jll["verified_listings"] == 3
+    assert jll["held_count"] == 1
+    assert jll["excluded_source_identities"] == "unknown"
+    assert result["complete"] is False
+    assert result["qualified_subset_source_keys"] == [source]
+    binding["whole_source_coverage"] = True
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence, source_keys=[source, setup["source2"]])

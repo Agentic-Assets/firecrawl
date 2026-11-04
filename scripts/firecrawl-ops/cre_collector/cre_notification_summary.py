@@ -1056,7 +1056,8 @@ def verified_pipeline_summary(
             require(state == "verified")
             require(
                 interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
-                    or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))) else "complete")
+                    or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
+                    or (source == "jll-investor" and __import__("cre_checkpoint_series").jll_partial_child(child))) else "complete")
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
