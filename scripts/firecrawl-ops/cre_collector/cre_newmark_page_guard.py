@@ -30,6 +30,29 @@ def guard_sql(attempt, claim, *, require_page=True):
         + " AND q.url=" + lit(claim["url"]) + " AND q.claimed_at=" + lit(claim["claimedAt"]) + "::timestamptz"
         + " AND q.attempts=" + str(claim["attempts"]) + " AND q.done_at IS NULL FOR UPDATE)\n"
     )
+    if not require_page:
+        return locked + r"""
+SELECT NOT (
+  (SELECT count(*) FROM _src) = 1
+  AND EXISTS (
+    SELECT 1 FROM _src s
+    JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id AND b.slug='newmark'
+    JOIN newmark_locked_claim q ON q.brokerage_id=s.brokerage_id
+      AND q.external_id=s.external_id AND q.url=s.source_url
+    JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id
+      AND l.external_id=s.external_id AND l.source_url=s.source_url
+    WHERE (SELECT count(*) FROM credeals.cre_listings other
+           WHERE other.brokerage_id=s.brokerage_id AND other.source_url=s.source_url)=1
+  )
+) AS newmark_page_refused \gset
+\if :newmark_page_refused
+ROLLBACK;
+\pset format unaligned
+\pset tuples_only on
+SELECT 'CRE_NEWMARK_PAGE_V1 ATTEMPT refused';
+\quit
+\endif
+""".replace("ATTEMPT", attempt)
     return locked + r"""
 SELECT NOT (
   (SELECT count(*) FROM _src) = 1
@@ -40,7 +63,7 @@ SELECT NOT (
       AND q.external_id=s.external_id AND q.url=s.source_url
     JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id
       AND l.external_id=s.external_id AND l.source_url=s.source_url
-    CROSS JOIN LATERAL (SELECT WITNESS_SQL AS w) p
+    CROSS JOIN LATERAL (SELECT s.raw_data->'newmarkPageObservation'->'witness' AS w) p
     CROSS JOIN LATERAL (SELECT CASE
       WHEN l.raw_data ? 'rawNewmarkNimRecord'
        AND l.raw_data->'latestInventoryObservation' ? 'rawNewmarkNimRecord'
@@ -68,10 +91,7 @@ ROLLBACK;
 SELECT 'CRE_NEWMARK_PAGE_V1 ATTEMPT refused';
 \quit
 \endif
-""".replace("ATTEMPT", attempt).replace(
-        "WITNESS_SQL", "s.raw_data->'newmarkPageObservation'->'witness'" if require_page
-        else "s.raw_data->'newmarkGuardedGenericWitness'"
-    )
+""".replace("ATTEMPT", attempt)
 
 
 def commit_sql(attempt):

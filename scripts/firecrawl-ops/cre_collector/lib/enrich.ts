@@ -49,7 +49,7 @@ import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidde
 import type { ScrapedDoc, SourceKey } from "../types.js";
 import type { NewmarkDetailWitness } from "../sources/pure/newmark-detail-link.js";
 import { createNewmarkPublishedDetailEnricher } from "../sources/newmark-published-enrich.js";
-import { extractNewmarkPage, matchesNewmarkPageIdentity, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
+import { extractNewmarkPage, contradictsNewmarkPageUrl, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
 
 export type EnrichItem = {
   sourceKey: string;
@@ -305,13 +305,19 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
       catch { observation = failedEnrichmentEvidence(item, "evidence_capture_failed"); }
       try {
         const guardedNewmark = item.sourceKey === "newmark" && Object.hasOwn(item, "sourcePageClaim");
-        if (guardedNewmark && (!item.sourcePageWitness || doc.metadata?.url !== item.url ||
-            doc.metadata?.sourceURL !== item.url ||
-            !matchesNewmarkPageIdentity(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode)))
-          return { listing: null, observation };
+        if (guardedNewmark) {
+          const metadata = doc.metadata;
+          const contradiction = (typeof metadata?.url === "string" && metadata.url !== item.url) ||
+            (typeof metadata?.sourceURL === "string" && metadata.sourceURL !== item.url) ||
+            contradictsNewmarkPageUrl(doc.rawHtml ?? "", item.url);
+          if (contradiction) return { listing: null, observation: {
+            ...(observation as Record<string, unknown>), newmarkIdentityConflict: true,
+          } };
+          if (typeof metadata?.statusCode === "number" && metadata.statusCode !== 200)
+            return { listing: null, observation };
+        }
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
-        if (genericHasSubstantiveFields(row)) return { listing: guardedNewmark
-          ? { ...row, newmarkGuardedGenericWitness: item.sourcePageWitness } : row, observation };
+        if (genericHasSubstantiveFields(row)) return { listing: row, observation };
         if (item.sourceKey === "newmark" && item.sourcePageWitness && evidenceCaptured &&
             doc.metadata?.url === item.url && doc.metadata?.sourceURL === item.url) {
           const page = extractNewmarkPage(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode);
