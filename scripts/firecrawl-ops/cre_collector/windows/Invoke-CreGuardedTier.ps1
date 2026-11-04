@@ -354,7 +354,14 @@ function Test-CreDaumSubsetSummary {
         if (($SourceKey -ceq "pyramid-brokerage" -and $Summary.inventory_count -lt 100) -or
             $Summary.emitted_count -lt $minimumEmitted -or $Summary.emitted_count -ne $Summary.verified_listings -or
             $Summary.inventory_count -ne ($Summary.emitted_count + $Summary.held_count)) { return $false }
-        $leaseCoverage = if ($Summary.held_count -gt 0) { 'unknown' } else { 'proved' }
+        $unknown = 0
+        if ($null -ne $Summary.PSObject.Properties['retained_unknown_tenure_count']) {
+            $unknown = $Summary.retained_unknown_tenure_count
+            if ($SourceKey -cne 'daum-commercial' -or
+                -not ($unknown -is [int] -or $unknown -is [long]) -or
+                $unknown -lt 0 -or $unknown -gt $Summary.emitted_count) { return $false }
+        }
+        $leaseCoverage = if ($Summary.held_count -gt 0 -or $unknown -gt 0) { 'unknown' } else { 'proved' }
         if ($Summary.whole_lease_coverage -cne $leaseCoverage) { return $false }
         $breakdown = $Summary.transaction_breakdown
         if ($breakdown.measurement -isnot [string] -or $breakdown.measurement -cne 'current_staged_inventory_transaction_types') { return $false }
@@ -363,7 +370,7 @@ function Test-CreDaumSubsetSummary {
                 $breakdown.$field -lt 0 -or $breakdown.$field -gt 500000) { return $false }
         }
         return ($breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
-            ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $Summary.emitted_count)
+            ($breakdown.sale + $breakdown.lease - $breakdown.both + $unknown) -eq $Summary.emitted_count)
     } catch { return $false }
 }
 
@@ -447,7 +454,7 @@ function Get-CreVerifiedSummary {
                             (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
                             $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
                             $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
-                            ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $entry.verified_listings
+                            ($breakdown.sale + $breakdown.lease - $breakdown.both + $(if ($expectsSubset -and $null -ne $entry.PSObject.Properties['retained_unknown_tenure_count']) { $entry.retained_unknown_tenure_count } else { 0 })) -eq $entry.verified_listings
                     } catch { $validBreakdown = $false }
                     if (-not $validBreakdown) { $entry.transaction_breakdown = $null }
                 }
@@ -510,7 +517,7 @@ function Get-CreVerifiedSummary {
                 (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
                 $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
                 $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
-                ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $summary.verified_listings
+                ($breakdown.sale + $breakdown.lease - $breakdown.both + $(if ($expectsSubset -and $null -ne $summary.PSObject.Properties['retained_unknown_tenure_count']) { $summary.retained_unknown_tenure_count } else { 0 })) -eq $summary.verified_listings
         } catch { $validBreakdown = $false }
         if (-not $validBreakdown) { $summary.transaction_breakdown = $null }
     }
@@ -559,9 +566,10 @@ function Get-CreNotificationText {
                 $lease = ([long]$entry.transaction_breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-                $leaseScope = if ($entry.held_count -gt 0) { 'whole lease coverage unknown' } else { 'whole lease coverage proved' }
+                $leaseScope = "whole lease coverage $($entry.whole_lease_coverage)"
+                $unknownLine = if ($null -ne $entry.PSObject.Properties['retained_unknown_tenure_count']) { " | *Unknown tenure:* $($entry.retained_unknown_tenure_count)" } else { '' }
                 $hasTransactionFigures = $true
-                $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both`n    $lease verified subset leases; $leaseScope; whole brokerage incomplete."
+                $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both$unknownLine`n    $lease verified subset leases; $leaseScope; whole brokerage incomplete."
                 continue
             }
             $scopeLabel = if ($null -ne $entry.PSObject.Properties['verified_inventory_only']) { 'property listings' } else { 'listings' }
@@ -631,8 +639,10 @@ function Get-CreNotificationText {
         if ($null -ne $Summary.PSObject.Properties['partial'] -and $Summary.partial -eq $true) {
             $held = ([long]$Summary.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
             $inventory = ([long]$Summary.inventory_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-            $leaseLine = if ($Summary.held_count -gt 0) { "$lease verified subset leases; whole lease coverage unknown" }
-                else { "$lease verified subset leases; whole lease coverage proved" }
+            $leaseLine = "$lease verified subset leases; whole lease coverage $($Summary.whole_lease_coverage)"
+            if ($null -ne $Summary.PSObject.Properties['retained_unknown_tenure_count']) {
+                $transactionLine += "`n$bullet *Unknown tenure:* $($Summary.retained_unknown_tenure_count)"
+            }
             $success = [char]::ConvertFromUtf32(0x2705)
             return "`n$success *$name | Verified subset refreshed*`n`n$bullet *Duration:* $duration`n$bullet *Inventory:* $inventory; $count emitted; $held held`n$transactionLine`n$bullet $leaseLine`n$bullet *Database readback:* passed; no quality regression.`n$bullet *Coverage:* whole brokerage incomplete."
         }
