@@ -271,6 +271,35 @@ def select_done_and_retry(claimed_rows, enriched_listings):
     return done_ids, retry_ids, dead_ids
 
 
+def newmark_403_claim_ids(claimed_rows, artifact):
+    """Identify a bound 403 observation without inferring absent status."""
+    if len(claimed_rows) != 1 or claimed_rows[0].get("source_key") != "newmark":
+        return set()
+    row = claimed_rows[0]
+    sources = artifact.get("sources")
+    if not isinstance(sources, list):
+        return set()
+    for source in sources:
+        if not isinstance(source, dict) or source.get("sourceKey") != "newmark":
+            continue
+        observations = source.get("retainedObservations")
+        if not isinstance(observations, list):
+            continue
+        for observation in observations:
+            if not isinstance(observation, dict) or observation.get("event") != "generic_enrichment_observation":
+                continue
+            claim = observation.get("claim")
+            doc = observation.get("scrapedDoc")
+            metadata = doc.get("metadata") if isinstance(doc, dict) else None
+            status = metadata.get("statusCode") if isinstance(metadata, dict) else None
+            if (isinstance(claim, dict) and claim.get("sourceKey") == "newmark"
+                    and claim.get("externalId") == row.get("external_id")
+                    and claim.get("url") == row.get("url")
+                    and type(status) is int and status == 403):
+                return {row["id"]}
+    return set()
+
+
 def deferred_claim_ids(claimed_rows, artifact):
     """Defer only source failures or claims explicitly marked unattempted/stopped."""
     sources = artifact.get("sources")
@@ -1043,12 +1072,14 @@ def run(args):
         _psql_exec(db_url, build_targeted_queue_sql(
             [i for i in claims["items"] if i["claimId"] in done_ids], "complete",
             artifact=artifact, claims=claims) if targeted else build_complete_sql(done_ids))
-    deferred = deferred_claim_ids(claimed_rows, artifact)
+    denied = newmark_403_claim_ids(claimed_rows, artifact) if page_witness else set()
+    deferred = deferred_claim_ids(claimed_rows, artifact) | denied
     absent = [claim_id for claim_id in retry_ids + dead_ids if claim_id not in deferred]
     deferred_ids = [claim_id for claim_id in retry_ids + dead_ids if claim_id in deferred]
     if deferred_ids:
         if page_witness:
-            if not settle_newmark_page_claim(db_url, claimed_rows[0], "defer", last_error="enrichment attempt not established"):
+            if not settle_newmark_page_claim(db_url, claimed_rows[0], "defer",
+                                             last_error="Newmark provider HTTP 403" if denied else "enrichment attempt not established"):
                 print("Newmark claim superseded; no queue change", file=sys.stderr)
                 return 21
         else:

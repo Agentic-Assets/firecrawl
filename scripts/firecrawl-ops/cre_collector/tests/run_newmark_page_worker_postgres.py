@@ -63,7 +63,7 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page", "generic-403", "generic-403-omitted", "generic-403-stale"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -104,6 +104,10 @@ def main():
                     sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) "
                         "SELECT id,'newmark','peer-after-ambiguous','https://www.nmrk.com/properties/peer','new' "
                         "FROM credeals.cre_brokerages WHERE slug='newmark';")
+            if kind == "generic-403":
+                sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) "
+                    "SELECT id,'newmark','peer-after-403','https://www.nmrk.com/properties/peer-403','new' "
+                    "FROM credeals.cre_brokerages WHERE slug='newmark';")
             prior_lifecycle=sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(deleted_at::text,'<null>') || '|' || coalesce(transaction_type,'<null>') FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")
             prior_index=sql("SELECT to_jsonb(si)::text FROM credeals.cre_source_index si WHERE external_id="+ingest.sql_lit(external)+";")
             prior_events=sql("SELECT count(*) FROM credeals.cre_listing_events e JOIN credeals.cre_listings l ON l.id=e.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")
@@ -122,8 +126,9 @@ if (mode==="generic-address") html=html.replace("10 Main Street", "20 Other Stre
 if (mode==="generic-og-mismatch") html=html.replace('property="og:url" content="'+url+'"', 'property="og:url" content="https://www.nmrk.com/properties/other"');
 if (mode==="generic-equivalent") html=html.replaceAll(url, url+"/?ref=example#details");
 if (mode==="generic-404-mismatch") html=html.replace('rel="canonical" href="'+url+'"', 'rel="canonical" href="https://www.nmrk.com/"');
+if (mode==="generic-403-omitted") html="x".repeat(300000);
 const e=createGenericEnricher(async()=>({rawHtml:html,markdown:"",links:[],metadata:{
- ...(mode==="generic-no-metadata" ? {} : {statusCode:["generic-status","generic-404-mismatch"].includes(mode) ? 404 : 200,
+ ...(mode==="generic-no-metadata" ? {} : {statusCode:mode.startsWith("generic-403") ? 403 : ["generic-status","generic-404-mismatch"].includes(mode) ? 404 : 200,
  url:mode==="generic-redirect" ? "https://www.nmrk.com/properties/other"
      : mode==="generic-host-mismatch" ? url.replace("https://www.nmrk.com", "https://other.example")
      : mode==="generic-404-mismatch" ? "https://www.nmrk.com/" : mode==="generic-equivalent" ? url+"/?a=1#map" : url,
@@ -153,7 +158,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                                capture_output=True,text=True)
                     if result.returncode:
                         raise RuntimeError("synthetic collector failed: " + result.stderr)
-                    if kind == "duplicate-claim-stale":
+                    if kind in {"duplicate-claim-stale", "generic-403-stale"}:
                         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind == "claim-attempt-stale":
                         sql("UPDATE credeals.cre_enrichment_queue SET attempts=attempts+1 WHERE external_id="+ingest.sql_lit(external)+";")
@@ -243,6 +248,24 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                         next_claim = sql(worker.build_claim_sql(1, source="newmark", source_page_witness=True))
                         assert "peer-after-ambiguous" in next_claim, next_claim
                         sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id='peer-after-ambiguous';")
+                sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
+            elif kind in {"generic-403", "generic-403-omitted", "generic-403-stale"}:
+                assert rc == 21 and queue == "0|false", (kind,rc,queue)
+                assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";") == "f"
+                evidence=json.loads((private/"enriched.json").read_text())["sources"][0]["retainedObservations"][0]
+                assert evidence["scrapedDoc"]["metadata"]["statusCode"] == 403
+                if kind == "generic-403-omitted":
+                    assert evidence["omissions"]["rawHtml"] == "field_byte_limit"
+                else:
+                    assert evidence["scrapedDoc"]["rawHtml"]
+                if kind == "generic-403-stale":
+                    assert sql("SELECT last_error IS NULL FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";") == "t"
+                else:
+                    assert sql("SELECT last_error FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";") == "Newmark provider HTTP 403"
+                if kind == "generic-403":
+                    next_claim=sql(worker.build_claim_sql(1, source="newmark", source_page_witness=True))
+                    assert "peer-after-403" in next_claim, next_claim
+                    sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id='peer-after-403';")
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
             elif kind in {"generic-status", "generic-404-mismatch", "generic-empty-page"}:
                 assert rc == 21 and queue == "1|true", (kind, rc, queue)
