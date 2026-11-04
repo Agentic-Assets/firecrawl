@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
+import cre_partial_page_custody as custody
 import pytest
 
 
@@ -51,6 +52,9 @@ https.request=(url,options,callback)=>{
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
     if(mode==='reverse-partial')status=native?404:200;
+    if(mode==='one-good-404' && index===1)status=404;
+    if(mode==='one-good-403' && index===1)status=403;
+
     if(mode==='partial-503')status=native?200:503;
     if(mode==='both-404'||mode.startsWith('mixed-')){
       status=404;
@@ -263,3 +267,65 @@ def test_actual_default_terminal_worker_and_coordinator_do_not_ingest_or_resume(
     assert not refresh._cohort_needs_collection(
         tmp_path, manifest, "avison-young", attempts_before=0, attempts_this_run=3
     )
+
+
+@pytest.mark.parametrize("case,exit_code", [
+    ("one-good-404", refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE),
+    ("one-good-403", 1),
+])
+def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tmp_path, case, exit_code):
+    preload, started, env = prepare(tmp_path, case)
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == exit_code, result.stderr
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    assert data["listings"] == []
+    assert all(source.get("error") for source in data["sources"])
+    receipt = data["sources"][0]["partialCapture"]
+    assert receipt["coverage"] == "unverified"
+    assert receipt["outcome"] == "source_error"
+    assert receipt["observationRecords"] >= 1
+    captured_calls = json.loads((tmp_path / "calls.json").read_text())
+    control = tmp_path / "without-spool"
+    control.mkdir()
+    control_result, control_output, _, control_calls = collect(control, case)
+    assert control_result.returncode == exit_code
+    assert not control_output.exists()
+    assert captured_calls == control_calls
+    rejected, _ = refresh.archive_rejected_with_evidence(
+        output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and (tmp_path / rejected).is_file()
+    assert attempt["avison-young_partial"]["state"] == "sealed_local"
+    pages = (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()
+    records = [json.loads(page) for page in pages[1:]]
+    assert all(record["kind"] == "validated_detail" for record in records)
+    observed = [record["documents"][0] for record in records]
+    assert all(row["sourceKey"] == "avison-young" for row in observed)
+    assert all(row["freshnessProvenance"]["detailScope"] == "detail_page" for row in observed)
+    assert all(str(row["id"]) in {"9001", "9003", "9004", "9006"} for row in observed)
+    archived = tmp_path / rejected
+    assert archived.stat().st_mode & 0o777 == 0o600
+    resumed = {"number": 1, "finished_at": started, "rc": exit_code,
+               "avison-young_partial": {"state": "pending", "path": attempt["avison-young_partial"]["path"]}}
+    custody.reconcile(tmp_path, {"sources": {"avison-young": {"attempts": [resumed]}}}, "avison-young")
+    assert resumed["avison-young_partial"]["state"] == "sealed_local"
+    spool = tmp_path / attempt["avison-young_partial"]["path"]
+    saved = spool.read_bytes()
+    interrupted = {"number": 1, "finished_at": None, "rc": None,
+                   "avison-young_partial": {"state": "pending", "path": attempt["avison-young_partial"]["path"]}}
+    custody.reconcile(tmp_path, {"sources": {"avison-young": {"attempts": [interrupted]}}}, "avison-young")
+    assert interrupted["avison-young_partial"]["state"] == "unverified"
+    assert spool.read_bytes() == saved
+    spool.write_bytes(saved + b"tamper")
+    changed = {"number": 1, "avison-young_partial": {"state": "pending", "path": attempt["avison-young_partial"]["path"]}}
+    custody.settle(tmp_path, changed, archived, "avison-young")
+    assert changed["avison-young_partial"]["state"] == "unverified"
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh.validate_source_artifact(archived, "avison-young", started,
+                                         expected_generation_id=tmp_path.name,
+                                         expected_generation_started_at=started)

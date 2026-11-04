@@ -1,4 +1,4 @@
-import { PartialPageSpool } from "./lib/partial-page-spool.js";
+import { PARTIAL_PAGE_SOURCES, PartialPageSpool, partialPageEnvName, type PartialPageSource } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
@@ -109,7 +109,7 @@ const UNSUPPORTED: Record<string, string> = {};
 // ---------- main ----------
 
 async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
-  spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>>): Promise<SourceResult> {
+  spools: Partial<Record<PartialPageSource, PartialPageSpool>>): Promise<SourceResult> {
   const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
@@ -167,7 +167,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
     case "marcus-millichap":
       return srcMarcusMillichap(tx, max, monitor);
     case "avison-young":
-      return srcAvisonYoung(tx, max, monitor);
+      return srcAvisonYoung(tx, max, monitor, spools["avison-young"]
+        ? (listing, index) => {
+            try { spools["avison-young"]!.record({ transaction: tx, page: index + 1,
+              kind: "validated_detail", pass: 1, observedAt: observationNow(), documents: [{ ...listing, sourceKey: key, transactionMode: tx }] }); }
+            catch { spools["avison-young"]!.markFailure(); }
+          }
+        : undefined);
     case "savills":
       return srcSavills(tx, max, monitor);
     case "svn":
@@ -217,11 +223,11 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
 
 async function main() {
   const startedAt = observationNow();
-  const spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>> = {};
-  const attempts: Partial<Record<"cbre" | "colliers", number>> = {};
-  for (const key of ["cbre", "colliers"] as const) {
-    const path = process.env[`CRE_${key.toUpperCase()}_PARTIAL_PATH`];
-    const attempt = Number(process.env[`CRE_${key.toUpperCase()}_PARTIAL_ATTEMPT`]);
+  const spools: Partial<Record<PartialPageSource, PartialPageSpool>> = {};
+  const attempts: Partial<Record<PartialPageSource, number>> = {};
+  for (const key of PARTIAL_PAGE_SOURCES) {
+    const path = process.env[partialPageEnvName(key, "PATH")];
+    const attempt = Number(process.env[partialPageEnvName(key, "ATTEMPT")]);
     if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
       spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
       attempts[key] = attempt;
@@ -347,7 +353,7 @@ async function main() {
 
   let partialCaptureAttached = false;
   let partialSourceFailed = false;
-  for (const key of ["cbre", "colliers"] as const) {
+  for (const key of PARTIAL_PAGE_SOURCES) {
     const spool = spools[key];
     if (!spool) continue;
     const receipt = spool.finish();
@@ -367,6 +373,7 @@ async function main() {
   ).size;
   const evidenceOnly = !MONITOR && listings.length === 0 &&
     (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
+  let avisonTerminal404 = false;
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -379,9 +386,9 @@ async function main() {
       })
     ) {
       // This exit is reserved for the typed direct-HTTP 404 path. It carries no
-      // artifact and is only used when every selected transaction failed with
-      // that terminal response, so the refresh coordinator can skip a duplicate
-      // whole-source attempt without accepting or ingesting partial data.
+      // accepted artifact and is used only when every selected transaction failed
+      // with that terminal response. If a private spool captured validated peers,
+      // write a rejected evidence-only artifact before returning the same code.
       console.error(JSON.stringify({
         event: "avison_young_terminal_required_detail_failure",
         code: "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404",
@@ -394,8 +401,13 @@ async function main() {
           }))
         ),
       }));
-      process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
-      return;
+      avisonTerminal404 = true;
+      const capture = sources.find(source => source.sourceKey === "avison-young" && source.partialCapture)?.partialCapture;
+      if (!capture || !["sealed", "sealed_partial"].includes(capture.state)
+          || capture.observationRecords < 1) {
+        process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
+        return;
+      }
     }
     // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that
@@ -501,7 +513,7 @@ async function main() {
   if (terminalCaptureFailure) process.exitCode = 1;
   if (evidenceOnly) {
     console.error("no listings collected from any source");
-    process.exitCode = 1;
+    process.exitCode = avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
   }
 }
 
