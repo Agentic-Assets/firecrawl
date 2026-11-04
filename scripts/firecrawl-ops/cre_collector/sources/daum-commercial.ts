@@ -560,6 +560,49 @@ export function daumBelongsToTx(tenure: DaumTenure, tx: Tx): boolean {
 }
 
 
+function mapDaumVerifiedUnknown(
+  inventory: DaumInventoryRow,
+  detail: DaumDetail,
+  inventoryObservedAt: string,
+  detailObservedAt: string
+): any {
+  const resolvedTenure = resolveDaumTenure(inventory.tenure, detail.tenure);
+  if (resolvedTenure !== "unknown") throw new Error("DAUM retained unknown mapping requires unknown tenure");
+  const observed = detailObservation("daum_direct_detail_html", "live", detailObservedAt);
+  // Use only direct fields from the bound observations. In particular, do
+  // not infer a sale/lease price, numeric size, or primary child by position.
+  const contacts = detail.contacts.length ? detail.contacts : inventory.brokerNames.map(name => ({
+    name, email: null, phone: null, office: null, profileUrl: null, avatarUrl: null, license: null,
+  }));
+  return prune({
+    id: daumListingId(inventory.url), daumPostId: String(detail.postId),
+    name: detail.title, street: detail.title,
+    assetType: detail.facts["Property Type"] ?? inventory.assetType,
+    propertySubtype: detail.facts["Primary Use"],
+    description: detail.description, highlights: detail.highlights,
+    city: detail.city ?? inventory.city, state: detail.state ?? inventory.state,
+    postalCode: detail.postalCode ?? inventory.postalCode,
+    latitude: inventory.latitude, longitude: inventory.longitude,
+    sizeText: detail.sizeText ?? inventory.sizeText, zoning: detail.facts.Zoning,
+    contactsDetailed: contacts, brochures: detail.brochures,
+    photos: [...new Set([...detail.photos, inventory.imageUrl].filter(Boolean))],
+    url: inventory.url, canonicalUrl: inventory.url,
+    inventoryObservedAt, detailObservedAt,
+    freshnessProvenance: {
+      detailScope: "detail_page", generationId: observed.generationId,
+      method: observed.method, cacheDisposition: observed.cacheDisposition,
+      identityMethod: "wordpress_shortlink_post_id",
+    },
+    daumTenureEvidence: {
+      inventory: inventory.tenure, inventoryText: inventory.tenureText,
+      detail: detail.tenure, detailText: detail.tenureText, resolved: resolvedTenure,
+    },
+    daumObservedCanonicalUrl: detail.observedCanonicalUrl,
+    daumUnknownTenure: true, daumUnknownEvidence: JSON.stringify({ inventory, detail }),
+    preserveChildCollections: true, detailObservedWithChildPreservation: true,
+  });
+}
+
 export function mapDaumListing(
   inventory: DaumInventoryRow,
   detail: DaumDetail,
@@ -568,44 +611,13 @@ export function mapDaumListing(
   detailObservedAt: string
 ): any {
   const resolvedTenure = resolveDaumTenure(inventory.tenure, detail.tenure);
-  if (resolvedTenure !== "unknown" && !daumBelongsToTx(resolvedTenure, tx)) {
+  if (resolvedTenure === "unknown") {
+    throw new Error(`DAUM ${inventory.url} has unresolved transaction tenure`);
+  }
+  if (!daumBelongsToTx(resolvedTenure, tx)) {
     throw new Error(`DAUM ${inventory.url} does not belong to requested ${tx} inventory`);
   }
   const observed = detailObservation("daum_direct_detail_html", "live", detailObservedAt);
-  if (resolvedTenure === "unknown") {
-    // Use only direct fields from the bound observations. In particular, do
-    // not infer a sale/lease price, numeric size, or primary child by position.
-    const contacts = detail.contacts.length ? detail.contacts : inventory.brokerNames.map(name => ({
-      name, email: null, phone: null, office: null, profileUrl: null, avatarUrl: null, license: null,
-    }));
-    return prune({
-      id: daumListingId(inventory.url), daumPostId: String(detail.postId),
-      name: detail.title, street: detail.title,
-      assetType: detail.facts["Property Type"] ?? inventory.assetType,
-      propertySubtype: detail.facts["Primary Use"],
-      description: detail.description, highlights: detail.highlights,
-      city: detail.city ?? inventory.city, state: detail.state ?? inventory.state,
-      postalCode: detail.postalCode ?? inventory.postalCode,
-      latitude: inventory.latitude, longitude: inventory.longitude,
-      sizeText: detail.sizeText ?? inventory.sizeText, zoning: detail.facts.Zoning,
-      contactsDetailed: contacts, brochures: detail.brochures,
-      photos: [...new Set([...detail.photos, inventory.imageUrl].filter(Boolean))],
-      url: inventory.url, canonicalUrl: inventory.url,
-      inventoryObservedAt, detailObservedAt,
-      freshnessProvenance: {
-        detailScope: "detail_page", generationId: observed.generationId,
-        method: observed.method, cacheDisposition: observed.cacheDisposition,
-        identityMethod: "wordpress_shortlink_post_id",
-      },
-      daumTenureEvidence: {
-        inventory: inventory.tenure, inventoryText: inventory.tenureText,
-        detail: detail.tenure, detailText: detail.tenureText, resolved: resolvedTenure,
-      },
-      daumObservedCanonicalUrl: detail.observedCanonicalUrl,
-      daumUnknownTenure: true, daumUnknownEvidence: JSON.stringify({ inventory, detail }),
-      preserveChildCollections: true, detailObservedWithChildPreservation: true,
-    });
-  }
   const contacts = detail.contacts.length
     ? detail.contacts
     : inventory.brokerNames.map((name) => ({
@@ -767,7 +779,10 @@ export async function srcDaumCommercial(
     const listings = cohort.details.filter(row => (tx === "sale" && retainedUnknown.has(String(row.detail.postId))) || (!held.has(String(row.detail.postId)) && daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx)))
       .map(row => {
         if ("emptyRequiredTitle" in row.detail) throw new Error("DAUM empty-title observation cannot enter listing mapping");
-        return { ...mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt), daumDetailResponseSha256: row.bodySha256 };
+        const mapped = retainedUnknown.has(String(row.detail.postId))
+          ? mapDaumVerifiedUnknown(row.inventory, row.detail, cohort.snapshot.observedAt, row.observedAt)
+          : mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt);
+        return { ...mapped, daumDetailResponseSha256: row.bodySha256 };
       });
     return {
       company: "DAUM Commercial Real Estate Services", sourceUrl: DAUM_SEARCH_URL,

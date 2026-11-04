@@ -82,7 +82,11 @@ test("subset proves 562 members and retains two unknown-tenure records", async t
   assert.ok(sale.listings.some(row => row.daumPostId === "50002"));
   assert.ok(lease.listings.some(row => row.daumPostId === "50002"));
   for (const id of ["50007", "50293"]) {
-    assert.equal(sale.listings.filter(row => row.daumPostId === id).length, 1);
+    const retained = sale.listings.filter(row => row.daumPostId === id);
+    assert.equal(retained.length, 1);
+    assert.equal(retained[0].daumUnknownTenure, true);
+    assert.equal(retained[0].transactionType, undefined);
+    assert.equal(retained[0].daumTenureEvidence.resolved, "unknown");
     assert.equal(lease.listings.filter(row => row.daumPostId === id).length, 0);
   }
   assert.equal(state.posts, 14); assert.equal(state.gets.length, 562);
