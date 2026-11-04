@@ -3504,7 +3504,7 @@ def merge_rows(a, b):
         a["transaction_type"] = "sale_or_lease"
     elif b["transaction_type"] == "sale_or_lease":
         a["transaction_type"] = "sale_or_lease"
-    elif a["slug"] == "svn" and a["transaction_type"] is None:
+    elif a["slug"] in {"svn", "newmark"} and a["transaction_type"] is None:
         a["transaction_type"] = b["transaction_type"]
     for k in (
         "property_type",
@@ -4152,6 +4152,20 @@ WHERE p.image_id IS NULL;
     svn_enrichment_source_sql = (
         "s.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
         if svn_enrichment_ids else "FALSE"
+    )
+    detail_source_sql = (
+        "(b.slug, s.external_id) IN (" +
+        ", ".join("(" + sql_lit(slug) + ", " + sql_lit(value) + ")"
+                  for slug, value in sorted(inventory_preserve_enrichment_ids)) + ")"
+        if inventory_preserve_enrichment_ids else "FALSE"
+    )
+    detail_source_insert_sql = (
+        "EXISTS (SELECT 1 FROM credeals.cre_brokerages b WHERE b.id=s.brokerage_id AND " +
+        detail_source_sql + ")"
+    )
+    detail_target_sql = (
+        "EXISTS (SELECT 1 FROM credeals.cre_brokerages sb WHERE sb.id=EXCLUDED.brokerage_id AND " +
+        inventory_preserve_sql + ")"
     )
     lines = []
     w = lines.append
@@ -5008,13 +5022,9 @@ WITH ins AS (
         updated_date, scraped_at, raw_data, source_lastmod, canonical_key
     )
     SELECT brokerage_id, external_id, source_url,
-           CASE WHEN {svn_enrichment_source_sql}
-                  AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                              WHERE sb.id=s.brokerage_id AND sb.slug='svn')
+           CASE WHEN {detail_source_insert_sql}
                 THEN NULL ELSE COALESCE(status, 'active') END,
-           CASE WHEN {svn_enrichment_source_sql}
-                  AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                              WHERE sb.id=s.brokerage_id AND sb.slug='svn')
+           CASE WHEN {detail_source_insert_sql}
                 THEN NULL ELSE transaction_type END,
            property_type, title, address, city, state, zip, lat, lng, market, submarket,
            size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
@@ -5076,13 +5086,11 @@ WITH ins AS (
         -- off_market) that flickered back into the feed. A terminal-bearing row that
         -- reappears stays with its terminal label; the board gate excludes it.
         status            = CASE
-                              WHEN {svn_enrichment_sql}
-                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                              WHEN {detail_target_sql}
                                 THEN t.status
                               WHEN t.status IS NULL
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug IN ('svn','newmark'))
                                 THEN EXCLUDED.status
                               WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
                                 THEN 'active' ELSE t.status END,
@@ -5099,9 +5107,7 @@ WITH ins AS (
         --   existing/incoming differ (sale vs lease)  -> 'sale_or_lease' (serves both)
         --   same single mode, or incoming NULL        -> keep existing
         transaction_type  = CASE
-                              WHEN {svn_enrichment_sql}
-                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                              WHEN {detail_target_sql}
                                 THEN t.transaction_type
                               WHEN t.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
                               WHEN EXCLUDED.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
@@ -5392,9 +5398,7 @@ WITH ins AS (
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
         canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
         deleted_at        = CASE
-                              WHEN {svn_enrichment_sql}
-                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
-                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                              WHEN {detail_target_sql}
                                 THEN t.deleted_at ELSE NULL END,
         updated_at        = now()
     RETURNING t.id, t.brokerage_id, t.external_id
@@ -5569,6 +5573,8 @@ END $$;
         .replace("{inventory_preserve_sql}", inventory_preserve_sql)
         .replace("{svn_enrichment_sql}", svn_enrichment_sql)
         .replace("{svn_enrichment_source_sql}", svn_enrichment_source_sql)
+        .replace("{detail_source_insert_sql}", detail_source_insert_sql)
+        .replace("{detail_target_sql}", detail_target_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
@@ -5596,7 +5602,7 @@ SELECT s.brokerage_id, s.external_id, {staged_source_key_sql}, s.source_url, fal
 FROM _src s
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
 -- A detail-only SVN observation is not a fresh inventory enumeration.
-WHERE NOT (b.slug = 'svn' AND {svn_enrichment_source_sql})
+WHERE NOT ({detail_source_sql})
 ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
     source_key = COALESCE(EXCLUDED.source_key, si.source_key),
     url = EXCLUDED.url,
@@ -5631,7 +5637,7 @@ JOIN credeals.cre_source_index si
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 WHERE (p.observation_present = false OR pv.deleted_at IS NOT NULL)
-  AND NOT (b.slug = 'svn' AND {svn_enrichment_source_sql})
+  AND NOT ({detail_source_sql})
 ON CONFLICT DO NOTHING;
 """)
     w(f"""-- Children: refresh wholesale only when the latest source row completed a
@@ -7541,10 +7547,9 @@ def main():
             if row["slug"] in {"svn", "newmark"}:
                 identity = (row["slug"], row["external_id"])
                 if mode == "enrich":
-                    if row["slug"] == "svn":
-                        # The detail-only producer does not witness sale or lease.
-                        row["transaction_type"] = None
-                        row["_modes"] = set()
+                    # These detail-only producers do not establish sale/lease.
+                    row["transaction_type"] = None
+                    row["_modes"] = set()
                     inventory_enrichment_ids.add(identity)
                 else:
                     inventory_non_enrichment_ids.add(identity)

@@ -410,7 +410,7 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
     """Shape claimed rows into the claim.json `items` collect.ts --enrich-input reads.
 
     Each item carries sourceKey/externalId/url. The queue does not store tenure;
-    SVN leaves it unknown. Other generic sources retain the existing sale fallback.
+    SVN and Newmark leave it unknown. Other sources retain the sale fallback.
     """
     items = []
     for r in claimed_rows:
@@ -419,8 +419,8 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
             "externalId": r.get("external_id"),
             "url": r.get("url"),
         }
-        if r.get("source_key") == "svn" and r.get("transaction") is None:
-            pass  # The SVN queue does not witness a transaction type.
+        if r.get("source_key") in {"svn", "newmark"} and r.get("transaction") is None:
+            pass  # These queues do not witness a transaction type.
         elif not targeted or r.get("source_key") != "matthews" or r.get("transaction") is not None:
             item["transaction"] = r.get("transaction") or "sale"
         if r.get("claimed_at"):

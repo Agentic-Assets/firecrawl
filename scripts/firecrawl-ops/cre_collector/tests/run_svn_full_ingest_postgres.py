@@ -267,6 +267,70 @@ def main():
                 assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='"
                            +identity+"';") == "1"
         print("PASS: pure SVN detail preserves index/event, lifecycle/tenure; mixed/full and foreign controls")
+        for route in ("published", "generic"):
+            identity = "nm-lifecycle-" + route
+            url = "https://example.test/" + identity
+            card = {"sourceKey": "newmark", "id": identity, "url": url,
+                    "name": "NIM inventory", "transactionMode": "lease", "preserveChildCollections": True}
+            parent = ingest.to_row(card, {}, "2026-11-04T00:00:00Z")
+            nm_job = [{"slug": "newmark", "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}]
+            sql(ingest.build_sql([parent], nm_job, "2026-11-04T00:00:00Z", set()))
+            sql("UPDATE credeals.cre_listings SET status='inactive',deleted_at='2026-11-04T00:01:00Z', transaction_type='lease' WHERE external_id="
+                + ingest.sql_lit(identity) + "; UPDATE credeals.cre_source_index SET observation_present=false,soft_deleted=true WHERE external_id="
+                + ingest.sql_lit(identity) + ";")
+            def snap():
+                return json.loads(sql("SELECT jsonb_build_object('parent',(SELECT jsonb_build_object('status',status,'deleted_at',deleted_at,'transaction_type',transaction_type) "
+                    "FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(identity)+"), 'idx',(SELECT to_jsonb(i) FROM credeals.cre_source_index i WHERE external_id="
+                    +ingest.sql_lit(identity)+"),'events',(SELECT count(*) FROM credeals.cre_listing_events e JOIN credeals.cre_listings l ON l.id=e.listing_id WHERE l.external_id="
+                    +ingest.sql_lit(identity)+"))::text;"))
+            before = snap()
+            item = {"sourceKey":"newmark","id":identity,"url":url,"name":"detail","markdown":"detail observed",
+                    "transactionMode": "sale" if route == "generic" else None}
+            if route == "published":
+                item["preserveChildCollections"] = True
+            detail = ingest.to_row(item, {}, "2026-11-04T00:02:00Z")
+            sql(ingest.build_sql([detail], nm_job, "2026-11-04T00:02:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark",detail["external_id"])}))
+            after = snap()
+            assert after == before, (route, before, after)
+            assert sql("SELECT markdown FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(identity)+";") == "detail observed"
+            newer = ingest.to_row(card, {}, "2026-11-04T00:03:00Z")
+            sql(ingest.build_sql([newer], nm_job, "2026-11-04T00:03:00Z", set()))
+            fresh = snap()
+            assert fresh["parent"]["status"] == "active" and fresh["parent"]["deleted_at"] is None
+            assert fresh["parent"]["transaction_type"] == "lease"
+            assert fresh["idx"]["observation_present"] is True and fresh["idx"]["soft_deleted"] is False
+            assert fresh["events"] == before["events"] + 1
+        missing = ingest.to_row({"sourceKey":"newmark","id":"nm-no-parent",
+                                 "url":"https://example.test/nm-no-parent","name":"detail only",
+                                 "markdown":"observed detail","transactionMode":"sale"},
+                                {}, "2026-11-04T00:04:00Z")
+        sql(ingest.build_sql([missing], nm_job, "2026-11-04T00:04:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", missing["external_id"])}))
+        assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') "
+                   "FROM credeals.cre_listings WHERE external_id='nm-no-parent';") == "<null>|<null>"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-no-parent';") == "0"
+        assert sql("SELECT markdown FROM credeals.cre_listings WHERE external_id='nm-no-parent';") == "observed detail"
+        inventory = ingest.to_row({"sourceKey":"newmark","id":"nm-no-parent",
+            "url":"https://example.test/nm-no-parent","name":"fresh NIM", "transactionMode":"lease"},
+            {}, "2026-11-04T00:05:00Z")
+        sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:05:00Z", set()))
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='nm-no-parent';") == "active|lease"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-no-parent';") == "1"
+        # Same external ID in two brokerages: Newmark detail must not suppress
+        # the independent full SVN inventory row in this very transaction.
+        shared = "synthetic-cross-source"
+        nm_cross = ingest.to_row({"sourceKey":"newmark","id":shared,
+            "url":"https://example.test/nm-shared","name":"NM detail","markdown":"real detail"},
+            {}, "2026-11-04T00:06:00Z")
+        svn_cross = ingest.to_row({"sourceKey":"svn","id":shared,
+            "url":"https://example.test/svn-shared","name":"SVN full","transactionMode":"lease"},
+            {}, "2026-11-04T00:06:00Z")
+        sql(ingest.build_sql([nm_cross, svn_cross], nm_job+job, "2026-11-04T00:06:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", shared)}))
+        assert sql("SELECT source_key FROM credeals.cre_source_index WHERE external_id='synthetic-cross-source';") == "svn"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='synthetic-cross-source';") == "2"
+        print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

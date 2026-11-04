@@ -496,11 +496,11 @@ export async function runEnrichGroups(
       // completion. Index input transaction by url so the correct
       // transactionMode tag is attached (and a url-less row is dropped).
       const urlToTx = new Map<string, "sale" | "lease" | undefined>();
-      for (const it of groupItems) urlToTx.set(it.url, it.transaction ?? (key === "svn" ? undefined : "sale"));
+      for (const it of groupItems) urlToTx.set(it.url, it.transaction ?? (["svn", "newmark"].includes(key) ? undefined : "sale"));
       let emitted = 0;
       for (const l of rows) {
         if (!l || !l.url) continue;
-        const tx = urlToTx.get(l.url) ?? (key === "svn" ? undefined : "sale");
+        const tx = urlToTx.get(l.url) ?? (["svn", "newmark"].includes(key) ? undefined : "sale");
         const listing = prune({ sourceKey: key, sourceCompany: company, transactionMode: tx, ...l });
         if (key === "kidder-mathews") preserveKidderRaw(listing, l.rawKidder, l.kidderRawRetention);
         // Preserve caller-owned table evidence exactly: generic pruning removes
