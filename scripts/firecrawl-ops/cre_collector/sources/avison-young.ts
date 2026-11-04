@@ -2552,7 +2552,8 @@ export async function enrichAvisonYoungListing(
   return result;
 }
 
-export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
+  onValidatedDetail?: (listing: any, index: number) => void): Promise<SourceResult> {
   const strict = requireFreshDetails();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   if (requireLiveDetails && !refreshGenerationId()) {
@@ -2652,6 +2653,9 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
         `Avison Young fresh property detail is incomplete for ${clean(listing?.id) ?? "unknown-id"}: ${reason}`
       );
     }
+    // Save only completed, freshly identity-validated detail. Spool failures
+    // must not change source acceptance or request scheduling.
+    if (requireLiveDetails && onValidatedDetail) onValidatedDetail(enriched, idx);
     if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
       console.error("  avison-young/" + tx + ": detail enriched " + (idx + 1) + "/" + detailLimit);
     }
