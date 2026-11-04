@@ -162,6 +162,13 @@ Assert-Cre ((Get-CreTaskContract $crePreview) -cne (Get-CreTaskContract $creDefa
 $creSeries = @{ TaskName='Offline Fixture'; Tier='series'; Source='interra-realty'; ExpectedSha=('a'*40); WorkDeadlineSeconds=3600; AcknowledgeDatabaseWrites=$true; AdmitCurrentInventorySource='interra-realty'; DailyAt='03:15'; WeeklyOn='Saturday' }
 $creSeriesPreview = (& $creInstaller @creSeries) -join [Environment]::NewLine
 Assert-Cre ($creSeriesPreview -match '<Saturday\s*/>' -and $creSeriesPreview -match '03:15:00' -and $creSeriesPreview -match 'AcknowledgeDatabaseWrites' -and $creSeriesPreview -match 'AdmitCurrentInventorySource') 'Weekly Interra series must preserve explicit work and admission flags.'
+$creEnrich = @{ TaskName='Enrichment - newmark'; Tier='enrich'; Source='newmark'; ExpectedSha=('a'*40); Apply=$true; Batch=12; DeadlineSeconds=300 }
+$creEnrichPreview = (& $creInstaller @creEnrich) -join [Environment]::NewLine
+Assert-Cre ($creEnrichPreview -match 'Enrichment - newmark|Guarded CRE enrich' -and $creEnrichPreview -match 'Apply' -and $creEnrichPreview -match 'Batch') 'Enrichment preview must retain source-bound name and bounded applied action.'
+$creWrongName=$creEnrich.Clone();$creWrongName.TaskName='Other name'
+$creRefused=$false
+try {& $creInstaller @creWrongName | Out-Null} catch {$creRefused=$true}
+Assert-Cre $creRefused 'Enrichment requires the source-bound task name.'
 $creInvalid = @(
     @{ NotificationMode='invalid' }, @{ NotificationMode='StartFinish' },
     @{ AlertWebhookFile='relative.url' }, @{ AlertWebhookFile='https://example.invalid/canary' },

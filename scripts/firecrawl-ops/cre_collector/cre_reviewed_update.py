@@ -685,6 +685,8 @@ def run_source_update(
             )
             snapshot = native_stage("Inspect", inspect_plan)
             release["qualified_sources"] = snapshot["qualified_sources"]
+            release["task_baseline"] = snapshot["task_baseline"]
+            release["reviewed_fleet"] = True
             active_plan = output / "active-plan.json"
             write_new(
                 active_plan,

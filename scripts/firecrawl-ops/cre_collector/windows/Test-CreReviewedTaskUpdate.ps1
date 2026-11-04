@@ -6,7 +6,9 @@ $ErrorActionPreference='Stop'
 foreach($name in @('Assert-CreMaintenanceIdle','Get-CreMaintenanceTaskInstances','Get-CreRestorationRegisteredTask')) {
  if(-not (Get-Command $name -CommandType Function -ErrorAction SilentlyContinue)) {throw "Missing task dependency: $name"}
 }
+$realFleetCheck=${function:Assert-CreHandoffFleet}
 function Assert-CreHandoffFleet($Release) {}
+function Get-CreHandoffRelevantTasks($Release) {return @($script:rows|ForEach-Object { $_.task_path+$_.task_name })}
 function Get-CreHandoffNativeFrontends {return @()}
 function Get-CreMaintenanceTaskInstances($Release) {return @()}
 Assert-CreMaintenanceIdle @{}
@@ -318,4 +320,60 @@ $fixture.securityCalls=0;$fixture.securityMismatch=$true
 try {Invoke-CreReviewedTaskDefinitionUpdate $service $rows[0] '<task/>' $fixtureSid;throw 'changed task security accepted'} catch {if($_.Exception.Message -ceq 'changed task security accepted'){throw}}
 $fixture.securityCalls=0;$fixture.securityMismatch=$false;$fixture.securityUnavailable=$true
 Invoke-CreReviewedTaskDefinitionUpdate $service $rows[0] '<task/>' $fixtureSid
+# Optional source-bound task: use only fake definitions and scheduler functions.
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$fixture.successor=$false;$fixture.events.Clear()
+$extra=@{key='enrich:newmark';task_path='\Agentic Assets\CRE\';task_name='Enrichment - newmark'}
+$rows=@($rows)+@($extra)
+$base=[string]$snapshot[1].xml
+$base=$base.Replace('"-Tier" "series"','"-Tier" "enrich"').Replace('"-WorkDeadlineSeconds" "3600" "-AcknowledgeDatabaseWrites"','"-Batch" "12" "-DeadlineSeconds" "300" "-Apply"')
+foreach($applied in @($false,$true)) {
+foreach($enabled in @($false,$true)) {
+ if($applied) {$actionXml=$base} else {$actionXml=$base.Replace('"-Apply"','')}
+ $fixture.tasks[$extra.key]=@{xml=(Set-CreHandoffEnabledXml $actionXml $enabled);enabled=$enabled}
+ $optionalRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark');wsl=$release.wsl}
+ $optional=@(Get-CreReviewedCurrentTaskSnapshot $optionalRelease $old $new)
+ if($optional.Count -ne 4 -or $optional[3].enabled -ne $enabled) {throw 'Optional task discovery or flag failed'}
+ & $realFleetCheck $optionalRelease
+ $fixture.tasks[$extra.key].xml=([string]$optional[3].xml).Replace('"-Apply"','')
+ $null=Get-CreReviewedTaskSnapshot $optionalRelease $old $new
+ $fixture.tasks[$extra.key].xml=[string]$optional[3].xml
+ foreach($mutation in @(
+   @('"-Batch" "12"','"-Batch" "0"'),
+   @('"-Source" "newmark"','"-Source" "interra-realty"')
+ )) {
+   $fixture.tasks[$extra.key].xml=([string]$optional[3].xml).Replace($mutation[0],$mutation[1])
+   try {$null=Get-CreReviewedTaskSnapshot $optionalRelease $old $new;throw 'invalid enrichment accepted'} catch {if($_.Exception.Message -ceq 'invalid enrichment accepted'){throw}}
+ }
+ $fixture.tasks[$extra.key].xml=[string]$optional[3].xml
+ $d=Get-CreReviewedSnapshotDigest $optionalRelease $optional $old $new
+ $fixture.tasks[$extra.key].xml=$fixture.tasks[$extra.key].xml.Replace('newmark','other')
+ try {Invoke-CreReviewedTaskHold $optionalRelease $optional $old $new $d $assertOwner;throw 'optional action drift accepted'} catch {if($_.Exception.Message -ceq 'optional action drift accepted'){throw}}
+ $fixture.tasks[$extra.key].xml=[string]$optional[3].xml
+ Invoke-CreReviewedTaskHold $optionalRelease $optional $old $new $d $assertOwner
+ Invoke-CreReviewedTaskRepin $optionalRelease $optional $old $new $d $assertOwner
+ if($fixture.tasks[$extra.key].xml -cnotmatch $new) {throw 'Optional task not repinned'}
+ Invoke-CreReviewedTaskRestore $optionalRelease $optional $old $new $d $assertOwner
+ if($fixture.tasks[$extra.key].enabled -ne $enabled) {throw 'Optional enabled flag not restored'}
+ foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+ $fixture.successor=$false;$fixture.events.Clear()
+}
+}
+$matthews=@{key='enrich:matthews';task_path='\Agentic Assets\CRE\';task_name='Enrichment - matthews'}
+$rows=@($rows[0..2])+@($matthews)
+$matthewsXml=$base.Replace('newmark','matthews').Replace('"-DeadlineSeconds" "300"','"-DeadlineSeconds" "900"')
+$fixture.tasks[$matthews.key]=@{xml=(Set-CreHandoffEnabledXml $matthewsXml.Replace('"-Apply"','') $false);enabled=$false}
+$matthewsRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','matthews');wsl=$release.wsl}
+$null=Get-CreReviewedCurrentTaskSnapshot $matthewsRelease $old $new
+$fixture.tasks[$matthews.key].xml=Set-CreHandoffEnabledXml $matthewsXml $false
+try {$null=Get-CreReviewedTaskSnapshot $matthewsRelease $old $new;throw 'applied Matthews deadline accepted'} catch {if($_.Exception.Message -ceq 'applied Matthews deadline accepted'){throw}}
+$rows=@($rows[0..2])+@($extra)
+$bad=$rows+@(@{key='unknown';task_path='\Agentic Assets\CRE\';task_name='Other'})
+$rows=$bad
+try {& $realFleetCheck $optionalRelease;throw 'fleet drift accepted'} catch {if($_.Exception.Message -ceq 'fleet drift accepted'){throw}}
+Set-Item Function:Assert-CreHandoffFleet $realFleetCheck
+foreach($stage in @('Hold','VerifyHeld','Repin','Restore','VerifyRestored','ReconcileHold','VerifyOriginal','CompleteRepin','CompleteRestore')) {
+ try {Invoke-CreReviewedTaskStage $stage $optionalRelease $optional $old $new $d $assertOwner;throw 'stage accepted fleet drift'} catch {if($_.Exception.Message -cnotmatch 'Whole CRE fleet|Unexpected or missing CRE task') {throw}}
+}
+try {$unknownRelease=@{task_baseline=@($bad[0..2]);supported_sources=@('newmark');roots=$release.roots};Add-CreReviewedOptionalTasks $unknownRelease;& $realFleetCheck $unknownRelease;throw 'unknown task accepted'} catch {if($_.Exception.Message -ceq 'unknown task accepted'){throw}}
 Write-Output 'CRE reviewed task lifecycle fixture passed'
