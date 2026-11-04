@@ -819,7 +819,7 @@ export async function generateCompletions({
         schema: schema instanceof z.ZodType ? schema : jsonSchema(schema),
       }),
       ...(!schema && { output: "no-schema" as const }),
-      ...(boundedStructuredOutput ? {} : repairConfig),
+      ...(boundedStructuredOutput ? { maxRetries: 0 } : repairConfig),
       ...(!schema && {
         onError: (error: Error) => {
           lastError = error;
