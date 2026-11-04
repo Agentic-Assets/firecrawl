@@ -15,8 +15,12 @@ function Save-CreRestorationWatermark([string]$Output) {
 
 function Get-CreRestorationRegisteredTask($Service,$Baseline) {
     $names=@{interra='Interra Refresh';newmark='Newmark Refresh';qualified='Qualified Brokerage Pipeline'}
+    $expected=if($Baseline.key -ceq 'daum-subset') {'DAUM Verified Subset'}
+    elseif($Baseline.key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {'Enrichment - '+$Matches[1]}
+    elseif($names.Keys -ccontains $Baseline.key) {$names[$Baseline.key]}
+    else {$null}
     if($Baseline.task_path -cne '\Agentic Assets\CRE\' -or
-       -not ($names.Keys -ccontains $Baseline.key) -or $Baseline.task_name -cne $names[$Baseline.key]) {
+       -not $expected -or $Baseline.task_name -cne $expected) {
         throw 'COM task query outside original restoration fleet'
     }
     # Installed TaskPath is an identity string with a trailing separator.
