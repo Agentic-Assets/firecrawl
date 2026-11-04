@@ -4,17 +4,15 @@ import {
   generateCompletions,
   GenerateCompletionsOptions,
   generateSchemaFromPrompt,
-  isInvalidStructuredOutputError,
-  normalizeJsonSchemaForModel,
 } from "../transformers/llmExtract";
 import { smartScrape } from "./smartScrape";
+import { generateValidated } from "./structuredOutputFallback";
 import {
   checkForPromptInjection,
   createPromptInjectionGuardLimiter,
 } from "./promptInjectionGuard";
 import { parseMarkdown } from "../../../lib/html-to-markdown";
 import { getModel } from "../../../lib/generic-ai";
-import { config } from "../../../config";
 import { TokenUsage } from "../../../controllers/v1/types";
 import type { SmartScrapeResult } from "./smartScrape";
 import {
@@ -23,102 +21,6 @@ import {
 } from "../../../lib/cost-tracking";
 import { JsonExtractionContentTooLargeError } from "../error";
 import { toRootSchema, typeIncludes } from "../../../lib/openai-strict-schema";
-import Ajv from "ajv";
-
-type ResolvedStructuredResult = {
-  extractedData: unknown;
-  wasDirectSchemaResult: boolean;
-};
-
-function isSmartScrapeEnvelope(value: unknown): value is {
-  extractedData: unknown;
-} {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Object.hasOwn(value, "extractedData")
-  );
-}
-
-function schemaValidatedValue(
-  value: unknown,
-  schema: unknown,
-): { value: unknown } | undefined {
-  if (schema === undefined) {
-    return undefined;
-  }
-
-  try {
-    // Providers sometimes include an unrequested sibling field even when the
-    // requested schema forbids it. Keep only schema-permitted output, then
-    // validate required fields and types before accepting the result.
-    const candidate =
-      value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-    const validate = new Ajv({
-      allErrors: false,
-      removeAdditional: "failing",
-      strict: false,
-    }).compile(schema as any);
-    return validate(candidate) ? { value: candidate } : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Some OpenAI-compatible providers return the requested user schema directly
- * instead of Firecrawl's SmartScrape envelope. Accept that response only when
- * it validates against the original user schema; anything else remains a
- * failed structured result and can use the configured fallback model.
- */
-export function resolveStructuredResult(
-  value: unknown,
-  userSchema: unknown,
-): ResolvedStructuredResult | undefined {
-  // Some user schemas legitimately have an `extractedData` property at their
-  // root. Validate the complete value first so that provider output matching
-  // that schema is not mistaken for Firecrawl's internal envelope.
-  const validatedDirectValue = schemaValidatedValue(value, userSchema);
-  if (validatedDirectValue !== undefined) {
-    return {
-      extractedData: validatedDirectValue.value,
-      wasDirectSchemaResult: true,
-    };
-  }
-
-  if (isSmartScrapeEnvelope(value)) {
-    const shouldUseSmartscrape = (value as Record<string, unknown>)
-      .shouldUseSmartscrape;
-    if (
-      shouldUseSmartscrape !== undefined &&
-      typeof shouldUseSmartscrape !== "boolean"
-    ) {
-      return undefined;
-    }
-
-    const validatedExtractedData = schemaValidatedValue(
-      value.extractedData,
-      userSchema,
-    );
-    if (shouldUseSmartscrape === true && value.extractedData === null) {
-      return {
-        extractedData: value.extractedData,
-        wasDirectSchemaResult: false,
-      };
-    }
-
-    if (validatedExtractedData !== undefined) {
-      return {
-        extractedData: validatedExtractedData.value,
-        wasDirectSchemaResult: false,
-      };
-    }
-
-    return undefined;
-  }
-
-  return undefined;
-}
 
 // ~2MB of markdown, well past typical page sizes -- caps worst-case JSON extraction cost/latency.
 export const MAX_JSON_EXTRACTION_MARKDOWN_CHARS = 2_000_000;
@@ -484,15 +386,6 @@ export async function extractData({
     ? prepareSmartScrapeSchema(toRootSchema(schema), logger, isSingleUrl)
         .schemaToUse
     : schema;
-  // Fork: the provider-normalized schema that a structured result must satisfy
-  // before it is accepted (and before the configured fallback is skipped).
-  let resultSchema: any = undefined;
-  if (schema && wrapForSmartScrape) {
-    resultSchema =
-      normalizeJsonSchemaForModel(schemaToUse)?.properties?.extractedData;
-  } else if (schema) {
-    resultSchema = normalizeJsonSchemaForModel(schema);
-  }
   const extractOptionsNewSchema = {
     ...extractOptions,
     options: { ...extractOptions.options, schema: schemaToUse },
@@ -507,38 +400,23 @@ export async function extractData({
     warning: string | undefined,
     totalUsage: TokenUsage | undefined;
 
-  const smartScrapeGenerationOptions = {
-    ...extractOptionsNewSchema,
-    costTrackingOptions: {
-      costTracking: extractOptions.costTrackingOptions.costTracking,
-      metadata: {
-        module: "scrapeURL",
-        method: "extractData",
-        description: "Check if using smartScrape is needed for this case",
-      },
-    },
-  };
-
-  const structuredOutputFallback =
-    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?.trim();
-
-  // checks if using smartScrape is needed for this case
-  const isStructuredOutputCompatibilityTransaction = Boolean(
-    structuredOutputFallback && resultSchema,
+  // Fork: schema validation and the one-time structured-output fallback.
+  const generate = generateValidated.bind(
+    null,
+    generateCompletions,
+    wrapForSmartScrape,
   );
-  let primaryGenerationFailed = false;
-  // Fork: the retryable primary failure (for example the output-limit message)
-  // stays actionable if the one-time fallback then yields nothing usable.
-  let primaryRetryableWarning: string | undefined;
-
   try {
-    const completion = await generateCompletions({
-      ...smartScrapeGenerationOptions,
-      // The explicit model fallback below is the only allowed retry for this
-      // compatibility transaction. Ordinary callers retain the upstream
-      // recovery behavior in generateCompletions.
-      disableInternalRateLimitRetry: isStructuredOutputCompatibilityTransaction,
-      disableInternalObjectRepair: isStructuredOutputCompatibilityTransaction,
+    const completion = await generate({
+      ...extractOptionsNewSchema,
+      costTrackingOptions: {
+        costTracking: extractOptions.costTrackingOptions.costTracking,
+        metadata: {
+          module: "scrapeURL",
+          method: "extractData",
+          description: "Check if using smartScrape is needed for this case",
+        },
+      },
     });
     extract = completion.extract;
     warning = completion.warning;
@@ -548,117 +426,22 @@ export async function extractData({
       throw error;
     }
 
-    const isRetryableStructuredOutputFailure =
-      isStructuredOutputCompatibilityTransaction &&
-      isInvalidStructuredOutputError(error);
-    primaryGenerationFailed = !isRetryableStructuredOutputFailure;
-
-    if (isRetryableStructuredOutputFailure) {
-      logger.warn(
-        "Structured JSON output was invalid; retrying with configured fallback model",
-      );
-      const primaryReason =
-        error instanceof Error ? error.message : String(error);
-      primaryRetryableWarning = `JSON extraction failed: ${primaryReason.slice(0, 300)}`;
-    } else {
-      logger.error("failed during extractSmartScrape.ts:generateCompletions", {
-        error,
-      });
-      // Surface the failure to the caller: swallowing it here made a failed
-      // extraction indistinguishable from a successful-but-empty one — the
-      // scrape returned 200 with the json field silently absent (and billed).
-      // `warning` is provably undefined here (only assigned on the success
-      // path of the try above), so assign directly — the caller merges any
-      // pre-existing document warnings.
-      const reason = error instanceof Error ? error.message : String(error);
-      warning = `JSON extraction failed: ${reason.slice(0, 300)}`;
-    }
-  }
-
-  let resolvedStructuredResult = resultSchema
-    ? resolveStructuredResult(extract, resultSchema)
-    : undefined;
-  if (resolvedStructuredResult?.wasDirectSchemaResult) {
-    logger.info("Normalized direct structured-output response", {
-      providedExtractId: extractId,
-      scrapeId,
+    logger.error("failed during extractSmartScrape.ts:generateCompletions", {
+      error,
     });
+    // Surface the failure to the caller: swallowing it here made a failed
+    // extraction indistinguishable from a successful-but-empty one — the
+    // scrape returned 200 with the json field silently absent (and billed).
+    // `warning` is provably undefined here (only assigned on the success
+    // path of the try above), so assign directly — the caller merges any
+    // pre-existing document warnings.
+    const reason = error instanceof Error ? error.message : String(error);
+    warning = `JSON extraction failed: ${reason.slice(0, 300)}`;
   }
 
-  if (
-    !primaryGenerationFailed &&
-    resultSchema &&
-    resolvedStructuredResult === undefined &&
-    structuredOutputFallback
-  ) {
-    const fallbackModelName = structuredOutputFallback;
-    logger.warn("Structured output missing or invalid; retrying once", {
-      fallbackModelName,
-      providedExtractId: extractId,
-      scrapeId,
-    });
-
-    try {
-      const { extract: fallbackExtract, warning: fallbackWarning } =
-        await generateCompletions({
-          ...smartScrapeGenerationOptions,
-          model: getModel(fallbackModelName, "openai", {
-            ignoreModelOverride: true,
-          }),
-          // A compatibility transaction is bounded to the primary request plus
-          // this single explicit fallback request for invalid structured output.
-          disableInternalRateLimitRetry: true,
-          disableInternalObjectRepair: true,
-        });
-      const fallbackResult = resolveStructuredResult(
-        fallbackExtract,
-        resultSchema,
-      );
-
-      if (fallbackResult !== undefined) {
-        extract = fallbackExtract;
-        warning = fallbackWarning;
-        resolvedStructuredResult = fallbackResult;
-        logger.info("Structured-output fallback succeeded", {
-          fallbackModelName,
-          wasDirectSchemaResult: fallbackResult.wasDirectSchemaResult,
-          providedExtractId: extractId,
-          scrapeId,
-        });
-      } else if (fallbackWarning) {
-        warning = [warning ?? primaryRetryableWarning, fallbackWarning]
-          .filter(Boolean)
-          .join(" ");
-      } else {
-        warning ??= primaryRetryableWarning;
-      }
-    } catch (error) {
-      if (error instanceof CostLimitExceededError) {
-        throw error;
-      }
-
-      const reason = error instanceof Error ? error.message : String(error);
-      warning = [
-        warning ?? primaryRetryableWarning,
-        `JSON extraction fallback failed: ${reason.slice(0, 300)}`,
-      ]
-        .filter(Boolean)
-        .join(" ");
-    }
-  }
-
-  // Without a schema there is nothing to validate against, so keep the
-  // upstream pass-through. With one, only a schema-valid result is accepted.
-  let structuredResult: any = extract;
-  if (resultSchema) {
-    structuredResult = resolvedStructuredResult?.extractedData;
-  } else if (wrapForSmartScrape) {
-    structuredResult = extract?.extractedData;
-  }
-  let extractedData: any =
-    wrapForSmartScrape || structuredResult === undefined
-      ? structuredResult
-      : unwrapRootArray(schema, structuredResult);
+  let extractedData = wrapForSmartScrape
+    ? extract?.extractedData
+    : unwrapRootArray(schema, extract);
 
   // console.log("shouldUseSmartscrape", extract?.shouldUseSmartscrape);
   // console.log("smartscrape_reasoning", extract?.smartscrape_reasoning);
