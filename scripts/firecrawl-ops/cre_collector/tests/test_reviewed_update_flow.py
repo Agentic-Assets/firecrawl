@@ -187,9 +187,26 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
                 return 1
             result = {
                 "qualified_sources": "interra-realty,newmark",
+                "task_baseline": data["release"]["task_baseline"]
+                + [
+                    {
+                        "key": "enrich:newmark",
+                        "task_path": "\\Agentic Assets\\CRE\\",
+                        "task_name": "Enrichment - newmark",
+                    }
+                ],
                 "snapshot": [],
                 "digest": "a" * 64,
             }
+        else:
+            assert data["release"]["reviewed_fleet"] is True
+            assert data["release"]["task_baseline"][-1] == {
+                "key": "enrich:newmark",
+                "task_path": "\\Agentic Assets\\CRE\\",
+                "task_name": "Enrichment - newmark",
+            }
+        if stage == "Inspect":
+            pass
         elif stage == "Hold":
             if failure == "hold_noop":
                 return completed_failure()
