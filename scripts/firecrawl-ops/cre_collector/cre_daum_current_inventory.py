@@ -354,6 +354,91 @@ def subset_source_scope(data):
     return {"entries": entries, "listings": listings}
 
 
+def checkpoint_retained_unknown_ids(data):
+    """Bind DAUM preservation rows to their subset evidence before worker validation.
+
+    This is a structural/projection check, not source or write admission. The
+    later source and aggregate gates still validate the complete cohort, clocks,
+    provider passes, generation and database target.
+    """
+    scope = subset_source_scope(data)
+    entries = {entry["transaction"]: entry for entry in scope["entries"]}
+    sale = entries["sale"]["currentInventoryProof"]
+    lease = entries["lease"]["currentInventoryProof"]
+    retained = sale.get("retainedUnknownTenure", [])
+    require(isinstance(retained, list))
+    if not retained:
+        require(all(not row.get("preserveChildCollections") and not row.get("daumUnknownTenure")
+                    for row in scope["listings"]))
+        return frozenset()
+    require(
+        {key: value for key, value in sale.items() if key != "transaction"}
+        == {key: value for key, value in lease.items() if key != "transaction"}
+        and sale.get("transaction") == "sale" and lease.get("transaction") == "lease"
+        and sale.get("sourceKey") == SOURCE
+        and sale.get("generationId") == (data["runMeta"].get("freshness") or {}).get("generationId")
+        and len(retained) == len(set(retained))
+    )
+    held = sale.get("held")
+    require(isinstance(held, list))
+    require(all(isinstance(item, list) and len(item) == 2 for item in held))
+    require(retained == [post for post, reason in held
+                         if reason == "unknown_inventory_and_detail_tenure"])
+    cohort, receipts = sale.get("cohort"), sale.get("details")
+    require(isinstance(cohort, list) and isinstance(receipts, list))
+    native, details = {}, {}
+    for row in cohort:
+        require(isinstance(row, list) and len(row) == 8)
+        post, url, key, inv, inv_raw, detail, detail_raw, resolved = row
+        _post(post)
+        require(post not in native and key == _path_key(url))
+        require(inv == _tenure(inv_raw) and detail == _tenure(detail_raw)
+                and resolved == _resolved(inv, detail))
+        native[post] = (url, key, inv, inv_raw, detail, detail_raw, resolved)
+    for row in receipts:
+        require(isinstance(row, list) and len(row) == 4)
+        post, canonical, clock, body_hash = row
+        require(post in native and post not in details and canonical == native[post][0])
+        _time(clock)
+        _digest(body_hash)
+        details[post] = (canonical, clock, body_hash)
+    require(all(post in native and post in details and native[post][-1] == "unknown"
+                for post in retained))
+    # Reuse the existing exact typed evidence validators on the retained subset.
+    retained_held = [[post, "unknown_inventory_and_detail_tenure"] for post in retained]
+    observed_proof = dict(sale)
+    for name in ("heldInventoryObservations", "heldDetailObservations"):
+        values = sale.get(name)
+        require(isinstance(values, list))
+        observed_proof[name] = [item for item in values
+                                if isinstance(item, dict) and item.get("postId") in retained]
+    _held_inventory_observations(observed_proof, retained_held, native)
+    _held_detail_observations(observed_proof, retained_held, native, details, False, set())
+    inventories = {item["postId"]: item["inventory"] for item in observed_proof["heldInventoryObservations"]}
+    observed_details = {item["postId"]: item["detail"] for item in observed_proof["heldDetailObservations"]}
+    by_id = {}
+    for row in scope["listings"]:
+        post = row.get("daumPostId")
+        if post not in retained:
+            require(not row.get("preserveChildCollections") and not row.get("daumUnknownTenure"))
+            continue
+        require(post not in by_id and row.get("transactionMode") == "sale")
+        by_id[post] = row
+        try:
+            evidence = json.loads(row.get("daumUnknownEvidence"))
+        except (TypeError, ValueError):
+            require(False)
+        require(evidence == {"inventory": inventories[post], "detail": observed_details[post]})
+        require(_sha({key: value for key, value in row.items() if key != "daumUnknownEvidence"})
+                == _sha(_unknown_projection(
+                    inventories[post], observed_details[post], generation=sale["generationId"],
+                    inventory_at=sale["observedAt"], detail_at=details[post][1],
+                    body_hash=details[post][2],
+                )))
+    require(set(by_id) == set(retained))
+    return frozenset(retained)
+
+
 def admit(artifact_path, manifest, report, **kwargs):
     return _admit(artifact_path, manifest, report, subset=False, **kwargs)
 

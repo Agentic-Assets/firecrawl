@@ -1,8 +1,55 @@
 """DAUM unknown tenure must not be inferred from the collection pass."""
 
+from pathlib import Path
+
 import pytest
 
 from cre_ingest import transaction_type_of
+
+
+def worker_validate(path, started, generation, tmp_path, *, enabled=True):
+    """Call the actual artifact-worker CLI against a contained artifact."""
+    import json
+    import subprocess
+    import sys
+
+    request = tmp_path / "validate-request.json"
+    response = tmp_path / "validate-response.json"
+    request.write_text(
+        json.dumps(
+            {
+                "request_id": "test-daum-retained",
+                "action": "validate",
+                "arguments": {
+                    "path": str(path),
+                    "source": "daum-commercial",
+                    "attempt_started_at": started,
+                    "kwargs": {
+                        "require_strict_freshness": True,
+                        "expected_generation_id": generation,
+                        "expected_generation_started_at": started,
+                        "daum_verified_subset": enabled,
+                    },
+                },
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "cre_pipeline_artifact_worker.py",
+            "--request",
+            str(request),
+            "--response",
+            str(response),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(response.read_text())
 
 
 def test_unknown_tenure_has_no_transaction_type():
@@ -19,8 +66,9 @@ def test_unknown_tenure_has_no_transaction_type():
     assert transaction_type_of(listing) is None
 
 
+@pytest.mark.parametrize("policy", ["tenure-only-v1", "tenure-and-empty-title-v2"])
 def test_actual_producer_admits_unknown_once_without_complete_coverage(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, policy
 ):
     import test_essex_current_inventory as helpers
     from test_daum_current_inventory import produce
@@ -33,16 +81,72 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     generated = produce(
         tmp_path,
         total=101,
-        all_sale=True,
+        all_sale=False,
         unknown_inventory=True,
         unknown_detail=True,
-        subset_policy="tenure-and-empty-title-v2",
+        subset_policy=policy,
     )
     monkeypatch.setattr(helpers, "SOURCE", daum.SOURCE)
     prepared = helpers.setup(tmp_path, generated)
     prepared[3]["config"]["current_inventory_admission"] = (
-        admission.subset_configuration("tenure-and-empty-title-v2")
+        admission.subset_configuration(policy)
     )
+    from cre_pipeline_artifact_worker import compute
+
+    validated = worker_validate(prepared[1], generated[2], generated[3], tmp_path)
+    assert validated["ok"] is True
+    assert validated["value"]["bytes"] == prepared[1].stat().st_size
+    refused = worker_validate(
+        prepared[1], generated[2], generated[3], tmp_path, enabled=False
+    )
+    assert refused["ok"] is False and refused["artifact_rejected"] is True
+
+    # Exercise the actual worker's source and aggregate paths, not only the
+    # pure DAUM verifier; the aggregate worker must emit usable ingest claims.
+    import copy
+    import json
+
+    import cre_checkpoint_refresh as refresh
+
+    worker_manifest = copy.deepcopy(prepared[3])
+    worker_report = copy.deepcopy(prepared[4])
+    monkeypatch.setattr(
+        refresh, "git_identity", lambda: (worker_manifest["collector_git_sha"], False)
+    )
+    source_result = compute(
+        "admit",
+        {
+            "path": str(prepared[1]),
+            "run_dir": str(prepared[0]),
+            "source": daum.SOURCE,
+            "manifest": worker_manifest,
+            "report": worker_report,
+            "phase": "source",
+        },
+        prepared[0] / "source-response.json",
+    )
+    worker_source = json.loads(Path(source_result["report_path"]).read_text())
+    source_gate = worker_source["per_source"][daum.SOURCE]
+    worker_manifest["sources"][daum.SOURCE]["gate"] = {
+        **source_gate,
+        "path": Path(source_result["report_path"]).name,
+    }
+    worker_manifest["sources"][daum.SOURCE]["subset_ingest_attempt_id"] = "e" * 32
+    aggregate_result = compute(
+        "admit",
+        {
+            "path": str(prepared[1]),
+            "run_dir": str(prepared[0]),
+            "source": daum.SOURCE,
+            "manifest": worker_manifest,
+            "report": worker_source,
+            "phase": "aggregate",
+        },
+        prepared[0] / "aggregate-response.json",
+    )
+    assert aggregate_result["subset_claims"]["attempt_id"] == "e" * 32
+    assert Path(aggregate_result["subset_claims"]["path"]).is_file()
+
     binding = admit(prepared)
     proof = prepared[2]["sources"][0]["currentInventoryProof"]
     unknown_ids = set(proof["retainedUnknownTenure"])
@@ -61,7 +165,10 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     assert binding["whole_lease_coverage"] == "unknown"
     assert binding["retained_unknown_tenure_count"] == len(unknown_ids)
     assert binding["held_count"] == 0
-    assert binding["sale_count"] == 101 - len(unknown_ids)
+    assert binding["sale_count"] == sum(
+        row[-1] in {"sale", "sale_or_lease"} for row in proof["cohort"]
+    )
+    assert binding["lease_count"] > 0
     assert (
         len(proof["held"])
         == len(proof["heldInventoryObservations"])
@@ -176,6 +283,15 @@ def test_unknown_arrays_do_not_invent_primary_but_known_daum_behavior_is_unchang
         "contact",
         "broker_ids",
         "unsupported_field",
+        "proof_cross_tx",
+        "retained_missing",
+        "retained_mismatch",
+        "fake_known_preservation",
+        "count_metric",
+        "missing_retained_detail",
+        "missing_preservation",
+        "missing_detail_preservation",
+        "boolean_count",
     ],
 )
 def test_unknown_admission_rejects_unbound_or_duplicate_rows(
@@ -227,6 +343,30 @@ def test_unknown_admission_rejects_unbound_or_duplicate_rows(
         unknown["contactsDetailed"] = [{"name": "Unobserved contact"}]
     elif fault == "broker_ids":
         unknown["brokerIds"] = [0]
+    elif fault == "proof_cross_tx":
+        artifact["sources"][1]["currentInventoryProof"]["retainedUnknownTenure"] = []
+    elif fault == "retained_missing":
+        for entry in artifact["sources"]:
+            entry["currentInventoryProof"]["retainedUnknownTenure"] = []
+    elif fault == "retained_mismatch":
+        for entry in artifact["sources"]:
+            entry["currentInventoryProof"]["retainedUnknownTenure"].append("59999")
+    elif fault == "fake_known_preservation":
+        known = next(
+            row for row in artifact["listings"] if not row.get("daumUnknownTenure")
+        )
+        known["preserveChildCollections"] = True
+    elif fault == "count_metric":
+        artifact["sources"][0]["freshness"]["childPreservationRows"] += 1
+    elif fault == "boolean_count":
+        artifact["sources"][0]["freshness"]["childPreservationRows"] = True
+    elif fault == "missing_preservation":
+        unknown.pop("preserveChildCollections")
+    elif fault == "missing_detail_preservation":
+        unknown.pop("detailObservedWithChildPreservation")
+    elif fault == "missing_retained_detail":
+        for entry in artifact["sources"]:
+            entry["currentInventoryProof"]["heldDetailObservations"].pop()
     else:
         duplicate = copy.deepcopy(unknown)
         duplicate["transactionMode"] = "lease"
@@ -240,5 +380,117 @@ def test_unknown_admission_rejects_unbound_or_duplicate_rows(
         entry["totalAvailableOnSource"] = entry["listingsCollected"]
     prepared[4]["per_source"][daum.SOURCE]["current_active"] = len(artifact["listings"])
     helpers.refresh(prepared[1], artifact, prepared[3])
-    with pytest.raises((ValueError, KeyError, TypeError)):
-        admit(prepared)
+    validated = worker_validate(prepared[1], generated[2], generated[3], tmp_path)
+    assert validated["ok"] is False and validated["artifact_rejected"] is True
+    if fault not in {"count_metric", "boolean_count"}:
+        with pytest.raises((ValueError, KeyError, TypeError)):
+            admit(prepared)
+
+
+def test_daum_latest_freshness_uses_explicit_source_and_marker():
+    from cre_validate import persisted_freshness_provenance
+
+    old = {
+        "inventoryObservedAt": "2026-11-01T00:00:00Z",
+        "detailObservedAt": "2026-11-01T00:00:01Z",
+        "freshnessProvenance": {"generationId": "old"},
+    }
+    new = {
+        "sourceKey": "daum-commercial",
+        "daumUnknownTenure": True,
+        "inventoryObservedAt": "2026-11-04T00:00:00Z",
+        "detailObservedAt": "2026-11-04T00:00:01Z",
+        "freshnessProvenance": {
+            "generationId": "new",
+            "detailScope": "detail_page",
+            "cacheDisposition": "live",
+        },
+    }
+    raw = {**old, "latestDaumUnknownTenureObservation": new}
+    assert (
+        persisted_freshness_provenance(raw, source_key="daum-commercial")[
+            "generation_id"
+        ]
+        == "new"
+    )
+    assert (
+        persisted_freshness_provenance(raw, source_key="other")["generation_id"]
+        == "old"
+    )
+    assert persisted_freshness_provenance(raw)["generation_id"] == "old"
+    assert (
+        persisted_freshness_provenance(
+            {
+                **raw,
+                "latestDaumUnknownTenureObservation": {
+                    **new,
+                    "daumUnknownTenure": False,
+                },
+            },
+            source_key="daum-commercial",
+        )["generation_id"]
+        == "old"
+    )
+    assert (
+        persisted_freshness_provenance(
+            {
+                **raw,
+                "latestDaumUnknownTenureObservation": {**new, "sourceKey": "other"},
+            },
+            source_key="daum-commercial",
+        )["generation_id"]
+        == "old"
+    )
+    assert (
+        persisted_freshness_provenance(
+            {
+                **raw,
+                "latestDaumUnknownTenureObservation": {
+                    "sourceKey": "daum-commercial",
+                    "daumUnknownTenure": True,
+                    "inventoryObservedAt": "",
+                    "freshnessProvenance": {"generationId": ""},
+                },
+            },
+            source_key="daum-commercial",
+        )["generation_id"]
+        == "old"
+    )
+
+
+@pytest.mark.parametrize("policy", ["tenure-only-v1", "tenure-and-empty-title-v2"])
+def test_historical_subset_without_retained_list_passes_worker(tmp_path, policy):
+    import json
+
+    from test_daum_current_inventory import produce
+
+    generated = produce(
+        tmp_path,
+        total=102,
+        all_sale=True,
+        unknown_inventory=True,
+        unknown_detail=True,
+        subset_policy=policy,
+    )
+    artifact = generated[0]
+    retained = set(
+        artifact["sources"][0]["currentInventoryProof"]["retainedUnknownTenure"]
+    )
+    artifact["listings"] = [
+        row for row in artifact["listings"] if row["daumPostId"] not in retained
+    ]
+    artifact["totalListings"] = len(artifact["listings"])
+    for entry in artifact["sources"]:
+        entry["currentInventoryProof"].pop("retainedUnknownTenure")
+        count = sum(
+            row["transactionMode"] == entry["transaction"]
+            for row in artifact["listings"]
+        )
+        entry["listingsCollected"] = entry["totalAvailableOnSource"] = count
+        for key in ("listings", "inventoryObserved", "detailObserved"):
+            entry["freshness"][key] = count
+        entry["freshness"]["childPreservationRows"] = 0
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(artifact))
+    result = worker_validate(path, generated[2], generated[3], tmp_path)
+    assert result["ok"] is True, result
