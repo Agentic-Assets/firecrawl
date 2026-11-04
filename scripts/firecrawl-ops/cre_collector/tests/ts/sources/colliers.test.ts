@@ -518,6 +518,7 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
   const pageRequests: string[] = [];
   let laterListAttempts = 0;
   let siblingSettled = false;
+  const observations: any[] = [];
 
   installSalesTrackerFetch(t, async (url, init) => {
     if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
@@ -557,7 +558,10 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
     return jsonResponse(pageTwo.map);
   });
 
-  const result = await srcColliers("sale", 4, false);
+  const result = await srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  });
+  assert.deepEqual(observations.map(row => [row.page, row.attempt]), [[1, 1], [2, 2]]);
   assert.equal(result.listings.length, 4);
   assert.equal(laterListAttempts, 2);
   assert.deepEqual(
