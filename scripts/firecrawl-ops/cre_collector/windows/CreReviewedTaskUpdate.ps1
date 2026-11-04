@@ -207,10 +207,18 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     $tier=Get-CreReviewedArgument $argv '-Tier'
     if((Get-CreReviewedArgument $argv '-ExpectedSha') -cne $OldSha) {throw 'Task pin differs'}
     $single=@($argv|Where-Object {$_ -ieq '-Source'}).Count;$many=@($argv|Where-Object {$_ -ieq '-Sources'}).Count
+    $daumFlag=@($argv|Where-Object {$_ -ieq '-AdmitDaumVerifiedSubset'}).Count
+    if($Row.key -cne 'daum-subset' -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
     if($Row.key -clike 'enrich:*') {
         $source=$Row.key.Substring(7)
         if($tier -cne 'enrich' -or $single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $source -or $source -cnotin @($Release.supported_sources)) {throw 'Enrichment task source scope differs'}
     } elseif($tier -cne 'series') {throw 'Task tier differs'}
+    elseif($Row.key -ceq 'daum-subset') {
+        $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedDaum) {throw 'Unsupported DAUM subset task argument'}}
+        if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'daum-commercial' -or
+           $daumFlag -ne 1 -or @($argv|Where-Object {$_ -iin @('-Pipeline','-AdmitCurrentInventorySource','-AdmitCurrentInventorySources','-AdmitBaselineHoldAdditively')}).Count -ne 0) {throw 'DAUM subset task scope differs'}
+    }
     elseif($Row.key -ceq 'qualified') {
         if($single -ne 0 -or $many -ne 1 -or -not $Release.qualified_sources -or
            (Get-CreReviewedArgument $argv '-Sources') -cne [string]$Release.qualified_sources -or
@@ -248,7 +256,8 @@ function Assert-CreReviewedFleetRowSet([object[]]$Rows) {
     if($Rows.Count -lt 3 -or @($Rows.key|Select-Object -Unique).Count -ne $Rows.Count) {throw 'Incomplete or duplicate task fleet'}
     foreach($row in $Rows) {
         $key=[string]$row.key
-        if($key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {$name='Enrichment - '+$Matches[1]}
+        if($key -ceq 'daum-subset') {$name='DAUM Verified Subset'}
+        elseif($key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {$name='Enrichment - '+$Matches[1]}
         elseif($expected.ContainsKey($key)) {$name=$expected[$key]}
         else {throw 'Unexpected task identity'}
         if($row.task_path -cne '\Agentic Assets\CRE\' -or $row.task_name -cne $name) {throw 'Unexpected task identity'}
@@ -261,7 +270,10 @@ function Add-CreReviewedOptionalTasks($Release) {
     Assert-CreReviewedFleetRowSet $rows
     if($rows.Count -ne 3) {throw 'Inspection must start from the standard fleet'}
     foreach($identity in @(Get-CreHandoffRelevantTasks $Release)) {
-        if($identity -cmatch '^\\Agentic Assets\\CRE\\Enrichment - ([a-z0-9]+(?:-[a-z0-9]+)*)$') {
+        if($identity -ceq '\Agentic Assets\CRE\DAUM Verified Subset') {
+            if('daum-commercial' -cnotin @($Release.supported_sources)) {throw 'Unsupported DAUM source'}
+            $rows+=@{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'}
+        } elseif($identity -cmatch '^\\Agentic Assets\\CRE\\Enrichment - ([a-z0-9]+(?:-[a-z0-9]+)*)$') {
             $source=$Matches[1]
             if($source -cnotin @($Release.supported_sources)) {throw 'Unsupported enrichment source'}
             $rows+=@{key='enrich:'+$source;task_path='\Agentic Assets\CRE\';task_name='Enrichment - '+$source}
