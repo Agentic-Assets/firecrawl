@@ -356,6 +356,8 @@ export function parseGenericJsonLd(item: EnrichItem, rawHtml: string): any {
     longitude: lng,
     url: item.url,
     genericEnrich: { jsonLdType: matched?.type ?? null, hadJsonLd: ld != null },
+    // Sparse Newmark JSON-LD is not a complete child observation.
+    preserveChildCollections: item.sourceKey === "newmark" ? true : undefined,
   });
 }
 

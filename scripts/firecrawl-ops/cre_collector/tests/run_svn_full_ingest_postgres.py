@@ -338,6 +338,60 @@ def main():
             inventory_preserve_enrichment_ids={("newmark", shared)}))
         assert sql("SELECT source_key FROM credeals.cre_source_index WHERE external_id='synthetic-cross-source';") == "svn"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='synthetic-cross-source';") == "2"
+        # Exercise the real TS generic mapper and the generated ingest transaction.
+        # The source detail is sparse: old physical children must survive, while
+        # distinct newly observed children remain additive and new parents insert.
+        mapper = """import {parseGenericJsonLd} from './lib/enrich.ts';
+const item={sourceKey:'newmark',externalId:'nm-child-existing',url:'https://example.test/nm-child-existing'};
+const html='<script type="application/ld+json">{"@type":"RealEstateListing","name":"New detail"}</script>';
+console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)}));"""
+        generic = json.loads(run("node", "--import", "tsx", "--input-type=module", "-e", mapper,
+                                 cwd=str(HERE.parent)))
+        child_fields = {
+            "contactsDetailed": [{"name": "Prior Broker", "email": "prior@example.test"}],
+            "documents": [{"url": "https://example.test/prior.pdf", "title": "Prior"}],
+            "photos": ["https://example.test/prior.jpg"],
+            "media": [{"url": "https://example.test/prior-video", "mediaType": "video"}],
+            "links": [{"url": "https://example.test/prior-link", "linkType": "other"}],
+        }
+        new_child_fields = {
+            "contactsDetailed": [{"name": "New Broker", "email": "new@example.test"}],
+            "documents": [{"url": "https://example.test/new.pdf", "title": "New"}],
+            "photos": ["https://example.test/new.jpg"],
+            "media": [{"url": "https://example.test/new-video", "mediaType": "video"}],
+            "links": [{"url": "https://example.test/new-link", "linkType": "other"}],
+        }
+        child_tables = ("contacts", "documents", "images", "media", "links")
+        def child_ids(external_id):
+            return {table: set(sql("SELECT c.id FROM credeals.cre_listing_" + table +
+                " c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id='" +
+                external_id + "' ORDER BY c.id;").splitlines()) for table in child_tables}
+        seed = ingest.to_row({**generic, **child_fields, "transactionType": "sale"}, {}, "2026-11-04T00:07:00Z")
+        sql(ingest.build_sql([seed], nm_job, "2026-11-04T00:07:00Z", set()))
+        before = child_ids("nm-child-existing")
+        assert all(len(ids) == 1 for ids in before.values()), before
+        sparse = ingest.to_row(generic, {}, "2026-11-04T00:08:00Z")
+        sql(ingest.build_sql([sparse], nm_job, "2026-11-04T00:08:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
+        assert child_ids("nm-child-existing") == before, "sparse generic detail deleted prior children"
+        enriched = ingest.to_row({**generic, **new_child_fields}, {}, "2026-11-04T00:09:00Z")
+        sql(ingest.build_sql([enriched], nm_job, "2026-11-04T00:09:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
+        after = child_ids("nm-child-existing")
+        assert all(before[t] < after[t] and len(after[t]) == 2 for t in child_tables), (before, after)
+        new_id = "nm-child-new"
+        new_row = ingest.to_row({**generic, **new_child_fields, "id": new_id,
+            "url": "https://example.test/nm-child-new"}, {}, "2026-11-04T00:10:00Z")
+        sql(ingest.build_sql([new_row], nm_job, "2026-11-04T00:10:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", new_id)}))
+        assert all(len(ids) == 1 for ids in child_ids(new_id).values()), child_ids(new_id)
+        empty_id = "nm-child-new-empty"
+        empty_row = ingest.to_row({**generic, "id": empty_id,
+            "url": "https://example.test/nm-child-new-empty"}, {}, "2026-11-04T00:11:00Z")
+        sql(ingest.build_sql([empty_row], nm_job, "2026-11-04T00:11:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", empty_id)}))
+        assert all(not ids for ids in child_ids(empty_id).values()), child_ids(empty_id)
+        print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")
         print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
     finally:
