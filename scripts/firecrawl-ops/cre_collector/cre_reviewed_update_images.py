@@ -276,6 +276,9 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
         require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number),
                 "previous Compose container number unavailable")
         labels["com.docker.compose.replace"] = service + "-" + number
+        require(isinstance(labels.get("com.docker.compose.depends_on"), str),
+                "Compose dependency label missing")
+        labels["com.docker.compose.depends_on"] = ""
         labels["com.docker.compose.project.config_files"] = ",".join(before["stack"]["files"])
         rollback_config[service] = snapshot_container(rollback_container)["config_sha256"]
         explicit = set((before["compose"]["services"][service].get("environment") or {}).keys())
@@ -309,7 +312,8 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
     packet = {"expected_images": {name: built[name]["image"] for name in changed},
               "allowed_image_default_changes": allowed, "new": selected,
               "compose_files": before["stack"]["files"], "compose_override_path": str(override_path)}
-    projected = qualify_fleet_projection(before["containers"], old_images, new_images, before["compose"], packet)
+    projected = qualify_fleet_projection(before["containers"], old_images, new_images, before["compose"], packet,
+                                         no_deps=True)
     plan = {"selected": selected, "services": sorted(services), "apply_services": sorted(changed), "images": built,
             "docker_sha256": binary_hash, "compose_stack": before["stack"],
             "nuq_data_sha256": before["nuq_data_sha256"], "compose_sha256": before["compose_sha256"],

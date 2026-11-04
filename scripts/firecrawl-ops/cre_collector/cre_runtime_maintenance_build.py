@@ -362,7 +362,7 @@ def qualify_mutable_limits(compose, host):
 
 
 def project_expected_configuration(container, old_image, new_image, explicit_keys, allowed_changed,
-                                   explicit_labels, selected_sha, *, expected_config_files, expected_replace):
+                                   explicit_labels, selected_sha, *, expected_config_files, expected_replace, no_deps=False):
     """Compute a private pre-mutation projection from actual Docker inspect data.
 
     Raw environment and mount values remain in memory. This refuses image
@@ -377,6 +377,10 @@ def project_expected_configuration(container, old_image, new_image, explicit_key
     live_labels = container["Config"].get("Labels")
     require(isinstance(live_labels, dict), "live container labels missing")
     generated = {"com.docker.compose.replace", "com.docker.compose.project.config_files"}
+    if no_deps:
+        generated.add("com.docker.compose.depends_on")
+        require(isinstance(live_labels.get("com.docker.compose.depends_on"), str),
+                "Compose dependency label missing")
     require(isinstance(explicit_labels, set) and not generated.intersection(old_labels)
             and not generated.intersection(new_labels)
             and live_labels.get("com.docker.compose.replace") in (None, expected_replace)
@@ -423,6 +427,8 @@ def project_expected_configuration(container, old_image, new_image, explicit_key
             "reviewed Compose config-file label missing")
     labels["com.docker.compose.project.config_files"] = expected_config_files
     labels["com.docker.compose.replace"] = expected_replace
+    if no_deps:
+        labels["com.docker.compose.depends_on"] = ""
     labels["org.opencontainers.image.revision"] = new_revision
     return {"config_sha256": snapshot_container(projected)["config_sha256"], "changed_keys": changed}
 
@@ -477,7 +483,7 @@ def expected_overlay_config_files(current_files, override_path):
     return current_files + "," + override_path
 
 
-def qualify_fleet_projection(containers, old_images, new_images, compose, packet):
+def qualify_fleet_projection(containers, old_images, new_images, compose, packet, *, no_deps=False):
     """Derive, rather than accept, five-container prestate and expected hashes.
 
     All inspect and Compose objects are supplied by the owning fresh observation;
@@ -540,7 +546,7 @@ def qualify_fleet_projection(containers, old_images, new_images, compose, packet
         result[service] = project_expected_configuration(actual[service], old, new, set(environment),
                                                          set(allowed[service]), set(labels), packet["new"]["sha"],
                                                          expected_config_files=expected_files,
-                                                         expected_replace=service + "-" + number)
+                                                         expected_replace=service + "-" + number, no_deps=no_deps)
     return {"before": sorted(before, key=lambda row: row["service"]),
             "expected_after_config": {name: row["config_sha256"] for name, row in result.items()},
             "changed_image_default_keys": {name: row["changed_keys"] for name, row in result.items()}}
