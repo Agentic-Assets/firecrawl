@@ -658,3 +658,127 @@ def test_partial_fleet_allows_missing_affected_but_rejects_unrelated_drift(monke
     rows[0]["status"] = "exited"
     with pytest.raises(HandoffError, match="unrelated container changed"):
         direct.qualify_settled_partial_fleet(plan, "/docker", "/native", lambda: None)
+
+
+def test_docker_observation_classifies_only_daemon_disconnect_or_timeout(monkeypatch, tmp_path):
+    import cre_reviewed_update_images as direct
+
+    binary = tmp_path / "docker"
+    binary.write_bytes(b"docker")
+    digest = sha(binary.read_bytes())
+    def run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 1, stdout=b"", stderr=stderr[0])
+    monkeypatch.setattr(direct.subprocess, "run", run)
+    stderr = [b"Cannot connect to the Docker daemon at npipe:local. Is the docker daemon running?"]
+    with pytest.raises(direct.DockerObservationUnavailable):
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+    stderr[0] = b"Error: No such object: api"
+    with pytest.raises(HandoffError, match="Docker observation failed") as failure:
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+    assert not isinstance(failure.value, direct.DockerObservationUnavailable)
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 60)
+    monkeypatch.setattr(direct.subprocess, "run", timeout)
+    with pytest.raises(direct.DockerObservationUnavailable):
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+    binary.write_bytes(b"changed")
+    with pytest.raises(HandoffError, match="executable changed"):
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+
+
+def test_readiness_retries_only_unavailable_observation(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    plan = {"apply_services": ["api"]}
+    attempts = []
+    def observe(*args):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise direct.DockerObservationUnavailable("daemon unavailable")
+        return {"containers": {"api": "running"}}
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def get_json(self, path):
+            return {"message": "Firecrawl API"} if path == "/" else {"success": True}
+    monkeypatch.setattr(direct, "verify_image_result", observe)
+    monkeypatch.setattr(direct.time, "sleep", lambda seconds: None)
+    assert direct.wait_for_selected_images(plan, {}, None, None, Client, lambda: None)["containers"]["api"] == "running"
+    assert len(attempts) == 2
+    monkeypatch.setattr(direct, "verify_image_result", lambda *args: (_ for _ in ()).throw(
+        direct.DockerObservationUnavailable("daemon unavailable")))
+    times = iter([0, 31])
+    monkeypatch.setattr(direct.time, "monotonic", lambda: next(times))
+    with pytest.raises(direct.SelectedImageUnready, match="observation timed out"):
+        direct.wait_for_selected_images(plan, {}, None, None, Client, lambda: None)
+    monkeypatch.setattr(direct.time, "monotonic", lambda: 0)
+    calls = []
+    def owner():
+        calls.append(True)
+        if len(calls) == 2:
+            raise RuntimeError("owner lost")
+    with pytest.raises(RuntimeError, match="owner lost"):
+        direct.wait_for_selected_images(plan, {}, None, None, Client, owner)
+
+
+def test_docker_observation_malformed_output_and_timeout_binary_change_fail(monkeypatch, tmp_path):
+    import cre_reviewed_update_images as direct
+
+    binary = tmp_path / "docker"
+    binary.write_bytes(b"docker")
+    digest = sha(binary.read_bytes())
+    monkeypatch.setattr(direct.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args[0], 0, stdout=b"not json", stderr=b""))
+    with pytest.raises(json.JSONDecodeError):
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+    def timeout(*args, **kwargs):
+        binary.write_bytes(b"changed")
+        raise subprocess.TimeoutExpired(args[0], 60)
+    monkeypatch.setattr(direct.subprocess, "run", timeout)
+    with pytest.raises(HandoffError, match="executable changed"):
+        direct._docker_json(binary, tmp_path, digest, "inspect", "api")
+
+
+def test_original_observation_timeout_is_not_a_degraded_success(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    times = iter([0, 31])
+    monkeypatch.setattr(direct.time, "monotonic", lambda: next(times))
+    def unavailable():
+        raise direct.DockerObservationUnavailable("daemon unavailable")
+    with pytest.raises(direct.DockerObservationUnavailable):
+        direct.wait_for_service_readiness({"apply_services": ["api"]}, None, None, None,
+                                          lambda: None, unavailable)
+
+
+def test_browser_hard_docker_error_propagates_and_unhealthy_retries(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    plan = {"apply_services": ["playwright-service"], "docker_sha256": "a" * 64}
+    observed = {"containers": {"playwright-service": "running"}}
+    monkeypatch.setattr(direct, "local_path", Path)
+    monkeypatch.setattr(direct.time, "sleep", lambda seconds: None)
+    def hard_error(*args):
+        raise HandoffError("Docker executable changed")
+    monkeypatch.setattr(direct, "_docker_json", hard_error)
+    with pytest.raises(HandoffError, match="Docker executable changed"):
+        direct.wait_for_service_readiness(plan, "/docker", "/native", None, lambda: None, lambda: observed)
+    values = iter([{"status": "unhealthy"}, {"status": "healthy"}])
+    monkeypatch.setattr(direct, "_docker_json", lambda *args: next(values))
+    assert direct.wait_for_service_readiness(plan, "/docker", "/native", None, lambda: None,
+                                             lambda: observed) == observed
+
+
+def test_browser_daemon_unavailable_never_becomes_degraded_success(monkeypatch):
+    import cre_reviewed_update_images as direct
+
+    plan = {"apply_services": ["playwright-service"], "docker_sha256": "a" * 64}
+    monkeypatch.setattr(direct, "local_path", Path)
+    times = iter([0, 31])
+    monkeypatch.setattr(direct.time, "monotonic", lambda: next(times))
+    def unavailable(*args):
+        raise direct.DockerObservationUnavailable("daemon unavailable")
+    monkeypatch.setattr(direct, "_docker_json", unavailable)
+    with pytest.raises(direct.DockerObservationUnavailable):
+        direct.wait_for_service_readiness(plan, "/docker", "/native", None, lambda: None,
+                                          lambda: {"containers": {"playwright-service": "running"}})

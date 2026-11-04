@@ -44,12 +44,23 @@ def _docker_environment():
     return environment
 
 
+class DockerObservationUnavailable(HandoffError):
+    """Docker did not provide an observation; no state conclusion is possible."""
+
+
 def _docker_json(executable, native, binary_hash, *args):
     require(sha(read_file(executable)) == binary_hash, "Docker executable changed")
-    result = subprocess.run([str(executable), "--host", ENGINE, *args],
-                            cwd=native, env=_docker_environment(), capture_output=True, timeout=60, check=False)
-    require(result.returncode == 0 and len(result.stdout) <= 8 * 1024 * 1024
-            and sha(read_file(executable)) == binary_hash, "Docker observation failed or changed")
+    try:
+        result = subprocess.run([str(executable), "--host", ENGINE, *args],
+                                cwd=native, env=_docker_environment(), capture_output=True, timeout=60, check=False)
+    except subprocess.TimeoutExpired as error:
+        require(sha(read_file(executable)) == binary_hash, "Docker executable changed")
+        raise DockerObservationUnavailable("Docker observation timed out") from error
+    require(sha(read_file(executable)) == binary_hash, "Docker executable changed")
+    if result.returncode != 0 and result.stderr.startswith(b"Cannot connect to the Docker daemon at "):
+        raise DockerObservationUnavailable("Docker daemon unavailable")
+    require(result.returncode == 0 and len(result.stdout) <= 8 * 1024 * 1024,
+            "Docker observation failed or changed")
     return json_bytes(result.stdout)
 
 
@@ -182,7 +193,7 @@ def assert_image_idle(docker, native_root, services, client, idle_snapshot):
         binary_hash = sha(read_file(executable))
         script = ("fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/health',"
                   "{signal:AbortSignal.timeout(3000)}).then(async r=>{if(!r.ok)throw Error('health');"
-                  "process.stdout.write(await r.text())}).catch(()=>process.exit(1))")
+                  "process.stdout.write(await r.text())}).catch(()=>process.stdout.write(JSON.stringify({status:\"unhealthy\"})))")
         value = _docker_json(executable, native, binary_hash, "exec", "firecrawl-playwright-service-1",
                              "node", "-e", script)
         require(isinstance(value, dict) and value.get("status") == "healthy"
@@ -481,24 +492,38 @@ def wait_for_service_readiness(plan, docker, native_root, client, owner, observe
     deadline = time.monotonic() + timeout_seconds
     while True:
         owner()
-        result = observe()
         try:
-            require(all(result["containers"][name] == "running" for name in affected),
-                    "selected container is not running")
+            result = observe()
+        except DockerObservationUnavailable:
+            owner()
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+            continue
+        try:
+            if not all(result["containers"][name] == "running" for name in affected):
+                raise RuntimeError("selected container is not running")
             if "api" in affected:
                 api = client("http://127.0.0.1:3002", timeout_seconds=5)
-                require(api.get_json("/").get("message") == "Firecrawl API"
-                        and api.get_json("/v2/team/queue-status").get("success") is True,
-                        "selected API is unavailable")
+                if not (api.get_json("/").get("message") == "Firecrawl API"
+                        and api.get_json("/v2/team/queue-status").get("success") is True):
+                    raise RuntimeError("selected API is unavailable")
             if "playwright-service" in affected:
                 executable, native = map(local_path, (docker, native_root))
                 script = ("fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/health',"
                           "{signal:AbortSignal.timeout(3000)}).then(async r=>{if(!r.ok)throw Error('health');"
-                          "process.stdout.write(await r.text())}).catch(()=>process.exit(1))")
+                          "process.stdout.write(await r.text())}).catch(()=>process.stdout.write(JSON.stringify({status:\"unhealthy\"})))")
                 value = _docker_json(executable, native, plan["docker_sha256"], "exec",
                                      "firecrawl-playwright-service-1", "node", "-e", script)
-                require(isinstance(value, dict) and value.get("status") == "healthy",
-                        "selected Playwright is unavailable")
+                if not isinstance(value, dict) or value.get("status") != "healthy":
+                    raise RuntimeError("selected Playwright is unavailable")
+        except DockerObservationUnavailable:
+            owner()
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+        except HandoffError:
+            raise
         except (RuntimeError, OSError, subprocess.TimeoutExpired):
             if time.monotonic() >= deadline:
                 return None
@@ -511,11 +536,16 @@ def wait_for_selected_images(plan, selected, docker, native_root, client, owner,
     def observe():
         try:
             return verify_image_result(plan, selected, docker, native_root)
+        except DockerObservationUnavailable:
+            raise
         except (HandoffError, OSError, subprocess.TimeoutExpired) as error:
             raise SelectedImageUnready("selected image transition differs") from error
 
-    result = wait_for_service_readiness(plan, docker, native_root, client, owner, observe,
-                                        timeout_seconds=timeout_seconds)
+    try:
+        result = wait_for_service_readiness(plan, docker, native_root, client, owner, observe,
+                                            timeout_seconds=timeout_seconds)
+    except DockerObservationUnavailable as error:
+        raise SelectedImageUnready("selected image observation timed out") from error
     if result is None:
         raise SelectedImageUnready("selected image readiness timed out")
     return result
