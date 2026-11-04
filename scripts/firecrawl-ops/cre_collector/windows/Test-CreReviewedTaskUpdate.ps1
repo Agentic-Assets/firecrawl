@@ -390,6 +390,27 @@ foreach($enabled in @($false,$true)) {
  $fixture.successor=$false;$fixture.events.Clear()
 }
 }
+# Both optional tasks participate in one fleet and retain their own enabled flags.
+$rows=@($rows[0..2])+@($daum,$extra)
+$fixture.tasks[$daum.key]=@{xml=$daumXml;enabled=$true}
+$fixture.tasks[$extra.key]=@{xml=(Set-CreHandoffEnabledXml $base $false);enabled=$false}
+$combinedRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
+$combined=@(Get-CreReviewedCurrentTaskSnapshot $combinedRelease $old $new)
+if($combined.Count -ne 5 -or @($combined | Where-Object {$_.key -ceq 'daum-subset'}).Count -ne 1 -or
+   @($combined | Where-Object {$_.key -ceq 'enrich:newmark'}).Count -ne 1) {throw 'Combined optional fleet discovery failed'}
+& $realFleetCheck $combinedRelease
+$combinedDigest=Get-CreReviewedSnapshotDigest $combinedRelease $combined $old $new
+Invoke-CreReviewedTaskHold $combinedRelease $combined $old $new $combinedDigest $assertOwner
+Invoke-CreReviewedTaskRepin $combinedRelease $combined $old $new $combinedDigest $assertOwner
+Invoke-CreReviewedTaskRestore $combinedRelease $combined $old $new $combinedDigest $assertOwner
+foreach($row in $combined) {
+ $actual=$fixture.tasks[$row.key]
+ $expected=Set-CreHandoffEnabledXml (Pin-ReviewedXml ([string]$row.xml) $old $new) $row.enabled
+ if($actual.enabled -ne $row.enabled -or (Get-CreTaskContract ([string]$actual.xml)) -cne (Get-CreTaskContract $expected)) {throw 'Combined fleet changed beyond pin or enabled state'}
+}
+$fixture.tasks.Remove($daum.key)
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$fixture.successor=$false;$fixture.events.Clear()
 $matthews=@{key='enrich:matthews';task_path='\Agentic Assets\CRE\';task_name='Enrichment - matthews'}
 $rows=@($rows[0..2])+@($matthews)
 $matthewsXml=$base.Replace('newmark','matthews').Replace('"-DeadlineSeconds" "300"','"-DeadlineSeconds" "900"')
