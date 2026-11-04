@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import cre_checkpoint_series as series
@@ -256,3 +254,70 @@ def test_reconcile_stale_running_source_refuses_ambiguous_children(tmp_path):
     with pytest.raises(series.SeriesError, match="exactly one terminal child"):
         series.reconcile_stale_running_sources(tmp_path, manifest)
     assert checkpoint["state"] == "running"
+
+
+@pytest.mark.parametrize("case", ["local", "bad_evidence", "unsettled"])
+def test_serial_series_pyramid_guard_only_continues_after_bound_settlement(tmp_path, monkeypatch, case):
+    import cre_checkpoint_refresh as refresh
+    import cre_pyramid_rollback_result as outcome
+
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40,
+                                   config=config(("pyramid-brokerage", "jll")), database_target=target)
+    started = []
+    returns = iter([refresh.PYRAMID_GUARD_SETTLED_EXIT, 0])
+    child_manifests = iter([
+        {"status": "failed", "serial_guard_holds": ["pyramid-brokerage"],
+         "preflight": {"database_target": target}},
+        {"status": series.SUCCESS_STATUS, "error": None},
+    ])
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.pid = 4321
+            self.rc = next(returns)
+            started.append(self)
+        def wait(self, timeout=None):
+            return self.rc
+        def poll(self):
+            return self.rc
+    monkeypatch.setattr(series.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(series, "_load_child_manifest", lambda root, **kwargs: (root / "child" / "manifest.json", next(child_manifests)))
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: case != "bad_evidence")
+    def settlement(*args):
+        if case == "unsettled":
+            raise refresh.ProcessCleanupUnknown("unknown")
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", settlement)
+    rc = series.run_series(tmp_path, manifest, env_file=None, retry_failed=False)
+    if case == "local":
+        assert rc == 2 and len(started) == 2
+        assert manifest["status"] == "complete_with_source_failures"
+        assert manifest["sources"]["pyramid-brokerage"]["state"] == "failed_source"
+        assert manifest["sources"]["jll"]["state"] == "complete"
+    else:
+        assert rc == 1 and len(started) == 1
+        assert manifest["status"] == "failed"
+        assert manifest["sources"]["pyramid-brokerage"]["state"] == "failed_global"
+
+
+def test_foreign_source_cannot_use_pyramid_settled_exit_as_local(tmp_path, monkeypatch):
+    import cre_checkpoint_refresh as refresh
+
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40,
+                                   config=config(("cbre", "jll")), database_target=target)
+    class FakeProcess:
+        pid = 4321
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def wait(self, timeout=None):
+            return refresh.PYRAMID_GUARD_SETTLED_EXIT
+        def poll(self):
+            return refresh.PYRAMID_GUARD_SETTLED_EXIT
+    child = {"status": "failed", "error": "RefreshError: source checkpoints remain incomplete: cbre",
+             "serial_guard_holds": ["cbre"], "preflight": {"database_target": target}}
+    monkeypatch.setattr(series.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(series, "_load_child_manifest", lambda root, **kwargs: (root / "child" / "manifest.json", child))
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", lambda *a: None)
+    assert series.run_series(tmp_path, manifest, env_file=None, retry_failed=False) == 1
+    assert manifest["sources"]["cbre"]["state"] == "failed_global"
+    assert manifest["sources"]["jll"]["state"] == "pending"

@@ -47,6 +47,8 @@ def run_schedule(
     deterministic_clock=False,
     pyramid_partial=False,
     pyramid_admitted=False,
+    pyramid_guard_refusal=False,
+    pyramid_guard_valid=True,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -160,6 +162,9 @@ def run_schedule(
 
     def database(root, owner, unit, env_file, previous):
         events.append(("db_start", tuple(unit["sources"]), clock["now"]))
+        if pyramid_guard_refusal and "pyramid-brokerage" in unit["sources"]:
+            owner["sources"]["pyramid-brokerage"]["state"] = "pyramid_historical_guard_refused"
+            raise refresh.PyramidHistoricalGuardRefusal("typed")
         if db_failure:
             raise refresh.GlobalStageError("synthetic DB fault")
         until = clock["now"] + 0.6
@@ -181,6 +186,9 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
+    if pyramid_guard_refusal:
+        import cre_pyramid_rollback_result as outcome
+        monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
 
     def cleanup(items):
         events.append(("cleanup", tuple(item.source for item in items), clock["now"]))
@@ -675,3 +683,41 @@ def test_scheduled_pipeline_complete_pyramid_does_not_become_partial(tmp_path, m
         sources=("pyramid-brokerage", "hanley"), pyramid_admitted=True)
     assert failures == [] and manifest["pipeline"]["status"] == "complete"
     assert manifest["pipeline"]["source_results"]["pyramid-brokerage"].get("partial") is not True
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_pyramid_is_singleton_unit_and_healthy_peers_continue(tmp_path, monkeypatch, refused):
+    sources = ("savills", "pyramid-brokerage", "hanley")
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, sources=sources,
+                                               pyramid_guard_refusal=refused)
+    pyramid_starts = [event for event in events if event[0] == "db_start" and "pyramid-brokerage" in event[1]]
+    assert len(pyramid_starts) == 1 and pyramid_starts[0][1] == ("pyramid-brokerage",)
+    prior_verified = next(i for i, event in enumerate(events) if event[0] == "db_end" and "savills" in event[1])
+    guard_start = next(i for i, event in enumerate(events) if event == pyramid_starts[0])
+    assert prior_verified < guard_start
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    if refused:
+        assert failures == ["pyramid-brokerage"] and manifest["pipeline"]["status"] == "partial"
+        assert manifest["pipeline"]["source_results"]["pyramid-brokerage"]["state"] == "failed"
+        pyramid_units = [unit for unit in manifest["pipeline"]["units"] if "pyramid-brokerage" in unit["sources"]]
+        assert len(pyramid_units) == 1 and pyramid_units[0]["state"] == "source_held"
+        assert len({unit["unit_id"] for unit in manifest["pipeline"]["units"]}) == len(manifest["pipeline"]["units"])
+    else:
+        assert failures == [] and manifest["pipeline"]["status"] == "complete"
+
+
+def test_invalid_pyramid_rollback_stops_the_pipeline_globally(tmp_path, monkeypatch):
+    with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+        run_schedule(tmp_path, monkeypatch, 2, sources=("pyramid-brokerage", "hanley"),
+                     pyramid_guard_refusal=True, pyramid_guard_valid=False)
+
+
+def test_pyramid_only_typed_hold_is_partial_without_verified_members(tmp_path, monkeypatch):
+    manifest, _, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("pyramid-brokerage",), pyramid_guard_refusal=True)
+    assert failures == ["pyramid-brokerage"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["counts"]["verified"] == 0
+    assert manifest["pipeline"]["source_results"]["pyramid-brokerage"]["state"] == "failed"
+    assert manifest["pipeline"]["units"][0]["state"] == "source_held"

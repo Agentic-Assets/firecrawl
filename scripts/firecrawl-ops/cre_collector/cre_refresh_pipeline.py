@@ -893,7 +893,7 @@ def run_bounded_pipeline(
     active = []
     ready = []
     pending = list(selected)
-    terminal_gate_holds: set[str] = set()
+    terminal_source_holds: set[str] = set()
     sealed = ()
     preparing = ()
     dispatch_pending = False
@@ -987,8 +987,8 @@ def run_bounded_pipeline(
                 source in sealed
                 or state["source_results"].get(source, {}).get("state") == "verified"
                 or (
-                    source in terminal_gate_holds
-                    and checkpoint.get("state") in {"gate_blocked", "baseline_seed_required"}
+                    source in terminal_source_holds
+                    and checkpoint.get("state") in {"gate_blocked", "baseline_seed_required", "pyramid_historical_guard_refused"}
                 )
             )
         }
@@ -1056,6 +1056,12 @@ def run_bounded_pipeline(
                         if oversized_index is None
                         else (oversized_index or 1)
                     )
+                    # A Pyramid write owns a singleton unit. Previously
+                    # completed siblings therefore use the normal verified
+                    # unit/baseline chain before a source-local rollback.
+                    if "pyramid-brokerage" in ready[:take]:
+                        index = ready.index("pyramid-brokerage")
+                        take = index if index else 1
                     preparing = tuple(ready[:take])
                     del ready[: len(preparing)]
                     unit_id = f"unit-{len(state['units']) + 1:04d}"
@@ -1110,7 +1116,7 @@ def run_bounded_pipeline(
                         if preseal_source_gate(run_dir, manifest, source, env_file):
                             qualified.append(source)
                         else:
-                            terminal_gate_holds.add(source)
+                            terminal_source_holds.add(source)
                             retry_or_fail(source, "pre-seal source gate refused")
                     sealed = tuple(qualified)
                     preparing = ()
@@ -1126,19 +1132,34 @@ def run_bounded_pipeline(
                         state["active_unit"] = None
                         counts()
                         continue
-                    if initial_before is None:
-                        previous = run_database_unit(
-                            run_dir, manifest, unit, env_file, previous
-                        )
-                    else:
-                        previous = run_database_unit(
-                            run_dir,
-                            manifest,
-                            unit,
-                            env_file,
-                            previous,
-                            initial_before=initial_before,
-                        )
+                    try:
+                        if initial_before is None:
+                            previous = run_database_unit(
+                                run_dir, manifest, unit, env_file, previous
+                            )
+                        else:
+                            previous = run_database_unit(
+                                run_dir, manifest, unit, env_file, previous,
+                                initial_before=initial_before,
+                            )
+                    except refresh.PyramidHistoricalGuardRefusal:
+                        from cre_pyramid_rollback_result import verified_rollback
+                        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                        if sealed != ("pyramid-brokerage",) or not verified_rollback(run_dir, manifest):
+                            raise refresh.GlobalStageError("source-local rollback evidence changed")
+                        source = sealed[0]
+                        manifest["sources"][source]["pipeline_stage"] = "failed"
+                        terminal_source_holds.add(source)
+                        state["source_results"][source] = {
+                            "state": "failed", "reason": "pyramid_historical_identity_guard",
+                            "unit_id": unit_id,
+                        }
+                        unit.update(state="source_held", finished_at=refresh.utc_now())
+                        sealed = ()
+                        state["active_unit"] = None
+                        counts()
+                        refresh.save_manifest(run_dir, manifest)
+                        continue
                     if any(
                         (manifest["sources"][source].get("readback") or {}).get("ok")
                         is not True

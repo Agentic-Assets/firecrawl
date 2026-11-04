@@ -44,7 +44,7 @@ def configure_main(monkeypatch, tmp_path):
     monkeypatch.setattr(refresh, "record_scope_from_validation", lambda *_: None)
     monkeypatch.setattr(refresh, "prepare_sources_cohort", lambda *_a, **_k: [])
     monkeypatch.setattr(refresh, "run_aggregate_gate", lambda *_: None)
-    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_: None)
+    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_, **__: None)
     monkeypatch.setattr(refresh, "run_final_validation", lambda *_: None)
 
     def command(argv, _log, **_kwargs):
@@ -92,7 +92,8 @@ r.run_cpu_guard_preflight = lambda _: 1.0
 r.HostCpuGuard.start = r.HostCpuGuard.stop = lambda _: None
 r.record_scope_from_validation = lambda *_: None
 r.prepare_sources_cohort = lambda *_a, **_k: []
-r.run_aggregate_gate = r.ingest_admitted_sources = r.run_final_validation = lambda *_: None
+r.run_aggregate_gate = r.run_final_validation = lambda *_: None
+r.ingest_admitted_sources = lambda *_, **__: None
 def pause():
     (root / "ready").write_text("ready")
     time.sleep(5)
@@ -596,3 +597,25 @@ def test_real_registration_failure_keeps_main_fenced(tmp_path, monkeypatch, inte
         # The leader has a bounded natural exit; reap only our actual Popen.
         for process in spawned:
             process.wait(timeout=4)
+
+
+@pytest.mark.parametrize("settlement", ["confirmed", "clear_failed"])
+def test_serial_pyramid_hold_exit_requires_owner_settlement(tmp_path, monkeypatch, settlement):
+    argv = configure_main(monkeypatch, tmp_path)
+    argv[-1] = "pyramid-brokerage"
+    def refuse(run_dir, manifest, *args, **kwargs):
+        manifest["serial_guard_holds"] = ["pyramid-brokerage"]
+        raise refresh.PyramidHistoricalGuardRefusal("typed")
+    monkeypatch.setattr(refresh, "ingest_admitted_sources", refuse)
+    if settlement == "clear_failed":
+        def fail_clear(_lock):
+            raise OSError("recovery clear failed")
+        monkeypatch.setattr(refresh.SharedLock, "clear_recovery_requirement", fail_clear)
+        with pytest.raises(OSError, match="recovery clear failed"):
+            refresh.main(argv)
+        assert_successor_fenced(tmp_path)
+    else:
+        assert refresh.main(argv) == refresh.PYRAMID_GUARD_SETTLED_EXIT
+        lock = refresh.SharedLock(tmp_path / ".cre.lock")
+        lock.acquire()
+        lock.release()

@@ -387,7 +387,7 @@ def configure_checkpoint(monkeypatch, tmp_path, before):
     monkeypatch.setattr(refresh, "run_command", command)
     monkeypatch.setattr(refresh, "prepare_sources_cohort", collect)
     monkeypatch.setattr(refresh, "run_aggregate_gate", lambda *_: None)
-    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_: None)
+    monkeypatch.setattr(refresh, "ingest_admitted_sources", lambda *_, **__: None)
     monkeypatch.setattr(refresh, "run_final_validation", lambda *_: None)
     argv = ["--out-root", str(tmp_path / "runs"), "--sources", "svn"]
     return argv, calls, collected

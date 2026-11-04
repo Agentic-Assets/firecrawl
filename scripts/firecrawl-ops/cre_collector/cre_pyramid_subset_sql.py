@@ -70,6 +70,21 @@ END $$;
 """
 
 
+def historical_conflict_rows_sql():
+    """One predicate shared by the ordinary guard and the typed rollback path."""
+    return """
+WITH incoming_pyramid AS MATERIALIZED (
+  SELECT s.brokerage_id, s.external_id, s.source_url FROM _src s
+  WHERE jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")')
+)
+SELECT 1 FROM incoming_pyramid s
+JOIN credeals.cre_listings t ON t.brokerage_id = s.brokerage_id
+ AND ((t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
+   OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url))
+
+"""
+
+
 def guard_sql(claims, *, mark_missing, status_activation, inventory_only):
     """Bind the validated partition to locked, actually staged source rows.
 

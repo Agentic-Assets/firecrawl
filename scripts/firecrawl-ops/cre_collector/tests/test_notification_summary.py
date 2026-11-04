@@ -1591,3 +1591,18 @@ def test_interrupted_pipeline_keeps_every_settlement_and_unit_guard(evidence, fa
     evidence["save"]()
     with pytest.raises(REFUSED):
         read_pipeline(evidence)
+
+
+def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(evidence):
+    setup = pipeline_evidence(evidence, second_source="pyramid-brokerage")
+    child = setup["child"]
+    child["sources"]["pyramid-brokerage"]["state"] = "pyramid_historical_guard_refused"
+    child["pipeline"]["source_results"]["pyramid-brokerage"] = {
+        "state": "failed", "reason": "pyramid_historical_identity_guard", "unit_id": "unit-0002"}
+    child["pipeline"]["units"].append({"unit_id": "unit-0002", "sources": ["pyramid-brokerage"], "state": "source_held"})
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, "pyramid-brokerage"])
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["pyramid-brokerage"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert "verified_listings" not in result

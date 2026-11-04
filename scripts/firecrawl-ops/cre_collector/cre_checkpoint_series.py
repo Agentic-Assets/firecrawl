@@ -2409,7 +2409,10 @@ def run_pipeline_series(
                 row["subset_counts"] = pyramid_subset_counts(child)
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
-            if state in {
+            if state == "pyramid_historical_guard_refused" and key == "pyramid-brokerage":
+                from cre_pyramid_rollback_result import verified_rollback
+                outcome = "failed_source" if verified_rollback(child_run, child) else "failed_global"
+            elif state in {
                 "collect_failed",
                 "artifact_rejected",
                 "gate_failed",
@@ -2812,6 +2815,31 @@ def run_series(
                     return cooldown_rc
                 resume_run = child_manifest_path.parent
                 continue
+            from cre_checkpoint_refresh import PYRAMID_GUARD_SETTLED_EXIT
+            if rc == PYRAMID_GUARD_SETTLED_EXIT:
+                from cre_checkpoint_refresh import _require_completed_group_settlement
+                from cre_pyramid_rollback_result import verified_rollback
+                try:
+                    if control is None:
+                        _require_completed_group_settlement(proc._cre_owned_group)
+                    local_guard = (
+                        source == "pyramid-brokerage"
+                        and child_manifest.get("status") == "failed"
+                        and child_manifest.get("serial_guard_holds") == [source]
+                        and child_manifest.get("preflight", {}).get("database_target") == manifest.get("database_target")
+                        and verified_rollback(child_manifest_path.parent, child_manifest)
+                    )
+                except ProcessCleanupUnknown:
+                    local_guard = False
+                if local_guard:
+                    checkpoint["state"] = "failed_source"
+                    save_manifest(series_dir, manifest)
+                    break
+                checkpoint["state"] = "failed_global"
+                manifest.update(status="failed", finished_at=utc_now(),
+                                error="Pyramid guard rollback or settlement evidence invalid")
+                save_manifest(series_dir, manifest)
+                return 1
             if source_local_failure(child_manifest):
                 checkpoint["state"] = "failed_source"
                 save_manifest(series_dir, manifest)
