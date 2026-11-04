@@ -198,3 +198,49 @@ def test_preview_rejects_rows_outside_selected_ids():
                 "database_target_sha256": "b" * 64, "requested_ids": [selected], "rows": [{"id": foreign}]}
     with pytest.raises(ValueError):
         validate_preview_binding(snapshot, [selected], "a" * 40, "b" * 64)
+
+
+def test_selection_accepts_200_distinct_ids_without_a_count_cap():
+    import uuid
+    ids = [str(uuid.UUID(int=value)) for value in range(1, 201)]
+    assert validate_selection("svn", ids) == ids
+
+
+def test_oversized_receipt_is_refused_before_publication(monkeypatch, tmp_path):
+    import cre_exact_redrive as mod
+    monkeypatch.setattr(mod, "MAX_RECEIPT_BYTES", 128)
+    with pytest.raises(ValueError):
+        mod.write_private_receipt(tmp_path, "snapshot.json", {"contents": "x" * 256})
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_oversized_apply_preimage_never_dispatches_write(monkeypatch, tmp_path):
+    import cre_exact_redrive as mod
+    row_id = "11111111-1111-4111-8111-111111111111"
+    snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn", "expected_sha": "a" * 40,
+                "database_target_sha256": "b" * 64, "requested_ids": [row_id],
+                "rows": [{"id": row_id, "last_error": "x" * 512}]}
+    class Lock:
+        path = tmp_path
+        cleared = False
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def clear_recovery_requirement(self): self.cleared = True
+    lock = Lock()
+    monkeypatch.setattr(mod, "MAX_RECEIPT_BYTES", 128)
+    monkeypatch.setattr(mod, "verify_exact_checkout", lambda *_: None)
+    monkeypatch.setattr(mod, "load_db_url", lambda _: ("postgres://synthetic", "unused"))
+    monkeypatch.setattr(mod, "assert_expected_database_target", lambda *_: None)
+    monkeypatch.setattr(mod, "canonical_shared_lock_dir", lambda: tmp_path / "lock")
+    monkeypatch.setattr(mod, "SharedLock", lambda *_, **__: lock)
+    monkeypatch.setattr(mod, "require_clear", lambda _: None)
+    monkeypatch.setattr(mod, "allocate_directory", lambda _: tmp_path)
+    monkeypatch.setattr(mod, "read_preview", lambda *_: snapshot)
+    def forbidden(*_):
+        raise AssertionError("write dispatched")
+    monkeypatch.setattr(mod, "query", forbidden)
+    with pytest.raises(ValueError, match="receipt exceeds"):
+        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True,
+                        preview_path="/synthetic/snapshot.json", preview_sha256="c" * 64)
+    assert not (tmp_path / "snapshot.json").exists()
+    assert lock.cleared

@@ -11,12 +11,12 @@ import uuid
 
 from cre_ingest import sql_lit
 
-MAX_ROWS = 10
+MAX_RECEIPT_BYTES = 16 * 1024 * 1024
 
 
 def validate_selection(source, row_ids):
-    if source != "svn" or not isinstance(row_ids, list) or not 1 <= len(row_ids) <= MAX_ROWS:
-        raise ValueError("select one to ten exact SVN queue ids")
+    if source != "svn" or not isinstance(row_ids, list) or not row_ids:
+        raise ValueError("select one or more exact SVN queue ids")
     try:
         parsed = [str(uuid.UUID(value)) for value in row_ids]
     except (TypeError, ValueError, AttributeError) as exc:
@@ -80,6 +80,8 @@ def write_private_receipt(directory, name, payload):
     import os
 
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    if len(raw) > MAX_RECEIPT_BYTES:
+        raise ValueError("receipt exceeds the 16 MiB limit")
     dirfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(dirfd)
@@ -165,23 +167,23 @@ def read_preview(path, digest):
         try:
             before = os.fstat(fd)
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
-                    stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024):
+                    stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or before.st_size > MAX_RECEIPT_BYTES):
                 raise ValueError("preview file is unsafe")
             chunks = []
             size = 0
             while True:
-                chunk = os.read(fd, min(65536, 16 * 1024 * 1024 + 1 - size))
+                chunk = os.read(fd, min(65536, MAX_RECEIPT_BYTES + 1 - size))
                 if not chunk:
                     break
                 chunks.append(chunk)
                 size += len(chunk)
-                if size > 16 * 1024 * 1024:
+                if size > MAX_RECEIPT_BYTES:
                     break
             raw = b"".join(chunks)
             after = os.fstat(fd)
             if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
-                    len(raw) > 16 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != digest):
+                    len(raw) > MAX_RECEIPT_BYTES or hashlib.sha256(raw).hexdigest() != digest):
                 raise ValueError("preview snapshot differs from digest")
         finally:
             os.close(fd)
