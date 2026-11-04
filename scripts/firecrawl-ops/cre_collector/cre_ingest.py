@@ -710,6 +710,18 @@ def num_or_none(v, lo=0, hi=None):
     return float(v)
 
 
+def coordinate_or_none(v, limit):
+    """Accept only finite numeric coordinates within inclusive geographic bounds."""
+    if isinstance(v, str):
+        value = v.strip()
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+            return None
+        v = float(value)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if -limit <= v <= limit else None
+
+
 def iso_date_or_none(v):
     if not v or not isinstance(v, str):
         return None
@@ -3229,8 +3241,8 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "zip": str(listing.get("postalCode"))[:12]
         if listing.get("postalCode")
         else None,
-        "lat": num_or_none(listing.get("latitude"), lo=-90, hi=90),
-        "lng": num_or_none(listing.get("longitude"), lo=-180, hi=180),
+        "lat": coordinate_or_none(listing.get("latitude"), 90),
+        "lng": coordinate_or_none(listing.get("longitude"), 180),
         "size_sf": size_sf,
         "lot_size_sf": lot_size_sf,
         "year_built": (
@@ -4036,6 +4048,23 @@ def build_sql(
     tw_alt_column = ", alt_text" if tw_parts else ""
     tw_alt_value = ", x->>'altText'" if tw_parts else ""
     tw_alt_update = ",\n  alt_text = incoming.x->>'altText'" if tw_parts else ""
+    tw_image_primary = "(x->>'isPrimary')::boolean" if tw_parts else "COALESCE((x->>'isPrimary')::boolean, false)"
+    tw_image_order = "(x->>'order')::integer" if tw_parts else "COALESCE((x->>'order')::integer, 0)"
+    tw_additive_filter = " AND s.slug <> 'transwestern'" if tw_parts else ""
+    tw_additive_image_sql = """-- Preserve physical image identities for additive Transwestern parents.
+UPDATE credeals.cre_listing_images i
+SET is_primary=p.is_primary,display_order=p.display_order,alt_text=p.alt_text
+FROM _tw_image_projection p JOIN _src s ON s.external_id=p.external_id
+JOIN _up u ON u.brokerage_id=s.brokerage_id AND u.external_id=s.external_id
+JOIN _child_additive a ON a.id=u.id
+WHERE p.image_id=i.id AND i.listing_id=u.id;
+INSERT INTO credeals.cre_listing_images (listing_id,url,is_primary,display_order,alt_text)
+SELECT u.id,p.url,p.is_primary,p.display_order,p.alt_text
+FROM _tw_image_projection p JOIN _src s ON s.external_id=p.external_id
+JOIN _up u ON u.brokerage_id=s.brokerage_id AND u.external_id=s.external_id
+JOIN _child_additive a ON a.id=u.id
+WHERE p.image_id IS NULL;
+""" if tw_parts else ""
     job_meta = [
         {
             **jm,
@@ -5614,8 +5643,8 @@ WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
 
 INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0){tw_alt_value}
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
@@ -5822,6 +5851,7 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_additive)
+  {tw_additive_filter}
   AND i.listing_id = u.id
   AND jsonb_typeof(s.images) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
@@ -5832,6 +5862,7 @@ WITH incoming AS (
   JOIN _src s USING (brokerage_id, external_id)
   CROSS JOIN LATERAL jsonb_array_elements(s.images) x
   WHERE u.id IN (SELECT id FROM _child_additive)
+    {tw_additive_filter}
     AND jsonb_typeof(s.images) = 'array'
     AND x->>'url' IS NOT NULL
 )
@@ -5843,18 +5874,21 @@ WHERE i.listing_id = incoming.listing_id
   AND i.url = incoming.x->>'url';
 
 INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0){tw_alt_value}
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_additive)
+  {tw_additive_filter}
   AND jsonb_typeof(s.images) = 'array'
   AND x->>'url' IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM credeals.cre_listing_images i
     WHERE i.listing_id = u.id AND i.url = x->>'url'
   );
+
+{tw_additive_image_sql}
 
 WITH incoming AS (
   SELECT u.id AS listing_id, x, {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
@@ -7511,7 +7545,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
-            *(["-X"] if pyramid_guard_binding is not None else []),
+            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -7523,7 +7557,7 @@ def main():
         stderr=sys.stderr,
     )
     if not args.keep_artifacts:
-        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None)
+        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
     print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None else "ingest complete", file=sys.stderr)

@@ -1,5 +1,7 @@
 # CRE Collector Start Here
 
+For a short map of active code, tests, operations, and historical material, see [README.md](README.md).
+
 For a reviewed Windows/Ubuntu **code-only handoff**, follow the maintained
 [checkout and runtime handoff procedure](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#moving-a-reviewed-build-to-a-runtime).
 The foreground tooling defaults to offline preview. Observation, independent

@@ -60,26 +60,38 @@ def cases():
         dict(name="ordinary_raw_guard_red", before=old, after=fresh, bound=False, refuses=True),
         dict(name="bound_exact_noise_removal", before=old, after=fresh),
         dict(name="same_count_nonnoise_substitution", before=old,
-             after=[listing("a", [PHOTO, "https://images.transwestern.com/property/replacement.jpg"])], refuses=True),
-        dict(name="physical_nonnoise_duplicate_loss", before=old, after=fresh, duplicate=True, refuses=True),
+             after=[listing("a", [PHOTO, "https://images.transwestern.com/property/replacement.jpg"])]),
+        dict(name="physical_nonnoise_duplicate_retained", before=old, after=fresh, duplicate=True),
         dict(name="cross_parent_compensation", before=old + [listing("b", [PHOTO])],
-             after=[listing("a", [PHOTO]), listing("b", [PHOTO, OTHER])], refuses=True),
+             after=[listing("a", [PHOTO]), listing("b", [PHOTO, OTHER])]),
         dict(name="new_parent_cannot_compensate", before=old,
-             after=[listing("a", [PHOTO]), listing("new", [OTHER])], refuses=True),
+             after=[listing("a", [PHOTO]), listing("new", [OTHER])]),
         dict(name="offstage_full_tuples_untouched", before=old + [listing("offstage", [OTHER])], after=fresh),
         dict(name="unknown_prior_primary_retained_after_raw_reorder",
              before=[listing("a", [PHOTO, OTHER, *TILES], witness=False)],
              after=[listing("a", [OTHER, PHOTO], witness=False)], historical_primary=PHOTO),
-        dict(name="unknown_missing_protected_primary_refuses",
+        dict(name="unknown_missing_protected_primary_retained",
              before=[listing("a", [PHOTO, OTHER, *TILES], witness=False)],
-             after=[listing("a", [OTHER], witness=False)], refuses=True),
+             after=[listing("a", [OTHER], witness=False)], historical_primary=PHOTO),
         dict(name="excluded_primary_no_witness_becomes_zero", before=[listing("a", [MARKER, *TILES])],
              after=[listing("a", [], witness=False, excluded=[{
                  "url": MARKER, "role": "template_resource", "basis": "existing_source_template_policy",
              }])], zero_primary=True),
         dict(name="new_unknown_only_has_zero_primary", before=old,
              after=fresh + [listing("new", [OTHER], witness=False)], new_zero=True),
-        dict(name="ambiguous_prior_primary_refuses", before=old, after=fresh, ambiguous=True, refuses=True),
+        dict(name="multiple_prior_primary_witness_resolves", before=old, after=fresh, ambiguous=True),
+        dict(name="multiple_prior_primary_without_witness_preserved", before=old,
+             after=[listing("a", [PHOTO, OTHER], witness=False)], ambiguous=True),
+        dict(name="matched_null_primary_preserved", before=old,
+             after=[listing("a", [PHOTO, OTHER], witness=False)], null_primary=True),
+        dict(name="additive_preserve_collection", before=old,
+             after=[{**listing("a", [PHOTO, OTHER]), "preserveChildCollections": True}], duplicate=True),
+        dict(name="additive_detail_error_null", before=old,
+             after=[{**listing("a", [PHOTO, OTHER]), "detailError": None}], duplicate=True),
+        dict(name="resurrection_refresh", before=old + [listing("offstage", [OTHER])],
+             after=[listing("a", [PHOTO])], resurrect=True, duplicate=True),
+        dict(name="resurrection_additive", before=old + [listing("offstage", [OTHER])],
+             after=[{**listing("a", [PHOTO]), "preserveChildCollections": True}], resurrect=True, duplicate=True),
         dict(name="image_trigger_rolls_back_all_tables", before=old, after=fresh, fail_trigger=True, refuses=True),
         dict(name="job_trigger_rolls_back_all_tables", before=old, after=fresh, fail_job=True, refuses=True),
     ]
@@ -141,14 +153,15 @@ def main():
         parts = [f"SELECT {ingest.sql_lit(name)} name,coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) rows FROM credeals.{name} t" for name in names]
         return json.loads(sql("SELECT jsonb_object_agg(name,rows)::text FROM (" + " UNION ALL ".join(parts) + ") s;").stdout)
 
-    def images():
+    def images(*, active_only=True):
+        active_filter = "AND l.deleted_at IS NULL" if active_only else ""
         return json.loads(sql("""SELECT coalesce(jsonb_agg(jsonb_build_object(
           'id',i.id,'listing_id',l.id,'external_id',l.external_id,'url',i.url,
           'is_primary',i.is_primary,'display_order',i.display_order,'alt_text',i.alt_text)
           ORDER BY l.external_id,i.url,i.is_primary,i.display_order,i.id),'[]')::text
           FROM credeals.cre_listings l JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
           JOIN credeals.cre_listing_images i ON i.listing_id=l.id
-          WHERE b.slug='transwestern' AND l.deleted_at IS NULL;""").stdout)
+          WHERE b.slug='transwestern' """ + active_filter + ";").stdout)
 
     def generated(listings, name, *, bound=True, mutation=None):
         rows = [ingest.to_row(value, {}, LATER) for value in listings]
@@ -222,13 +235,17 @@ def main():
             if case["name"] == "offstage_full_tuples_untouched":
                 sql("UPDATE credeals.cre_listing_images i SET alt_text='retained offstage text',display_order=17 FROM credeals.cre_listings l WHERE l.id=i.listing_id AND l.external_id='offstage';")
             if case.get("duplicate"):
-                sql("INSERT INTO credeals.cre_listing_images(listing_id,url,is_primary,display_order,alt_text) SELECT listing_id,url,false,display_order,alt_text FROM credeals.cre_listing_images WHERE url=" + ingest.sql_lit(OTHER) + ";")
+                sql("INSERT INTO credeals.cre_listing_images(listing_id,url,is_primary,display_order,alt_text) SELECT listing_id,url,false,display_order,'duplicate alt text' FROM credeals.cre_listing_images WHERE url=" + ingest.sql_lit(OTHER) + ";")
             if case.get("ambiguous"):
                 sql("UPDATE credeals.cre_listing_images SET is_primary=true WHERE url=" + ingest.sql_lit(OTHER) + ";")
+            if case.get("null_primary"):
+                sql("UPDATE credeals.cre_listing_images SET is_primary=NULL WHERE url=" + ingest.sql_lit(OTHER) + ";")
+            if case.get("resurrect"):
+                sql("UPDATE credeals.cre_listings SET deleted_at=now() WHERE external_id IN ('a','offstage');")
             if case.get("fail_trigger") or case.get("fail_job"):
                 table = "cre_scrape_jobs" if case.get("fail_job") else "cre_listing_images"
                 sql(f"CREATE FUNCTION credeals.fixture_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture terminal write failure'; END $$; CREATE TRIGGER fixture_fail BEFORE INSERT ON credeals.{table} FOR EACH ROW EXECUTE FUNCTION credeals.fixture_fail();")
-            before, old_images = snapshot(), images()
+            before, old_images, all_old_images = snapshot(), images(), images(active_only=False)
             rows, binding, query = generated(case["after"], case["name"], bound=case.get("bound", True))
             if not case.get("bound", True):
                 jobs = [{"slug": "transwestern", "discovered": len(rows), "saved": len(rows), "errors": 0, "notes": case["name"]}]
@@ -247,17 +264,28 @@ def main():
                 assert receipt["source_key"] == "transwestern" and receipt["binding"] == binding
                 observed = images()
                 for row in rows:
-                    expected = collections.Counter((image["url"], image["order"]) for image in row["images"])
                     children = [image for image in observed if image["external_id"] == row["external_id"]]
-                    assert collections.Counter((image["url"], image["display_order"]) for image in children) == expected
-                    expected_primary = (case.get("historical_primary") or row["images"][0]["url"]) if row["images"] else None
-                    if case.get("zero_primary") or (case.get("new_zero") and row["external_id"] == "new"):
-                        expected_primary = None
-                    assert [image["url"] for image in children if image["is_primary"]] == ([expected_primary] if expected_primary else [])
-                    for image in children:
-                        old = [prior for prior in old_images if prior["external_id"] == row["external_id"] and prior["url"] == image["url"]]
-                        if old:
-                            assert image["alt_text"] == old[0]["alt_text"]
+                    old = [prior for prior in all_old_images if prior["external_id"] == row["external_id"]]
+                    current = collections.Counter(image["url"] for image in row["images"])
+                    raw = next(item for item in case["after"] if item["id"] == row["external_id"])
+                    additive = raw.get("preserveChildCollections") is True or "detailError" in raw
+                    protected = [prior for prior in old if additive or prior["url"] in current
+                                 or (prior["url"] not in TILES and prior["url"] != MARKER)]
+                    old_count = collections.Counter(prior["url"] for prior in protected)
+                    expected = old_count | current
+                    assert collections.Counter(image["url"] for image in children) == expected, case["name"]
+                    for prior in protected:
+                        assert sum(image["url"] == prior["url"] and image["alt_text"] == prior["alt_text"] for image in children) >= sum(
+                            item["url"] == prior["url"] and item["alt_text"] == prior["alt_text"] for item in protected
+                        ), case["name"]
+                    if additive:
+                        assert {image["id"] for image in old} <= {image["id"] for image in children}, case["name"]
+                    witness = raw.get("transwesternPrimaryPhotoEvidence")
+                    expected_primary = ([witness["url"]] if witness else
+                                        [prior["url"] for prior in protected if prior["is_primary"]])
+                    assert sorted(image["url"] for image in children if image["is_primary"]) == sorted(expected_primary), case["name"]
+                    if case.get("null_primary"):
+                        assert next(image for image in children if image["url"] == OTHER)["is_primary"] is None
                 assert [image for image in observed if image["external_id"] == "offstage"] == [image for image in old_images if image["external_id"] == "offstage"]
                 old_offstage = {item["id"] for item in before["cre_listings"] if item["external_id"] == "offstage"}
                 for table in before:

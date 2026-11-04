@@ -1,9 +1,10 @@
 # cre_collector/archive
 
-Dated buildout, validation, and handoff artifacts from the 2026-06-11..13 CRE
-collector build. Archived 2026-06-13 during the doc reorganization. Nothing here
-is current status; live status is in `../BROKERAGE_STATUS_2026-06-12.md`,
-`../START_HERE.md`, and `docs/firecrawl-ops/references/cre-intelligence-system-design.md`.
+Historical buildout, validation, handoff and security-review artifacts live here.
+They are point-in-time evidence, not current operating status. For the active
+layout see [the collector map](../README.md); for current runtime and source
+status see [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752)
+and [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
 
 The files kept here each hold durable operational knowledge worth keeping
 findable without duplicating it into the live docs. Point-in-time session
@@ -11,6 +12,9 @@ transcripts, completed goal records, and stale gap/QA snapshots were pruned
 2026-06-13. Pruned files are preserved in
 `tasks/tmp/cre-archive-pruned-2026-06-13.tar.gz` (relative to the repo root).
 Index of the durable nuggets:
+
+- [2026-06-15 collector workstream ideas](2026-06-15-collector-workstream-ideas.md) -- historical ideas, not a current task list; Firecrawl work is tracked in [Linear](https://linear.app/agenticassets/project/firecrawl-ops-and-automation-f13a738a83bf).
+- `SECURITY_REVIEW_2026-06-14.md` -- point-in-time branch security review and findings.
 
 - `HANDOFF_LOG_2026-06-11.md` -- chronological build evidence. Durable nuggets:
   the working Cushman public API URL shape
@@ -30,9 +34,8 @@ Index of the durable nuggets:
   `pg_column_size`, `pg_stat_statements` filtered to CRE, RLS/grant checks) and
   the board-query projection trick (`null::jsonb as raw_data`) plus its
   regression test in the display app.
-- `SUPABASE_SECURITY_NOTE_2026-06-12.md` -- the live security/access model is
-  summarized in `../CLAUDE.md` ("Supabase access model"); this holds the
-  point-in-time access posture.
+- `SUPABASE_SECURITY_NOTE_2026-06-12.md` -- point-in-time access posture; use
+  current database readback for current grants and policies.
 - `CONTRACT_SYNC_2026-06-12.md` -- point-in-time UI/collector contract
   reconciliation (note: `005_cre_views.sql` does not itself encode
   `security_invoker`/grants, so a fresh DB rebuild needs the separate display-app
