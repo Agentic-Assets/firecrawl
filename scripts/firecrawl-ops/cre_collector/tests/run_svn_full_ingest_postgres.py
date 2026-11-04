@@ -231,6 +231,14 @@ def main():
         # Full/mixed SVN identity still advances its source index.
         sql(ingest.build_sql([row], job, "2026-11-04T00:03:00Z", set()))
         assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='synthetic';") == "1"
+        # Full inventory continues to revive inactive rows, preserve terminal status,
+        # and clear the deletion marker in both cases.
+        for status, expected in (("inactive", "active"), ("sold", "sold")):
+            sql("UPDATE credeals.cre_listings SET status='" + status +
+                "', deleted_at='2026-11-03T01:02:03Z' WHERE external_id='synthetic';")
+            sql(ingest.build_sql([row], job, "2026-11-04T00:03:00Z", set()))
+            assert sql("SELECT status || '|' || (deleted_at IS NULL)::text "
+                       "FROM credeals.cre_listings WHERE external_id='synthetic';") == expected + "|true"
         # A different brokerage sharing the same external ID keeps ordinary behavior.
         other = ingest.to_row({"sourceKey":"newmark","id":"synthetic",
                                "url":"https://example.test/other",
