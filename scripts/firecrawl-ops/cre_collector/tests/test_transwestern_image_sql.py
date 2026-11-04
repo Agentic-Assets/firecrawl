@@ -99,7 +99,7 @@ def test_role_and_alt_projection_are_explicit_without_reordering_source_images()
     assert "historical_primary" in parts["project"]
     assert "current_source_primary" in parts["project"]
     assert "unassigned_primary" in parts["project"]
-    assert "ambiguous" in parts["project"]
+    assert "history.is_primary" in parts["project"]
     assert "altText" in parts["project"]
     assert "alt_text" in parts["verify"]
 

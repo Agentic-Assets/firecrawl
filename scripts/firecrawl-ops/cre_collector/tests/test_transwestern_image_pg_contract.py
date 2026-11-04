@@ -46,16 +46,17 @@ class ProjectionContract(unittest.TestCase):
     def project(self, staged, prior, *, tamper="", expected_error=None):
         parts = build_parts([staged], binding())
         images = json.dumps(staged["images"]).replace("'", "''")
+        raw_data = json.dumps(staged["raw_data"]).replace("'", "''")
         sql = f"""
 BEGIN;
 CREATE SCHEMA credeals;
 CREATE TABLE credeals.cre_brokerages(id int,slug text);
 CREATE TABLE credeals.cre_listings(id int,brokerage_id int,external_id text,source_url text,canonical_url text,deleted_at text);
 CREATE TABLE credeals.cre_listing_images(id int,listing_id int,url text,is_primary boolean,display_order int,alt_text text);
-CREATE TEMP TABLE _src(brokerage_id int,slug text,external_id text,source_url text,canonical_url text,images jsonb);
+CREATE TEMP TABLE _src(brokerage_id int,slug text,external_id text,source_url text,canonical_url text,images jsonb,raw_data jsonb);
 INSERT INTO credeals.cre_brokerages VALUES (1,'transwestern');
 INSERT INTO credeals.cre_listings VALUES (1,1,'example','{staged['source_url']}','{staged['canonical_url']}',NULL);
-INSERT INTO _src VALUES (1,'transwestern','example','{staged['source_url']}','{staged['canonical_url']}','{images}');
+INSERT INTO _src VALUES (1,'transwestern','example','{staged['source_url']}','{staged['canonical_url']}','{images}','{raw_data}');
 INSERT INTO credeals.cre_listing_images VALUES {prior};
 CREATE TEMP TABLE _child_counts_by_listing_before(source_key text,child_type text,child_count int);
 INSERT INTO _child_counts_by_listing_before SELECT 'transwestern','images',count(*) FROM credeals.cre_listing_images;
@@ -116,6 +117,30 @@ ROLLBACK;
         self.assertEqual(actual, [
             ["https://images.transwestern.com/property/old.jpg", False, 4, "old"],
             ["https://images.transwestern.com/property/photo.jpg", True, 0, None],
+        ])
+
+    def test_unwitnessed_matched_null_and_multiple_prior_primaries_survive(self):
+        staged = row()
+        staged["raw_data"].pop("transwesternPrimaryPhotoEvidence")
+        actual = self.project(staged, """
+ (1,1,'https://images.transwestern.com/property/photo.jpg',NULL,4,'matched'),
+ (2,1,'https://images.transwestern.com/property/old.jpg',true,5,'hero one'),
+ (3,1,'https://images.transwestern.com/property/old.jpg',true,6,'hero two')
+""")
+        self.assertEqual(actual, [
+            ["https://images.transwestern.com/property/old.jpg", True, 5, "hero one"],
+            ["https://images.transwestern.com/property/old.jpg", True, 6, "hero two"],
+            ["https://images.transwestern.com/property/photo.jpg", None, 0, "matched"],
+        ])
+
+    def test_witness_resolves_multiple_prior_primaries(self):
+        actual = self.project(row(), """
+ (1,1,'https://images.transwestern.com/property/photo.jpg',true,4,'current'),
+ (2,1,'https://images.transwestern.com/property/old.jpg',true,5,'other')
+""")
+        self.assertEqual(actual, [
+            ["https://images.transwestern.com/property/old.jpg", False, 5, "other"],
+            ["https://images.transwestern.com/property/photo.jpg", True, 0, "current"],
         ])
 
     def test_guard_rejects_loss_of_a_protected_occurrence(self):

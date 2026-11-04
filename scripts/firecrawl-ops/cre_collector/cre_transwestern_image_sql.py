@@ -56,10 +56,15 @@ DO $$ BEGIN
 END $$;
 CREATE TEMP TABLE _tw_image_parents_before ON COMMIT DROP AS
 SELECT l.id AS listing_id,l.external_id,l.source_url,l.canonical_url,
-       input.external_id IS NOT NULL AS staged
+       input.external_id IS NOT NULL AS staged,
+       (input.external_id IS NOT NULL AND (
+         jsonb_path_exists(s.raw_data, '$.**.detailError') OR
+         jsonb_path_exists(s.raw_data, '$.**.preserveChildCollections ? (@ == true || @ == "true")')
+       )) AS additive
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
 LEFT JOIN _tw_image_input input ON input.external_id=l.external_id
+LEFT JOIN _src s ON s.brokerage_id=l.brokerage_id AND s.external_id=l.external_id
 WHERE b.slug='transwestern' AND l.deleted_at IS NULL;
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM _tw_image_parents_before GROUP BY external_id HAVING count(*)>1)
@@ -82,7 +87,7 @@ SELECT DISTINCT input.external_id,x->>'url' AS url
 FROM _tw_image_input input CROSS JOIN LATERAL jsonb_array_elements(input.excluded) x;
 CREATE TEMP TABLE _tw_images_before ON COMMIT DROP AS
 SELECT i.id AS image_id,i.listing_id,i.url,i.is_primary,i.display_order,i.alt_text,p.staged,
-  (p.staged AND current.url IS NULL AND (
+  (p.staged AND NOT p.additive AND current.url IS NULL AND (
      i.url ~ '^https://mapsresources-pa\.googleapis\.com/v1/tiles([?#].*)?$'
      OR i.url='https://transwestern.com/assets/images/transwestern-mapmarker.png'
      OR excluded.url IS NOT NULL
@@ -104,22 +109,15 @@ SELECT p.external_id,prior.*,
          ORDER BY (prior.is_primary IS TRUE) DESC,prior.image_id) AS occurrence
 FROM _tw_images_before prior JOIN _tw_image_parents_before p USING(listing_id)
 WHERE prior.staged AND NOT prior.removable;
-DO $$ BEGIN
-  IF EXISTS (
-    SELECT 1 FROM _tw_images_before WHERE staged AND is_primary IS TRUE
-    GROUP BY listing_id HAVING count(*)>1
-  ) THEN RAISE EXCEPTION 'ambiguous Transwestern prior primaries'; END IF;
-END $$;
 CREATE TEMP TABLE _tw_image_choice ON COMMIT DROP AS
 SELECT input.external_id,
-  CASE WHEN input.witness IS NOT NULL THEN input.witness->>'url'
-       ELSE old.url END AS primary_url,
-  old.image_id AS old_primary_id,
+  input.witness->>'url' AS primary_url,
   CASE WHEN input.witness IS NOT NULL THEN 'current_source_primary'
-       WHEN old.image_id IS NOT NULL
+       WHEN old.has_primary
        THEN 'historical_primary' ELSE 'unassigned_primary' END AS primary_basis
 FROM _tw_image_input input
-LEFT JOIN _tw_image_history old ON old.external_id=input.external_id AND old.is_primary IS TRUE;
+LEFT JOIN (SELECT external_id,bool_or(is_primary IS TRUE) AS has_primary
+           FROM _tw_image_history GROUP BY external_id) old USING(external_id);
 CREATE TEMP TABLE _tw_image_projection ON COMMIT DROP AS
 WITH current_ranked AS (
   SELECT current.*,row_number() OVER (PARTITION BY external_id,url ORDER BY display_order) AS occurrence
@@ -128,14 +126,16 @@ WITH current_ranked AS (
 SELECT current.external_id,current.url,current.display_order,
   CASE WHEN choice.primary_basis='current_source_primary'
        THEN (current.url=choice.primary_url AND current.occurrence=1) IS TRUE
-       ELSE (history.image_id=choice.old_primary_id) IS TRUE END AS is_primary,
-  history.alt_text,current.original,0 AS sort_group,current.display_order AS sort_order
+       WHEN history.image_id IS NOT NULL THEN history.is_primary
+       ELSE false END AS is_primary,
+  history.alt_text,current.original,0 AS sort_group,current.display_order AS sort_order,
+  history.image_id
 FROM current_ranked current JOIN _tw_image_choice choice USING(external_id)
 LEFT JOIN _tw_image_history history USING(external_id,url,occurrence)
 UNION ALL
 SELECT history.external_id,history.url,history.display_order,
   CASE WHEN choice.primary_basis='current_source_primary' THEN false ELSE history.is_primary END,
-  history.alt_text,jsonb_build_object('url',history.url),1,history.occurrence::int
+  history.alt_text,jsonb_build_object('url',history.url),1,history.occurrence::int,history.image_id
 FROM _tw_image_history history JOIN _tw_image_choice choice USING(external_id)
 LEFT JOIN current_ranked current USING(external_id,url,occurrence)
 WHERE current.external_id IS NULL;
