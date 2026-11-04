@@ -7329,7 +7329,7 @@ def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key
             or not args.expected_db_target_sha256 or not args.require_strict_freshness
             or args.mark_missing or _status_activation_enabled(args.activate_status)
             or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
-            or args.jll_partial_claims or args.matthews_targeted_claims):
+            or getattr(args, "jll_partial_claims", None) or args.matthews_targeted_claims):
         raise ValueError("unbound Transwestern image transition")
     validate_strict_artifact_freshness(data, require_strict_freshness=True)
     scope = strict_full_source_scope(data, "transwestern")
