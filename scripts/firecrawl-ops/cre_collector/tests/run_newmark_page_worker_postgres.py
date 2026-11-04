@@ -63,13 +63,13 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
             url = "https://www.nmrk.com/properties/" + external
             item = {"sourceKey":"newmark","id":external,"url":url,
-                    "description":"Original long description",
+                    "name":"Original title", "description":"Original long description",
                     "contactsDetailed":[{"name":"Original Broker","email":"prior@example.test"}]}
             row = ingest.to_row(item, {}, ts)
             sql(ingest.build_sql([row],job,ts,set()))
@@ -83,6 +83,8 @@ def main():
             sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) "
                 "SELECT id,'newmark',"+ingest.sql_lit(external)+","+ingest.sql_lit(url)+",'new' "
                 "FROM credeals.cre_brokerages WHERE slug='newmark';")
+            if kind == "generic-empty":
+                sql("UPDATE credeals.cre_listings SET title='', description=NULL WHERE external_id="+ingest.sql_lit(external)+";")
             if kind == "duplicate-before":
                 duplicate=ingest.to_row({"sourceKey":"newmark","id":"duplicate-before-other","url":url}, {}, ts)
                 sql(ingest.build_sql([duplicate],job,ts,set()))
@@ -96,7 +98,7 @@ import {createGenericEnricher} from "./lib/enrich.ts";
 const claimPath=process.env.FIXTURE_CLAIM, outPath=process.env.FIXTURE_OUT;
 const claims=JSON.parse(fs.readFileSync(claimPath,"utf8")), item=claims.items[0], url=item.url;
 const html=process.env.FIXTURE_MODE.startsWith("generic-")
- ? '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Fixture listing"}</script>'
+ ? '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Fixture listing","description":"Fixture description"}</script>'
  : fs.readFileSync("./tests/fixtures/newmark-property-detail-sanitized.html","utf8").replaceAll("{{URL}}",url);
 const e=createGenericEnricher(async()=>({rawHtml:html,markdown:"",links:[],metadata:{statusCode:200,url,sourceURL:url}}),()=> "2026-11-04T00:01:00Z");
 const result=await e.enrichWithEvidence([item]); if(result.listings.length!==1) throw Error("fixture not admitted");
@@ -166,9 +168,13 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 worker.subprocess.run=run
                 worker._psql_query=original_query
             queue=sql("SELECT attempts || '|' || (claimed_at IS NULL)::text FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
-            if kind == "generic-success":
+            if kind in {"generic-success", "generic-empty"}:
                 assert rc==0 and queue=="", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="t"
+                values = json.loads(sql("SELECT json_build_object('title',title,'description',description,'evidence',raw_data->'newmarkGenericPageObservation')::text FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";"))
+                assert values["title"] == ("Original title" if kind == "generic-success" else "Fixture listing"), values
+                assert values["description"] == ("Original long description" if kind == "generic-success" else "Fixture description"), values
+                assert values["evidence"]["name"] == "Fixture listing" and values["evidence"]["description"] == "Fixture description", values
             elif kind == "generic-stale":
                 assert rc==21 and queue=="0|false", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
@@ -199,6 +205,18 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert rc==1 and queue=="0|false" and (kind=="refusal-uncertain" or observed.get("attempted")), (kind,rc,queue)
                 present=sql("SELECT raw_data ? 'newmarkPageObservation' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")
                 assert present == ("t" if kind in {"unknown-after", "bad-outcome"} else "f")
+        # Ordinary ingest keeps its existing incoming-wins behavior outside the guarded path.
+        ordinary = ingest.to_row({"sourceKey":"newmark", "id":"ordinary-newmark",
+                                  "url":"https://www.nmrk.com/properties/ordinary-newmark",
+                                  "name":"Before", "description":"Before description"}, {}, ts)
+        sql(ingest.build_sql([ordinary], job, ts, set()))
+        ordinary_update = ingest.to_row({"sourceKey":"newmark", "id":"ordinary-newmark",
+                                         "url":"https://www.nmrk.com/properties/ordinary-newmark",
+                                         "name":"After", "description":"After description",
+                                         "genericEnrich":{"hadJsonLd":True},
+                                         "preserveChildCollections":True}, {}, ts)
+        sql(ingest.build_sql([ordinary_update], job, ts, set()))
+        assert sql("SELECT title || '|' || description FROM credeals.cre_listings WHERE external_id='ordinary-newmark';") == "After|After description"
         stale_claim = json.loads(sql("SELECT to_jsonb(q)::text FROM credeals.cre_enrichment_queue q WHERE q.external_id='worker-unknown-after';"))
         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE id="+
             ingest.sql_lit(stale_claim["id"])+"::uuid;")
