@@ -413,9 +413,9 @@ def build_retry_increment_sql(retry_ids, last_error=None):
     ])
 
 
-def build_newmark_page_disposition_sql(row, outcome):
-    """Settle only the exact claimed generation; uncertainty must stay fenced."""
-    if outcome not in {"complete", "retry"} or not row.get("claimed_at"):
+def build_newmark_page_disposition_sql(row, outcome, *, last_error=None):
+    """Settle only the exact claimed generation; never mutate its successor."""
+    if outcome not in {"complete", "retry", "release", "defer"} or not row.get("claimed_at"):
         raise ValueError("invalid Newmark page claim disposition")
     predicate = (
         "id=" + sql_lit(row["id"]) + "::uuid AND source_key='newmark'"
@@ -425,12 +425,25 @@ def build_newmark_page_disposition_sql(row, outcome):
         + " AND claimed_at=" + sql_lit(row["claimed_at"]) + "::timestamptz"
         + " AND attempts=" + str(int(row["attempts"])) + " AND done_at IS NULL"
     )
-    statement = ("DELETE FROM credeals.cre_enrichment_queue WHERE " + predicate if outcome == "complete"
-                 else "UPDATE credeals.cre_enrichment_queue SET attempts=attempts+1, claimed_at=NULL, "
-                      "last_error='Newmark page identity changed or ambiguous' WHERE " + predicate)
+    if outcome == "complete":
+        statement = "DELETE FROM credeals.cre_enrichment_queue WHERE " + predicate
+    else:
+        updates = []
+        if outcome == "retry":
+            updates.append("attempts=attempts+1")
+        if outcome != "defer":
+            updates.append("claimed_at=NULL")
+        updates.append("last_error=" + _lit_or_null(last_error))
+        statement = "UPDATE credeals.cre_enrichment_queue SET " + ", ".join(updates) + " WHERE " + predicate
     return "\\set ON_ERROR_STOP on\nBEGIN;\n" + lifecycle_transaction_lock_sql() + (
-        "\nDO $$ DECLARE n integer; BEGIN " + statement + "; GET DIAGNOSTICS n = ROW_COUNT; "
-        "IF n <> 1 THEN RAISE EXCEPTION 'Newmark page claim changed'; END IF; END $$;\nCOMMIT;\n")
+        "\nWITH changed AS (" + statement + " RETURNING id) SELECT count(*) FROM changed;\nCOMMIT;\n")
+
+
+def settle_newmark_page_claim(db_url, row, outcome, *, last_error=None):
+    result = _psql_query(db_url, build_newmark_page_disposition_sql(row, outcome, last_error=last_error))
+    if result not in [[("0",)], [("1",)]]:
+        raise ValueError("unknown Newmark page queue disposition")
+    return result == [("1",)]
 
 
 def claim_rows_to_items(claimed_rows, *, targeted=False):
@@ -456,6 +469,9 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
             item["sourcePublishedDetail"] = r["source_published_detail"]
         if r.get("source_key") == "newmark" and r.get("source_page_witness") is not None:
             item["sourcePageWitness"] = r["source_page_witness"]
+        if "source_page_witness" in r:
+            item["sourcePageClaim"] = {"id": r["id"], "claimedAt": r.get("claimed_at"),
+                "attempts": r["attempts"], "brokerageId": r.get("brokerage_id")}
         items.append(item)
     return {"items": items}
 
@@ -594,6 +610,8 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             "external_id"
         ):
             raise ValueError("Hanley enrichment native identity differs from its claim")
+        if "source_page_witness" in claimed and listing.get("id") != claimed.get("external_id"):
+            raise ValueError("Newmark enrichment identity differs from its claim")
         if "newmarkPageObservation" in listing and (
             listing.get("sourceKey") != "newmark" or listing.get("id") != claimed.get("external_id")
             or not isinstance(listing["newmarkPageObservation"], dict)
@@ -848,8 +866,9 @@ def run(args):
     claimed_ids = [r["id"] for r in claimed_rows]
     if page_witness and claimed_rows[0].get("source_page_witness") == {"refused": True}:
         require_owner()
-        _psql_exec(db_url, build_newmark_page_disposition_sql(claimed_rows[0], "retry"))
-        print("enrich failed: 0 done, 1 retry, ambiguous Newmark URL association", file=sys.stderr)
+        changed = settle_newmark_page_claim(db_url, claimed_rows[0], "retry",
+                                           last_error="Newmark page identity changed or ambiguous")
+        print("Newmark URL association refused; " + ("retry recorded" if changed else "claim superseded; no queue change"), file=sys.stderr)
         return 21
 
     # (3) Targeted-detail collect. No full/monitor flags.
@@ -888,6 +907,10 @@ def run(args):
             else artifact_error or "enriched artifact missing/invalid/empty"
         )
         require_owner()
+        if page_witness:
+            changed = settle_newmark_page_claim(db_url, claimed_rows[0], "release", last_error=err)
+            print("Newmark collection failed; " + ("claim released" if changed else "claim superseded; no queue change"), file=sys.stderr)
+            return 21
         _psql_exec(db_url, build_targeted_queue_sql(claims["items"], "release", last_error=err)
                    if targeted else build_release_sql(claimed_ids, last_error=err))
         print(f"enrich run failed: {err}; released {len(claimed_ids)} claim(s)",
@@ -905,7 +928,7 @@ def run(args):
         require_owner()
         page_rows = [row for row in enriched_listings if "newmarkPageObservation" in row]
         page_attempt = None
-        if page_rows:
+        if page_rows or page_witness:
             if not page_witness or len(claimed_rows) != 1 or len(enriched_listings) != 1:
                 print("Newmark page requires one bound Newmark-only claim", file=sys.stderr)
                 return 1
@@ -927,8 +950,8 @@ def run(args):
             + (["--env-file", args.env_file] if args.env_file else [])
             + (["--expected-db-target-sha256", expected_target]
                if expected_target is not None else [])
-            + (["--newmark-page-attempt", page_attempt, "--skip-post-commit-summary"]
-               if page_attempt else []),
+            + (["--newmark-page-attempt", page_attempt, "--newmark-page-claims", claim_path,
+                "--skip-post-commit-summary"] if page_attempt else []),
             cwd=HERE, stdout=subprocess.PIPE if page_attempt else sys.stderr, stderr=sys.stderr,
             text=bool(page_attempt), check=False,
         )
@@ -970,8 +993,9 @@ def run(args):
                       "artifact", artifact_digest, "claim", claim_digest, "target", expected_target,
                       "code", code_sha, "zero_jobs", file=sys.stderr)
                 require_owner()
-                _psql_exec(db_url, build_newmark_page_disposition_sql(claimed_rows[0], "retry"))
-                print("enrich failed: 0 done, 1 retry, confirmed Newmark identity refusal", file=sys.stderr)
+                changed = settle_newmark_page_claim(db_url, claimed_rows[0], "retry",
+                    last_error="Newmark page identity changed or ambiguous")
+                print("Newmark identity refusal confirmed; " + ("retry recorded" if changed else "claim superseded; no queue change"), file=sys.stderr)
                 return 21
     else:
         print(
@@ -990,24 +1014,37 @@ def run(args):
             print("targeted readback refused; claims retained for recovery", file=sys.stderr)
             return 1
     require_owner()
-    _psql_exec(db_url, build_targeted_queue_sql(
-        [i for i in claims["items"] if i["claimId"] in done_ids], "complete",
-        artifact=artifact, claims=claims)
-        if targeted else (build_newmark_page_disposition_sql(claimed_rows[0], "complete")
-                          if enriched_listings and page_attempt else build_complete_sql(done_ids)))
+    if page_witness and done_ids:
+        if not settle_newmark_page_claim(db_url, claimed_rows[0], "complete"):
+            print("Newmark committed claim was superseded; recovery required", file=sys.stderr)
+            return 1
+    else:
+        _psql_exec(db_url, build_targeted_queue_sql(
+            [i for i in claims["items"] if i["claimId"] in done_ids], "complete",
+            artifact=artifact, claims=claims) if targeted else build_complete_sql(done_ids))
     deferred = deferred_claim_ids(claimed_rows, artifact)
     absent = [claim_id for claim_id in retry_ids + dead_ids if claim_id not in deferred]
     deferred_ids = [claim_id for claim_id in retry_ids + dead_ids if claim_id in deferred]
     if deferred_ids:
-        _psql_exec(db_url, build_targeted_queue_sql(
-            [i for i in claims["items"] if i["claimId"] in deferred_ids], "defer",
-            last_error="enrichment attempt not established") if targeted else build_release_sql(
-            deferred_ids, last_error="enrichment attempt not established", preserve_claim=True))
+        if page_witness:
+            if not settle_newmark_page_claim(db_url, claimed_rows[0], "defer", last_error="enrichment attempt not established"):
+                print("Newmark claim superseded; no queue change", file=sys.stderr)
+                return 21
+        else:
+            _psql_exec(db_url, build_targeted_queue_sql(
+                [i for i in claims["items"] if i["claimId"] in deferred_ids], "defer",
+                last_error="enrichment attempt not established") if targeted else build_release_sql(
+                deferred_ids, last_error="enrichment attempt not established", preserve_claim=True))
     if absent:
-        _psql_exec(db_url, build_targeted_queue_sql(
-            [i for i in claims["items"] if i["claimId"] in absent], "retry",
-            last_error="claimed but absent from enriched artifact") if targeted else build_retry_increment_sql(
-            absent, last_error="claimed but absent from enriched artifact"))
+        if page_witness:
+            if not settle_newmark_page_claim(db_url, claimed_rows[0], "retry", last_error="claimed but absent from enriched artifact"):
+                print("Newmark claim superseded; no queue change", file=sys.stderr)
+                return 21
+        else:
+            _psql_exec(db_url, build_targeted_queue_sql(
+                [i for i in claims["items"] if i["claimId"] in absent], "retry",
+                last_error="claimed but absent from enriched artifact") if targeted else build_retry_increment_sql(
+                absent, last_error="claimed but absent from enriched artifact"))
     state = "completed" if not absent and not deferred_ids else ("partial" if done_ids else "failed")
     code = {"completed": 0, "partial": 20, "failed": 21}[state]
     print(f"enrich {state}: {len(done_ids)} done, {len(absent)} retry, "

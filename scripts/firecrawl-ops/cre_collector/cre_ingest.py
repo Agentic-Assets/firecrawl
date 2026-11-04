@@ -3988,6 +3988,8 @@ def build_sql(
     svn_enrichment_ids=(),
     inventory_preserve_enrichment_ids=(),
     newmark_page_attempt=None,
+    newmark_page_claim=None,
+    newmark_page_requires_witness=True,
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -5604,7 +5606,7 @@ END $$;
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
         .replace("{pyramid_guard_sql}", pyramid_guard_sql)
-        .replace("{newmark_page_guard_sql}", __import__("cre_newmark_page_guard").guard_sql(newmark_page_attempt) if newmark_page_attempt else "")
+        .replace("{newmark_page_guard_sql}", __import__("cre_newmark_page_guard").guard_sql(newmark_page_attempt, newmark_page_claim, require_page=newmark_page_requires_witness) if newmark_page_attempt else "")
         .replace("{pyramid_historical_rows}", pyramid_historical_rows)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
@@ -5958,7 +5960,10 @@ DO $$ BEGIN
         OR
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
-         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', '')
+         AND (NOT i.newmark_page OR NULLIF(lower(c.email), '') IS NULL
+              OR NULLIF(lower(i.x->>'email'), '') IS NULL
+              OR lower(c.email) = lower(i.x->>'email')))
         OR
         (i.preserve_contact
          AND NULLIF(lower(i.x->>'email'), '') IS NULL
@@ -5989,7 +5994,11 @@ DO $$ BEGIN
             OR
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
-             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', '')
+             AND (NOT (s.raw_data ? 'newmarkPageObservation'
+                       AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark'))
+                  OR NULLIF(lower(c.email), '') IS NULL OR NULLIF(lower(x->>'email'), '') IS NULL
+                  OR lower(c.email) = lower(x->>'email')))
             OR
             (jsonb_path_exists(
                s.raw_data,
@@ -6041,7 +6050,10 @@ DO $$ BEGIN
         OR
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
-         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', '')
+         AND (NOT i.newmark_page OR NULLIF(lower(c.email), '') IS NULL
+              OR NULLIF(lower(i.x->>'email'), '') IS NULL
+              OR lower(c.email) = lower(i.x->>'email')))
         OR
         (i.preserve_contact
          AND NULLIF(lower(i.x->>'email'), '') IS NULL
@@ -6072,7 +6084,11 @@ DO $$ BEGIN
             OR
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
-             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', '')
+             AND (NOT (s.raw_data ? 'newmarkPageObservation'
+                       AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark'))
+                  OR NULLIF(lower(c.email), '') IS NULL OR NULLIF(lower(x->>'email'), '') IS NULL
+                  OR lower(c.email) = lower(x->>'email')))
             OR
             (jsonb_path_exists(
                s.raw_data,
@@ -7265,6 +7281,7 @@ def main():
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--newmark-page-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
@@ -7401,6 +7418,21 @@ def main():
                 len(targeted_claims["items"]), worker_identity=guarded["workerIdentity"])
         finally:
             os.close(directory)
+    newmark_page_claim = None
+    if bool(args.newmark_page_attempt) != bool(args.newmark_page_claims):
+        sys.exit("refusing unbound Newmark page claim")
+    if args.newmark_page_claims:
+        with open(args.newmark_page_claims, "rb") as f:
+            claim_data = json.load(f)
+        items = claim_data.get("items") if isinstance(claim_data, dict) else None
+        if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+            sys.exit("refusing invalid Newmark page claim")
+        item = items[0]
+        page_claim = item.get("sourcePageClaim")
+        if (item.get("sourceKey") != "newmark" or not isinstance(page_claim, dict)
+                or set(page_claim) != {"id", "claimedAt", "attempts", "brokerageId"}):
+            sys.exit("refusing invalid Newmark page claim")
+        newmark_page_claim = {**page_claim, "externalId": item.get("externalId"), "url": item.get("url")}
     for path in args.inputs:
         with open(path, "rb") as f:
             image_transition_input = f.read()
@@ -7476,9 +7508,12 @@ def main():
         mode = run_meta.get("mode")
         page_rows = [x for x in data.get("listings", []) if isinstance(x, dict) and "newmarkPageObservation" in x]
         if page_rows or args.newmark_page_attempt:
+            listings = data.get("listings", [])
             if (not args.newmark_page_attempt or len(args.inputs) != 1 or mode != "enrich"
-                    or len(data.get("listings", [])) != 1 or len(page_rows) != 1
-                    or page_rows[0].get("sourceKey") != "newmark"
+                    or len(listings) != 1 or not isinstance(listings[0], dict)
+                    or listings[0].get("sourceKey") != "newmark"
+                    or listings[0].get("id") != newmark_page_claim.get("externalId")
+                    or listings[0].get("url") != newmark_page_claim.get("url")
                     or not args.expected_db_target_sha256 or args.mark_missing or _status_activation_enabled(args.activate_status)):
                 sys.exit("refusing unbound or mixed Newmark page ingest")
         if not args.dry_run and mode not in {"full", "enrich"}:
@@ -7796,6 +7831,8 @@ def main():
         pyramid_guard_binding=pyramid_guard_binding,
         inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
         newmark_page_attempt=args.newmark_page_attempt,
+        newmark_page_claim=newmark_page_claim,
+        newmark_page_requires_witness=bool(page_rows),
     )
 
     print(

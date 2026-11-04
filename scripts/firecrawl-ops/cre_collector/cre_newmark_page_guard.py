@@ -1,18 +1,62 @@
 """One-item Newmark page identity check under the ingest transaction lock."""
 import re
+import uuid
+from datetime import datetime
 
 PREFIX = "CRE_NEWMARK_PAGE_V1 "
 
 
-def guard_sql(attempt):
+def guard_sql(attempt, claim, *, require_page=True):
     if not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{64}", attempt):
         raise ValueError("invalid Newmark page attempt")
-    return r"""
+    if (not isinstance(claim, dict) or set(claim) != {"id", "claimedAt", "attempts", "brokerageId", "externalId", "url"}
+            or not isinstance(claim["id"], str) or not isinstance(claim["brokerageId"], str)
+            or type(claim["attempts"]) is not int or claim["attempts"] < 0
+            or not all(isinstance(claim[k], str) and claim[k] for k in ("claimedAt", "externalId", "url"))):
+        raise ValueError("invalid Newmark page claim")
+    try:
+        uuid.UUID(claim["id"])
+        uuid.UUID(claim["brokerageId"])
+        if datetime.fromisoformat(claim["claimedAt"]).tzinfo is None:
+            raise ValueError("claim timestamp lacks timezone")
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("invalid Newmark page claim identity") from exc
+    def lit(value):
+        return "'" + value.replace("'", "''") + "'"
+    locked = (
+        "WITH newmark_locked_claim AS MATERIALIZED (SELECT * FROM credeals.cre_enrichment_queue q WHERE "
+        + "q.id=" + lit(claim["id"]) + "::uuid AND q.brokerage_id=" + lit(claim["brokerageId"]) + "::uuid"
+        + " AND q.source_key='newmark' AND q.external_id=" + lit(claim["externalId"])
+        + " AND q.url=" + lit(claim["url"]) + " AND q.claimed_at=" + lit(claim["claimedAt"]) + "::timestamptz"
+        + " AND q.attempts=" + str(claim["attempts"]) + " AND q.done_at IS NULL FOR UPDATE)\n"
+    )
+    if not require_page:
+        return locked + r"""
 SELECT NOT (
   (SELECT count(*) FROM _src) = 1
   AND EXISTS (
     SELECT 1 FROM _src s
     JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id AND b.slug='newmark'
+    JOIN newmark_locked_claim q ON q.brokerage_id=s.brokerage_id
+      AND q.external_id=s.external_id AND q.url=s.source_url
+  )
+) AS newmark_page_refused \gset
+\if :newmark_page_refused
+ROLLBACK;
+\pset format unaligned
+\pset tuples_only on
+SELECT 'CRE_NEWMARK_PAGE_V1 ATTEMPT refused';
+\quit
+\endif
+""".replace("ATTEMPT", attempt)
+    return locked + r"""
+SELECT NOT (
+  (SELECT count(*) FROM _src) = 1
+  AND EXISTS (
+    SELECT 1 FROM _src s
+    JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id AND b.slug='newmark'
+    JOIN newmark_locked_claim q ON q.brokerage_id=s.brokerage_id
+      AND q.external_id=s.external_id AND q.url=s.source_url
     JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id
       AND l.external_id=s.external_id AND l.source_url=s.source_url
     CROSS JOIN LATERAL (SELECT s.raw_data->'newmarkPageObservation'->'witness' AS w) p

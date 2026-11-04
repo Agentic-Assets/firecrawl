@@ -539,9 +539,13 @@ console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
         witness_value = claim_result.split("|")[-2]
         actual_witness = newmark_claim_witness.parse_page(witness_value)
         assert actual_witness == witness, actual_witness
+        claimed = cre_enrich._parse_claimed([tuple(claim_result.split("|"))], source_page_witness=True)[0]
+        page_claim = {"id": claimed["id"], "claimedAt": claimed["claimed_at"],
+            "attempts": claimed["attempts"], "brokerageId": claimed["brokerage_id"],
+            "externalId": page_id, "url": page_url}
         attempt = "a" * 64
         result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:19:00Z", set(),
-            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt=attempt))
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt=attempt, newmark_page_claim=page_claim))
         assert "CRE_NEWMARK_PAGE_V1 " + attempt + " committed" in result
         raw_after = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';"))
         assert raw_after["inventoryObservedAt"] == "old-clock"
@@ -553,7 +557,7 @@ console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
         sql("UPDATE credeals.cre_listings SET source_url='https://example.test/changed' WHERE external_id='" + page_id + "';")
         before_refusal = sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';")
         result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:20:00Z", set(),
-            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="b" * 64))
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="b" * 64, newmark_page_claim=page_claim))
         assert "CRE_NEWMARK_PAGE_V1 " + "b" * 64 + " refused" in result
         assert sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';") == before_refusal
         sql("UPDATE credeals.cre_listings SET source_url=" + ingest.sql_lit(page_url) +
@@ -563,7 +567,7 @@ console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
         sql(ingest.build_sql([duplicate], nm_job, "2026-11-04T00:21:00Z", set()))
         before_refusal = sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';")
         result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:22:00Z", set(),
-            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="c" * 64))
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="c" * 64, newmark_page_claim=page_claim))
         assert "CRE_NEWMARK_PAGE_V1 " + "c" * 64 + " refused" in result
         assert sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';") == before_refusal
         print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")

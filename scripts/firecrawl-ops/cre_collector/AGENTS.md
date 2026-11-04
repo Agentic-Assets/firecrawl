@@ -406,9 +406,11 @@ Key behavior:
   source-bound property-page observation and add contacts when a unique URL and
   exact single non-unit native address match. Existing prose and populated
   contact fields remain unchanged. The ingest transaction rechecks the full
-  brokerage URL association under the lifecycle lock. A bound explicit
-  rollback plus zero-job check permits retry; missing/invalid outcomes or
-  uncertain queue disposition retain the recovery fence. This is not inventory
+  brokerage URL association and the exact queue claim generation under the
+  lifecycle lock. Early collection and rejection outcomes update only that
+  generation; superseded claims are left untouched. A bound explicit rollback
+  plus zero-job check permits retry; missing/invalid outcomes or uncertain
+  queue disposition retain the recovery fence. This is not inventory
   freshness or lifecycle authority, and unsupported or ambiguous pages remain
   held.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are

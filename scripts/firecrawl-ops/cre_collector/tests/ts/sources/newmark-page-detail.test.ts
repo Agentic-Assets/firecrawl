@@ -1,17 +1,15 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { extractNewmarkPage } from "../../../sources/pure/newmark-page-detail.js";
 const url = "https://www.nmrk.com/properties/example";
 const claim = {externalId:"example",url};
 const witness = {recordId:"source-1",slug:"example",sourceUrl:url,address:"10 Main Street",city:"Example",state:"Florida",zip:"12345"};
-const html = `<link rel="canonical" href="${url}"><meta property="og:url" content="${url}">
-<main><div class="property-detail"><div class="property-detail__title"><h1>10 Main Street</h1>
-<p class="street-address">Example, Florida 12345</p></div><div class="property-detail__prose"><p>Observed property text.</p></div>
-<div class="property-detail__contact"><span class="property-detail__contact-name">Example Broker</span><a href="mailto:broker@example.test">Email</a></div>
-</div></main>`;
+// Sanitized structure from the retained official page; all values are synthetic.
+const html = readFileSync(new URL("../../fixtures/newmark-property-detail-sanitized.html", import.meta.url), "utf8").replaceAll("{{URL}}", url);
 test("exact source-bound single-address detail preserves prose and contacts",()=>{
  const out=extractNewmarkPage(claim,witness,html,200);
- assert.equal(out?.prose,"Observed property text."); assert.equal(out?.contacts.length,1);
+ assert.equal(out?.prose,"Property prose from source."); assert.equal(out?.contacts.length,2);
 });
 test("holds stale or duplicate identity and ambiguous unit",()=>{
  for (const [item,w,page,status] of [

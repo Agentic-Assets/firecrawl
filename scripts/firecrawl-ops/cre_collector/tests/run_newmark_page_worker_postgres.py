@@ -63,7 +63,9 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-stale"):
+            if kind == "success-no-license":
+                sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
             url = "https://www.nmrk.com/properties/" + external
             item = {"sourceKey":"newmark","id":external,"url":url,
@@ -93,7 +95,9 @@ import fs from "node:fs";
 import {createGenericEnricher} from "./lib/enrich.ts";
 const claimPath=process.env.FIXTURE_CLAIM, outPath=process.env.FIXTURE_OUT;
 const claims=JSON.parse(fs.readFileSync(claimPath,"utf8")), item=claims.items[0], url=item.url;
-const html=`<link rel="canonical" href="${url}"><meta property="og:url" content="${url}"><main><div class="property-detail"><div class="property-detail__title"><h1>10 Main Street</h1><p class="street-address">Example, Florida 12345</p></div><div class="property-detail__prose"><p>Property prose from source.</p></div><div class="property-detail__contact"><span class="property-detail__contact-name">Changed Name</span><a href="mailto:prior@example.test">Email</a></div><div class="property-detail__contact"><span class="property-detail__contact-name">New Broker</span><a href="mailto:new@example.test">Email</a></div></div></main>`;
+const html=process.env.FIXTURE_MODE.startsWith("generic-")
+ ? '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Fixture listing"}</script>'
+ : fs.readFileSync("./tests/fixtures/newmark-property-detail-sanitized.html","utf8").replaceAll("{{URL}}",url);
 const e=createGenericEnricher(async()=>({rawHtml:html,markdown:"",links:[],metadata:{statusCode:200,url,sourceURL:url}}),()=> "2026-11-04T00:01:00Z");
 const result=await e.enrichWithEvidence([item]); if(result.listings.length!==1) throw Error("fixture not admitted");
 const listings=result.listings.map(x=>({sourceKey:"newmark",...x}));
@@ -111,11 +115,25 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                         raise AssertionError("prefilter must not call collector")
                     claim_path=args[args.index("--enrich-input")+1]
                     out_path=args[args.index("--out")+1]
+                    if kind == "collect-fail-stale":
+                        sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
+                        return subprocess.CompletedProcess(args,1)
                     result=run(["node","--import","tsx","--input-type=module","-e",js],
-                               cwd=HERE,env={**os.environ,"FIXTURE_CLAIM":claim_path,"FIXTURE_OUT":out_path},
+                               cwd=HERE,env={**os.environ,"FIXTURE_CLAIM":claim_path,"FIXTURE_OUT":out_path,"FIXTURE_MODE":kind},
                                capture_output=True,text=True)
                     if result.returncode:
                         raise RuntimeError("synthetic collector failed: " + result.stderr)
+                    if kind == "claim-attempt-stale":
+                        sql("UPDATE credeals.cre_enrichment_queue SET attempts=attempts+1 WHERE external_id="+ingest.sql_lit(external)+";")
+                    if kind in {"claim-stale", "empty-stale", "deferred-stale", "generic-stale"}:
+                        if kind in {"empty-stale", "deferred-stale"}:
+                            data=json.loads(Path(out_path).read_text())
+                            data["listings"]=[]
+                            data["totalListings"]=0
+                            if kind == "deferred-stale":
+                                data["sources"][0]["error"]="synthetic failure"
+                            Path(out_path).write_text(json.dumps(data))
+                        sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind in {"stale", "refusal-uncertain"}:
                         sql("UPDATE credeals.cre_listings SET source_url='https://example.test/changed' WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind=="duplicate-after":
@@ -148,7 +166,13 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 worker.subprocess.run=run
                 worker._psql_query=original_query
             queue=sql("SELECT attempts || '|' || (claimed_at IS NULL)::text FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
-            if kind=="success":
+            if kind == "generic-success":
+                assert rc==0 and queue=="", (kind,rc,queue)
+                assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="t"
+            elif kind == "generic-stale":
+                assert rc==21 and queue=="0|false", (kind,rc,queue)
+                assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
+            elif kind in {"success", "success-no-license"}:
                 assert rc==0 and queue=="", (kind,rc,queue)
                 assert sql("SELECT description FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Original long description"
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
@@ -168,6 +192,9 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert rc==21 and queue=="1|true", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'newmarkPageObservation' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
+            elif kind in {"claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale"}:
+                assert rc in (1,21) and queue==("1|false" if kind=="claim-attempt-stale" else "0|false"), (kind,rc,queue)
+                assert sql("SELECT raw_data ? 'newmarkPageObservation' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
             else:
                 assert rc==1 and queue=="0|false" and (kind=="refusal-uncertain" or observed.get("attempted")), (kind,rc,queue)
                 present=sql("SELECT raw_data ? 'newmarkPageObservation' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")
@@ -175,11 +202,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
         stale_claim = json.loads(sql("SELECT to_jsonb(q)::text FROM credeals.cre_enrichment_queue q WHERE q.external_id='worker-unknown-after';"))
         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE id="+
             ingest.sql_lit(stale_claim["id"])+"::uuid;")
-        try:
-            sql(worker.build_newmark_page_disposition_sql(stale_claim, "complete"))
-            raise AssertionError("changed claim unexpectedly completed")
-        except RuntimeError as exc:
-            assert "Newmark page claim changed" in str(exc)
+        assert sql(worker.build_newmark_page_disposition_sql(stale_claim, "complete")) == "0"
         assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE id="+ingest.sql_lit(stale_claim["id"])+"::uuid;")=="1"
         assert sql("SELECT attempts || '|' || (claimed_at IS NULL)::text FROM credeals.cre_enrichment_queue WHERE source_key='svn';") == "0|true"
         print("PASS: actual source enricher and worker with disposable PostgreSQL: commit, stale/duplicate retry, unknown before/after commit, unrelated source untouched")
