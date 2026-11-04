@@ -19,7 +19,7 @@ def lit(value):
 
 
 def expression(enrichment):
-    sql = cre_ingest.build_sql([], [], "2026-11-04T00:00:00Z", set(), svn_enrichment=enrichment)
+    sql = cre_ingest.build_sql([], [], "2026-11-04T00:00:00Z", set(), svn_enrichment_ids=("synthetic",) if enrichment else ())
     return sql.split("raw_data          = ", 1)[1].split(",\n        source_lastmod", 1)[0]
 
 
@@ -46,7 +46,7 @@ def main():
         def evaluate(enrichment, prior, incoming, brokerage=1):
             statement = (f"SELECT ({expression(enrichment)})::text FROM "
                          f"(SELECT {lit(prior)} AS raw_data) t CROSS JOIN "
-                         f"(SELECT {lit(incoming)} AS raw_data, {brokerage} AS brokerage_id, "
+                         f"(SELECT {lit(incoming)} AS raw_data, {brokerage} AS brokerage_id, 'synthetic'::text AS external_id, "
                          "'2026-11-04T00:00:00Z'::timestamptz AS scraped_at) excluded;")
             return json.loads(sql(statement))
         actual = evaluate(True, old, new)
@@ -57,7 +57,9 @@ def main():
             "sourceKey": "newmark", "markdown": "new"}
         assert evaluate(True, {}, new) == new
         incoming = {**new, "inventoryObservedAt": "newer", "latestInventoryObservation": {"latitude": 2}}
-        assert evaluate(True, old, incoming) == incoming
+        assert evaluate(True, old, incoming) == actual
+        asymmetric = {**new, "inventoryObservedAt": "unproven newer"}
+        assert evaluate(True, old, asymmetric) == actual
         null_incoming = {**new, "inventoryObservedAt": None, "latestInventoryObservation": None}
         assert evaluate(True, old, null_incoming) == actual
         assert evaluate(True, ["inventoryObservedAt"], new) == new
@@ -65,7 +67,7 @@ def main():
         assert partial["oldDetail"] == "not carried"
         assert partial["latestInventoryObservation"]["detailError"] == "failed"
         print("PASS: real generated CASE preserves SVN inventory wrapper, detail, scoping, "
-              "newer observation precedence, absent keys, and existing partial behavior")
+              "untrusted incoming inventory ignored, absent keys, and existing partial behavior")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
