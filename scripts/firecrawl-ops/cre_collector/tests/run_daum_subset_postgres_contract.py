@@ -1,6 +1,7 @@
 """Owned Unix-socket PG17 fixture only; never reads application environment."""
 
 import hashlib
+import copy
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import cre_ingest as ingest  # noqa: E402 - explicit standalone collector root
 
-if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--pyramid", "--pyramid-benchmark")):
-    raise ValueError("usage: run_daum_subset_postgres_contract.py NEW_PROOF_DIR [--pyramid|--pyramid-benchmark]")
-pyramid_mode = len(sys.argv) == 3
+if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--pyramid", "--pyramid-benchmark", "--unknown")):
+    raise ValueError("usage: run_daum_subset_postgres_contract.py NEW_PROOF_DIR [--pyramid|--pyramid-benchmark|--unknown]")
+unknown_mode = len(sys.argv) == 3 and sys.argv[2] == "--unknown"
+pyramid_mode = len(sys.argv) == 3 and not unknown_mode
 benchmark_mode = len(sys.argv) == 3 and sys.argv[2] == "--pyramid-benchmark"
 out = Path(sys.argv[1]).resolve()
 out.mkdir(mode=0o700)
@@ -269,6 +271,74 @@ try:
             (directory / "016_cre_listing_lifecycle.sql").read_text(),
         ]
     )
+    if unknown_mode:
+        unknown_claims = copy.deepcopy(claims_v2)
+        for member in unknown_claims["members"]:
+            if member["native_id"] == "50101":
+                member["emitted"] = True
+        unknown_claims["binding"].update(emitted_count=101, held_count=1)
+        for case in ("unknown_existing", "unknown_new", "unknown_conflict", "unknown_baseline"):
+            db = "fixture_" + case
+            sql("CREATE DATABASE " + db + ";")
+            sql(schema, db)
+            sql(generated([row(index) for index in range(102)]), db)
+            sql("UPDATE credeals.cre_listings SET transaction_type='lease', "
+                "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\"}'::jsonb "
+                "WHERE external_id='property/Synthetic-101';", db)
+            if case == "unknown_new":
+                sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-101'; "
+                    "DELETE FROM credeals.cre_listings WHERE external_id='property/Synthetic-101';", db)
+            if case == "unknown_baseline":
+                sql("INSERT INTO credeals.cre_source_baseline(source_key,median_active_rows) "
+                    "VALUES ('daum-commercial',100);", db)
+            if case == "unknown_conflict":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}',"
+                    "'\"50101\"') WHERE external_id='property/Synthetic-0';", db)
+            prior_raw = None if case == "unknown_new" else json.loads(sql(
+                "SELECT raw_data::text FROM credeals.cre_listings "
+                "WHERE external_id='property/Synthetic-101';", db
+            ).stdout)
+            unknown = row(101, fresh=True, name="Observed current title")
+            unknown["transaction_type"] = None
+            for child in unknown["images"] + unknown["contacts"]:
+                child.pop("isPrimary", None)
+            unknown["raw_data"].update({
+                "daumUnknownTenure": True,
+                "preserveChildCollections": True,
+                "detailObservedWithChildPreservation": True,
+                "daumTenureEvidence": {"inventory": "unknown", "detail": "unknown", "resolved": "unknown"},
+            })
+            child_tables = ("cre_listing_images", "cre_listing_contacts",
+                            "cre_listing_documents", "cre_listing_media", "cre_listing_links")
+            def children(table):
+                return json.loads(sql(
+                    "SELECT coalesce(jsonb_agg(to_jsonb(c)-'scraped_at' ORDER BY c.id)::text,'[]') "
+                    "FROM credeals." + table + " c JOIN credeals.cre_listings l ON l.id=c.listing_id "
+                    "WHERE l.external_id='property/Synthetic-101';", db
+                ).stdout)
+            before_children = {table: children(table) for table in child_tables}
+            before_rows = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id)::text FROM credeals.cre_listings l;", db).stdout
+            result = sql(generated([row(index) for index in range(100)] + [unknown], unknown_claims), db, check=False)
+            if case in {"unknown_conflict", "unknown_baseline"}:
+                assert result.returncode != 0 and sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id)::text FROM credeals.cre_listings l;", db).stdout == before_rows
+            else:
+                assert result.returncode == 0, result.stderr
+                state = sql("SELECT coalesce(transaction_type,'<null>') || '|' || "
+                            "(raw_data ? 'latestDaumUnknownTenureObservation')::text "
+                            "FROM credeals.cre_listings WHERE external_id='property/Synthetic-101';", db).stdout.strip()
+                assert state == ("lease|true" if case == "unknown_existing" else "<null>|false"), state
+                if case == "unknown_existing":
+                    raw_after = json.loads(sql(
+                        "SELECT raw_data::text FROM credeals.cre_listings "
+                        "WHERE external_id='property/Synthetic-101';", db
+                    ).stdout)
+                    assert raw_after.pop("latestDaumUnknownTenureObservation") == unknown["raw_data"]
+                    assert raw_after == prior_raw
+                    assert sql("SELECT title FROM credeals.cre_listings "
+                               "WHERE external_id='property/Synthetic-101';", db).stdout.strip() == "Observed current title"
+                    for table in child_tables:
+                        assert all(item in children(table) for item in before_children[table]), table
+            checks.append({"case": case, "passed": True})
     cases = [
         "baseline_present",
         "deleted_parent",
@@ -292,7 +362,7 @@ try:
         "v2_held_missing_index",
         "v2_held_native_collision",
     ]
-    for i, case in enumerate([] if pyramid_mode else cases):
+    for i, case in enumerate([] if pyramid_mode or unknown_mode else cases):
         db = "fixture_" + str(i)
         sql("CREATE DATABASE " + db + ";")
         sql(schema, db)
@@ -841,7 +911,7 @@ try:
         snapshot_sql = "SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='listings/fixture-1';"
         held_before = sql(snapshot_sql, db).stdout
         def identity_held_children():
-            parts = ["SELECT 'index' name,jsonb_agg(to_jsonb(i) ORDER BY i.id)::text value FROM credeals.cre_source_index i WHERE external_id='listings/fixture-1'"]
+            parts = ["SELECT 'index' name,jsonb_agg(to_jsonb(i)-'scraped_at' ORDER BY i.id)::text value FROM credeals.cre_source_index i WHERE external_id='listings/fixture-1'"]
             for table in ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
                 parts.append("SELECT '" + table + "' name,jsonb_agg(to_jsonb(c) ORDER BY to_jsonb(c)::text)::text value FROM credeals." + table + " c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id='listings/fixture-1'")
             return sql("SELECT jsonb_object_agg(name,value)::text FROM (" + " UNION ALL ".join(parts) + ")s;", db).stdout
