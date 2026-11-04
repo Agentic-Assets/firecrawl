@@ -8,7 +8,7 @@ verifiers), findings and fixes integrated by the main session.
 
 This document is both the security report and the activity log for the review.
 For the SQL/database advisor deep dives it references, see the dated reports
-under `../sql/advisor-reports/`.
+under `../../sql/advisor-reports/`.
 
 ## 1. Objective and method
 
@@ -40,13 +40,13 @@ markdown, archived JSON/HTML capture artifacts, and test-run output, which were
 out of scope.
 
 - Python (shells out to `psql`, builds SQL):
-  `cre_ingest.py`, `cre_monitor.py`, `cre_gate.py`, `cre_validate.py`.
-- TypeScript (web scrapers): `collect.ts`, `types.ts`, `lib/*.ts`
-  (`config`, `scrape`, `util`, `broker`, `html`), `sources/*.ts` (15 sources).
-- Shell: `cre_daily_update.sh`, `run_colliers_main_full.sh`,
-  `launchd/cre_run_tier.sh`.
-- SQL migrations: `../sql/001`..`../sql/008`, `000_run_all.sql`,
-  `005_cre_views.sql`, and `../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
+  `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`, `../cre_validate.py`.
+- TypeScript (web scrapers): `../collect.ts`, `../types.ts`, `../lib/*.ts`
+  (`config`, `scrape`, `util`, `broker`, `html`), `../sources/*.ts` (15 sources).
+- Shell: `../cre_daily_update.sh`, `../run_colliers_main_full.sh`,
+  `../launchd/cre_run_tier.sh`.
+- SQL migrations: `../../sql/001`..`../../sql/008`, `000_run_all.sql`,
+  `005_cre_views.sql`, and `../../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
 - PowerShell: `apps/api/scripts/check-domains.ps1`.
 - Config: `.claude/settings.json`, `.gitignore`, launchd plists.
 
@@ -140,7 +140,7 @@ Observation. The table lock down currently rests on the absence of any
 anon/authenticated grant rather than an explicit deny policy on the base tables.
 
 Disposition. This is a documented, deliberate decision, not an oversight. The
-advisor report `../sql/advisor-reports/2026-06-13-cre-rls-enabled-no-policy.md`
+advisor report `../../sql/advisor-reports/2026-06-13-cre-rls-enabled-no-policy.md`
 analyzes it and records the recommendation as ACCEPT: effective access is
 already blocked two ways (no API role grant, and the 5 views are
 `security_invoker` with explicit REVOKE at `005_cre_views.sql:337-362`). The
@@ -167,15 +167,15 @@ and targets only anon and authenticated (never `service_role`).
 - Keep `subprocess.run` in argv list form, never `shell=True`, and never place
   the DB URL anywhere but a single argv element.
 - Database objects under `credeals` are service role only. Read
-  `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` and the advisor reports before
+  `SUPABASE_SECURITY_NOTE_2026-06-12.md` and the advisor reports before
   changing any grant, view privilege, or RLS setting.
 
 ## 8. References
 
-- Reviewed code: `cre_ingest.py`, `cre_monitor.py`, `cre_gate.py`,
-  `cre_validate.py`, `collect.ts`, `lib/`, `sources/`, `../sql/`.
-- SQL authorization deep dives: `../sql/advisor-reports/2026-06-13-cre-rls-enabled-no-policy.md`,
-  `../sql/advisor-reports/2026-06-13-cre-functions-and-grants.md`,
-  `../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
-- Test contracts: `tests/CLAUDE.md`, `tests/test_ingest_status_activation.py`,
-  `tests/test_monitor_events.py`, `tests/test_gate.py`, `tests/test_monitor.py`.
+- Reviewed code: `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`,
+  `../cre_validate.py`, `../collect.ts`, `../lib/`, `../sources/`, `../../sql/`.
+- SQL authorization deep dives: `../../sql/advisor-reports/2026-06-13-cre-rls-enabled-no-policy.md`,
+  `../../sql/advisor-reports/2026-06-13-cre-functions-and-grants.md`,
+  `../../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
+- Test contracts: `../tests/CLAUDE.md`, `../tests/test_ingest_status_activation.py`,
+  `../tests/test_monitor_events.py`, `../tests/test_gate.py`, `../tests/test_monitor.py`.

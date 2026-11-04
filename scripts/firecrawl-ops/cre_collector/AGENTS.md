@@ -42,6 +42,8 @@ database (EQUIRE feed). It supersedes the per-broker Python scrapers in
 `../cre_scrapers/` for bulk collection (`../cre_scrapers/brokers/*/scraper.py`
 is **stale** for production; README/archive there is reference-only).
 
+For a compact directory map and links to the active entrypoints, see [README.md](README.md).
+
 ## Agent routing: where to edit
 
 | Task | Edit here (ACTIVE) | Do NOT use (STALE) |
@@ -217,7 +219,7 @@ and resolve confirmed findings before shipping.
 | `BROKERAGE_STATUS_2026-06-12.md` | Historical per-broker coverage snapshot |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
-| `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
+| `archive/SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
 | `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retained for rollback). Implemented in code; live scheduler recovery remains gated. |
 | `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
 | `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` | Phase-2 data-lift implementation contract: the spec the `011`-`014` DDL, the backfills, and the `cre_parse`/`cre_geo`/`om_*` modules implement |
