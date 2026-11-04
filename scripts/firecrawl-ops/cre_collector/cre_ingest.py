@@ -3504,6 +3504,8 @@ def merge_rows(a, b):
         a["transaction_type"] = "sale_or_lease"
     elif b["transaction_type"] == "sale_or_lease":
         a["transaction_type"] = "sale_or_lease"
+    elif a["slug"] == "svn" and a["transaction_type"] is None:
+        a["transaction_type"] = b["transaction_type"]
     for k in (
         "property_type",
         "title",
@@ -4966,7 +4968,11 @@ WITH ins AS (
            CASE WHEN {svn_enrichment_source_sql}
                   AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
                               WHERE sb.id=s.brokerage_id AND sb.slug='svn')
-                THEN NULL ELSE COALESCE(status, 'active') END, transaction_type,
+                THEN NULL ELSE COALESCE(status, 'active') END,
+           CASE WHEN {svn_enrichment_source_sql}
+                  AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                              WHERE sb.id=s.brokerage_id AND sb.slug='svn')
+                THEN NULL ELSE transaction_type END,
            property_type, title, address, city, state, zip, lat, lng, market, submarket,
            size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
            floors, year_built, units, parking_spaces, parking_ratio,
@@ -5031,6 +5037,10 @@ WITH ins AS (
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
                                             WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
                                 THEN t.status
+                              WHEN t.status IS NULL
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN EXCLUDED.status
                               WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
                                 THEN 'active' ELSE t.status END,
         -- transaction_type NEVER narrows a known type. A partial/generic re-ingest
@@ -5046,6 +5056,10 @@ WITH ins AS (
         --   existing/incoming differ (sale vs lease)  -> 'sale_or_lease' (serves both)
         --   same single mode, or incoming NULL        -> keep existing
         transaction_type  = CASE
+                              WHEN {svn_enrichment_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN t.transaction_type
                               WHEN t.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
                               WHEN EXCLUDED.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
                               WHEN t.transaction_type IS NULL THEN EXCLUDED.transaction_type
@@ -7438,6 +7452,9 @@ def main():
             key = (row["slug"], row["external_id"])
             if row["slug"] == "svn":
                 if mode == "enrich":
+                    # The detail-only producer does not witness sale or lease.
+                    row["transaction_type"] = None
+                    row["_modes"] = set()
                     svn_enrichment_ids.add(row["external_id"])
                 else:
                     svn_non_enrichment_ids.add(row["external_id"])

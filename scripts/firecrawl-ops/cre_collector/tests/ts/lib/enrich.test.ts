@@ -184,6 +184,19 @@ test("runEnrichGroups produces the enrich artifact shape; every listing echoes i
   assert.equal(byUrl.get("https://x/c").transactionMode, "sale"); // default
 });
 
+test("SVN detail without observed transaction does not invent sale", async () => {
+  const groups = groupEnrichItems([
+    { sourceKey: "svn", externalId: "unknown", url: "https://x/unknown" },
+    { sourceKey: "svn", externalId: "known", url: "https://x/known", transaction: "lease" },
+    { sourceKey: "src-a", externalId: "other", url: "https://x/other" },
+  ]);
+  const { listings } = await runEnrichGroups(groups, () => ({ enricher: fakeEnricher(), label: "fake" }), (key) => key);
+  const byUrl = new Map(listings.map((row) => [row.url, row]));
+  assert.equal(byUrl.get("https://x/unknown").transactionMode, undefined);
+  assert.equal(byUrl.get("https://x/known").transactionMode, "lease");
+  assert.equal(byUrl.get("https://x/other").transactionMode, "sale");
+});
+
 test("runEnrichGroups records a per-source error when an enricher throws (matches full-path)", async () => {
   const items: EnrichItem[] = [
     { sourceKey: "boom", externalId: "x1", url: "https://x/a" },

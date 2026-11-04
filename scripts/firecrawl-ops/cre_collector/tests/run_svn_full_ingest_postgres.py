@@ -2,6 +2,7 @@
 import json
 import re
 import subprocess
+import tempfile
 import sys
 import time
 import uuid
@@ -55,7 +56,8 @@ def main():
         sql("""UPDATE credeals.cre_listings SET raw_data=
               '{"inventoryObservedAt":"old","latestInventoryObservation":{"latitude":1.0000000000000001}}'::jsonb;""")
         row["scraped_at"] = "2026-11-04T00:01:00Z"
-        sql("UPDATE credeals.cre_listings SET status='inactive', "
+        row["transaction_type"] = "sale"
+        sql("UPDATE credeals.cre_listings SET status='inactive', transaction_type='lease', "
             "deleted_at='2026-11-03T01:02:03Z' WHERE external_id='synthetic';")
         prior_lifecycle = sql("SELECT status || '|' || deleted_at::text FROM credeals.cre_listings "
                               "WHERE external_id='synthetic';")
@@ -72,6 +74,7 @@ def main():
         assert sql("SELECT status || '|' || deleted_at::text FROM credeals.cre_listings "
                    "WHERE external_id='synthetic';") == prior_lifecycle
         assert int(sql("SELECT count(*) FROM credeals.cre_listing_events;")) == prior_events
+        assert sql("SELECT transaction_type FROM credeals.cre_listings WHERE external_id='synthetic';") == "lease"
         value = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings;"))
         assert value["inventoryObservedAt"] == "old"
         assert value["latestInventoryObservation"]["latitude"] == 1.0000000000000001
@@ -97,12 +100,20 @@ def main():
         # A detail-only first observation can be retained without inventing active status or index.
         missing = ingest.to_row({"sourceKey":"svn","id":"missing-parent",
                                  "url":"https://example.test/missing-parent",
-                                 "name":"Missing","markdown":"detail"}, {}, "2026-11-04T00:02:00Z")
+                                 "name":"Missing","markdown":"detail","transactionMode":"sale"}, {}, "2026-11-04T00:02:00Z")
         sql(ingest.build_sql([missing], job, "2026-11-04T00:02:00Z", set(),
                              svn_enrichment_ids=("missing-parent",)))
         assert sql("SELECT coalesce(status,'<null>') FROM credeals.cre_listings "
                    "WHERE external_id='missing-parent';") == "<null>"
         assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='missing-parent';") == "0"
+        assert sql("SELECT coalesce(transaction_type,'<null>') FROM credeals.cre_listings "
+                   "WHERE external_id='missing-parent';") == "<null>"
+        # A later full inventory observation establishes active status and tenure.
+        missing["transaction_type"] = "lease"
+        sql(ingest.build_sql([missing], job, "2026-11-04T00:03:00Z", set()))
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings "
+                   "WHERE external_id='missing-parent';") == "active|lease"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='missing-parent';") == "1"
         # Missing source-index evidence must not be fabricated by pure detail.
         sql("DELETE FROM credeals.cre_source_index WHERE external_id='synthetic';")
         sql(ingest.build_sql([row], job, "2026-11-04T00:02:00Z", set(),
@@ -121,7 +132,33 @@ def main():
                              svn_enrichment_ids=("synthetic",)))
         assert sql("SELECT count(*) FROM credeals.cre_source_index si JOIN credeals.cre_brokerages b "
                    "ON b.id=si.brokerage_id WHERE b.slug='newmark' AND si.external_id='synthetic';") == "1"
-        print("PASS: pure SVN detail preserves index/event, full and foreign controls, raw and new detail")
+        # Exercise the real ingest CLI mode partition and merge in both input orders.
+        with tempfile.TemporaryDirectory(prefix="svn-mixed-proof-") as temporary:
+            for first in ("enrich", "full"):
+                identity = "mixed-" + first
+                paths = []
+                for position, mode in enumerate((first, "full" if first == "enrich" else "enrich")):
+                    path = Path(temporary) / f"{identity}-{position}.json"
+                    path.write_text(json.dumps({
+                        "runMeta": {"mode": mode, "startedAt": "2026-11-04T00:00:00Z",
+                                    "finishedAt": "2026-11-04T00:01:00Z"},
+                        "sources": [{"sourceKey":"svn"}],
+                        "listings": [{"sourceKey":"svn", "id":identity,
+                                      "url":f"https://example.test/{identity}",
+                                      "name":"Synthetic",
+                                      "transactionMode":"sale" if mode=="enrich" else "lease"}],
+                    }))
+                    paths.extend(["--in",str(path)])
+                out = Path(temporary) / (identity + "-sql")
+                run(sys.executable,str(HERE.parent / "cre_ingest.py"),*paths,
+                    "--dry-run","--keep-artifacts",str(out),cwd=HERE.parent)
+                sql((out / "ingest.sql").read_text())
+                assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings "
+                           "WHERE external_id='"+identity+"';") == "active|lease"
+                assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='"
+                           +identity+"';") == "1"
+        print("PASS: pure SVN detail preserves index/event, lifecycle/tenure; mixed/full and foreign controls")
+
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
