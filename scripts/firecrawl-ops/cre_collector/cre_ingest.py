@@ -5295,7 +5295,7 @@ WITH ins AS (
                                              '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
                                            )
                                            AND NOT (
-                                             t.raw_data->'newmarkEnrichmentRetained' = 'true'::jsonb
+                                             COALESCE(t.raw_data->'newmarkEnrichmentRetained' = 'true'::jsonb, false)
                                              AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb_prior
                                                          WHERE nb_prior.id=t.brokerage_id AND nb_prior.slug='newmark')
                                            )

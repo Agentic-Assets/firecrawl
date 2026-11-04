@@ -131,6 +131,12 @@ def main():
                 assert after_inventory["markdown"] == "second detail"
                 assert after_inventory["newmarkUnqualifiedInventoryContext"] == current["newmarkUnqualifiedInventoryContext"]
                 assert after_inventory["inventoryObservedAt"] != "old"
+                sql("""UPDATE credeals.cre_listings SET raw_data=
+                      '{"preserveChildCollections":true,"markdown":"stale partial"}'::jsonb
+                      WHERE external_id='nm-synthetic';""")
+                sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:05:30Z", set()))
+                unmarked = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+                assert "markdown" not in unmarked
             sql("UPDATE credeals.cre_listings SET raw_data='{}'::jsonb WHERE external_id='nm-synthetic';")
             sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:04:00Z", set(),
                 inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
