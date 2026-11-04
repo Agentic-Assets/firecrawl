@@ -103,3 +103,47 @@ def parse(value):
             or (prop['selection'] == 'unresolved' and prop['fields'])):
         return invalid
     return parsed
+
+
+def page_returning_sql():
+    """Single exact URL association and bounded fields; caller still rechecks at ingest."""
+    return r"""(SELECT CASE WHEN count(*) <> 1 OR count(*) FILTER (WHERE l.external_id=q.external_id) <> 1
+        THEN jsonb_build_object('refused', true) ELSE
+        (SELECT jsonb_build_object(
+          'recordId', r->>'id', 'slug', r->>'slug', 'sourceUrl', r->>'externalWebsiteUrl',
+          'address', r->'properties'->0->>'address', 'city', r->'properties'->0->>'city',
+          'state', r->'properties'->0->>'stateDescription', 'zip', r->'properties'->0->>'zip')
+         FROM (SELECT CASE
+            WHEN l2.raw_data ? 'rawNewmarkNimRecord'
+             AND l2.raw_data->'latestInventoryObservation' ? 'rawNewmarkNimRecord'
+             AND l2.raw_data->'rawNewmarkNimRecord' IS DISTINCT FROM
+                 l2.raw_data->'latestInventoryObservation'->'rawNewmarkNimRecord' THEN NULL
+            ELSE COALESCE(l2.raw_data->'rawNewmarkNimRecord',
+                          l2.raw_data->'latestInventoryObservation'->'rawNewmarkNimRecord') END AS r
+          FROM credeals.cre_listings l2 WHERE l2.brokerage_id=q.brokerage_id
+            AND l2.external_id=q.external_id AND l2.source_url=q.url) source
+         WHERE jsonb_typeof(r)='object'
+           AND CASE WHEN jsonb_typeof(r->'properties')='array'
+                    THEN jsonb_array_length(r->'properties')=1 ELSE false END
+           AND jsonb_typeof(r->'properties'->0)='object')
+        END FROM credeals.cre_listings l
+        WHERE l.brokerage_id=q.brokerage_id AND l.source_url=q.url
+          AND EXISTS (SELECT 1 FROM credeals.cre_brokerages b WHERE b.id=q.brokerage_id AND b.slug='newmark'))::text"""
+
+
+def parse_page(value):
+    if not isinstance(value, str) or len(value.encode('utf8')) > MAX_WITNESS_BYTES:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (ValueError, RecursionError):
+        return None
+    if parsed == {'refused': True}:
+        return parsed
+    keys = {'recordId', 'slug', 'sourceUrl', 'address', 'city', 'state', 'zip'}
+    if (not isinstance(parsed, dict) or set(parsed) != keys or any(
+            not isinstance(v, str) or not v.strip() or len(v.encode('utf8')) > 256
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in v)
+            for v in parsed.values())):
+        return None
+    return parsed
