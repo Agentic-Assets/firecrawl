@@ -4,13 +4,13 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CbrePartialSpool } from "../../../lib/cbre-partial-spool.js";
+import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
 
 test("Colliers page retains provisional card fields without detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "colliers-page-"));
   try {
     const path = join(dir, "attempt.jsonl");
-    const spool = new CbrePartialSpool(path, "generation", 1, undefined, "colliers");
+    const spool = new PartialPageSpool(path, "generation", 1, undefined, "colliers");
     spool.record({ transaction: "sale", pass: 1, page: 1,
       observedAt: "2026-01-01T00:00:00Z",
       documents: [{ id: "salestracker:card:123", name: "Property", sizeText: "10 SF" }] });

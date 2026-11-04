@@ -50,8 +50,8 @@ def compute(action: str, arguments: dict, response: Path) -> dict:
             **kwargs,
         )
         result = {**stats, "bytes": before[2]}
-    elif action == "cbre_partial":
-        from cre_cbre_partial_custody import settle
+    elif action == "partial_pages":
+        from cre_partial_page_custody import settle
         attempt = arguments["attempt"]
         source = arguments.get("source", "cbre")
         settle(Path(arguments["run_dir"]), attempt, path, source)

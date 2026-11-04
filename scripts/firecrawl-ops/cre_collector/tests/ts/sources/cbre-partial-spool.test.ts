@@ -4,14 +4,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CbrePartialSpool } from "../../../lib/cbre-partial-spool.js";
+import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
 import { fetchCbreSnapshot } from "../../../sources/cbre.js";
 
 test("writes private page observations with exact sealed digest", () => {
   const dir = mkdtempSync(join(tmpdir(), "cbre-spool-test-"));
   try {
     const path = join(dir, "capture.jsonl");
-    const spool = new CbrePartialSpool(path, "run-1", 2);
+    const spool = new PartialPageSpool(path, "run-1", 2);
     spool.record({ transaction: "sale", pass: 1, page: 1,
       observedAt: "2026-01-01T00:00:00.000Z",
       documents: [{ "Common.PrimaryKey": "abc", value: null, empty: [] }] });
@@ -33,13 +33,13 @@ test("unsafe directory and preexisting file fail without overwriting", () => {
   const dir = mkdtempSync(join(tmpdir(), "cbre-spool-test-"));
   try {
     const path = join(dir, "capture.jsonl");
-    const first = new CbrePartialSpool(path, "run-1", 1);
+    const first = new PartialPageSpool(path, "run-1", 1);
     assert.equal(first.finish().state, "sealed");
     const before = readFileSync(path);
-    assert.equal(new CbrePartialSpool(path, "run-1", 2).finish().state, "failed");
+    assert.equal(new PartialPageSpool(path, "run-1", 2).finish().state, "failed");
     assert.deepEqual(readFileSync(path), before);
     chmodSync(dir, 0o755);
-    assert.equal(new CbrePartialSpool(join(dir, "other"), "run-1", 3).finish().state, "failed");
+    assert.equal(new PartialPageSpool(join(dir, "other"), "run-1", 3).finish().state, "failed");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -47,7 +47,7 @@ test("keeps validated pages when a later page fails without changing the error",
   const dir = mkdtempSync(join(tmpdir(), "cbre-spool-test-"));
   try {
     const path = join(dir, "capture.jsonl");
-    const spool = new CbrePartialSpool(path, "run-1", 1);
+    const spool = new PartialPageSpool(path, "run-1", 1);
     const failure = new Error("synthetic later failure");
     await assert.rejects(() => fetchCbreSnapshot(async (page) => {
       if (page === 1) return { DocumentCount: 2, Documents: [{ "Common.PrimaryKey": "a" }] };
@@ -107,7 +107,7 @@ test("collector preserves failed CBRE error, sidecar and healthy sibling", async
     assert.equal(pages[1].transaction, "sale");
     assert.equal(pages[2].transaction, "lease");
     const verify = spawnSync("python3", ["-c",
-      `import json,sys; from pathlib import Path; from cre_cbre_partial_custody import settle; a={"number":1,"cbre_partial":{"state":"pending","path":"cbre-partial/attempt-1.jsonl"}}; settle(Path(sys.argv[1]),a,Path(sys.argv[2])); print(json.dumps(a))`,
+      `import json,sys; from pathlib import Path; from cre_partial_page_custody import settle; a={"number":1,"cbre_partial":{"state":"pending","path":"cbre-partial/attempt-1.jsonl"}}; settle(Path(sys.argv[1]),a,Path(sys.argv[2])); print(json.dumps(a))`,
       run, out], { cwd: process.cwd(), encoding: "utf8", timeout: 10000 });
     assert.equal(verify.status, 0, verify.stderr);
     assert.equal(JSON.parse(verify.stdout).cbre_partial.state, "sealed_local");
@@ -151,7 +151,7 @@ test("later partial write failure seals the complete prefix only", () => {
   try {
     const path = join(dir, "capture.jsonl");
     let writes = 0;
-    const spool = new CbrePartialSpool(path, "run-1", 1, {
+    const spool = new PartialPageSpool(path, "run-1", 1, {
       write(fd, buffer, offset, length) {
         writes++;
         if (writes === 3) return writeSync(fd, buffer, offset, Math.min(5, length));
@@ -179,7 +179,7 @@ test("a failed first sync only seals prefix after a successful retry", () => {
   try {
     const path = join(dir, "capture.jsonl");
     let calls = 0;
-    const spool = new CbrePartialSpool(path, "run-1", 1, {
+    const spool = new PartialPageSpool(path, "run-1", 1, {
       write(fd, buffer, offset, length) { return writeSync(fd, buffer, offset, length); },
       sync(fd) { if (++calls === 1) throw new Error("synthetic sync failure"); fsyncSync(fd); },
     });

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, statfsSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type CbrePageObservation = {
+export type PartialPageObservation = {
   transaction: "sale" | "lease";
   pass: number;
   page: number;
@@ -12,7 +12,7 @@ export type CbrePageObservation = {
   start?: number;
 };
 
-export class CbrePartialSpool {
+export class PartialPageSpool {
   private fd: number | null = null;
   private hash = createHash("sha256");
   private bytes = 0;
@@ -63,7 +63,7 @@ export class CbrePartialSpool {
     } catch { this.fail(); }
   }
 
-  record(page: CbrePageObservation): void {
+  record(page: PartialPageObservation): void {
     if (this.failed) return;
     this.write({ kind: this.sourceKey === "colliers" ? "parsed_page" : "validated_page", ...page });
     if (!this.failed) this.pages++;

@@ -2641,7 +2641,7 @@ def fresh_source_env(
         if name in env:
             clear(name)
     if source in {"cbre", "colliers"}:
-        from cre_cbre_partial_custody import expected_path
+        from cre_partial_page_custody import expected_path
         partial = expected_path(run_dir, attempt_number, source)
         try:
             directory = partial.parent.lstat()
@@ -3819,7 +3819,7 @@ def _cohort_attempt(
         tmp_artifact.unlink(missing_ok=True)
     partial_state = None
     if source in {"cbre", "colliers"}:
-        from cre_cbre_partial_custody import prepare
+        from cre_partial_page_custody import prepare
         partial_state = prepare(run_dir, attempt_number, source)
     attempt = {
         "number": attempt_number,
@@ -4059,7 +4059,7 @@ def _finalize_cohort_collection(
         os.replace(item.tmp_artifact, canonical)
         make_private_artifact(canonical)
         if item.source in {"cbre", "colliers"}:
-            settle_cbre_partial(run_dir, item.attempt, canonical, item.source)
+            settle_partial_pages(run_dir, item.attempt, canonical, item.source)
         identity = canonical.stat()
         checkpoint["candidate"] = {
             "path": _relative_to_run(canonical, run_dir),
@@ -4107,7 +4107,7 @@ def _finalize_cohort_collection(
     os.replace(item.tmp_artifact, canonical)
     make_private_artifact(canonical)
     if item.source in {"cbre", "colliers"}:
-        settle_cbre_partial(run_dir, item.attempt, canonical, item.source)
+        settle_partial_pages(run_dir, item.attempt, canonical, item.source)
     stats["sha256"] = sha256_file(canonical)
     stats["bytes"] = canonical.stat().st_size
     checkpoint["artifact"] = {
@@ -4587,14 +4587,14 @@ def refuse_unsafe_source_evidence(run_dir: Path, manifest: dict, source: str, at
     save_manifest(run_dir, manifest)
 
 
-def settle_cbre_partial(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre") -> None:
+def settle_partial_pages(run_dir: Path, attempt: dict, main: Path | None, source: str = "cbre") -> None:
     """Keep large collector JSON parsing outside a pipeline coordinator."""
     if not isinstance(attempt.get(f"{source}_partial"), dict):
         return
-    from cre_cbre_partial_custody import settle
+    from cre_partial_page_custody import settle
     if main is not None and main.is_file() and artifact_compute_enabled():
         try:
-            result = run_artifact_compute(run_dir, "cbre_partial", {
+            result = run_artifact_compute(run_dir, "partial_pages", {
                 "path": str(main), "run_dir": str(run_dir), "attempt": attempt, "source": source,
             })
             state = result.get(f"{source}_partial")
@@ -4614,7 +4614,7 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
     try:
         result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
         if source in {"cbre", "colliers"}:
-            settle_cbre_partial(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
+            settle_partial_pages(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
         return result
     except ArtifactValidationError:
         refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
@@ -4962,7 +4962,7 @@ def collect_source(
             tmp_artifact.unlink(missing_ok=True)
         partial_state = None
         if source in {"cbre", "colliers"}:
-            from cre_cbre_partial_custody import prepare
+            from cre_partial_page_custody import prepare
             partial_state = prepare(run_dir, attempt_number, source)
         env, overrides = fresh_source_env(
             source,
@@ -5128,7 +5128,7 @@ def collect_source(
         os.replace(tmp_artifact, canonical)
         make_private_artifact(canonical)
         if source in {"cbre", "colliers"}:
-            settle_cbre_partial(run_dir, attempt, canonical, source)
+            settle_partial_pages(run_dir, attempt, canonical, source)
         stats["sha256"] = sha256_file(canonical)
         stats["bytes"] = canonical.stat().st_size
         checkpoint["artifact"] = {
@@ -8057,7 +8057,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 active_operation="source_collection_preflight",
             )
             if args.resume:
-                from cre_cbre_partial_custody import reconcile
+                from cre_partial_page_custody import reconcile
                 lock._require_authority()
                 reconcile(run_dir, manifest)
                 reconcile(run_dir, manifest, "colliers")

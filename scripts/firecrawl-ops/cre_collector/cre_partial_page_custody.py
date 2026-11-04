@@ -1,4 +1,4 @@
-"""CBRE attempt-local partial page custody; never authorizes a database write."""
+"""Source attempt-local partial page custody; never authorizes a database write."""
 import hashlib
 import json
 import os
@@ -8,7 +8,7 @@ from pathlib import Path
 
 def expected_path(run_dir: Path, attempt: int, source: str = "cbre") -> Path:
     if source not in {"cbre", "colliers"} or type(attempt) is not int or attempt < 1:
-        raise ValueError("invalid CBRE attempt")
+        raise ValueError("invalid partial-page attempt")
     return run_dir / f"{source}-partial" / f"attempt-{attempt}.jsonl"
 
 

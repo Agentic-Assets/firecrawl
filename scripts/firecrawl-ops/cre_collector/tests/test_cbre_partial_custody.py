@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import cre_cbre_partial_custody as custody
+import cre_partial_page_custody as custody
 import cre_checkpoint_refresh as refresh
 
 

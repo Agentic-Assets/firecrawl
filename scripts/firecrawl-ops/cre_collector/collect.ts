@@ -1,4 +1,4 @@
-import { CbrePartialSpool } from "./lib/cbre-partial-spool.js";
+import { PartialPageSpool } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
@@ -109,7 +109,7 @@ const UNSUPPORTED: Record<string, string> = {};
 // ---------- main ----------
 
 async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
-  spools: Partial<Record<"cbre" | "colliers", CbrePartialSpool>>): Promise<SourceResult> {
+  spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>>): Promise<SourceResult> {
   const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
@@ -205,13 +205,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
 
 async function main() {
   const startedAt = observationNow();
-  const spools: Partial<Record<"cbre" | "colliers", CbrePartialSpool>> = {};
+  const spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>> = {};
   const attempts: Partial<Record<"cbre" | "colliers", number>> = {};
   for (const key of ["cbre", "colliers"] as const) {
     const path = process.env[`CRE_${key.toUpperCase()}_PARTIAL_PATH`];
     const attempt = Number(process.env[`CRE_${key.toUpperCase()}_PARTIAL_ATTEMPT`]);
     if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
-      spools[key] = new CbrePartialSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
+      spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
       attempts[key] = attempt;
     }
   }
