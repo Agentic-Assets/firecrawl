@@ -395,6 +395,13 @@ Key behavior:
   remote outcomes, prove descendant settlement, and bind the exact filesystem
   state before recovery; preserve its forensic evidence and persistent authority
   inode. Recovery does not retry an apply or certify source freshness.
+- **Newmark generic detail is sparse.** Generic JSON-LD enrichment sets
+  `preserveChildCollections` for Newmark so existing children are not erased;
+  separately observed new child records remain eligible for additive insertion.
+  Empty generic output remains unadmitted. This does not establish source or
+  queue acceptance, inventory freshness, lifecycle authority, or a prior-history archive.
+  A new parent from generic or published Newmark detail stores its detail without inventing
+  an inventory observation or clock; a later admitted inventory may add both.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:

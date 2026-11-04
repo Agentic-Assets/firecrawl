@@ -78,14 +78,14 @@ test("real Colliers adapter seals recovered page evidence while remaining failed
     writeFileSync(preload, `globalThis.fetch=async (input)=>{
       const u=new URL(String(input)); if(u.hostname==='sales.colliers.com')return new Response('<html></html>');
       const start=Number(u.searchParams.get('Start')), requested=Number(u.searchParams.get('PageSize'));
-      const list=u.pathname.endsWith('GetListingsHtml'); const size=start===1?2:requested;
-      if(start!==1 && start<=4 && start+size>4)return Response.json({success:false,error:list?'Failure retrieving listing HTML.':'Failure retrieving map.'});
+      const list=u.pathname.endsWith('GetListingsHtml'); const size=requested;
+      if(start!==1 && start<=101 && start+size>101 && start!==1)return Response.json({success:false,error:list?'Failure retrieving listing HTML.':'Failure retrieving map.'});
       const ids=Array.from({length:size},(_,i)=>'P'+(start+i));
-      return Response.json(list?{success:true,total:6,totalAvail:6,numProjects:size,html:'<ul>'+ids.map(id=>'<li class="item"><a class="headline">Property '+id+'</a></li>').join('')+'</ul>'}:{success:true,projectLocations:ids.map(ProjectId=>({ProjectId,Latitude:30,Longitude:-90}))});
+      return Response.json(list?{success:true,total:203,totalAvail:203,numProjects:size,html:'<ul>'+ids.map(id=>'<li class="item"><a class="headline">Property '+id+'</a></li>').join('')+'</ul>'}:{success:true,projectLocations:ids.map(ProjectId=>({ProjectId,Latitude:30,Longitude:-90}))});
     };`);
     const run = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
-      "--source=colliers", "--transaction=both", "--max-items=6", `--out=${out}`], {
-      cwd: process.cwd(), encoding: "utf8", timeout: 20000,
+      "--source=colliers", "--transaction=both", "--max-items=203", `--out=${out}`], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 40000,
       env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: capture, CRE_COLLIERS_PARTIAL_ATTEMPT: "1",
         CRE_REFRESH_GENERATION: dir.split("/").at(-1)! },
     });
@@ -95,8 +95,21 @@ test("real Colliers adapter seals recovered page evidence while remaining failed
     assert.match(failed.error, /success=false/);
     assert.equal(failed.partialCapture.outcome, "source_error");
     const rows = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
-    assert.equal(rows.filter(row => row.kind === "parsed_page").length, 3);
-    assert.deepEqual(rows.filter(row => row.kind === "recovery_hole").map(row => [row.start, row.pageSize, row.reason]), [[4, 1, "provider_failure"]]);
-    assert.ok(rows.some(row => row.kind === "unqualified_response_pair" && row.start === 4 && row.pageSize === 1));
+    assert.equal(rows.filter(row => row.kind === "parsed_page").reduce((n, row) => n + row.documents.length, 0), 202);
+    assert.ok(rows.some(row => row.kind === "parsed_page" && row.start === 201 && row.documents.length === 3));
+    assert.deepEqual(rows.filter(row => row.kind === "recovery_hole").map(row => [row.start, row.pageSize, row.reason]), [[101, 1, "provider_failure"]]);
+    assert.ok(rows.some(row => row.kind === "unqualified_response_pair" && row.start === 101 && row.pageSize === 1));
+    const limitedCapture = join(captureDir, "attempt-2.jsonl"), limitedOut = join(dir, "limited.json");
+    const limited = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
+      "--source=colliers", "--transaction=both", "--max-items=203", "--page-cap=2", `--out=${limitedOut}`], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 40000,
+      env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: limitedCapture, CRE_COLLIERS_PARTIAL_ATTEMPT: "2",
+        CRE_REFRESH_GENERATION: dir.split("/").at(-1)! },
+    });
+    assert.equal(limited.status, 1, limited.stderr);
+    const limitedRows = readFileSync(limitedCapture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(limitedRows.some(row => row.kind === "recovery_hole" && row.start === 201
+      && row.pageSize === 3 && row.reason === "page_cap"));
+    assert.ok(!limitedRows.some(row => row.kind === "parsed_page" && row.start === 201));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
