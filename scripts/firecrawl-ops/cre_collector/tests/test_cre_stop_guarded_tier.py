@@ -578,3 +578,25 @@ def test_real_private_owner_cooperative_stop_and_concurrent_requests(
             # This test is the actual parent of this unreaped synthetic owner.
             owner.kill()
         owner.communicate(timeout=3)
+
+@pytest.mark.parametrize(("status", "worker_rc"), [("partial", 20), ("failed", 21)])
+def test_settled_partial_enrichment_racing_stop_is_not_unknown_or_fenced(fake_owner, tmp_path, monkeypatch, status, worker_rc):
+    _owner, _running, terminal, _state = fake_owner
+    terminal.update(status=status, recovery_clear_eligible=True,
+                    canonical_enrichment={"state": status, "returncode": worker_rc})
+    monkeypatch.setattr(stop, "_authority", lambda _: pytest.fail("settled outcome has no retained fence"))
+    rc, result = invoke_stop(tmp_path)
+    assert rc == 0
+    assert result["outcome"] == status
+    assert result["terminal_status"] == status
+    assert result["local_settlement"] == "confirmed"
+
+
+@pytest.mark.parametrize("field", ["recovery_clear_eligible", "canonical_enrichment"])
+def test_settled_partial_stop_requires_durable_completion_evidence(fake_owner, tmp_path, field):
+    _owner, _running, terminal, _state = fake_owner
+    terminal.update(status="partial", recovery_clear_eligible=True,
+                    canonical_enrichment={"state": "partial", "returncode": 20})
+    del terminal[field]
+    rc, result = invoke_stop(tmp_path)
+    assert rc == 2 and result["outcome"] == "stop_outcome_unverified"

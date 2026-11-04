@@ -33,7 +33,7 @@ def test_observation_only_never_ingests_or_completes_claim(monkeypatch, tmp_path
     claims = [("11111111-1111-1111-1111-111111111111", "svn", "one",
                "https://example.test/property/0", "new", "0")]
     calls = _wire_run(monkeypatch, tmp_path, claimed=claims, write_enriched=artifact())
-    assert cre_enrich.run(_Args()) == 0
+    assert cre_enrich.run(_Args()) == 21
     assert calls["ingest_called"] is False
     assert all("DELETE FROM credeals.cre_enrichment_queue" not in sql for sql in calls["exec_sql"])
     assert any("attempts = attempts + 1" in sql for sql in calls["exec_sql"])
@@ -55,7 +55,7 @@ def test_mixed_artifact_completes_only_exact_emitted_listing_url(monkeypatch, tm
                "https://example.test/property/1", "new", "0")]
     payload = artifact([{"sourceKey": "svn", "url": claims[0][3], "description": "synthetic detail"}])
     calls = _wire_run(monkeypatch, tmp_path, claimed=claims, write_enriched=payload)
-    assert cre_enrich.run(_Args()) == 0 and calls["ingest_called"] is True
+    assert cre_enrich.run(_Args()) == 20 and calls["ingest_called"] is True
     done = next(sql for sql in calls["exec_sql"] if "DELETE FROM credeals.cre_enrichment_queue" in sql)
     assert claims[0][0] in done and claims[1][0] not in done
     retry = next(sql for sql in calls["exec_sql"] if "attempts = attempts + 1" in sql)
@@ -72,7 +72,7 @@ def test_generic_thin_row_is_excluded_from_ingest_and_completion(monkeypatch, tm
     useful = {"sourceKey": "svn", "url": claims[1][3], "genericEnrich": {"hadJsonLd": True}, "latitude": 0}
     payload = artifact([thin, useful])
     calls = _wire_run(monkeypatch, tmp_path, claimed=claims, write_enriched=payload)
-    assert cre_enrich.run(_Args()) == 0 and calls["ingest_called"] is True
+    assert cre_enrich.run(_Args()) == 20 and calls["ingest_called"] is True
     assert calls["ingest_argv"][calls["ingest_argv"].index("--in") + 1] == calls["collect_out_path"]
     assert cre_enrich.validate_enriched_artifact(
         [{"url": row[3], "source_key": row[1]} for row in claims], payload) == [useful]

@@ -720,3 +720,21 @@ tier.run_guarded_tier(args, _lock_path=Path({str(tmp_path / "private.lock")!r}),
             parent.kill()
             parent.wait(timeout=5)
         parent.stderr.close()
+
+@pytest.mark.parametrize(("worker_rc", "state"), [(20, "partial"), (21, "failed")])
+def test_settled_enrichment_partial_or_failed_is_visible_without_recovery_fence(tmp_path, monkeypatch, worker_rc, state):
+    monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
+    rc = execute(options(apply=True), tmp_path, _runner=lambda *_a, **_kw: worker_rc)
+    doc = receipt(tmp_path)
+    assert rc == worker_rc
+    assert doc["canonical_enrichment"]["state"] == state
+    assert doc["status"] == state
+    assert doc["local_settlement"]["state"] == "confirmed"
+    assert_released(tmp_path)
+
+
+def test_unrecognized_enrichment_failure_still_requires_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
+    assert execute(options(apply=True), tmp_path, _runner=lambda *_a, **_kw: 2) == 1
+    assert receipt(tmp_path)["status"] == "failed_recovery_required"
+    assert_fenced(tmp_path)

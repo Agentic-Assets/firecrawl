@@ -229,7 +229,7 @@ def test_empty_matthews_batch_has_no_ingest_and_retains_retry_accounting(
         enrich.run(
             SimpleNamespace(batch=1, source="matthews", dry_run=False, env_file=None)
         )
-        == 0
+        == 21
     )
     assert any("attempts = attempts + 1" in sql for sql in writes)
     assert not any("DELETE FROM" in sql for sql in writes)
