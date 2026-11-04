@@ -488,6 +488,14 @@ function Get-CreVerifiedSummary {
             if ($subsetKeys.Count -gt 0 -and (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
                 -not ($summary.windows_admission_unix_ms -is [int] -or $summary.windows_admission_unix_ms -is [long]))) { return $null }
             if (($declaredSubsetKeys -join ',') -cne ($subsetKeys -join ',')) { return $null }
+            if ($null -ne $summary.PSObject.Properties['unverifiable_source_keys']) {
+                if ($summary.unverifiable_source_keys -isnot [array]) { return $null }
+                $unverifiableKeys = @($summary.unverifiable_source_keys)
+                if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
+                foreach ($key in $unverifiableKeys) {
+                    if ($key -cne 'jll-investor' -or @($summary.failed_source_keys) -cnotcontains $key) { return $null }
+                }
+            }
             $partition = @($verifiedKeys) + @($summary.failed_source_keys) + @($summary.pending_source_keys)
             if (@($partition | Sort-Object -Unique).Count -ne $partition.Count -or
                 (($partition | Sort-Object) -join ',') -cne (($selectedSourceKeys | Sort-Object) -join ',') -or
@@ -629,7 +637,11 @@ function Get-CreNotificationText {
         $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
         foreach ($key in @($Summary.failed_source_keys | Select-Object -First 20)) {
             $broker = (Get-CreBrokerageName $key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
-            $lines += "$bullet *${broker}:* Failed; verified counts unavailable."
+            if ($null -ne $Summary.PSObject.Properties['unverifiable_source_keys'] -and @($Summary.unverifiable_source_keys) -ccontains $key) {
+                $lines += "$bullet *${broker}:* Readback could not be verified; counts unavailable. Check the local CRE audit."
+            } else {
+                $lines += "$bullet *${broker}:* Failed; verified counts unavailable."
+            }
         }
         foreach ($key in @($Summary.pending_source_keys | Select-Object -First 20)) {
             $broker = (Get-CreBrokerageName $key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')

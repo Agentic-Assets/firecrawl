@@ -1676,5 +1676,12 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tam
             child["pipeline"]["source_results"][key]["validation_sha256"] = digest
             parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
     evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    assert result["complete"] is False
+    assert result["unverifiable_source_keys"] == [source]
+    assert result["failed_source_keys"] == [source]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [setup["source2"]]
+    # A corrupted unit report is shared evidence failure and remains global.
+    validation_path.write_bytes(b"{}")
     with pytest.raises(REFUSED):
         read_pipeline(evidence, source_keys=[source, setup["source2"]])

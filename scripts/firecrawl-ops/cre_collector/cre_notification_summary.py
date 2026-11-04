@@ -987,6 +987,7 @@ def verified_pipeline_summary(
         qualified = []
         failed = []
         pending = []
+        unverifiable = []
         validated_units = {}
         total_validation_bytes = 0
         for source in selected_sources:
@@ -1057,7 +1058,7 @@ def verified_pipeline_summary(
             require(
                 interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
-                    or (source == "jll-investor" and __import__("cre_checkpoint_series").jll_partial_child(child))) else "complete")
+                    or (source == "jll-investor" and (checkpoint.get("artifact") or {}).get("jll_partial") is True)) else "complete")
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1114,11 +1115,14 @@ def verified_pipeline_summary(
             require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
             artifact, readback = checkpoint["artifact"], checkpoint["readback"]
             if source == "jll-investor" and artifact.get("jll_partial") is True:
-                from cre_checkpoint_series import _pipeline_member_report_matches
+                from cre_checkpoint_series import _pipeline_member_report_matches, jll_partial_child
 
-                require(_pipeline_member_report_matches(
+                if not (jll_partial_child(child) and _pipeline_member_report_matches(
                     validated_units[unit_id], checkpoint, source, run_id
-                ))
+                )):
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
             count = readback["expected_staged_unique"]
             artifact_sha = artifact.get("sha256")
             artifact_bytes = artifact.get("bytes")
@@ -1287,6 +1291,7 @@ def verified_pipeline_summary(
             "per_source_summaries": result_rows,
             "qualified_subset_source_keys": qualified_subset_sources,
             "failed_source_keys": failed_sources,
+            "unverifiable_source_keys": [s for s in selected_sources if s in set(unverifiable)],
             "pending_source_keys": pending_sources,
             "complete": complete,
             "local_settlement": "confirmed",
