@@ -1,4 +1,4 @@
-import { PartialPageSpool } from "./lib/partial-page-spool.js";
+import { PARTIAL_PAGE_SOURCES, PartialPageSpool, partialPageEnvName, type PartialPageSource } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
@@ -109,7 +109,7 @@ const UNSUPPORTED: Record<string, string> = {};
 // ---------- main ----------
 
 async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
-  spools: Partial<Record<"cbre" | "colliers" | "avison-young", PartialPageSpool>>): Promise<SourceResult> {
+  spools: Partial<Record<PartialPageSource, PartialPageSpool>>): Promise<SourceResult> {
   const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
@@ -223,11 +223,11 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
 
 async function main() {
   const startedAt = observationNow();
-  const spools: Partial<Record<"cbre" | "colliers" | "avison-young", PartialPageSpool>> = {};
-  const attempts: Partial<Record<"cbre" | "colliers" | "avison-young", number>> = {};
-  for (const key of ["cbre", "colliers", "avison-young"] as const) {
-    const path = process.env[`CRE_${key.toUpperCase().replaceAll("-", "_")}_PARTIAL_PATH`];
-    const attempt = Number(process.env[`CRE_${key.toUpperCase().replaceAll("-", "_")}_PARTIAL_ATTEMPT`]);
+  const spools: Partial<Record<PartialPageSource, PartialPageSpool>> = {};
+  const attempts: Partial<Record<PartialPageSource, number>> = {};
+  for (const key of PARTIAL_PAGE_SOURCES) {
+    const path = process.env[partialPageEnvName(key, "PATH")];
+    const attempt = Number(process.env[partialPageEnvName(key, "ATTEMPT")]);
     if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
       spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
       attempts[key] = attempt;
@@ -352,7 +352,7 @@ async function main() {
 
   let partialCaptureAttached = false;
   let partialSourceFailed = false;
-  for (const key of ["cbre", "colliers", "avison-young"] as const) {
+  for (const key of PARTIAL_PAGE_SOURCES) {
     const spool = spools[key];
     if (!spool) continue;
     const receipt = spool.finish();

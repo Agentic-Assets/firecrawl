@@ -6,8 +6,17 @@ import stat
 from pathlib import Path
 
 
+PARTIAL_PAGE_SOURCES = ("cbre", "colliers", "avison-young")
+
+
+def partial_env_name(source: str, field: str) -> str:
+    if source not in PARTIAL_PAGE_SOURCES or field not in {"PATH", "ATTEMPT"}:
+        raise ValueError("invalid partial-page environment key")
+    return f"CRE_{source.upper().replace('-', '_')}_PARTIAL_{field}"
+
+
 def expected_path(run_dir: Path, attempt: int, source: str = "cbre") -> Path:
-    if source not in {"cbre", "colliers", "avison-young"} or type(attempt) is not int or attempt < 1:
+    if source not in PARTIAL_PAGE_SOURCES or type(attempt) is not int or attempt < 1:
         raise ValueError("invalid partial-page attempt")
     return run_dir / f"{source}-partial" / f"attempt-{attempt}.jsonl"
 

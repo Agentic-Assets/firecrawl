@@ -3,6 +3,13 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, statfsSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
+export const PARTIAL_PAGE_SOURCES = ["cbre", "colliers", "avison-young"] as const;
+export type PartialPageSource = (typeof PARTIAL_PAGE_SOURCES)[number];
+
+export function partialPageEnvName(source: PartialPageSource, field: "PATH" | "ATTEMPT"): string {
+  return `CRE_${source.toUpperCase().replaceAll("-", "_")}_PARTIAL_${field}`;
+}
+
 export type PartialPageObservation = {
   transaction: "sale" | "lease";
   pass: number;
@@ -35,7 +42,7 @@ export class PartialPageSpool {
       sync: (fd: number) => void;
     } = { write: (fd, buffer, offset, length) => writeSync(fd, buffer, offset, length),
       sync: (fd) => fsyncSync(fd) },
-    readonly sourceKey: "cbre" | "colliers" | "avison-young" = "cbre",
+    readonly sourceKey: PartialPageSource = "cbre",
   ) {
     try {
       const directory = lstatSync(dirname(path));
