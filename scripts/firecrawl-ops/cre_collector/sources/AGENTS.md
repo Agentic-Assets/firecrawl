@@ -1300,3 +1300,15 @@ requires an explicit USD currency field and a compatible symbol. The staging
 per-square-foot fallback respects that currency basis for these new source
 facts; legacy records keep their existing behavior. This does not establish
 publisher UI visibility, source authorization, or full detail completeness.
+
+Franklin Street's full sale collection may retain one source-owned sale-page
+observation after a thrown Buildout sale failure. It preserves decoded HTML,
+card occurrences, parsed attributes and serialized card HTML with the page
+URL, observation time and SHA-256 of the decoded UTF-8 HTML. The 8 MiB page limit, HTTP/content-type
+checks and 15-second deadline bound acquisition; failed capture leaves the
+original Buildout error unchanged when response cleanup settles. Unsettled
+cleanup remains a terminal capture failure. The page is partial with unknown completeness
+and is not an identity crosswalk, lease inventory or canonical listing input.
+The collector preserves the source error and normally archives the rejected
+attempt under its checkpoint run; no database storage is implied. Serialization
+can expand the output beyond separate evidence-store limits.

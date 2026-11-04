@@ -1,3 +1,4 @@
+import { collectFranklinWithEvidence } from "./franklin-street-evidence.js";
 import { srcBuildout, BuildoutInventoryOpts, BUILDOUT_STABLE_INVENTORY_SORT } from "./buildout.js";
 import { SourceResult, Tx } from "../types.js";
 import { buildoutFeedFor } from "./buildout-feeds/index.js";
@@ -31,5 +32,5 @@ export function franklinStreetBuildoutConfig(tx: Tx): {
 
 export async function srcFranklinStreet(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const cfg = franklinStreetBuildoutConfig(tx);
-  return srcBuildout(cfg.company, cfg.pluginKey, cfg.listingsPage, tx, max, monitor, cfg.opts);
+  return collectFranklinWithEvidence(tx, monitor, () => srcBuildout(cfg.company, cfg.pluginKey, cfg.listingsPage, tx, max, monitor, cfg.opts));
 }
