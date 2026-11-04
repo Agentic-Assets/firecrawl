@@ -181,3 +181,14 @@ def test_current_transition_separates_true_noops_from_replacements(images):
     after[0]["started_at"] = "changed"
     with pytest.raises(HandoffError, match="configuration drifted"):
         qualify_current_image_transition(before, after, expected)
+
+
+def test_current_transition_reports_settled_unhealthy_service_without_changing_legacy(images):
+    from cre_runtime_maintenance_images import qualify_current_image_transition
+
+    before, after, expected = images
+    after[0]["status"] = "exited"
+    with pytest.raises(HandoffError, match="not running"):
+        validator()(before, after, expected)
+    result = qualify_current_image_transition(before, after, expected)
+    assert result == {"unchanged": [], "replaced": ["api", "playwright-service"]}

@@ -111,7 +111,7 @@ def _transition_fleet(before, after):
     require(len(old) == 5 and set(old) == set(new), "container service fleet differs")
     fields = {"service", "id", "image", "started_at", "config_sha256", "restart_policy", "status"}
     for row in [*old.values(), *new.values()]:
-        require(set(row) == fields and row["status"] == "running"
+        require(set(row) == fields
                 and all(isinstance(row[field], str) and row[field] for field in fields)
                 and re.fullmatch(r"[0-9a-f]{64}", row["config_sha256"]),
                 "container observation malformed")
@@ -121,6 +121,8 @@ def _transition_fleet(before, after):
 def qualify_image_transition(before, after, expected_images, *, expected_after_config=None):
     """Compare to old settings or a separately qualified expected after-config."""
     old, new = _transition_fleet(before, after)
+    require(all(row["status"] == "running" for row in [*old.values(), *new.values()]),
+            "container fleet is not running")
     _qualify_replaced_images(old, new, expected_images, expected_after_config)
 
 
@@ -154,6 +156,10 @@ def qualify_current_image_transition(before, after, expected_images, *, expected
             and isinstance(expected_images, dict) and expected_images
             and set(expected_images) <= {"api", "playwright-service", "nuq-postgres"},
             "image fleet or affected scope differs")
+    require(all(row["status"] == "running" for row in old.values()),
+            "initial container fleet is not running")
+    require(all(new[name]["status"] in {"running", "exited", "restarting", "created", "dead"}
+                for name in expected_images), "affected container state is uncertain")
     expected_config = {} if expected_after_config is None else expected_after_config
     require(isinstance(expected_config, dict) and set(expected_config) <= set(expected_images),
             "invalid expected after-config scope")
