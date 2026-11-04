@@ -392,8 +392,12 @@ async function main() {
   const json = JSON.stringify(out);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
-  const franklinFallback = requestedSources.length === 1 && requestedSources[0] === "franklin-street" &&
-    sources.some(source => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  const franklinFallback = sources.some(source => source.sourceKey === "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !sources.some(source => source.sourceKey !== "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !listings.some(listing => listing.sourceKey !== "franklin-street" &&
+      (listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention));
   const writeFranklinProjection = () => {
     let sidecar = "written";
     const sidecarJson = JSON.stringify({ ...out, runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_private_sidecar" } });
@@ -406,8 +410,16 @@ async function main() {
     const projection = {
       ...out,
       runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_sidecar_projection", franklinSidecar: sidecar },
-      sources: sources.map(({ retainedObservations, ...source }) => source),
-      listings: listings.map(({ rawBuildout, buildoutRawRetention, ...listing }) => listing),
+      sources: sources.map(source => {
+        if (source.sourceKey !== "franklin-street") return source;
+        const { retainedObservations, ...projection } = source;
+        return projection;
+      }),
+      listings: listings.map(listing => {
+        if (listing.sourceKey !== "franklin-street") return listing;
+        const { rawBuildout, buildoutRawRetention, ...projection } = listing;
+        return projection;
+      }),
     };
     writeCollectorArtifact(OUT_PATH, JSON.stringify(projection), false);
   };
