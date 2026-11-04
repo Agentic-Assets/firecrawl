@@ -394,6 +394,7 @@ export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "
   schema: "daum-verified-subset-v1";
   kind: "verified_subset_with_holds";
   cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, DaumTenureProof]>;
+  retainedUnknownTenure?: string[];
   // Complete URL-sorted cohort partition: only unknown/unknown may be held.
   held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
   // Audit-only parsed cards from new producers, never listing authority.

@@ -272,3 +272,15 @@ def test_actual_cli_nondefault_policy_without_optin_refuses_before_dispatch(
     assert result.returncode != 0
     assert "Current-inventory admission evidence is incomplete or drifted" in result.stderr
     assert list(tmp_path.iterdir()) == []
+
+
+def test_historical_v2_without_retained_unknown_field_still_admits(v2):
+    import test_essex_current_inventory as helpers
+    from test_daum_verified_subset import admit
+
+    for entry in v2[2]["sources"]:
+        entry["currentInventoryProof"].pop("retainedUnknownTenure")
+    helpers.refresh(v2[1], v2[2], v2[3])
+    binding = admit(v2)
+    assert binding["held_count"] == 1
+    assert "retained_unknown_tenure_count" not in binding

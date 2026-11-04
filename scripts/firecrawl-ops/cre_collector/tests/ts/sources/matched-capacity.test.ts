@@ -14,6 +14,7 @@ import {
 } from "../../../sources/matched-capacity.js";
 import { executeMatchedWorker, prepareMarcusInventory, prepareJllInventory, readWorkerInput, writeWorkerOutput, verifyInventory } from "../../../sources/matched-capacity-worker.js";
 import { jllCohortSha256 } from "../../../sources/jll-direct-benchmark.js";
+import { observationNow } from "../../../lib/observation-clock.js";
 
 const context = {
   runtimeSnapshot: { project: "synthetic-owned", apiCpuCores: 2, browserCpuCores: 2,
@@ -32,7 +33,7 @@ function cohort(source: MatchedSource = "marcus-millichap"): MatchedCohort {
   }) };
 }
 function detail(member: MatchedMember, generationId: string): CapturedDetail {
-  return { listing: { ...member.baseRow, detailObservedAt: new Date().toISOString(),
+  return { listing: { ...member.baseRow, detailObservedAt: observationNow(),
     freshnessProvenance: { generationId, cacheDisposition: "live", detailScope: "detail_page", method: "real_source" },
     photos: ["https://images.example/image.jpg"],
     documents: [{ url: "https://docs.example/om.pdf", docType: "om" }],
