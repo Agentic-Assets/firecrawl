@@ -11,7 +11,7 @@ export type PartialPageObservation = {
   documents: unknown[];
   start?: number;
   pageSize?: number;
-  kind?: "unqualified_response_pair" | "recovery_hole";
+  kind?: "unqualified_response_pair" | "recovery_hole" | "validated_detail";
   reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped";
   pairAttempt?: number;
 };
@@ -35,7 +35,7 @@ export class PartialPageSpool {
       sync: (fd: number) => void;
     } = { write: (fd, buffer, offset, length) => writeSync(fd, buffer, offset, length),
       sync: (fd) => fsyncSync(fd) },
-    readonly sourceKey: "cbre" | "colliers" = "cbre",
+    readonly sourceKey: "cbre" | "colliers" | "avison-young" = "cbre",
   ) {
     try {
       const directory = lstatSync(dirname(path));

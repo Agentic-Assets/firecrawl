@@ -2637,10 +2637,11 @@ def fresh_source_env(
             overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
     for name in ("CRE_CBRE_PARTIAL_PATH", "CRE_CBRE_PARTIAL_ATTEMPT",
-                 "CRE_COLLIERS_PARTIAL_PATH", "CRE_COLLIERS_PARTIAL_ATTEMPT"):
+                 "CRE_COLLIERS_PARTIAL_PATH", "CRE_COLLIERS_PARTIAL_ATTEMPT",
+                 "CRE_AVISON_YOUNG_PARTIAL_PATH", "CRE_AVISON_YOUNG_PARTIAL_ATTEMPT"):
         if name in env:
             clear(name)
-    if source in {"cbre", "colliers"}:
+    if source in {"cbre", "colliers", "avison-young"}:
         from cre_partial_page_custody import expected_path
         partial = expected_path(run_dir, attempt_number, source)
         try:
@@ -2648,8 +2649,8 @@ def fresh_source_env(
             if (stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
                     and stat.S_IMODE(directory.st_mode) == 0o700
                     and not os.path.lexists(partial)):
-                set_value(f"CRE_{source.upper()}_PARTIAL_PATH", str(partial))
-                set_value(f"CRE_{source.upper()}_PARTIAL_ATTEMPT", str(attempt_number))
+                set_value(f"CRE_{source.upper().replace('-', '_')}_PARTIAL_PATH", str(partial))
+                set_value(f"CRE_{source.upper().replace('-', '_')}_PARTIAL_ATTEMPT", str(attempt_number))
         except OSError:
             pass
 
@@ -3829,7 +3830,7 @@ def _cohort_attempt(
     else:
         tmp_artifact.unlink(missing_ok=True)
     partial_state = None
-    if source in {"cbre", "colliers"}:
+    if source in {"cbre", "colliers", "avison-young"}:
         from cre_partial_page_custody import prepare
         partial_state = prepare(run_dir, attempt_number, source)
     attempt = {
@@ -4069,7 +4070,7 @@ def _finalize_cohort_collection(
         canonical = run_dir / "sources" / f"{item.source}.json"
         os.replace(item.tmp_artifact, canonical)
         make_private_artifact(canonical)
-        if item.source in {"cbre", "colliers"}:
+        if item.source in {"cbre", "colliers", "avison-young"}:
             settle_partial_pages(run_dir, item.attempt, canonical, item.source)
         identity = canonical.stat()
         checkpoint["candidate"] = {
@@ -4117,7 +4118,7 @@ def _finalize_cohort_collection(
     canonical = run_dir / "sources" / f"{item.source}.json"
     os.replace(item.tmp_artifact, canonical)
     make_private_artifact(canonical)
-    if item.source in {"cbre", "colliers"}:
+    if item.source in {"cbre", "colliers", "avison-young"}:
         settle_partial_pages(run_dir, item.attempt, canonical, item.source)
     stats["sha256"] = sha256_file(canonical)
     stats["bytes"] = canonical.stat().st_size
@@ -4624,7 +4625,7 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
                                    source: str, attempt: dict) -> tuple[str | None, str | None]:
     try:
         result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
-        if source in {"cbre", "colliers"}:
+        if source in {"cbre", "colliers", "avison-young"}:
             settle_partial_pages(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
         return result
     except ArtifactValidationError:
@@ -4972,7 +4973,7 @@ def collect_source(
         else:
             tmp_artifact.unlink(missing_ok=True)
         partial_state = None
-        if source in {"cbre", "colliers"}:
+        if source in {"cbre", "colliers", "avison-young"}:
             from cre_partial_page_custody import prepare
             partial_state = prepare(run_dir, attempt_number, source)
         env, overrides = fresh_source_env(
@@ -5138,7 +5139,7 @@ def collect_source(
             return None
         os.replace(tmp_artifact, canonical)
         make_private_artifact(canonical)
-        if source in {"cbre", "colliers"}:
+        if source in {"cbre", "colliers", "avison-young"}:
             settle_partial_pages(run_dir, attempt, canonical, source)
         stats["sha256"] = sha256_file(canonical)
         stats["bytes"] = canonical.stat().st_size
@@ -8072,6 +8073,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lock._require_authority()
                 reconcile(run_dir, manifest)
                 reconcile(run_dir, manifest, "colliers")
+                reconcile(run_dir, manifest, "avison-young")
                 save_manifest(run_dir, manifest)
                 lock._require_authority()
             if args.resume and automatic_source_evidence is not None and not args.pipeline:

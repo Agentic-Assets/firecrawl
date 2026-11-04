@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def expected_path(run_dir: Path, attempt: int, source: str = "cbre") -> Path:
-    if source not in {"cbre", "colliers"} or type(attempt) is not int or attempt < 1:
+    if source not in {"cbre", "colliers", "avison-young"} or type(attempt) is not int or attempt < 1:
         raise ValueError("invalid partial-page attempt")
     return run_dir / f"{source}-partial" / f"attempt-{attempt}.jsonl"
 
