@@ -470,6 +470,43 @@ console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)
             assert child_ids(first_id) == old_children
             assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='" + first_id + "';") == "active|sale"
             assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='" + first_id + "';") == "1"
+        # Real published-detail producer, with injected sanitized page and no network.
+        published_mapper = """import {createNewmarkPublishedDetailEnricher} from './sources/newmark-published-enrich.ts';
+const f=value=>({state:'value',value}), missing={state:'missing'};
+const item={sourceKey:'newmark',externalId:'published-real',url:'https://www.nmrk.com/properties/published-real',
+ sourcePublishedDetail:{status:'observed',schema:'newmark-nim-link-witness/v1',sourceKey:'newmark',
+ sourcePath:'raw_data.rawNewmarkNimRecord',recordId:'native-id',slug:'published-real',
+ url:'https://my.rcm1.com/handler/modern.aspx?pv=opaque',inventoryObservedAt:null,
+ sourceName:f('Example Property'),sourceProperty:{selection:'single',fields:{address:f('10 Main Street'),
+ city:f('Example'),stateAbbreviation:f('FL'),stateDescription:missing,zip:f('12345'),countryCode:missing}}}};
+const data={name:'Example Property',addresses:{street:'10 Main Street',city:'Example',state:'FL',zip:'12345'},
+ photos:[{type:'image',imageUrl:'/image.jpg'}]};
+const e=createNewmarkPublishedDetailEnricher(async()=>({rawHtml:'<script>var data = '+JSON.stringify(data)+'</script>',
+ markdown:'',links:[],metadata:{statusCode:200}}),()=> '2026-11-04T00:16:00Z');
+const out=await e.enrichWithEvidence([item]);
+if(out.listings.length!==1) throw Error('published producer did not emit matched detail');
+console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
+        published = json.loads(run("node", "--import", "tsx", "--input-type=module", "-e",
+                                   published_mapper, cwd=str(HERE.parent)))
+        assert published["preserveChildCollections"] is True and "genericEnrich" not in published
+        published_row = ingest.to_row(published, {}, "2026-11-04T00:16:00Z")
+        sql(ingest.build_sql([published_row], nm_job, "2026-11-04T00:16:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", "published-real")}))
+        published_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='published-real';"))
+        assert "inventoryObservedAt" not in published_raw and "latestInventoryObservation" not in published_raw
+        assert len(child_ids("published-real")["images"]) == 1
+        assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') FROM credeals.cre_listings WHERE external_id='published-real';") == "<null>|<null>"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='published-real';") == "0"
+        published_children = child_ids("published-real")
+        inventory = ingest.to_row({"sourceKey": "newmark", "id": "published-real", "url": published["url"],
+            "name": "Published later inventory", "transactionMode": "sale",
+            "preserveChildCollections": True}, {}, "2026-11-04T00:17:00Z")
+        sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:17:00Z", set()))
+        published_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='published-real';"))
+        assert published_raw["latestInventoryObservation"]["name"] == "Published later inventory"
+        assert child_ids("published-real") == published_children
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='published-real';") == "active|sale"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='published-real';") == "1"
         print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")
         print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
