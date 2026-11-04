@@ -1304,3 +1304,22 @@ requires an explicit USD currency field and a compatible symbol. The staging
 per-square-foot fallback respects that currency basis for these new source
 facts; legacy records keep their existing behavior. This does not establish
 publisher UI visibility, source authorization, or full detail completeness.
+
+Franklin Street's full sale collection may retain one source-owned sale-page
+observation after a thrown Buildout sale failure. It preserves decoded HTML,
+card occurrences, parsed attributes and serialized card HTML with the page
+URL, observation time and SHA-256 of the decoded UTF-8 HTML. The 8 MiB page limit, HTTP/content-type
+checks and 15-second deadline bound acquisition; failed capture leaves the
+original Buildout error unchanged when response cleanup settles. Unsettled
+cleanup remains a terminal capture failure. The page is partial with unknown completeness
+and is not an identity crosswalk, lease inventory or canonical listing input.
+The collector preserves the source error and normally archives the rejected
+attempt under its checkpoint run; no database storage is implied. Serialization
+can expand the output beyond separate evidence-store limits.
+For a Franklin-only fallback with stdout, or a fallback with an existing output
+file where all private content is Franklin's, the full private artifact goes to a uniquely created private sidecar whose path is
+reported on stderr. The ordinary output is an evidence-only projection that
+omits Franklin observations and Buildout raw-retention fields. If sidecar
+publication fails, the projection remains available and the process exits
+nonzero. Fresh output files and runs with other sources' private data keep the
+normal private artifact path.

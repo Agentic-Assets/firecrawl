@@ -1,3 +1,4 @@
+import { PartialPageSpool } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
@@ -107,7 +108,9 @@ const UNSUPPORTED: Record<string, string> = {};
 
 // ---------- main ----------
 
-async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
+  spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>>): Promise<SourceResult> {
+  const cbreSpool = spools.cbre;
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
     return srcBuildout(
@@ -122,7 +125,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
   }
   switch (key) {
     case "cbre":
-      return srcCbre(tx, max, monitor);
+      return srcCbre(tx, max, monitor, cbreSpool
+        ? (page, pass, documents) => {
+            try { cbreSpool.record({ transaction: tx, page, pass,
+              observedAt: observationNow(), documents }); }
+            catch { cbreSpool.markFailure(); }
+          }
+        : undefined);
     case "cbre-dealflow":
       return srcCbreDealflow(tx, max, monitor);
     case "jll":
@@ -132,7 +141,19 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
     case "cushman-wakefield":
       return srcCushman(tx, max, monitor);
     case "colliers":
-      return srcColliers(tx, max, monitor);
+      return srcColliers(tx, max, monitor, spools.colliers
+        ? (page, start, documents) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              observedAt: observationNow(), documents }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined, spools.colliers
+        ? (page, start, pairAttempt, responses) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
+              pairAttempt, kind: "unqualified_response_pair", observedAt: observationNow(), documents: [responses] }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined);
     case "colliers-main":
       return srcColliersMain(tx, max, monitor);
     case "newmark":
@@ -190,6 +211,16 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
 
 async function main() {
   const startedAt = observationNow();
+  const spools: Partial<Record<"cbre" | "colliers", PartialPageSpool>> = {};
+  const attempts: Partial<Record<"cbre" | "colliers", number>> = {};
+  for (const key of ["cbre", "colliers"] as const) {
+    const path = process.env[`CRE_${key.toUpperCase()}_PARTIAL_PATH`];
+    const attempt = Number(process.env[`CRE_${key.toUpperCase()}_PARTIAL_ATTEMPT`]);
+    if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
+      spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
+      attempts[key] = attempt;
+    }
+  }
   const sources: any[] = [];
   const listings: any[] = [];
   const avisonTerminalFailures: Array<{
@@ -218,7 +249,7 @@ async function main() {
       recordSourceStarted(key, tx);
       try {
         const res = await withPerformanceSource(key, tx, () =>
-          runSource(key, tx, MAX_ITEMS, MONITOR)
+          runSource(key, tx, MAX_ITEMS, MONITOR, spools)
         );
         const freshness = summarizeListingFreshness(res.listings);
         sources.push({
@@ -307,11 +338,28 @@ async function main() {
     }
   }
 
+  let partialCaptureAttached = false;
+  let partialSourceFailed = false;
+  for (const key of ["cbre", "colliers"] as const) {
+    const spool = spools[key];
+    if (!spool) continue;
+    const receipt = spool.finish();
+    const failed = sources.find((source) => source.sourceKey === key && source.error);
+    const source = failed ?? sources.find((entry) => entry.sourceKey === key);
+    if (source) {
+      partialCaptureAttached = true;
+      partialSourceFailed ||= Boolean(failed);
+      source.partialCapture = { ...receipt, sourceKey: key,
+        generationId: refreshGenerationId(), attempt: attempts[key],
+        path: `${key}-partial/attempt-${attempts[key]}.jsonl`,
+        coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
+    }
+  }
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
   const evidenceOnly = !MONITOR && listings.length === 0 &&
-    sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -390,13 +438,57 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+  const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
+  const franklinFallback = !partialCaptureAttached && sources.some(source => source.sourceKey === "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !sources.some(source => source.sourceKey !== "franklin-street" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+    !listings.some(listing => listing.sourceKey !== "franklin-street" &&
+      (listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention));
+  let outputCollision = false;
+  const writeFranklinProjection = () => {
+    let sidecar = "written";
+    const sidecarJson = JSON.stringify({ ...out, runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_private_sidecar" } });
+    try { console.error(`Franklin private sidecar: ${writeTerminalCollectorArtifact(undefined, sidecarJson)}`); }
+    catch {
+      sidecar = "failed";
+      console.error("Franklin private sidecar failed; private evidence was not retained");
+      process.exitCode = 1;
+    }
+    const projection = {
+      ...out,
+      runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "franklin_sidecar_projection", franklinSidecar: sidecar },
+      sources: sources.map(source => {
+        if (source.sourceKey !== "franklin-street") return source;
+        const { retainedObservations, ...projection } = source;
+        return projection;
+      }),
+      listings: listings.map(listing => {
+        if (listing.sourceKey !== "franklin-street") return listing;
+        const { rawBuildout, buildoutRawRetention, ...projection } = listing;
+        return projection;
+      }),
+    };
+    if (outputCollision) process.exitCode = 1;
+    writeCollectorArtifact(outputCollision ? undefined : OUT_PATH, JSON.stringify(projection), false);
+    if (outputCollision) console.error("existing output unchanged; Franklin projection written to stdout");
+  };
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
-  } else writeCollectorArtifact(OUT_PATH, json, privateEvidence);
-  if (OUT_PATH) {
+  } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
+  else {
+    try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
+    catch (error) {
+      if (franklinFallback && (error as NodeJS.ErrnoException).code === "EEXIST") {
+        outputCollision = true;
+        writeFranklinProjection();
+      }
+      else throw error;
+    }
+  }
+  if (OUT_PATH && !outputCollision) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }
   if (terminalCaptureFailure) process.exitCode = 1;
@@ -520,7 +612,8 @@ async function dispatch(): Promise<void> {
   try {
     const enrichInput = flags["enrich-input"];
     if (flags["observe-input"] === undefined && !enrichInput && !OUT_PATH &&
-        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || key === "newmark" || allBuildoutFeeds.some((feed) => feed.sourceKey === key))) {
+        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || key === "newmark" || allBuildoutFeeds.some((feed) => feed.sourceKey === key)) &&
+        !(requestedSources.length === 1 && requestedSources[0] === "franklin-street")) {
       throw new Error("SRS, Kidder, Newmark and Buildout collection require a private --out file");
     }
     if (enrichInput && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1" && !OUT_PATH)

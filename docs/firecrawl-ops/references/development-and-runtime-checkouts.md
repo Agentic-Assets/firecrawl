@@ -32,7 +32,11 @@ python3 -B scripts/firecrawl-ops/cre_collector/cre_reviewed_update.py --selected
 
 It checks the current task definitions, holds their existing flags under the
 shared writer lock, advances the native and WSL checkouts, repins, and restores
-the original flags. It refuses image, Compose, or dependency input changes
+the original flags. Optional enrichment tasks use the exact name
+`Enrichment - <source-key>` and are included in the same captured fleet and
+pin update. Unknown CRE tasks or invalid enrichment actions block the update.
+This naming and update support does not establish source-specific pilot or
+recurring enrichment readiness. It refuses image, Compose, or dependency input changes
 before holding tasks; those updates still need the reviewed image/dependency
 procedure. It reports existing image provenance as unknown and records bounded
 service-health observations; a temporary unavailable service does not by
