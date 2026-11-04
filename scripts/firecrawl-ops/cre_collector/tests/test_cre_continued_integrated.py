@@ -218,7 +218,7 @@ def continued_transition_case(continued_ready_case, tmp_path, monkeypatch):
     times = iter(case.now + timedelta(seconds=index) for index in range(30))
     monkeypatch.setattr(operation, 'now', lambda: next(times))
     checkpoint = SimpleNamespace(safe_process_env=dict,
-        run_command=lambda argv, log, env: (log.write_bytes(b'synthetic settled output\n') and 0))
+        _run_logged_command=lambda argv, log, env: (log.write_bytes(b'synthetic settled output\n') and 0))
     runner = operation.Foreground(case.packet, checkpoint, case.output)
     runner.native('Hold', case.release, sha(case.release_raw), case.observation, case.authorization)
     collector = operation.local_path(case.packet['roots']['runtime']) / 'scripts/firecrawl-ops/cre_collector'

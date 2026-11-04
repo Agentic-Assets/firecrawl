@@ -264,7 +264,7 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
         def clear_recovery_requirement(self): pass
     checkpoint = SimpleNamespace(SharedLock=lambda *_args, **_kwargs: Lease(),
                                  canonical_shared_lock_dir=lambda *_args: tmp_path / "lock",
-                                 safe_process_env=dict, run_command=command, COLLECTOR_DIR=collector)
+                                 safe_process_env=dict, _run_logged_command=command, COLLECTOR_DIR=collector)
     args = SimpleNamespace(release=str(case.release), maintenance_packet=str(case.release), restoration_packet=None,
                            observation=str(case.observation),
                            authorization=str(case.authorization), output=str(case.output))

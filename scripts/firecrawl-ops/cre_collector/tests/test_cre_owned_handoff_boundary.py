@@ -234,7 +234,7 @@ def test_foreground_deactivation_preserves_original_failure(tmp_path, monkeypatc
             raise RuntimeError("original native failure")
         return 0
 
-    checkpoint = SimpleNamespace(safe_process_env=dict, run_command=command)
+    checkpoint = SimpleNamespace(safe_process_env=dict, _run_logged_command=command)
     runner = handoff.Foreground({"programs": {"powershell": "/tmp/pwsh"}}, checkpoint, tmp_path,
                                 boundary=BadBoundary())
     if stage == "native":
