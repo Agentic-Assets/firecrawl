@@ -73,8 +73,16 @@ for (const sibling of ['interra-realty', 'svn'] as const) test(`mixed ${sibling}
     const child=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source',`franklin-street,${sibling}`,'--transaction','both','--max-items','0','--out',output],{cwd:process.cwd(),encoding:'utf8',timeout:20000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
     if(sibling==='svn') {
       assert.equal(child.status,1,child.stderr);
+      assert.match(child.stderr,/svn\/sale: 1 listings/,child.stderr);
+      assert.match(child.stderr,/EEXIST/,child.stderr);
       assert.equal(readFileSync(output,'utf8'),'previous');
       assert.doesNotMatch(child.stderr,/Franklin private sidecar:/);
+      const fresh=join(dir,'private-fresh.json');
+      const proof=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source','franklin-street,svn','--transaction','both','--max-items','0','--out',fresh],{cwd:process.cwd(),encoding:'utf8',timeout:20000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
+      assert.equal(proof.status,0,proof.stderr);
+      const listing=JSON.parse(readFileSync(fresh,'utf8')).listings.find((row: any)=>row.sourceKey==='svn');
+      assert.equal(listing.rawBuildout.id,55);
+      assert.equal(listing.buildoutRawRetention.status,'complete');
       return;
     }
     assert.equal(child.status,0,child.stderr);
