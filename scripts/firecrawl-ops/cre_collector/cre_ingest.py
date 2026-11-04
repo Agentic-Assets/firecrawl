@@ -4048,6 +4048,8 @@ def build_sql(
     tw_alt_column = ", alt_text" if tw_parts else ""
     tw_alt_value = ", x->>'altText'" if tw_parts else ""
     tw_alt_update = ",\n  alt_text = incoming.x->>'altText'" if tw_parts else ""
+    tw_image_primary = "(x->>'isPrimary')::boolean" if tw_parts else "COALESCE((x->>'isPrimary')::boolean, false)"
+    tw_image_order = "(x->>'order')::integer" if tw_parts else "COALESCE((x->>'order')::integer, 0)"
     job_meta = [
         {
             **jm,
@@ -5626,8 +5628,8 @@ WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
 
 INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0){tw_alt_value}
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
@@ -5855,8 +5857,8 @@ WHERE i.listing_id = incoming.listing_id
   AND i.url = incoming.x->>'url';
 
 INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
-SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0){tw_alt_value}
+SELECT u.id, x->>'url', {tw_image_primary},
+       {tw_image_order}{tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x

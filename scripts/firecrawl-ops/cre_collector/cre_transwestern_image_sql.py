@@ -99,43 +99,50 @@ DO $$ BEGIN
 END $$;
 """
     project = r"""CREATE TEMP TABLE _tw_image_history ON COMMIT DROP AS
-SELECT p.external_id,prior.url,min(nullif(prior.alt_text,'')) AS alt_text,
-       count(DISTINCT nullif(prior.alt_text,'')) AS alt_versions
+SELECT p.external_id,prior.*,
+       row_number() OVER (PARTITION BY p.external_id,prior.url
+         ORDER BY (prior.is_primary IS TRUE) DESC,prior.image_id) AS occurrence
 FROM _tw_images_before prior JOIN _tw_image_parents_before p USING(listing_id)
-WHERE prior.staged GROUP BY p.external_id,prior.url;
+WHERE prior.staged AND NOT prior.removable;
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1 FROM _tw_images_before WHERE staged AND is_primary IS TRUE
     GROUP BY listing_id HAVING count(*)>1
   ) THEN RAISE EXCEPTION 'ambiguous Transwestern prior primaries'; END IF;
-  IF EXISTS (
-    SELECT 1 FROM _tw_image_history history JOIN _tw_image_urls USING(external_id,url)
-    WHERE history.alt_versions>1
-  ) THEN RAISE EXCEPTION 'ambiguous Transwestern useful alt text'; END IF;
 END $$;
 CREATE TEMP TABLE _tw_image_choice ON COMMIT DROP AS
 SELECT input.external_id,
   CASE WHEN input.witness IS NOT NULL THEN input.witness->>'url'
-       WHEN retained.url IS NOT NULL
-       THEN old.url ELSE NULL END AS primary_url,
+       ELSE old.url END AS primary_url,
+  old.image_id AS old_primary_id,
   CASE WHEN input.witness IS NOT NULL THEN 'current_source_primary'
-       WHEN retained.url IS NOT NULL
+       WHEN old.image_id IS NOT NULL
        THEN 'historical_primary' ELSE 'unassigned_primary' END AS primary_basis
 FROM _tw_image_input input
-LEFT JOIN _tw_image_parents_before p USING(external_id)
-LEFT JOIN _tw_images_before old ON old.listing_id=p.listing_id AND old.is_primary IS TRUE
-LEFT JOIN _tw_image_urls retained ON retained.external_id=input.external_id AND retained.url=old.url;
+LEFT JOIN _tw_image_history old ON old.external_id=input.external_id AND old.is_primary IS TRUE;
 CREATE TEMP TABLE _tw_image_projection ON COMMIT DROP AS
+WITH current_ranked AS (
+  SELECT current.*,row_number() OVER (PARTITION BY external_id,url ORDER BY display_order) AS occurrence
+  FROM _tw_image_current current
+)
 SELECT current.external_id,current.url,current.display_order,
-  (current.url=choice.primary_url AND current.display_order=urls.first_order) IS TRUE AS is_primary,
-  history.alt_text,current.original
-FROM _tw_image_current current JOIN _tw_image_choice choice USING(external_id)
-JOIN _tw_image_urls urls USING(external_id,url)
-LEFT JOIN _tw_image_history history USING(external_id,url);
+  CASE WHEN choice.primary_basis='current_source_primary'
+       THEN (current.url=choice.primary_url AND current.occurrence=1) IS TRUE
+       ELSE (history.image_id=choice.old_primary_id) IS TRUE END AS is_primary,
+  history.alt_text,current.original,0 AS sort_group,current.display_order AS sort_order
+FROM current_ranked current JOIN _tw_image_choice choice USING(external_id)
+LEFT JOIN _tw_image_history history USING(external_id,url,occurrence)
+UNION ALL
+SELECT history.external_id,history.url,history.display_order,
+  CASE WHEN choice.primary_basis='current_source_primary' THEN false ELSE history.is_primary END,
+  history.alt_text,jsonb_build_object('url',history.url),1,history.occurrence::int
+FROM _tw_image_history history JOIN _tw_image_choice choice USING(external_id)
+LEFT JOIN current_ranked current USING(external_id,url,occurrence)
+WHERE current.external_id IS NULL;
 WITH grouped AS (
   SELECT external_id,jsonb_agg(projection.original || jsonb_build_object(
     'isPrimary',projection.is_primary,'order',projection.display_order,'altText',projection.alt_text
-  ) ORDER BY projection.display_order) AS images
+  ) ORDER BY projection.sort_group,projection.sort_order,projection.url) AS images
   FROM _tw_image_projection projection GROUP BY external_id
 )
 UPDATE _src s SET images=coalesce(grouped.images,'[]'::jsonb)

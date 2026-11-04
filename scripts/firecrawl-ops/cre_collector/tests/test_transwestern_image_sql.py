@@ -95,7 +95,7 @@ def test_role_and_alt_projection_are_explicit_without_reordering_source_images()
     parts = build_parts([row()], binding())
     assert "WITH ORDINALITY" in parts["before"]
     assert "current.display_order" in parts["project"]
-    assert "ORDER BY projection.display_order" in parts["project"]
+    assert "ORDER BY projection.sort_group,projection.sort_order,projection.url" in parts["project"]
     assert "historical_primary" in parts["project"]
     assert "current_source_primary" in parts["project"]
     assert "unassigned_primary" in parts["project"]
@@ -108,9 +108,9 @@ def test_projection_groups_history_and_stage_once_instead_of_per_image_scans():
     parts = build_parts([row()], binding())
     assert parts["before"].count("jsonb_array_elements(input.images)") == 1
     assert "GROUP BY external_id,url" in parts["before"]
-    assert "GROUP BY p.external_id,prior.url" in parts["project"]
-    assert "LEFT JOIN _tw_image_history history USING(external_id,url)" in parts["project"]
-    assert "current.display_order=urls.first_order" in parts["project"]
+    assert "PARTITION BY p.external_id,prior.url" in parts["project"]
+    assert "LEFT JOIN _tw_image_history history USING(external_id,url,occurrence)" in parts["project"]
+    assert "current.occurrence=1" in parts["project"]
     assert "GROUP BY external_id" in parts["project"]
     assert "(SELECT min(" not in parts["project"]
     assert "projection.external_id=s.external_id" not in parts["project"]
