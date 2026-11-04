@@ -1055,12 +1055,17 @@ def verified_pipeline_summary(
                 pending.append(source)
                 continue
             require(state == "verified")
-            jll_partial_candidate = (source == "jll-investor"
-                                     and parent_entry.get("state") == "qualified_partial_subset")
+            source_artifact = checkpoint.get("artifact")
+            jll_partial_candidate = (
+                source == "jll-investor"
+                and (parent_entry.get("state") == "qualified_partial_subset"
+                     or (isinstance(source_artifact, dict) and source_artifact.get("jll_partial") is True))
+            )
             require(
-                interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
+                interrupted or ((jll_partial_candidate and parent_entry.get("state") in {"complete", "qualified_partial_subset"}
+                    or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
-                    or jll_partial_candidate) else "complete")
+                    or jll_partial_candidate) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1122,7 +1127,8 @@ def verified_pipeline_summary(
                     artifact, readback = checkpoint["artifact"], checkpoint["readback"]
                     count = readback["expected_staged_unique"]
                     jll_proven = (
-                        jll_partial_child(child)
+                        parent_entry.get("state") == "qualified_partial_subset"
+                        and jll_partial_child(child)
                         and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
                         and type(count) is int and 0 < count <= 500000
                         and isinstance(artifact.get("sha256"), str)
