@@ -271,6 +271,7 @@ async function main() {
           note: res.note ?? null,
           ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
           ...(res.retainedObservations !== undefined ? { retainedObservations: res.retainedObservations } : {}),
+          ...(res.jllInvestorNotFoundObservations !== undefined ? { jllInvestorNotFoundObservations: res.jllInvestorNotFoundObservations } : {}),
           freshness,
         });
         for (const l of res.listings) {
