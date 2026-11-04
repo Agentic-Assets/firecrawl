@@ -331,7 +331,7 @@ def test_verify_image_result_binds_selected_stack_and_image(monkeypatch, tmp_pat
     assert result["images"]["replaced"] == ["api"]
     plan["services"].append("playwright-service")
     plan["images"]["playwright-service"] = dict(plan["images"]["api"])
-    def mixed_observation(docker, native, services):
+    def mixed_observation(docker, native, services, override):
         assert services == {"api"}
         return copy.deepcopy(current[0])
     monkeypatch.setattr(direct, "observe_current_project", mixed_observation)
@@ -392,6 +392,7 @@ def test_equal_built_image_id_skips_new_override_and_compose(monkeypatch, tmp_pa
                      "context_sha256": "c" * 64}}
     monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(live))
     monkeypatch.setattr(direct, "build_current_images", lambda *args: copy.deepcopy(built))
+    monkeypatch.setattr(direct, "windows_path", str)
     plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {"api"}, tmp_path / "docker",
                                               tmp_path, tmp_path / "stable.yaml", tmp_path)
     assert plan["apply_services"] == [] and overlay is None
@@ -449,7 +450,7 @@ def test_selected_readiness_does_not_hide_configuration_mismatch(monkeypatch):
     def mismatch(*args):
         raise HandoffError("Compose configuration differs")
     monkeypatch.setattr(direct, "verify_image_result", mismatch)
-    with pytest.raises(HandoffError, match="Compose configuration differs"):
+    with pytest.raises(direct.SelectedImageUnready, match="transition differs"):
         direct.wait_for_selected_images({"apply_services": ["api"]}, {}, None, None, None, lambda: None)
 
 def test_selected_readiness_timeout_and_owner_loss_are_distinct(monkeypatch):
@@ -504,21 +505,21 @@ def test_original_image_verification_rejects_unaffected_and_volume_drift(monkeyp
     selected = {"sha": "a" * 40, "tree": "b" * 40}
     before = [{"service": "api", "id": "old", "image": "old-image", "status": "running",
                "config_sha256": "old-config", "restart_policy": "always", "started_at": "old-time"},
-              {"service": "nuq-postgres", "id": "nuq"}]
+              {"service": "nuq-postgres", "id": "nuq", "status": "running"}]
     restored = [{"service": "api", "id": "restored", "image": "old-image", "status": "running",
                  "config_sha256": "restored-config", "restart_policy": "always", "started_at": "new-time"},
-                {"service": "nuq-postgres", "id": "nuq"}]
+                {"service": "nuq-postgres", "id": "nuq", "status": "running"}]
     plan = {"selected": selected, "services": ["api"], "apply_services": ["api"],
             "before": before, "docker_sha256": "a", "compose_stack": {"files": ["base"]},
             "nuq_data_sha256": "volume", "compose_sha256": "config",
             "previous_images": {"api": {"ref": "old-ref", "image": "old-image"}},
-            "rollback_config": {"api": "restored-config"}}
+            "rollback_config": {"api": "restored-config"}, "override_path": "C:/override.yaml"}
     observed = {"snapshots": restored, "docker_sha256": "a", "stack": {"files": ["base"]},
                 "nuq_data_sha256": "volume", "compose_sha256": "config"}
     monkeypatch.setattr(direct, "local_path", Path)
     monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(observed))
     monkeypatch.setattr(direct, "_docker_json", lambda *args: [{"Id": "old-image"}])
-    assert direct.verify_original_images(plan, selected, "/docker", "/native") == {"restored": ["api"]}
+    assert direct.verify_original_images(plan, selected, "/docker", "/native")["restored"] == ["api"]
     observed["snapshots"][1]["id"] = "other"
     with pytest.raises(HandoffError, match="unaffected container changed"):
         direct.verify_original_images(plan, selected, "/docker", "/native")
@@ -526,3 +527,33 @@ def test_original_image_verification_rejects_unaffected_and_volume_drift(monkeyp
     observed["nuq_data_sha256"] = "other"
     with pytest.raises(HandoffError, match="original Compose configuration differs"):
         direct.verify_original_images(plan, selected, "/docker", "/native")
+
+def test_partial_fleet_allows_missing_affected_but_rejects_unrelated_drift(monkeypatch):
+    import copy
+
+    import cre_reviewed_update_images as direct
+
+    binary = b"binary"
+    before = [{"service": name, "id": name, "image": "old", "status": "running",
+               "restart_policy": "always", "config_sha256": "old-config"}
+              for name in ("api", "playwright-service", "nuq-postgres", "redis", "rabbitmq")]
+    plan = {"before": before, "apply_services": ["api"], "docker_sha256": sha(binary),
+            "nuq_data_sha256": "volume", "previous_images": {"api": {"ref": "prior", "image": "old"}},
+            "images": {"api": {"image": "new"}}, "expected_after_config": {"api": "new-config"}}
+    rows = [dict(row, Name="/firecrawl-" + row["service"] + "-1",
+                 Config={"Labels": {"com.docker.compose.project": "firecrawl",
+                                    "com.docker.compose.service": row["service"]}})
+            for row in before if row["service"] != "api"]
+    monkeypatch.setattr(direct, "local_path", Path)
+    monkeypatch.setattr(direct, "read_file", lambda path: binary)
+    monkeypatch.setattr(direct, "snapshot_container", lambda row: {k: v for k, v in row.items() if k not in {"Config", "Name"}})
+    monkeypatch.setattr(direct, "nuq_data_identity", lambda rows: "volume")
+    monkeypatch.setattr(direct, "expected_compose_stack", lambda plan: [])
+    monkeypatch.setattr(direct.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args[0], 0, stdout=b"playwright-service nuq-postgres redis rabbitmq"))
+    monkeypatch.setattr(direct, "_docker_json",
+                        lambda *args: copy.deepcopy(rows) if "inspect" in args and "image" not in args else [{"Id": "old"}])
+    direct.qualify_settled_partial_fleet(plan, "/docker", "/native", lambda: None)
+    rows[0]["status"] = "exited"
+    with pytest.raises(HandoffError, match="unrelated container changed"):
+        direct.qualify_settled_partial_fleet(plan, "/docker", "/native", lambda: None)

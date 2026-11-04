@@ -534,6 +534,7 @@ def run_source_update(
     output = Path(tempfile.mkdtemp(prefix="reviewed-update-", dir=scratch))
     image_plan = image_plan_path = overlay = None
     image_outcome = None
+    image_readiness = "not_checked"
     apply_services = set()
     if image_services:
         from cre_reviewed_update_images import prepare_image_plan
@@ -759,11 +760,13 @@ def run_source_update(
                         SelectedImageUnready,
                         expected_compose_stack,
                         install_image_override,
+                        qualify_settled_partial_fleet,
                         restore_image_override,
                         run_current_compose,
                         verify_image_result,
                         verify_original_images,
                         wait_for_selected_images,
+                        wait_for_service_readiness,
                     )
                     from cre_runtime_maintenance_steps import current_compose_argv
 
@@ -811,6 +814,7 @@ def run_source_update(
                                 image_plan, selected, docker, native, ReadOnlyLoopbackClient, owner)
                         except (ComposeCompletedFailure, SelectedImageUnready):
                             image_guard()
+                            qualify_settled_partial_fleet(image_plan, docker, native, owner)
                             restore_image_override(image_plan, owner, output)
                             old_stack = image_plan["compose_stack"]
                             rollback_args = current_compose_argv(
@@ -834,8 +838,13 @@ def run_source_update(
                                 checkpoint, owner, lease, development, control, control_sha,
                                 rollback_plan, output, powershell)
                             image_guard()
-                            verify_original_images(image_plan, selected, docker, native)
+                            original_ready = wait_for_service_readiness(
+                                image_plan, docker, native, ReadOnlyLoopbackClient, owner,
+                                lambda: verify_original_images(image_plan, selected, docker, native))
                             phase = "held-pre-advance"
+                            if original_ready is None:
+                                raise RuntimeError(
+                                    "previous images restored; endpoint readiness remains degraded")
                             raise
                     else:
                         image_outcome = verify_image_result(image_plan, selected, docker, native)
@@ -852,12 +861,22 @@ def run_source_update(
                     phase = "repin"
                     native_stage("Repin", active_plan)
                 phase = "restore"
+                if apply_services:
+                    ready = wait_for_service_readiness(
+                        image_plan, docker, native, ReadOnlyLoopbackClient, owner,
+                        lambda: verify_image_result(image_plan, selected, docker, native))
+                    image_readiness = "ready" if ready is not None else "degraded"
                 native_stage("Restore", active_plan)
                 native_stage("VerifyRestored", active_plan)
             owner()
             if image_plan is not None:
                 image_guard()
                 image_outcome = verify_image_result(image_plan, selected, docker, native)
+                if apply_services:
+                    ready = wait_for_service_readiness(
+                        image_plan, docker, native, ReadOnlyLoopbackClient, owner,
+                        lambda: verify_image_result(image_plan, selected, docker, native))
+                    image_readiness = "ready" if ready is not None else "degraded"
             final_health = observe_health()
             owner()
             lease.clear_recovery_requirement()
@@ -903,11 +922,21 @@ def run_source_update(
                         image_outcome = verify_image_result(image_plan, selected, docker, native)
                     if phase == "repin":
                         native_stage("CompleteRepin", active_plan)
+                    if apply_services:
+                        ready = wait_for_service_readiness(
+                            image_plan, docker, native, ReadOnlyLoopbackClient, owner,
+                            lambda: verify_image_result(image_plan, selected, docker, native))
+                        image_readiness = "ready" if ready is not None else "degraded"
                     native_stage("CompleteRestore", active_plan)
                     native_stage("VerifyRestored", active_plan)
                     if image_plan is not None:
                         image_guard()
                         image_outcome = verify_image_result(image_plan, selected, docker, native)
+                        if apply_services:
+                            ready = wait_for_service_readiness(
+                                image_plan, docker, native, ReadOnlyLoopbackClient, owner,
+                                lambda: verify_image_result(image_plan, selected, docker, native))
+                            image_readiness = "ready" if ready is not None else "degraded"
                     for target in targets:
                         git.clean(target["root"], selected, tracking=selected_sha)
                     owner()
@@ -933,11 +962,12 @@ def run_source_update(
                     original.add_note(f"Update phase: {phase}; logs: {output}")
                 raise
     return {
-        "status": "completed",
+        "status": "completed_with_warnings" if image_readiness == "degraded" else "completed",
         "selected": selected_sha,
         "output": str(output),
         "existing_image_provenance": "not established",
         "image_changes_applied": bool(image_outcome and image_outcome["images"]["replaced"]),
+        "image_readiness": image_readiness,
         "reviewed_images": image_plan["images"] if image_plan is not None else {},
         "reconciled_after": reconciled_after,
         "service_health_before": initial_health,

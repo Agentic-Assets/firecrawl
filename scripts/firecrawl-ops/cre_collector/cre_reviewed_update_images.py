@@ -70,7 +70,7 @@ def nuq_data_identity(containers):
     return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
-def observe_current_project(docker, native_root, services):
+def observe_current_project(docker, native_root, services, override_path=None):
     """Capture current Docker/Compose state in memory without exposing env values."""
     require(isinstance(services, set) and services and services <= {"api", "playwright-service"},
             "NuQ or unknown image update is not supported")
@@ -84,7 +84,22 @@ def observe_current_project(docker, native_root, services):
     require({row["service"] for row in snapshots}
             == {"api", "nuq-postgres", "playwright-service", "redis", "rabbitmq"},
             "container service inventory differs")
-    stack = current_compose_files(containers, services, windows_path(native))
+    scope = {"api", "playwright-service"} if override_path is not None else services
+    stack = current_compose_files(containers, scope, windows_path(native), override_path=override_path)
+    if override_path is not None and canonical_path(stack["files"][-1]).casefold() == canonical_path(override_path).casefold():
+        override_bytes = read_file(local_path(override_path))
+        value = json_bytes(override_bytes)
+        entries = value.get("services") if isinstance(value, dict) else None
+        require(isinstance(entries, dict) and entries, "reviewed Compose override is empty or invalid")
+        name = next(iter(entries))
+        require(isinstance(entries[name], dict) and isinstance(entries[name].get("image"), str),
+                "reviewed Compose override entry is invalid")
+        updated_image_override(override_bytes, {name: entries[name]["image"]})
+        live = {row["Config"]["Labels"]["com.docker.compose.service"]: row for row in containers}
+        for name, entry in entries.items():
+            images = _docker_json(executable, native, binary_hash, "image", "inspect", entry["image"])
+            require(isinstance(images, list) and len(images) == 1 and images[0].get("Id") == live[name]["Image"],
+                    "reviewed Compose override image differs from running service")
     argv = ["compose", "--project-name", "firecrawl", "--project-directory", windows_path(native)]
     for path in stack["files"]:
         argv += ["-f", windows_path(local_path(path))]
@@ -207,9 +222,9 @@ def updated_image_override(previous, tags):
 
 def prepare_image_plan(git, source, selected, services, docker, native_root, override_path, output):
     """Build and project selected images before any scheduled task is held."""
-    before = observe_current_project(docker, native_root, services)
+    before = observe_current_project(docker, native_root, services, override_path)
     built = build_current_images(git, source, selected, services, docker, native_root, before["compose"], output)
-    after = observe_current_project(docker, native_root, services)
+    after = observe_current_project(docker, native_root, services, override_path)
     for key in ("docker_sha256", "stack", "snapshots", "compose_sha256", "nuq_data_sha256"):
         require(before[key] == after[key], "current project changed during image build")
     executable, native = map(local_path, (docker, native_root))
@@ -220,7 +235,8 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
         return ({"selected": selected, "services": sorted(services), "apply_services": [], "images": built,
                  "docker_sha256": binary_hash, "compose_stack": before["stack"],
                  "nuq_data_sha256": before["nuq_data_sha256"], "compose_sha256": before["compose_sha256"],
-                 "before": sorted(before["snapshots"], key=lambda row: row["service"])}, None)
+                 "before": sorted(before["snapshots"], key=lambda row: row["service"]),
+                 "override_path": windows_path(local_path(override_path))}, None)
     old_images, new_images, allowed, previous_images, rollback_config = {}, {}, {}, {}, {}
     for service in sorted(changed):
         old_values = _docker_json(executable, native, binary_hash, "image", "inspect", current[service]["Image"])
@@ -244,6 +260,7 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
         require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number),
                 "previous Compose container number unavailable")
         labels["com.docker.compose.replace"] = service + "-" + number
+        labels["com.docker.compose.project.config_files"] = ",".join(before["stack"]["files"])
         rollback_config[service] = snapshot_container(rollback_container)["config_sha256"]
         explicit = set((before["compose"]["services"][service].get("environment") or {}).keys())
         old_env, new_env = _image_environment(old_images[service]), _image_environment(new_images[service])
@@ -300,7 +317,7 @@ def recheck_image_plan(plan, selected, docker, native_root):
             and all(isinstance(item, dict) for item in plan["images"].values())
             and set(plan["images"]) == set(plan.get("services", [])),
             "image plan is not bound to selected source")
-    observed = observe_current_project(docker, native_root, set(plan["services"]))
+    observed = observe_current_project(docker, native_root, set(plan["services"]), plan["override_path"])
     require(observed["docker_sha256"] == plan["docker_sha256"]
             and observed["stack"] == plan["compose_stack"]
             and observed["nuq_data_sha256"] == plan["nuq_data_sha256"]
@@ -342,7 +359,7 @@ def verify_image_result(plan, selected, docker, native_root):
         observed = recheck_image_plan(plan, selected, docker, native_root)
         return {"images": {"unchanged": sorted(plan["services"]), "replaced": []},
                 "containers": {row["service"]: row["status"] for row in observed["snapshots"]}}
-    observed = observe_current_project(docker, native_root, set(plan["apply_services"]))
+    observed = observe_current_project(docker, native_root, set(plan["apply_services"]), plan["override_path"])
     expected_stack = expected_compose_stack(plan)
     expected_files = [row["path"] for row in expected_stack]
     expected_hashes = [row["sha256"] for row in expected_stack]
@@ -366,11 +383,62 @@ def verify_image_result(plan, selected, docker, native_root):
     return {"images": outcome, "containers": {row["service"]: row["status"] for row in observed["snapshots"]}}
 
 
+def qualify_settled_partial_fleet(plan, docker, native_root, owner):
+    """Allow a rollback only if every observed container remains within the sealed plan."""
+    owner()
+    executable, native = map(local_path, (docker, native_root))
+    require(sha(read_file(executable)) == plan["docker_sha256"], "Docker executable changed")
+    result = subprocess.run(
+        [str(executable), "--host", ENGINE, "ps", "-aq", "--no-trunc",
+         "--filter", "label=com.docker.compose.project=firecrawl"],
+        cwd=native, env=_docker_environment(), capture_output=True, timeout=60, check=False)
+    owner()
+    require(result.returncode == 0 and sha(read_file(executable)) == plan["docker_sha256"],
+            "partial fleet observation failed")
+    ids = result.stdout.decode("ascii").split()
+    require(len(ids) == len(set(ids)) and len(ids) <= 5, "partial fleet identities differ")
+    containers = _docker_json(executable, native, plan["docker_sha256"], "inspect", *ids) if ids else []
+    owner()
+    require(isinstance(containers, list) and len(containers) == len(ids), "partial fleet inspection differs")
+    snapshots = [snapshot_container(row) for row in containers]
+    actual = {row["service"]: row for row in snapshots}
+    before = {row["service"]: row for row in plan["before"]}
+    affected = set(plan["apply_services"])
+    require(len(actual) == len(snapshots) and set(actual) <= set(before)
+            and {row["id"] for row in snapshots} == set(ids)
+            and set(before) - affected <= set(actual), "unrelated fleet is incomplete")
+    require(all(row["Config"]["Labels"].get("com.docker.compose.project") == "firecrawl"
+                and row.get("Name") == "/firecrawl-" + row["Config"]["Labels"].get("com.docker.compose.service", "") + "-1"
+                for row in containers), "partial fleet project differs")
+    require(nuq_data_identity(containers) == plan["nuq_data_sha256"], "NuQ data mount differs")
+    for name, row in actual.items():
+        if name not in affected:
+            require(row == before[name], "unrelated container changed")
+        elif row["id"] == before[name]["id"]:
+            require(row["image"] == before[name]["image"]
+                    and row["config_sha256"] == before[name]["config_sha256"]
+                    and row["restart_policy"] == before[name]["restart_policy"]
+                    and row["status"] in {"running", "exited", "restarting", "created", "dead"},
+                    "original container changed")
+        else:
+            require(row["image"] == plan["images"][name]["image"]
+                    and row["config_sha256"] == plan["expected_after_config"][name]
+                    and row["restart_policy"] == before[name]["restart_policy"],
+                    "affected container is outside selected transition")
+    for item in expected_compose_stack(plan):
+        require(sha(read_file(local_path(item["path"]))) == item["sha256"], "Compose file changed")
+    for item in plan["previous_images"].values():
+        values = _docker_json(executable, native, plan["docker_sha256"], "image", "inspect", item["ref"])
+        require(isinstance(values, list) and len(values) == 1 and values[0].get("Id") == item["image"],
+                "previous image reference changed")
+    owner()
+
+
 def verify_original_images(plan, selected, docker, native_root):
     """Prove original image identities, stack, data mount and unaffected containers."""
     identity(selected)
     require(plan.get("selected") == selected, "image plan selected source differs")
-    observed = observe_current_project(docker, native_root, set(plan["services"]))
+    observed = observe_current_project(docker, native_root, set(plan["services"]), plan["override_path"])
     require(observed["docker_sha256"] == plan["docker_sha256"]
             and observed["stack"] == plan["compose_stack"]
             and observed["nuq_data_sha256"] == plan["nuq_data_sha256"]
@@ -389,31 +457,29 @@ def verify_original_images(plan, selected, docker, native_root):
         image = plan["previous_images"][name]
         values = _docker_json(executable, native, plan["docker_sha256"], "image", "inspect", image["ref"])
         require(isinstance(values, list) and len(values) == 1 and values[0].get("Id") == image["image"]
-                and after["image"] == image["image"] and after["status"] == "running",
-                "original image or running state differs")
-        if before["id"] == after["id"]:
-            require(before == after, "original container changed")
-        else:
-            require(after["config_sha256"] == plan["rollback_config"][name]
-                    and after["restart_policy"] == before["restart_policy"]
-                    and after["started_at"] != before["started_at"],
-                    "restored container configuration differs")
-    return {"restored": sorted(plan["apply_services"])}
+                and after["image"] == image["image"]
+                and after["status"] in {"running", "exited", "restarting", "created", "dead"}
+                and after["restart_policy"] == before["restart_policy"],
+                "original image or container state differs")
+        expected_config = before["config_sha256"] if before["id"] == after["id"] else plan["rollback_config"][name]
+        require(after["config_sha256"] == expected_config, "restored container configuration differs")
+    return {"restored": sorted(plan["apply_services"]),
+            "containers": {name: row["status"] for name, row in actual.items()}}
 
 
 class SelectedImageUnready(HandoffError):
     """A settled selected image transition did not become locally ready."""
 
 
-def wait_for_selected_images(plan, selected, docker, native_root, client, owner, *, timeout_seconds=30):
-    """Wait for affected services and bounded local endpoints, without claiming scrape readiness."""
+def wait_for_service_readiness(plan, docker, native_root, client, owner, observe, *, timeout_seconds=30):
+    """Check running state and bounded endpoints without claiming scrape readiness."""
     require(type(timeout_seconds) is int and 0 < timeout_seconds <= 60, "invalid readiness timeout")
     affected = set(plan["apply_services"])
     require(affected and affected <= {"api", "playwright-service"}, "invalid readiness services")
     deadline = time.monotonic() + timeout_seconds
     while True:
         owner()
-        result = verify_image_result(plan, selected, docker, native_root)
+        result = observe()
         try:
             require(all(result["containers"][name] == "running" for name in affected),
                     "selected container is not running")
@@ -433,11 +499,24 @@ def wait_for_selected_images(plan, selected, docker, native_root, client, owner,
                         "selected Playwright is unavailable")
         except (RuntimeError, OSError, subprocess.TimeoutExpired):
             if time.monotonic() >= deadline:
-                raise SelectedImageUnready("selected image readiness timed out")
+                return None
             time.sleep(min(2, max(0, deadline - time.monotonic())))
         else:
             owner()
             return result
+
+def wait_for_selected_images(plan, selected, docker, native_root, client, owner, *, timeout_seconds=30):
+    def observe():
+        try:
+            return verify_image_result(plan, selected, docker, native_root)
+        except (HandoffError, OSError, subprocess.TimeoutExpired) as error:
+            raise SelectedImageUnready("selected image transition differs") from error
+
+    result = wait_for_service_readiness(plan, docker, native_root, client, owner, observe,
+                                        timeout_seconds=timeout_seconds)
+    if result is None:
+        raise SelectedImageUnready("selected image readiness timed out")
+    return result
 
 
 def install_image_override(plan, overlay, owner, output):

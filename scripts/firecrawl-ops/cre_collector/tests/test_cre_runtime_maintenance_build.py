@@ -316,6 +316,26 @@ def test_current_compose_files_bind_actual_overlay_stack(monkeypatch):
             build.current_compose_files(bad, {"api", "nuq-postgres"}, root)
 
 
+def test_compose_stack_accepts_only_owned_final_override_divergence(monkeypatch):
+    import cre_runtime_maintenance_build as build
+
+    root = "C:/firecrawl"
+    base = "C:/firecrawl/base.yaml,C:/firecrawl/third.yaml"
+    override = "C:/private/reviewed.yaml"
+    def row(service, files):
+        return {"Config": {"Labels": {
+            "com.docker.compose.service": service, "com.docker.compose.project": "firecrawl",
+            "com.docker.compose.project.working_dir": root, "com.docker.compose.project.config_files": files,
+        }}}
+    monkeypatch.setattr(build, "read_file", lambda path: path.encode())
+    fleet = [row("api", base + "," + override), row("playwright-service", base)]
+    result = build.current_compose_files(fleet, {"api", "playwright-service"}, root, override_path=override)
+    assert result["files"] == (base + "," + override).split(",")
+    fleet[1]["Config"]["Labels"]["com.docker.compose.project.config_files"] = "C:/other.yaml"
+    with pytest.raises(HandoffError, match="stacks differ"):
+        build.current_compose_files(fleet, {"api", "playwright-service"}, root, override_path=override)
+
+
 def test_current_compose_argv_preserves_stack_and_scopes_recreation():
     from cre_runtime_maintenance_steps import current_compose_argv
 

@@ -39,8 +39,13 @@ a drain: another local API client can start work immediately afterward and its
 request can be interrupted by recreation. Selected images run briefly with the
 old collector checkout before code advances. Local API identity and queue response
 or browser health are bounded readiness checks, not proof that a scrape succeeds.
-A known-settled image failure restores the previous images and overlay before
-restoring task flags; an unknown native outcome retains the fence.
+A settled image failure restores the previous images and overlay when the
+observed fleet remains within the captured old/selected transition. A mismatched
+fleet or unknown native outcome retains the fence. After a verified rollback,
+temporarily unavailable endpoints are reported as degraded while original task
+flags are restored. If selected services become unready after code advances, the
+command reports `completed_with_warnings` and does not claim service recovery;
+the collector preflight continues to gate actual work.
 
 The command refuses NuQ, Compose configuration, or collector dependency
 changes before holding tasks; those updates need a separate reviewed procedure.

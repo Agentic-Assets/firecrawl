@@ -41,6 +41,8 @@ import pytest
         "image_lock_success",
         "image_completed_failure",
         "image_unready",
+        "image_unready_rollback_degraded",
+        "image_degraded_after_advance",
         "image_rollback_unknown",
         "image_unknown",
         "image_build_failure",
@@ -418,12 +420,22 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
         monkeypatch.setattr(direct, "run_current_compose", compose)
         monkeypatch.setattr(direct, "verify_image_result", verify)
         def ready(*args):
-            if failure == "image_unready":
+            if failure in {"image_unready", "image_unready_rollback_degraded"}:
                 raise direct.SelectedImageUnready("synthetic readiness timeout")
             return verify(*args)
         monkeypatch.setattr(direct, "wait_for_selected_images", ready)
         monkeypatch.setattr(direct, "restore_image_override", lambda *args: state["image_calls"].append("restore"))
-        monkeypatch.setattr(direct, "verify_original_images", lambda *args: state["image_calls"].append("verify-original"))
+        monkeypatch.setattr(direct, "qualify_settled_partial_fleet", lambda *args: state["image_calls"].append("qualify-partial"))
+        def original(*args):
+            state["image_calls"].append("verify-original")
+            return {"containers": {"api": "running"}}
+        monkeypatch.setattr(direct, "verify_original_images", original)
+        def readiness(plan, docker, native, client, owner, observe):
+            result = observe()
+            if failure in {"image_unready_rollback_degraded", "image_degraded_after_advance"}:
+                return None
+            return result
+        monkeypatch.setattr(direct, "wait_for_service_readiness", readiness)
         def compose_argv(*args, **kwargs):
             assert args[4] == {"api"}
             return ["docker", "fixture"]
@@ -467,7 +479,11 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
         assert lock.exists() and state["held"]
         assert git(native, "rev-parse", "HEAD") == old and git(runtime, "rev-parse", "HEAD") == old
         assert "ReconcileHold" not in state["calls"] and "verify-original" not in state["image_calls"]
-    elif failure in {"image_completed_failure", "image_unready"}:
+    elif failure == "image_degraded_after_advance":
+        result = update.run_source_update(selected, **args)
+        assert result["status"] == "completed_with_warnings" and result["image_readiness"] == "degraded"
+        assert state["successor"] and not lock.exists()
+    elif failure in {"image_completed_failure", "image_unready", "image_unready_rollback_degraded"}:
         with pytest.raises(RuntimeError):
             update.run_source_update(selected, **args)
         assert not lock.exists() and not state["held"]

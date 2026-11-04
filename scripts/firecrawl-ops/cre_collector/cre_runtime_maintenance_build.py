@@ -427,7 +427,7 @@ def project_expected_configuration(container, old_image, new_image, explicit_key
     return {"config_sha256": snapshot_container(projected)["config_sha256"], "changed_keys": changed}
 
 
-def current_compose_files(containers, services, native_root):
+def current_compose_files(containers, services, native_root, *, override_path=None):
     """Read the affected services' current Compose stack and its file bytes."""
     require(isinstance(containers, list) and isinstance(services, set) and services
             and services <= set(SERVICES), "invalid Compose service scope")
@@ -450,8 +450,13 @@ def current_compose_files(containers, services, native_root):
         require(len(set(keys)) == len(keys), "duplicate Compose config-file path")
         rows[service] = (files, keys)
     require(set(rows) == services, "affected Compose services missing")
-    first = rows[min(services)]
-    require(all(row[1] == first[1] for row in rows.values()), "affected Compose overlay stacks differ")
+    first = max(rows.values(), key=lambda row: len(row[1]))
+    if override_path is None:
+        require(all(row[1] == first[1] for row in rows.values()), "affected Compose overlay stacks differ")
+    else:
+        override = canonical_path(override_path).casefold()
+        require(all(row[1] == first[1] or (first[1][-1] == override and row[1] == first[1][:-1])
+                    for row in rows.values()), "affected Compose overlay stacks differ")
     # Bytes may contain secrets; return only their digests alongside original
     # file names, never their contents.
     return {"files": first[0], "sha256": [sha(read_file(path)) for path in first[0]]}
@@ -519,12 +524,15 @@ def qualify_fleet_projection(containers, old_images, new_images, compose, packet
                     and actual[service]["Config"]["Labels"][key] == str(value)
                     for key, value in labels.items()), "pending explicit label change refused")
         current_files = actual[service]["Config"]["Labels"].get("com.docker.compose.project.config_files")
-        require(isinstance(current_files, str)
-                and [canonical_path(path).casefold() for path in current_files.split(",")]
-                == [canonical_path(path).casefold() for path in packet["compose_files"]],
-                "running Compose config-file labels differ")
+        require(isinstance(current_files, str), "running Compose config-file labels missing")
         reviewed_path = windows_path(local_path(packet["compose_override_path"])).replace("/", "\\")
-        expected_files = expected_overlay_config_files(current_files, reviewed_path)
+        canonical_files = packet["compose_files"]
+        actual_keys = [canonical_path(path).casefold() for path in current_files.split(",")]
+        canonical_keys = [canonical_path(path).casefold() for path in canonical_files]
+        require(actual_keys == canonical_keys or
+                (canonical_keys[-1] == canonical_path(reviewed_path).casefold()
+                 and actual_keys == canonical_keys[:-1]), "running Compose config-file labels differ")
+        expected_files = expected_overlay_config_files(",".join(canonical_files), reviewed_path)
         number = actual[service]["Config"]["Labels"].get("com.docker.compose.container-number")
         require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number)
                 and actual[service].get("Name") == "/" + compose["name"] + "-" + service + "-" + number,
