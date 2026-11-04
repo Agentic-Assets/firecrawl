@@ -526,12 +526,15 @@ The installer can preview a separate `DAUM Verified Subset` series task with
 singleton source and admission are bound together; other admissions and
 pipeline mode are refused. The reviewed updater discovers that exact optional
 task and checks its source, admission and pin when updating the existing fleet.
-The subset remains partial and does not establish whole-source coverage.
+The optional `DaumSubsetPolicy = 'tenure-and-empty-title-v2'` forwards that
+reviewed policy; omission retains the launcher's existing default. The subset
+remains partial and does not establish whole-source coverage.
 
 The installer accepts explicit series-only `Concurrency = 1..6` and forwards
 it through the fixed action. If omitted, action bytes are unchanged and inherit
-concurrency **1**. It does not accept `AttemptsPerSource`; scheduled actions
-retain **3 whole-source attempts**, within the explicit work deadline. Provider
+concurrency **1**. An explicit positive `AttemptsPerSource` is forwarded for a
+series; when omitted, the launcher retains its existing default of **3 whole-source
+attempts**, within the explicit work deadline. Provider
 per-request retries and pacing remain separate. Qualify the actual scheduled
 action, not a manual command with different attempt limits.
 
