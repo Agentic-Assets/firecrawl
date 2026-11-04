@@ -37,24 +37,6 @@ def test_primary_conflicts_only_gate_active_parents():
 
 
 @pytest.mark.parametrize(
-    "column,limit",
-    [
-        ("sale_price_per_sf", 10000),
-        ("lease_rate_min", 500),
-        ("lease_rate_max", 500),
-    ],
-)
-def test_sparse_financial_fallback_uses_existing_forward_bounds(column, limit):
-    assignment = " ".join(financial_assignment(column).split())
-    assert (
-        f"CASE WHEN t.{column} > 0 AND t.{column} <= {limit} "
-        f"THEN t.{column} END" in assignment
-    )
-    assert "jllPriceWithheld" in assignment
-    assert "first_party_detail_api" in assignment
-
-
-@pytest.mark.parametrize(
     "field,column,limit",
     [
         ("salePricePerSf", "sale_price_per_sf", 10000),
@@ -91,11 +73,14 @@ def financial_fallback_contract_sql():
     columns = ("sale_price_per_sf", "lease_rate_min", "lease_rate_max")
     cases = [
         ("missing", None, None, None),
-        ("zero", 0, None, None),
-        ("negative", -1, None, None),
+        ("zero", 0, None, 0),
+        ("negative", -1, None, -1),
         ("valid", 25, None, 25),
         ("boundary", "limit", None, "limit"),
-        ("above", "over", None, None),
+        ("above", "over", None, "over"),
+        ("invalid-new", 25, "over", 25),
+        ("zero-new", 25, 0, 25),
+        ("negative-new", 25, -1, 25),
         ("replacement", "over", 30, 30),
         ("withheld", 25, None, None),
         ("marker-collision", 25, None, 25),
@@ -224,7 +209,7 @@ INSERT INTO credeals.cre_listings (id, brokerage_id, external_id, raw_data, sale
     )
     statements.append("""DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM credeals.cre_listings l
- JOIN (VALUES (10,NULL::numeric),(11,NULL),(12,225),(13,NULL),
+ JOIN (VALUES (10,0::numeric),(11,-5),(12,225),(13,20000),
  (14,300),(15,NULL),(16,NULL),(17,225)) expected(id,psf) USING(id)
  WHERE l.sale_price_per_sf IS DISTINCT FROM expected.psf) THEN
  RAISE EXCEPTION 'sparse price/SF preservation contract failed'; END IF;

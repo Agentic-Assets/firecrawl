@@ -5140,8 +5140,9 @@ WITH ins AS (
                                  THEN EXCLUDED.lng ELSE t.lng END,
         size_sf           = CASE
                               WHEN {colliers_transition_row_sql} THEN EXCLUDED.size_sf
-                              WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
-                              ELSE COALESCE(EXCLUDED.size_sf, t.size_sf)
+                              WHEN EXCLUDED.size_sf > 0 AND EXCLUDED.size_sf <= 1000000000
+                                THEN EXCLUDED.size_sf
+                              ELSE t.size_sf
                             END,
         market            = COALESCE(EXCLUDED.market, t.market),
         submarket         = COALESCE(EXCLUDED.submarket, t.submarket),
@@ -5176,14 +5177,14 @@ WITH ins AS (
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END,
-        -- Sparse updates retain prior PSF/lease values only within forward bounds.
+        -- Sparse updates retain prior values; only new values must meet forward bounds.
         sale_price_per_sf = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.sale_price_per_sf,
-                                   CASE WHEN t.sale_price_per_sf > 0 AND t.sale_price_per_sf <= 10000
-                                        THEN t.sale_price_per_sf END) END,
+                                 WHEN EXCLUDED.sale_price_per_sf > 0 AND EXCLUDED.sale_price_per_sf <= 10000
+                                 THEN EXCLUDED.sale_price_per_sf
+                                 ELSE t.sale_price_per_sf END,
         cap_rate          = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END,
@@ -5198,16 +5199,16 @@ WITH ins AS (
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.lease_rate_min,
-                                   CASE WHEN t.lease_rate_min > 0 AND t.lease_rate_min <= 500
-                                        THEN t.lease_rate_min END) END,
+                                 WHEN EXCLUDED.lease_rate_min > 0 AND EXCLUDED.lease_rate_min <= 500
+                                 THEN EXCLUDED.lease_rate_min
+                                 ELSE t.lease_rate_min END,
         lease_rate_max    = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.lease_rate_max,
-                                   CASE WHEN t.lease_rate_max > 0 AND t.lease_rate_max <= 500
-                                        THEN t.lease_rate_max END) END,
+                                 WHEN EXCLUDED.lease_rate_max > 0 AND EXCLUDED.lease_rate_max <= 500
+                                 THEN EXCLUDED.lease_rate_max
+                                 ELSE t.lease_rate_max END,
         lease_rate_type   = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
