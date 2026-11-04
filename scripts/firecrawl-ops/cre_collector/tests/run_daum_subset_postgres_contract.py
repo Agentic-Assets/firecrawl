@@ -278,7 +278,7 @@ try:
             if member["native_id"] == "50101":
                 member["emitted"] = True
         unknown_claims["binding"].update(emitted_count=101, held_count=1)
-        for case in ("unknown_existing", "unknown_new", "unknown_conflict", "unknown_baseline"):
+        for case in ("unknown_new", "unknown_new_no_license", "unknown_existing", "unknown_existing_no_license", "unknown_conflict", "unknown_baseline"):
             db = "fixture_" + case
             sql("CREATE DATABASE " + db + ";")
             sql(schema, db)
@@ -290,7 +290,9 @@ try:
                 "\"freshnessProvenance\":{\"generationId\":\"old-generation\","
                 "\"detailScope\":\"detail_page\",\"cacheDisposition\":\"live\"}}'::jsonb "
                 "WHERE external_id='property/Synthetic-101';", db)
-            if case == "unknown_new":
+            if case.endswith("_no_license"):
+                sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;", db)
+            if case.startswith("unknown_new"):
                 sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-101'; "
                     "DELETE FROM credeals.cre_listings WHERE external_id='property/Synthetic-101';", db)
             if case == "unknown_baseline":
@@ -299,7 +301,7 @@ try:
             if case == "unknown_conflict":
                 sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}',"
                     "'\"50101\"') WHERE external_id='property/Synthetic-0';", db)
-            prior_raw = None if case == "unknown_new" else json.loads(sql(
+            prior_raw = None if case.startswith("unknown_new") else json.loads(sql(
                 "SELECT raw_data::text FROM credeals.cre_listings "
                 "WHERE external_id='property/Synthetic-101';", db
             ).stdout)
@@ -316,6 +318,36 @@ try:
                 "detailObservedAt": "2026-10-16T00:00:01Z",
                 "freshnessProvenance": {"generationId": "new-generation", "detailScope": "detail_page", "cacheDisposition": "live"},
             })
+            if case.startswith("unknown_existing"):
+                sql("UPDATE credeals.cre_listing_contacts SET title='Prior title', "
+                    "phone=NULL, is_primary=true WHERE listing_id=(SELECT id FROM "
+                    "credeals.cre_listings WHERE external_id='property/Synthetic-101'); "
+                    "INSERT INTO credeals.cre_listing_contacts "
+                    "(listing_id,name,email,title,phone,is_primary) SELECT listing_id, "
+                    "'Second old name',email,'Second prior title',NULL,false "
+                    "FROM credeals.cre_listing_contacts WHERE listing_id=(SELECT id FROM "
+                    "credeals.cre_listings WHERE external_id='property/Synthetic-101');", db)
+                unknown["contacts"] = [
+                    {"name": "New name", "email": "fixture@example.invalid",
+                     "title": "New title", "phone": "555-0101", "isPrimary": True},
+                    {"name": "New contact", "email": "new@example.invalid", "title": "first", "isPrimary": True},
+                    {"name": "Different observed name", "email": "NEW@example.invalid", "title": "second", "isPrimary": True},
+                    {"name": "Phone match", "phone": "555-0123", "title": "first", "isPrimary": True},
+                    {"name": "PHONE MATCH", "phone": "555-0123", "title": "second", "isPrimary": True},
+                ]
+                unknown["raw_data"]["contactsDetailed"] = copy.deepcopy(unknown["contacts"])
+            if case.startswith("unknown_new"):
+                unknown["contacts"] = [
+                    {"name": "First", "email": "first@example.invalid", "isPrimary": True},
+                    {"name": "Second", "email": "second@example.invalid", "isPrimary": True},
+                    {"name": "Duplicate", "email": "FIRST@example.invalid", "isPrimary": True},
+                    {"name": "Phone", "phone": "555-0123", "isPrimary": True},
+                    {"name": "PHONE", "phone": "555-0123", "isPrimary": True},
+                    {"name": "Amy", "email": "bridge-a@example.invalid", "phone": "111"},
+                    {"name": "Bea", "email": "bridge-a@example.invalid", "phone": "222"},
+                    {"name": "Bea", "email": "bridge-c@example.invalid", "phone": "222"},
+                ]
+                unknown["raw_data"]["contactsDetailed"] = copy.deepcopy(unknown["contacts"])
             child_tables = ("cre_listing_images", "cre_listing_contacts",
                             "cre_listing_documents", "cre_listing_media", "cre_listing_links")
             def children(table):
@@ -334,8 +366,22 @@ try:
                 state = sql("SELECT coalesce(transaction_type,'<null>') || '|' || "
                             "(raw_data ? 'latestDaumUnknownTenureObservation')::text "
                             "FROM credeals.cre_listings WHERE external_id='property/Synthetic-101';", db).stdout.strip()
-                assert state == ("lease|true" if case == "unknown_existing" else "<null>|false"), state
-                if case == "unknown_existing":
+                assert state == ("lease|true" if case.startswith("unknown_existing") else "<null>|false"), state
+                if case.startswith("unknown_new"):
+                    contacts = children("cre_listing_contacts")
+                    assert not any(c["is_primary"] for c in contacts)
+                    assert len(contacts) == 5
+                    assert {c["email"] for c in contacts} >= {
+                        "bridge-a@example.invalid", "bridge-c@example.invalid"
+                    }
+                    raw_after = json.loads(sql(
+                        "SELECT raw_data::text FROM credeals.cre_listings "
+                        "WHERE external_id='property/Synthetic-101';", db
+                    ).stdout)
+                    assert raw_after["contactsDetailed"] == unknown["contacts"]
+                    sql(generated([row(index) for index in range(100)] + [unknown], unknown_claims), db)
+                    assert len(children("cre_listing_contacts")) == 5
+                if case.startswith("unknown_existing"):
                     raw_after = json.loads(sql(
                         "SELECT raw_data::text FROM credeals.cre_listings "
                         "WHERE external_id='property/Synthetic-101';", db
@@ -367,9 +413,61 @@ try:
                         ).stdout.strip() == "old-generation"
                     assert sql("SELECT title FROM credeals.cre_listings "
                                "WHERE external_id='property/Synthetic-101';", db).stdout.strip() == "Observed current title"
+                    contacts = children("cre_listing_contacts")
+                    for old_contact in before_children["cre_listing_contacts"]:
+                        matched = next(c for c in contacts if c["id"] == old_contact["id"])
+                        assert matched["name"] == old_contact["name"]
+                        assert matched["title"] == old_contact["title"]
+                        assert matched["phone"] == "555-0101"
+                        assert matched["is_primary"] == old_contact["is_primary"]
+                    assert len(contacts) == 4
+                    assert sum(c["is_primary"] is True for c in contacts) == 1
+                    assert next(c for c in contacts if c["email"] == "new@example.invalid")["title"] == "first"
+                    sql(generated([row(index) for index in range(100)] + [unknown], unknown_claims), db)
+                    assert len(children("cre_listing_contacts")) == 4
                     for table in child_tables:
-                        assert all(item in children(table) for item in before_children[table]), table
+                        if table != "cre_listing_contacts":
+                            assert all(item in children(table) for item in before_children[table]), table
             checks.append({"case": case, "passed": True})
+    if unknown_mode:
+        db = "fixture_unknown_existing"
+        # Ordinary DAUM partial rows keep the pre-existing additive precedence.
+        known = row(0, fresh=True)
+        known["contacts"] = [{"name": "Ordinary new name", "email": "fixture@example.invalid"}]
+        known["raw_data"]["preserveChildCollections"] = True
+        known["raw_data"]["daumUnknownTenure"] = False
+        result = sql(generated([known]), db, check=False)
+        assert result.returncode == 0, result.stderr
+        assert sql(
+            "SELECT name FROM credeals.cre_listing_contacts WHERE listing_id="
+            "(SELECT id FROM credeals.cre_listings WHERE external_id='property/Synthetic-0');", db
+        ).stdout.strip() == "Ordinary new name"
+        checks.append({"case": "ordinary_daum_additive", "passed": True})
+
+        # A foreign brokerage cannot activate DAUM precedence through JSON.
+        other = ingest.to_row(
+            {"sourceKey": "transwestern", "id": "contact-control",
+             "url": "https://example.test/contact-control", "name": "Control",
+             "transactionType": "Sale"}, {}, "2026-10-16T00:00:00Z"
+        )
+        other["contacts"] = [{"name": "Other old", "email": "other@example.invalid"}]
+        def generated_other():
+            return ingest.build_sql([other], [], "2026-10-16T00:00:00Z", set())
+        sql(generated_other(), db)
+        other["contacts"][0]["name"] = "Other new"
+        other["raw_data"].update({
+            "sourceKey": "transwestern",
+            "daumUnknownTenure": True,
+            "preserveChildCollections": True,
+        })
+        sql(generated_other(), db)
+        assert sql(
+            "SELECT c.name FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l "
+            "ON l.id=c.listing_id JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id "
+            "WHERE b.slug='transwestern' AND l.external_id='contact-control';", db
+        ).stdout.strip() == "Other new"
+        checks.append({"case": "foreign_spoof", "passed": True})
+
     cases = [
         "baseline_present",
         "deleted_parent",
