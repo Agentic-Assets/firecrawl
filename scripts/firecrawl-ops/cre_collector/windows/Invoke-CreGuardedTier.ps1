@@ -634,7 +634,11 @@ function Get-CreNotificationText {
         if ($qualifiedSubsets.Count -gt 0) {
             $lines += "$bullet *Complete brokerages:* $($members.Count - $qualifiedSubsets.Count) | *Qualified subsets:* $($qualifiedSubsets.Count)"
         }
-        $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
+        $unverifiableKeys = @()
+        if ($null -ne $Summary.PSObject.Properties['unverifiable_source_keys']) { $unverifiableKeys = @($Summary.unverifiable_source_keys) }
+        $failedCount = @($Summary.failed_source_keys).Count - $unverifiableKeys.Count
+        $unverifiableCount = if ($unverifiableKeys.Count -gt 0) { " | *Unverifiable:* $($unverifiableKeys.Count)" } else { '' }
+        $lines += "$bullet *Failed:* $failedCount$unverifiableCount | *Pending:* $(@($Summary.pending_source_keys).Count)"
         foreach ($key in @($Summary.failed_source_keys | Select-Object -First 20)) {
             $broker = (Get-CreBrokerageName $key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
             if ($null -ne $Summary.PSObject.Properties['unverifiable_source_keys'] -and @($Summary.unverifiable_source_keys) -ccontains $key) {

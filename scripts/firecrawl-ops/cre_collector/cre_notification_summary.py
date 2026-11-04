@@ -1055,10 +1055,12 @@ def verified_pipeline_summary(
                 pending.append(source)
                 continue
             require(state == "verified")
+            jll_partial_candidate = (source == "jll-investor"
+                                     and parent_entry.get("state") == "qualified_partial_subset")
             require(
                 interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
-                    or (source == "jll-investor" and (checkpoint.get("artifact") or {}).get("jll_partial") is True)) else "complete")
+                    or jll_partial_candidate) else "complete")
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1113,16 +1115,33 @@ def verified_pipeline_summary(
             checkpoint = checkpoints[source]
             require(checkpoint.get("state") == "ingested")
             require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
-            artifact, readback = checkpoint["artifact"], checkpoint["readback"]
-            if source == "jll-investor" and artifact.get("jll_partial") is True:
+            if jll_partial_candidate:
                 from cre_checkpoint_series import _pipeline_member_report_matches, jll_partial_child
 
-                if not (jll_partial_child(child) and _pipeline_member_report_matches(
-                    validated_units[unit_id], checkpoint, source, run_id
-                )):
+                try:
+                    artifact, readback = checkpoint["artifact"], checkpoint["readback"]
+                    count = readback["expected_staged_unique"]
+                    jll_proven = (
+                        jll_partial_child(child)
+                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and type(count) is int and 0 < count <= 500000
+                        and isinstance(artifact.get("sha256"), str)
+                        and re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+                        and type(artifact.get("bytes")) is int
+                        and 0 < artifact["bytes"] <= MAX_ARTIFACT_BINDING_BYTES
+                        and result.get("artifact_sha256") == artifact["sha256"]
+                        and readback.get("kind") == "jll_investor_partial"
+                        and artifact.get("path") == f"sources/{source}.json"
+                        and artifact.get("rejected_by_ingest") == 0
+                    )
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    jll_proven = False
+                if not jll_proven:
                     failed.append(source)
                     unverifiable.append(source)
                     continue
+            else:
+                artifact, readback = checkpoint["artifact"], checkpoint["readback"]
             count = readback["expected_staged_unique"]
             artifact_sha = artifact.get("sha256")
             artifact_bytes = artifact.get("bytes")

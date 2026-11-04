@@ -436,7 +436,7 @@ $mixedJll['unverifiable_source_keys'] = @('jll-investor')
 Save-Summary $mixedJll
 $unverifiableRead = Get-CreVerifiedSummary (New-Record) 'jll-unverifiable'
 $unverifiableText = Get-CreNotificationText (New-Record) 'Terminal' 0 $unverifiableRead
-Assert-Cre ($null -ne $unverifiableRead -and $unverifiableText.Contains('Readback could not be verified') -and $unverifiableText.Contains('100 listings verified by database readback')) 'Unverifiable JLL preserves independently verified peer counts.'
+Assert-Cre ($null -ne $unverifiableRead -and $unverifiableText.Contains('Readback could not be verified') -and $unverifiableText.Contains('100 listings verified by database readback') -and $unverifiableText.Contains('*Failed:* 0 | *Unverifiable:* 1')) 'Unverifiable JLL preserves peer counts without claiming failed execution.'
 $mixedJll['unverifiable_source_keys'] = @('newmark'); Save-Summary $mixedJll
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'jll-unverifiable-forged')) 'Unverifiable source must be the failed JLL source.'
 $Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true

@@ -1608,7 +1608,8 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
     assert "verified_listings" not in result
 
 
-@pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing"])
+@pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing",
+                                    "artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed"])
 def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="jll-investor")
     source = "jll-investor"
@@ -1659,6 +1660,12 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tam
     assert any(row["source_key"] == setup["source2"] for row in result["per_source_summaries"])
     if tamper == "coverage":
         binding["whole_source_coverage"] = True
+    elif tamper in {"artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed"}:
+        key, variant = tamper.split("_")
+        if variant == "missing":
+            checkpoint.pop(key)
+        else:
+            checkpoint[key] = "malformed"
     else:
         if tamper == "missing":
             del validation["jll_partial_readback"]
