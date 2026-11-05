@@ -142,6 +142,7 @@ test("Essex discrepancy retains parsed source evidence while refusing completion
     assert.equal(evidence.pass.current.rows.length, 2);
     assert.equal(evidence.pass.closed.rows.length, 1);
     assert.equal(evidence.pass.sitemap.urls.length, 3);
+    assert.deepEqual(evidence.responseText, { current, closed, sitemap });
     assert.match(evidence.pass.current.responseTextSha256, /^[a-f0-9]{64}$/);
     return true;
   });

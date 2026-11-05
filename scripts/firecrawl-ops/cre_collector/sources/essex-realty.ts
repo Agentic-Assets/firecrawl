@@ -414,6 +414,7 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
       generationId: refreshGenerationId(),
       generationStartedAt: refreshStartedAt(),
       pass,
+      responseText: { current: currentHtml, closed: closedHtml, sitemap: sitemapXml },
       archiveOnly: error.archiveOnly,
       sitemapOnly: error.sitemapOnly,
     }]);
