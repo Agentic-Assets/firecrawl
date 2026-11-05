@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 
 const MAX_NATIVE_BYTES = 16 * 1024 * 1024;
 const MAX_METADATA_BYTES = 16 * 1024;
-const DEFAULT_SOFT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_SOFT_BYTES = 16 * 1024 * 1024;
 
 export class ColliersWindowEvidence {
   private fd: number | null;

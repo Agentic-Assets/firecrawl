@@ -67,5 +67,5 @@ export async function selectColliersWindow(
   // attempted member only after settlement; a full window can exceed its
   // artifact byte budget and contain unattempted members.
   return { eligible, window, selected: selected.length, heldSelected: selected.length - eligible.length,
-    heldOther: first.indexed - selected.length, total: first.total, holes: first.holes };
+    heldOther: first.indexed - selected.length, total: first.total, available: first.available, holes: first.holes };
 }

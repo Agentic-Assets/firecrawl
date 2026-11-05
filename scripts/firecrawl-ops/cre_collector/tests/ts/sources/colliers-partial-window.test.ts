@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
 import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
+import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
 import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
 import { ColliersAccessStop, ColliersIdentityError } from "../../../sources/colliers.js";
@@ -81,6 +82,27 @@ test("byte budget stops only after storing complete native evidence", async t =>
   assert.equal(receipt.sha256, createHash("sha256").update(bytes).digest("hex"));
   const records = bytes.toString().trim().split("\n").map(line => JSON.parse(line));
   assert.deepEqual(Buffer.from(records[1].nativeBase64, "base64"), native);
+  const saved: any[] = [];
+  const replay = await withColliersPartialSpool(sourcePath, sourceBytes.length, createHash("sha256").update(sourceBytes).digest("hex"),
+    (openSource, verifySource) => withColliersPartialSpool(path, receipt.bytes, receipt.sha256,
+      (openEvidence, verifyEvidence) => reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
+        { ...binding, detailFinishedAt: new Date(Date.now() + 1000).toISOString() }, 1, receipt.records,
+        result.proposedCursor, async item => { saved.push(item); }, 2)));
+  assert.equal(replay.emitted, 1); assert.equal(saved[0].listing.id, "a");
+  await assert.rejects(withColliersPartialSpool(sourcePath, sourceBytes.length, createHash("sha256").update(sourceBytes).digest("hex"),
+    (openSource, verifySource) => withColliersPartialSpool(path, receipt.bytes, receipt.sha256,
+      (openEvidence, verifyEvidence) => reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
+        { ...binding, detailFinishedAt: new Date(Date.now() + 1000).toISOString() }, 1, receipt.records,
+        3, async () => {}, 2))), /cursor differs/);
+  const altered = Buffer.from(native); altered[0] ^= 1;
+  records[1].nativeBase64 = altered.toString("base64");
+  const forgedBytes = Buffer.from(records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const forgedPath = join(dir, "forged"); writeFileSync(forgedPath, forgedBytes, { mode: 0o600 });
+  await assert.rejects(withColliersPartialSpool(sourcePath, sourceBytes.length, createHash("sha256").update(sourceBytes).digest("hex"),
+    (openSource, verifySource) => withColliersPartialSpool(forgedPath, forgedBytes.length, createHash("sha256").update(forgedBytes).digest("hex"),
+      (openEvidence, verifyEvidence) => reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
+        { ...binding, detailFinishedAt: new Date(Date.now() + 1000).toISOString() }, 1, receipt.records,
+        result.proposedCursor, async () => {}, 2))), /native hash differs/);
 });
 
 test("a settled provider stop records the hold without fetching later peers", async () => {
