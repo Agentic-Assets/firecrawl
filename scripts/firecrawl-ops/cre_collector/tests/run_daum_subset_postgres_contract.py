@@ -305,10 +305,79 @@ try:
                 sql("BEGIN;" + guard + "ROLLBACK;", db)
                 stale = sql("BEGIN; UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';" + guard + "ROLLBACK;", db, check=False)
                 assert stale.returncode and "DAUM fallback partition changed" in stale.stderr
+                # A cooperating lifecycle writer commits after the initial probe.
+                # The admission transaction waits on the shared advisory lock,
+                # then must refuse its stale parent preimage.
+                writer = subprocess.Popen(
+                    ["docker", "exec", "-i", container, "psql", "-X", "-qAt",
+                     "-U", "postgres", "-d", db, "-v", "ON_ERROR_STOP=1"],
+                    env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                )
+                writer.stdin.write(
+                    "BEGIN;\n" + ingest.lifecycle_transaction_lock_sql()
+                    + "\nUPDATE credeals.cre_listings SET status='withdrawn' "
+                    "WHERE external_id='property/Synthetic-0';\n\\echo WRITER_READY\n"
+                    "SELECT pg_sleep(4);\nCOMMIT;\n"
+                )
+                writer.stdin.flush()
+                for line in writer.stdout:
+                    if line.strip() == "WRITER_READY":
+                        break
+                else:
+                    raise AssertionError("cooperating writer did not acquire lock")
+                reader = subprocess.Popen(
+                    ["docker", "exec", "-i", container, "psql", "-X", "-qAt",
+                     "-U", "postgres", "-d", db, "-v", "ON_ERROR_STOP=1"],
+                    env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                )
+                reader.stdin.write(
+                    "BEGIN; SET LOCAL lock_timeout='6s'; SELECT pg_backend_pid();\n"
+                    + ingest.lifecycle_transaction_lock_sql() + guard + "ROLLBACK;\n"
+                )
+                reader.stdin.flush()
+                reader_pid = int(reader.stdout.readline().strip())
+                deadline = time.monotonic() + 3
+                observed_waiter = False
+                while time.monotonic() < deadline:
+                    observed_waiter = sql(
+                        "SELECT count(*) FROM pg_stat_activity WHERE pid="
+                        + str(reader_pid) + " AND wait_event_type='Lock' AND wait_event='advisory';", db
+                    ).stdout.strip() == "1"
+                    if observed_waiter:
+                        break
+                    time.sleep(0.05)
+                assert observed_waiter, "reader never observed waiting on lifecycle lock"
+                writer.stdin.close()
+                assert writer.wait(timeout=10) == 0, writer.stderr.read()
+                reader.stdin.close()
+                assert reader.wait(timeout=10) != 0
+                assert "DAUM fallback partition changed" in reader.stderr.read()
+                sql("UPDATE credeals.cre_listings SET status='active' WHERE external_id='property/Synthetic-0';", db)
+                checks.append("fallback_two_session_stale_preimage")
                 terminal = probe("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';")
                 assert terminal["50000"]["hold_reason"] == "existing_parent_unqualified"
                 assert terminal["59999"]["hold_reason"] is None
                 assert terminal["50000"]["preimage"] != normal["50000"]["preimage"]
+                sql("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';", db)
+                held_now = probe()
+                held_partition = [held_now[key] for key in sorted(held_now, key=lambda key: held_now[key]["external_id"])]
+                held_guard = transaction_guard_sql(members_probe, held_partition, filter_src=True)
+                stage = """
+CREATE TEMP TABLE _src ON COMMIT DROP AS
+SELECT brokerage_id, external_id, source_url, raw_data FROM credeals.cre_listings
+ WHERE external_id='property/Synthetic-0'
+UNION ALL SELECT id, 'property/Synthetic-new',
+  'https://daumcommercial.com/property/Synthetic-new/',
+  jsonb_build_object('sourceKey','daum-commercial','daumPostId','59999')
+ FROM credeals.cre_brokerages WHERE slug='daum-commercial';
+"""
+                held_result = sql("BEGIN;" + stage + held_guard
+                                  + "SELECT external_id FROM _src ORDER BY external_id; ROLLBACK;", db)
+                assert held_result.stdout.strip() == "property/Synthetic-new"
+                sql("UPDATE credeals.cre_listings SET status='active' WHERE external_id='property/Synthetic-0';", db)
+                checks.append("fallback_held_filtered_valid_peer_retained")
                 conflict = probe("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}'," + "'\"50000\"') WHERE external_id='property/Synthetic-1';")
                 assert conflict["50000"]["hold_reason"] == "identity_conflict"
                 assert conflict["59999"]["hold_reason"] is None

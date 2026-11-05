@@ -75,6 +75,25 @@ def guard_sql(claims):
         and emitted == binding.get("emitted_count")
         and len(members) - emitted == binding.get("held_count")
     )
+    fallback_members = claims.get("fallbackMembers", [])
+    fallback_partition = claims.get("fallbackPartition", [])
+    if fallback_members or fallback_partition:
+        from cre_daum_fallback_partition import transaction_guard_sql
+
+        require(v2 and _sha(fallback_partition) == binding.get("fallback_partition_sha256"))
+        require({row["native_id"] for row in fallback_members} == fallback_ids)
+        for row in fallback_members:
+            member = by_id[row["native_id"]]
+            require(row == {"native_id": member["native_id"], "external_id": member["external_id"],
+                            "source_url": member["source_url"]})
+        transaction_guard_sql(fallback_members, fallback_partition)
+    else:
+        require(not v2 or not fallback_ids)
+    held_filter = (
+        " AND NOT EXISTS (SELECT 1 FROM _daum_fallback_held h "
+        "WHERE h.brokerage_id=s.brokerage_id AND h.external_id=s.external_id)"
+        if fallback_members else ""
+    )
     payload = sql_lit(json.dumps(members, separators=(",", ":")))
     return f"""
 -- DAUM verified subset: exhaustive incoming identities, including held members.
@@ -92,9 +111,9 @@ BEGIN
   IF (SELECT count(*) FROM _daum_subset_members) <> {len(members)}
      OR EXISTS (
        (SELECT brokerage_id, external_id, source_url FROM _src
-        EXCEPT SELECT brokerage_id, external_id, source_url FROM _daum_subset_members WHERE emitted)
+        EXCEPT SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{held_filter})
        UNION ALL
-       (SELECT brokerage_id, external_id, source_url FROM _daum_subset_members WHERE emitted
+       (SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{held_filter}
         EXCEPT SELECT brokerage_id, external_id, source_url FROM _src)
      ) THEN
     RAISE EXCEPTION 'DAUM subset staging does not equal emitted identities';
@@ -108,7 +127,7 @@ BEGIN
   END IF;
   IF EXISTS (
     SELECT 1 FROM _daum_subset_members s
-    JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
+    JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id{held_filter}
     WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
        OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
        OR (s.native_id = ANY(t.native_ids)
@@ -118,7 +137,7 @@ BEGIN
            AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_id))
   ) OR EXISTS (
     SELECT 1 FROM _daum_subset_members s
-    JOIN credeals.cre_source_index si ON si.brokerage_id = s.brokerage_id
+    JOIN credeals.cre_source_index si ON si.brokerage_id = s.brokerage_id{held_filter}
     WHERE (si.url = s.source_url AND si.external_id IS DISTINCT FROM s.external_id)
        OR (si.external_id = s.external_id AND si.url IS DISTINCT FROM s.source_url)
   ) THEN
@@ -127,11 +146,11 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM _daum_subset_members s
     JOIN credeals.cre_listings t USING (brokerage_id, external_id)
-    WHERE s.emitted AND (t.deleted_at IS NOT NULL OR t.status::text IS DISTINCT FROM 'active')
+    WHERE s.emitted{held_filter} AND (t.deleted_at IS NOT NULL OR t.status::text IS DISTINCT FROM 'active')
   ) OR EXISTS (
     SELECT 1 FROM _daum_subset_members s
     JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
-    WHERE s.emitted AND (si.soft_deleted IS DISTINCT FROM false
+    WHERE s.emitted{held_filter} AND (si.soft_deleted IS DISTINCT FROM false
                          OR si.observation_present IS DISTINCT FROM true)
   ) THEN
     RAISE EXCEPTION 'DAUM subset would revive lifecycle or presence; refusing entire apply';

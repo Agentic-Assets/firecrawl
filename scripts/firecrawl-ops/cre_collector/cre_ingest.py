@@ -4055,6 +4055,12 @@ def build_sql(
             raise ValueError("DAUM subset cannot change lifecycle or inventory-only scope")
         from cre_daum_subset_sql import guard_sql
         daum_subset_guard = guard_sql(daum_verified_subset_claims)
+    daum_fallback_guard = ""
+    if daum_verified_subset_claims and daum_verified_subset_claims.get("fallbackMembers"):
+        from cre_daum_fallback_partition import transaction_guard_sql
+        daum_fallback_guard = transaction_guard_sql(
+            daum_verified_subset_claims["fallbackMembers"],
+            daum_verified_subset_claims["fallbackPartition"], filter_src=True)
     pyramid_subset_guard = ""
     if pyramid_verified_subset_claims is not None:
         if targeted or daum_verified_subset_claims is not None or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
@@ -4688,6 +4694,8 @@ WHERE s.slug = e.slug
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
 FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;""")
+    if daum_fallback_guard:
+        w(daum_fallback_guard)
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.

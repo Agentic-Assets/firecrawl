@@ -976,5 +976,10 @@ def ingest_subset_context(
     if proof["schema"] == SUBSET_SCHEMA_V2:
         result.update(subset_policy=SUBSET_POLICY_V2, titleObservations=proof["titleObservations"])
         if proof.get("titleFallbackObservations"):
+            from cre_daum_fallback_partition import staged_fallback_members
+
             result["titleFallbackObservations"] = proof["titleFallbackObservations"]
+            result["fallbackMembers"] = staged_fallback_members(json.loads(raw))
+            result["fallbackPartition"] = manifest["sources"][SOURCE]["daum_fallback_probe"]["partition"]
+            require(_sha(result["fallbackPartition"]) == binding["fallback_partition_sha256"])
     return result

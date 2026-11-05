@@ -124,7 +124,7 @@ SELECT (SELECT count(*) FROM candidate) AS staged,
          ORDER BY external_id)::text FROM assessed), '[]') AS partition
 """
 
-def transaction_guard_sql(members, partition):
+def transaction_guard_sql(members, partition, *, filter_src=False):
     """Lock owned targets and recheck the bound partition before filtering holds."""
     import json
     import re
@@ -154,7 +154,7 @@ def transaction_guard_sql(members, partition):
         raise ValueError("DAUM fallback partition ordering differs")
     payload = sql_lit(json.dumps(members, sort_keys=True, separators=(",", ":")))
     bound = sql_lit(json.dumps(partition, sort_keys=True, separators=(",", ":")))
-    return f"""
+    sql = f"""
 CREATE TEMP TABLE _daum_fallback_members ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, m.*
 FROM jsonb_to_recordset({payload}::jsonb)
@@ -181,6 +181,34 @@ BEGIN
  THEN RAISE EXCEPTION 'DAUM fallback partition changed'; END IF;
 END $$;
 """
+    if filter_src:
+        sql += f"""
+CREATE TEMP TABLE _daum_fallback_partition ON COMMIT DROP AS
+SELECT * FROM jsonb_to_recordset({bound}::jsonb)
+ AS p(native_id text, external_id text, source_url text, hold_reason text, preimage text);
+DO $$
+BEGIN
+ IF (SELECT count(*) FROM _daum_fallback_partition) <> {len(members)}
+ OR EXISTS (
+   SELECT 1 FROM _daum_fallback_members m
+   LEFT JOIN _src s ON s.brokerage_id=m.brokerage_id AND s.external_id=m.external_id
+   WHERE s.external_id IS NULL OR s.source_url IS DISTINCT FROM m.source_url
+      OR NOT jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "daum-commercial")')
+      OR ARRAY(SELECT DISTINCT v #>> '{{}}' FROM jsonb_path_query(s.raw_data, '$.**.daumPostId') v)
+         IS DISTINCT FROM ARRAY[m.native_id]
+ )
+ THEN RAISE EXCEPTION 'DAUM fallback staging differs'; END IF;
+END $$;
+CREATE TEMP TABLE _daum_fallback_held ON COMMIT DROP AS
+SELECT m.brokerage_id, m.external_id, m.native_id, p.hold_reason
+FROM _daum_fallback_members m JOIN _daum_fallback_partition p
+  ON p.external_id=m.external_id
+WHERE p.hold_reason IS NOT NULL;
+DELETE FROM _src s USING _daum_fallback_held h
+ WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
+"""
+    return sql
+
 
 def run_identity_probe(artifact_path, artifact_sha256, generation, producer, target_sha256, env_file):
     """Capture a read-only partition bound to the source artifact and target."""
