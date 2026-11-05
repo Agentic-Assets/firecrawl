@@ -539,5 +539,3 @@ SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_broker
  (SELECT count(*) FROM observed) AS observed,
  ((SELECT count(*) FROM mismatches)+(SELECT count(*) FROM held_mismatches)) AS mismatches
 """, history_held
-
-

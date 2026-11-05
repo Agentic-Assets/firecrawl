@@ -6485,6 +6485,8 @@ JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
 WHERE b.slug IN ({slug_list})
   AND l.deleted_at IS NULL
   AND l.external_id IS NOT NULL
+  -- Buildout absence does not establish disappearance of site-card identities.
+  AND NOT (b.slug = 'franklin-street' AND l.external_id LIKE 'franklin-site:%')
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
 -- The transaction-wide lifecycle advisory lock serializes retirement against
@@ -7485,6 +7487,7 @@ def main():
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
@@ -7538,6 +7541,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.franklin_site_claims:
+        try:
+            from cre_franklin_site_admission import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing Franklin site partial ingest: {exc}")
+        return
     if (args.checkpoint_collector_git_sha is not None or args.checkpoint_jll_code_sha is not None) and not args.checkpoint_ingest_attempt:
         ap.error("collector code binding requires a checkpoint ingest attempt")
 
@@ -7702,6 +7712,11 @@ def main():
         with open(path, "rb") as f:
             image_transition_input = f.read()
         data = json.loads(image_transition_input)
+        # Franklin card subsets require a future, exact guarded claims lane.
+        # Never let the regular full/enrichment CLI turn them into lifecycle authority.
+        artifact_meta = data.get("runMeta") if isinstance(data, dict) else None
+        if isinstance(artifact_meta, dict) and artifact_meta.get("franklinSitePartial") is not None:
+            sys.exit("refusing Franklin site partial without guarded checkpoint admission")
         try:
             require_canonical_artifact(data)
         except ValueError as exc:
