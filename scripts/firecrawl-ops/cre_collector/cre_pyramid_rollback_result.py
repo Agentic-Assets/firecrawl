@@ -100,6 +100,9 @@ def verified_rollback(run_dir, manifest, source="pyramid-brokerage"):
         elif source == "transwestern":
             from cre_transwestern_rollback_result import read_result as result_reader, expected_binding as binding_reader
             state, reason, result_key, outcome = ("transwestern_image_guard_refused", "transwestern_image_guard_refusal", "transwestern_guard_result", "protected_image_multiplicity_refused")
+        elif source == "jll":
+            from cre_jll_guard_result import read_result as result_reader, expected_binding as binding_reader
+            state, reason, result_key, outcome = ("jll_image_guard_refused", "jll_image_guard_refusal", "jll_guard_result", "image_loss_refused")
         else:
             return False
         checkpoint = manifest["sources"][source]

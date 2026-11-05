@@ -251,6 +251,10 @@ class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
 
 
+class JllImageGuardRefusal(SourceGuardRefusal):
+    pass
+
+
 class TranswesternImageGuardRefusal(SourceGuardRefusal):
     """The protected image multiplicity guard refused and rolled back."""
 
@@ -5516,6 +5520,11 @@ def ingest_source(
             argv.extend(["--checkpoint-ingest-attempt", attempt_id])
         argv.extend(["--checkpoint-pyramid-code-sha", manifest["collector_git_sha"]])
         pyramid_binding = expected_binding(run_dir, manifest, attempt_id)
+    if source == "jll":
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id,
+                     "--checkpoint-jll-code-sha", manifest["collector_git_sha"]])
+        from cre_jll_guard_result import expected_binding
+        jll_binding = expected_binding(run_dir, manifest, attempt_id)
     if source == "colliers-main":
         argv.extend(["--checkpoint-ingest-attempt", attempt_id])
     if source == "transwestern":
@@ -5524,7 +5533,7 @@ def ingest_source(
         from cre_transwestern_rollback_result import expected_binding
         transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
     checkpoint["ingest"] = {
-        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage"} or subset else {}),
+        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage", "jll"} or subset else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -5545,7 +5554,7 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
-        if source in {"transwestern", "pyramid-brokerage"} or poll_hook() is not None:
+        if source in {"transwestern", "pyramid-brokerage", "jll"} or poll_hook() is not None:
             checkpoint["state"] = "ingest_recovery_required"
             save_manifest(run_dir, manifest)
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
@@ -5564,10 +5573,13 @@ def ingest_source(
             save_manifest(run_dir, manifest)
             return
         checkpoint["state"] = "ingest_recovery_required"
-    if source in {"pyramid-brokerage", "transwestern"}:
+    if source in {"pyramid-brokerage", "transwestern", "jll"}:
         if source == "pyramid-brokerage":
             from cre_pyramid_rollback_result import read_result
             binding, result_key, reason, held_state, refused, refusal = pyramid_binding, "pyramid_guard_result", "pyramid_historical_guard_refusal", "pyramid_historical_guard_refused", "historical_identity_refused", PyramidHistoricalGuardRefusal
+        elif source == "jll":
+            from cre_jll_guard_result import read_result
+            binding, result_key, reason, held_state, refused, refusal = jll_binding, "jll_guard_result", "jll_image_guard_refusal", "jll_image_guard_refused", "image_loss_refused", JllImageGuardRefusal
         else:
             from cre_transwestern_rollback_result import read_result
             binding, result_key, reason, held_state, refused, refusal = transwestern_binding, "transwestern_guard_result", "transwestern_image_guard_refusal", "transwestern_image_guard_refused", "protected_image_multiplicity_refused", TranswesternImageGuardRefusal
@@ -5612,7 +5624,7 @@ def ingest_source(
             trip = _peek_cpu_guard_trip()
             if trip is not None:
                 raise CpuGuardTrip(trip)
-            message = ("Transwestern protected image multiplicity lost" if source == "transwestern"
+            message = ("JLL image-loss guard refused" if source == "jll" else "Transwestern protected image multiplicity lost" if source == "transwestern"
                        else "Pyramid historical identity guard refused")
             raise refusal(message)
     if source == "colliers-main":
@@ -5639,7 +5651,7 @@ def advance_source(
     checkpoint = manifest["sources"][source]
     transactions = tuple(manifest["config"]["transactions"])
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
-    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused"}:
+    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused", "jll_image_guard_refused"}:
         raise GlobalStageError("held source artifact cannot be replayed on resume")
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(

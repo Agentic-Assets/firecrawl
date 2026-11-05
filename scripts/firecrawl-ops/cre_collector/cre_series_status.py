@@ -62,7 +62,7 @@ CHILD_STATES = {
     "ingesting",
     "ingest_recovery_required",
     "pyramid_historical_guard_refused",
-    "transwestern_image_guard_refused",
+    "transwestern_image_guard_refused", "jll_image_guard_refused",
     "ingested",
     "complete",
     "qualified_partial_subset",
@@ -245,7 +245,7 @@ def pipeline_progress(manifest: Mapping[str, Any], path: Path) -> dict | None:
                 "gate_blocked",
                 "dry_run_failed",
                 "pyramid_historical_guard_refused",
-                "transwestern_image_guard_refused",
+                "transwestern_image_guard_refused", "jll_image_guard_refused",
             }:
                 phase = "failed"
             else:
