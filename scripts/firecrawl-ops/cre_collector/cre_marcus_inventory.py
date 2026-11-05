@@ -203,6 +203,28 @@ def partition_inventory(listings, generation, started_at, finished_at, brokers=N
     return {"staged": accepted, "held": sorted(held, key=lambda value: value["index"])}
 
 
+def _read_rejected_artifact(path, maximum):
+    """Read a private leaf inside the standard owner-controlled rejected dir."""
+    import os
+    from pathlib import Path
+    from cre_stop_guarded_tier import _read_at, _safe_stat
+
+    path = Path(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        before = _safe_stat(directory, directory=True)
+        raw, _ = _read_at(directory, path.name, limit=maximum)
+        after = _safe_stat(directory, directory=True)
+        named = os.stat(path.parent, follow_symlinks=False)
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_uid) != (
+                after.st_dev, after.st_ino, after.st_mode, after.st_uid) or (
+                after.st_dev, after.st_ino, after.st_mode, after.st_uid) != (
+                named.st_dev, named.st_ino, named.st_mode, named.st_uid):
+            raise ValueError("Marcus rejected artifact directory changed")
+        return raw
+    finally:
+        os.close(directory)
+
 def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sha, current_git_dirty):
     """Read one exact rejected artifact; caller owns the manifest, lock and settlement.
 
@@ -213,7 +235,6 @@ def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sh
     from datetime import UTC, timedelta
     from pathlib import Path
 
-    from cre_colliers_partial_checkpoint import _read_private_file
 
     run_dir = Path(run_dir)
     if (not isinstance(manifest, dict) or manifest.get("run_id") != run_dir.name
@@ -247,7 +268,7 @@ def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sh
         raise ValueError("Marcus source attempt unsettled or ineligible")
     path = run_dir / relative
     size = path.lstat().st_size
-    raw = _read_private_file(path, size)
+    raw = _read_rejected_artifact(path, size)
     if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("Marcus source artifact changed")
     data = json.loads(raw)

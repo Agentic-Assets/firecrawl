@@ -60,8 +60,15 @@ def run_replay_worker(run_dir, manifest, owner, save):
     try:
         candidate = candidate_data(source)
         encoded = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n"
-        name = f"marcus-millichap-inventory-attempt-{number}.json"
-        directory = os.open(run_dir / "rejected", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        name = f"candidate-{number}.json"
+        parent = os.open(run_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(parent, directory=True)
+            os.mkdir("marcus-millichap-partial", mode=0o700, dir_fd=parent)
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        directory = os.open(run_dir / "marcus-millichap-partial", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             _safe_stat(directory, directory=True, private=True)
             descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
@@ -74,7 +81,7 @@ def run_replay_worker(run_dir, manifest, owner, save):
                 os.fsync(directory)
         finally:
             os.close(directory)
-        path = run_dir / "rejected" / name
+        path = run_dir / "marcus-millichap-partial" / name
         check_owner()
         if (refresh.git_identity() != (producer, False)
                 or rederive_settled_artifact(run_dir, manifest, number, producer, False) != source
@@ -112,7 +119,7 @@ def verify_candidate_artifact(artifact_path, manifest, *, current_code_sha, curr
             or not isinstance(candidate, dict)):
         raise ValueError("Marcus inventory worker unsettled")
     number = worker["attempt"]
-    relative = f"rejected/marcus-millichap-inventory-attempt-{number}.json"
+    relative = f"marcus-millichap-partial/candidate-{number}.json"
     if path != run_dir / relative or candidate.get("path") != relative or candidate.get("attempt_number") != number:
         raise ValueError("Marcus inventory candidate path differs")
     source = rederive_settled_artifact(run_dir, manifest, number, current_code_sha, current_git_dirty)
@@ -245,8 +252,8 @@ def run_identity_probe(artifact_path, manifest, env_file):
         raise MarcusInventoryProbeRefusal("Marcus source identity partition was invalid") from exc
     encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-    name = f"marcus-millichap-preimage-{source['attempt']}-{secrets.token_hex(8)}.json"
-    directory = os.open(verified["run_dir"] / "rejected", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    name = f"preimage-{source['attempt']}-{secrets.token_hex(8)}.json"
+    directory = os.open(verified["run_dir"] / "marcus-millichap-partial", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         _safe_stat(directory, directory=True, private=True)
         descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
@@ -262,7 +269,7 @@ def run_identity_probe(artifact_path, manifest, env_file):
     return {"artifact_sha256": verified["sha256"], "generation_id": source["generation"],
             "producer_sha": producer, "database_target_sha256": target,
             "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(), "held": held,
-            "preimage_path": f"rejected/{name}", "preimage_bytes": len(encoded),
+            "preimage_path": f"marcus-millichap-partial/{name}", "preimage_bytes": len(encoded),
             "preimage_sha256": hashlib.sha256(encoded).hexdigest()}
 
 
@@ -272,7 +279,7 @@ def load_probe_preimage(run_dir, attempt, probe):
 
     relative = probe.get("preimage_path") if isinstance(probe, dict) else None
     if not isinstance(relative, str) or not re.fullmatch(
-            rf"rejected/marcus-millichap-preimage-{attempt}-[a-f0-9]{{16}}\.json", relative):
+            rf"marcus-millichap-partial/preimage-{attempt}-[a-f0-9]{{16}}\.json", relative):
         raise ValueError("Marcus inventory preimage path invalid")
     size = probe.get("preimage_bytes")
     if type(size) is not int or size < 1:

@@ -82,6 +82,7 @@ def test_settled_artifact_binds_attempt_bytes_and_preserves_coordinator_clock(tm
     run = tmp_path / GENERATION
     rejected = run / "rejected"
     rejected.mkdir(parents=True, mode=0o700)
+    rejected.chmod(0o755)
     now = datetime.now(UTC)
     generation_start = (now - timedelta(minutes=3)).isoformat()
     attempt_start = (now - timedelta(minutes=2)).isoformat()
@@ -286,7 +287,7 @@ def test_series_qualifies_only_exact_marcus_partial_owner_and_attempt():
                "generation_started_at": START, "producer_sha": producer, "attempt": 1,
                "held": [], "held_count": 0, "emitted_count": 1}
     checkpoint = {"artifact": {"marcus_inventory_partial": True, "sha256": sha, "staged_unique": 1,
-                               "path": "rejected/marcus-millichap-inventory-attempt-1.json"},
+                               "path": "marcus-millichap-partial/candidate-1.json"},
                   "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
                            "admission_scope": "marcus_inventory_partial_v1", "current_inventory_proof": binding},
                   "marcus_inventory_worker": {"sha256": sha, "state": "settled", "attempt": 1},

@@ -186,7 +186,7 @@ def marcus_inventory_partial_child(child: Mapping[str, Any]) -> bool:
                 and source_attempt.get("error") == "marcus-millichap/sale freshness metric detailErrors must be zero"
                 and source_attempt.get("rejected_artifact") == f"rejected/marcus-millichap-attempt-{binding['attempt']}.json"
                 and source_attempt.get("rejected_artifact_sha256") == binding["source_sha256"]
-                and artifact.get("path") == f"rejected/marcus-millichap-inventory-attempt-{binding['attempt']}.json"
+                and artifact.get("path") == f"marcus-millichap-partial/candidate-{binding['attempt']}.json"
                 and worker.get("state") == "settled" and worker.get("attempt") == binding["attempt"]
                 and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
                 and isinstance(held, list) and all(isinstance(value, str) and value for value in held)
