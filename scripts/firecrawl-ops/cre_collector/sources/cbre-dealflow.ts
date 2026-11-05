@@ -1067,7 +1067,9 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
   if (!selected.length) throw new Error(`no public ${projectType} cards found on CBRE Deal Flow`);
   const stoppedAtRequestedLimit = selected.length >= want && Number.isFinite(max);
   const providerTotalMismatch =
-    !Number.isFinite(max) && total !== null && providerRowsScanned !== total;
+    total !== null &&
+    (providerRowsScanned < Math.min(total, want) ||
+      (!Number.isFinite(max) && providerRowsScanned !== total));
   const truncated =
     parseOmissions > 0 ||
     duplicateIdentities > 0 ||

@@ -2032,6 +2032,13 @@ export async function srcJll(
             filterTotals[propertyType],
             strictFreshness,
           );
+          if (parsed.total !== filterTotals[propertyType]) {
+            paginationIncomplete = true;
+            if (parsed.total !== null) {
+              const observedPages = Math.max(1, Math.ceil(parsed.total / JLL_SEARCH_PAGE_SIZE));
+              maxByFilterPage[propertyType] = Math.max(maxByFilterPage[propertyType] ?? 0, observedPages);
+            }
+          }
         }
         console.error(
           `  jll/${tx}/${propertyType}: page ${page}, ${parsed.listings.length} cards (filter total ${parsed.total ?? "?"})`,
@@ -2046,7 +2053,10 @@ export async function srcJll(
       for (const listing of result.listings) {
         observedIdentityPairs.push(listing);
         const url = clean(listing?.url);
-        if (url) urls.add(url);
+        if (url) {
+          if (urls.has(url)) paginationIncomplete = true;
+          urls.add(url);
+        }
       }
       const declaredLast = maxByFilterPage[result.propertyType];
       if (result.listings.length === 0 || urls.size === before) {

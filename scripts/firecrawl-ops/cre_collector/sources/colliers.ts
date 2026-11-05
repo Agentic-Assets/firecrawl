@@ -978,9 +978,9 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   const stoppedAtRequestedLimit =
     selected.length >= want && Number.isFinite(max);
   const providerTotalMismatch =
-    !Number.isFinite(max) &&
     total !== null &&
-    providerRowsScanned !== total;
+    (providerRowsScanned < Math.min(total, want) ||
+      (!Number.isFinite(max) && providerRowsScanned !== total));
   let truncated =
     parseOmissions > 0 ||
     providerTotalMismatch ||

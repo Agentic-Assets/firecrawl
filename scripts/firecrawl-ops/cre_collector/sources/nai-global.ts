@@ -849,16 +849,11 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
     const seenIds = new Set<string>();
     let enumeratedFeedRows = 0;
     let stoppedOnShortPage = false;
+    let identityOverlap = false;
     for (let offset = 0; (PAGE_CAP === 0 || offset < PAGE_CAP * NAI_PAGE_SIZE); offset += NAI_PAGE_SIZE) {
       const page = await fetchNaiFeedPage(offset, sourceIds);
       const signature = naiPageSignature(page);
       if (signature && seenPageSignatures.has(signature)) {
-        if (requireFreshDetails()) {
-          throw new Error(
-            `NAI ${tx} office batch ${batchIndex + 1}/${sourceBatches.length} repeated ` +
-              `a full page at offset ${offset} during strict freshness collection`
-          );
-        }
         console.error(
           `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
             "repeated page; provider enumeration remains incomplete"
@@ -868,6 +863,9 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
       if (signature) seenPageSignatures.add(signature);
       const pageIds = page.map((row: any) => naiPublicPostId(row?.id)).filter((id: string | null): id is string => !!id);
       const noNewIds = pageIds.length > 0 && pageIds.every((id: string) => seenIds.has(id));
+      if (new Set(pageIds).size !== pageIds.length || pageIds.some((id: string) => seenIds.has(id))) {
+        identityOverlap = true;
+      }
       for (const id of pageIds) seenIds.add(id);
       enumeratedFeedRows += page.length;
       // The public feed contains historical and inactive posts. Use the same
@@ -880,21 +878,20 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
           `${page.length} feed rows, ${batchRows.length} ${tx} collected`
       );
       if (noNewIds) {
-        if (requireFreshDetails()) throw new Error(`NAI ${tx} page has no new source identities`);
         console.error(`  nai-global/${tx}: page has no new source identities; enumeration incomplete`);
+        break;
+      }
+      if (page.length && !signature) {
+        // A page with missing identities cannot establish complete coverage.
+        console.error(`  nai-global/${tx}: page lacks stable identities; enumeration incomplete`);
         break;
       }
       if (page.length < NAI_PAGE_SIZE) {
         stoppedOnShortPage = true;
         break;
       }
-      if (!signature) {
-        // Cannot establish progress for another full page without stable IDs.
-        console.error(`  nai-global/${tx}: full page lacks stable identities; enumeration incomplete`);
-        break;
-      }
     }
-    return { rows: batchRows, enumeratedFeedRows, complete: stoppedOnShortPage };
+    return { rows: batchRows, enumeratedFeedRows, complete: stoppedOnShortPage && !identityOverlap };
   };
 
   // An unlimited run can enumerate disjoint source batches in a small bounded

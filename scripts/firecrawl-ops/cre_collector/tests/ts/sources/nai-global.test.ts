@@ -281,7 +281,7 @@ test("NAI strict full enumeration observes every batch and emits freshness on ev
   }
 });
 
-test("NAI strict freshness fails closed on a repeated full provider page", async (t) => {
+test("NAI strict freshness retains peers on a repeated full provider page", async (t) => {
   const originalFetch = globalThis.fetch;
   const originalRequireFresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const originalGeneration = process.env.CRE_REFRESH_GENERATION;
@@ -321,10 +321,9 @@ test("NAI strict freshness fails closed on a repeated full provider page", async
     else process.env.CRE_REFRESH_GENERATION = originalGeneration;
   });
 
-  await assert.rejects(
-    () => srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false),
-    /repeated a full page .* strict freshness collection/
-  );
+  const result = await srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.truncated, true);
+  assert.equal(result.listings.length, 100);
 });
 
 test("NAI non-strict repeated page remains incomplete", async (t) => {

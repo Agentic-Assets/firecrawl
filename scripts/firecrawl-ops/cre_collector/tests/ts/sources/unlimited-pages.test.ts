@@ -223,6 +223,16 @@ test("NAI full pages without stable IDs stop as incomplete in unlimited mode", a
 });
 
 test("NAI reordered duplicate pages stop as incomplete in unlimited mode", async (t) => {
+  const previousStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const previousGeneration = process.env.CRE_REFRESH_GENERATION;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "nai-overlap-test";
+  t.after(() => {
+    if (previousStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = previousStrict;
+    if (previousGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = previousGeneration;
+  });
   const nai = await import("../../../sources/nai-global.js");
   const chunk = new URL("/_next/static/chunks/office-config.js", nai.NAI_WIDGET_URL).href;
   const offices = nai.NAI_SOURCE_IDS.map((id, i) => `{id:${id},name:"${i ? "NAI Office" : "NAI Global"}",country:"United States"}`).join(",");
@@ -245,4 +255,115 @@ test("NAI reordered duplicate pages stop as incomplete in unlimited mode", async
   assert.equal(calls, 6);
   assert.equal(result.truncated, true);
   assert.equal(result.listings.length, 100);
+});
+
+for (const mode of ["partial-overlap", "short-missing-id", "same-page-duplicate"] as const) {
+  test(`NAI ${mode} preserves peers but keeps coverage incomplete`, async (t) => {
+    const nai = await import("../../../sources/nai-global.js");
+    const chunk = new URL("/_next/static/chunks/office-config.js", nai.NAI_WIDGET_URL).href;
+    const offices = nai.NAI_SOURCE_IDS.map((id, i) => `{id:${id},name:"${i ? "NAI Office" : "NAI Global"}",country:"United States"}`).join(",");
+    const row = (id: number | null) => ({ id, title: `Listing ${id}`,
+      contentType: { id: 4, name: "Sale Listings" }, listingStatus: "FOR_SALE_ON_MARKET",
+      source: { name: "NAI Test" } });
+    let calls = 0;
+    nai.naiFeedPageCache.clear();
+    t.after(() => nai.naiFeedPageCache.clear());
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === nai.NAI_WIDGET_URL) return new Response(`<script src="${chunk}"></script>`);
+      if (String(input) === chunk) return new Response(`self.webpackChunk_N_E.push([[1],{1:()=>{let a=[${offices}];}}]);`);
+      const offset = JSON.parse(String(init?.body)).variables.offset;
+      calls++;
+      const rows = mode === "short-missing-id" ? [row(1), row(null)] :
+        mode === "same-page-duplicate" ? [row(1), row(1), row(2)] : offset === 0 ? Array.from({ length: 100 }, (_, i) => row(i + 1)) : [row(100), row(101)];
+      return Response.json({ data: { publicPosts: rows } });
+    });
+    const result = await nai.srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false);
+    assert.equal(calls, mode === "partial-overlap" ? 6 : 3);
+    assert.equal(result.truncated, true);
+    assert.ok(result.listings.some((entry: any) => String(entry.id) === "infabode:1"));
+    if (mode === "partial-overlap") assert.ok(result.listings.some((entry: any) => String(entry.id) === "infabode:101"));
+    if (mode === "same-page-duplicate") assert.ok(result.listings.some((entry: any) => String(entry.id) === "infabode:2"));
+  });
+}
+test("JLL partially overlapping pages retain new cards with incomplete coverage", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const skip = JSON.parse(String(init?.body)).variables.skip;
+    const ids = skip === 0 ? ["one", "two"] : ["two", "three"];
+    return Response.json({ data: { properties: { count: 51,
+      items: ids.map(id => ({ id, pageUrl: `/listings/${id}` })),
+    } } });
+  });
+  t.mock.method(firecrawl, "scrape", async (url: string) => {
+    const id = String(url).split("/").at(-1);
+    return { rawHtml: `<script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: {
+      property: { id, pageUrl: `/listings/${id}` }, brokers: [],
+    } } })}</script>`, markdown: "", links: [], images: [] } as any;
+  });
+  const result = await srcJll("sale", Number.POSITIVE_INFINITY, false);
+  assert.deepEqual(result.listings.map((entry: any) => entry.id).sort(), ["one", "three", "two"]);
+  assert.equal(result.truncated, true);
+});
+
+test("JLL rising per-filter totals continue to the new boundary and remain incomplete", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const skip = JSON.parse(String(init?.body)).variables.skip;
+    assert.ok(skip <= 100);
+    calls++;
+    const count = skip === 0 ? 100 : 101;
+    const n = skip === 100 ? 1 : 50;
+    return Response.json({ data: { properties: { count,
+      items: Array.from({ length: n }, (_, i) => {
+        const id = `listing-${skip + i}`;
+        return { id, pageUrl: `/listings/${id}` };
+      }),
+    } } });
+  });
+  t.mock.method(firecrawl, "scrape", async (url: string) => {
+    const id = String(url).split("/").at(-1);
+    return { rawHtml: `<script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: {
+      property: { id, pageUrl: `/listings/${id}` }, brokers: [],
+    } } })}</script>`, markdown: "", links: [], images: [] } as any;
+  });
+  const result = await srcJll("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(calls, 27);
+  assert.equal(result.listings.length, 101);
+  assert.equal(result.truncated, true);
+});
+
+test("finite Colliers request reports early empty page as incomplete", async (t) => {
+  const { srcColliers } = await import("../../../sources/colliers.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two"] : [];
+    if (url.pathname.endsWith("GetListingsHtml")) return Response.json({
+      success: true, total: 4, totalAvail: 4, numProjects: ids.length,
+      html: `<ul>${ids.map(id => `<li class="item"><a class="headline">${id}</a></li>`).join("")}</ul>`,
+    });
+    return Response.json({ success: true, projectLocations: ids.map(ProjectId => ({ ProjectId, Latitude: 30, Longitude: -90 })) });
+  });
+  const result = await srcColliers("sale", 3, false);
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.truncated, true);
+});
+
+test("finite CBRE Deal Flow request reports early empty page as incomplete", async (t) => {
+  const { srcCbreDealflow } = await import("../../../sources/cbre-dealflow.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (!init?.method || init.method === "GET") return new Response("<html></html>");
+    if (url.pathname.endsWith("GetFilters")) return Response.json({});
+    const start = Number(new URLSearchParams(String(init.body)).get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two"] : [];
+    return Response.json({ success: true, total: 4, totalAvail: 4, numProjects: ids.length,
+      html: `<ul class="gridview">${ids.map(id => `<li class="item"><div class="headline">${id}</div><div class="location"><div class="city">Dallas, TX</div></div><div class="details">Investment Sale</div></li>`).join("")}</ul>`,
+    });
+  });
+  const result = await srcCbreDealflow("sale", 3, false);
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.truncated, true);
 });
