@@ -264,3 +264,97 @@ def run_identity_probe(artifact_path, manifest, env_file):
             "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(), "held": held,
             "preimage_path": f"rejected/{name}", "preimage_bytes": len(encoded),
             "preimage_sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def load_probe_preimage(run_dir, attempt, probe):
+    import re
+    from cre_colliers_partial_checkpoint import _read_private_file
+
+    relative = probe.get("preimage_path") if isinstance(probe, dict) else None
+    if not isinstance(relative, str) or not re.fullmatch(
+            rf"rejected/marcus-millichap-preimage-{attempt}-[a-f0-9]{{16}}\.json", relative):
+        raise ValueError("Marcus inventory preimage path invalid")
+    size = probe.get("preimage_bytes")
+    if type(size) is not int or size < 1:
+        raise ValueError("Marcus inventory preimage size invalid")
+    raw = _read_private_file(Path(run_dir) / relative, size)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != probe.get("preimage_sha256"):
+        raise ValueError("Marcus inventory preimage changed")
+    result = json.loads(raw)
+    if not isinstance(result, list):
+        raise ValueError("Marcus inventory preimage invalid")
+    return result
+
+
+def admit_inventory(artifact_path, manifest, report, *, current_code_sha, current_git_dirty, phase):
+    """Bind source and target proof to the existing additive coverage gate."""
+    from copy import deepcopy
+    from cre_current_inventory_admission import validate_report_scope
+    from cre_gate import count_artifacts
+    from cre_marcus_inventory_db import _validate_partition
+
+    config = manifest["config"]
+    if (phase not in ("source", "aggregate") or config.get("additive") is not True
+            or config.get("mark_missing") is not False or config.get("status_activation") is not False
+            or config.get("transactions") != ["sale", "lease"] or "marcus-millichap" not in config.get("sources", [])):
+        raise ValueError("Marcus inventory gate scope invalid")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                         current_git_dirty=current_git_dirty)
+    source, staged = verified["source"], verified["staged"]
+    checkpoint = manifest["sources"]["marcus-millichap"]
+    probe = checkpoint.get("marcus_inventory_probe")
+    staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    staged_sha = hashlib.sha256(staged_bytes).hexdigest()
+    if (not isinstance(probe, dict) or probe.get("artifact_sha256") != verified["sha256"]
+            or probe.get("generation_id") != manifest["run_id"] or probe.get("producer_sha") != current_code_sha
+            or probe.get("database_target_sha256") != source["target_sha256"] or probe.get("staged_sha256") != staged_sha):
+        raise ValueError("Marcus inventory probe differs")
+    held = probe.get("held")
+    preimage = load_probe_preimage(verified["run_dir"], source["attempt"], probe)
+    _validate_partition(staged, held, preimage, source["generation"], source["started_at"], source["finished_at"])
+    current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
+    if (sources != {"marcus-millichap"} or errors.get("marcus-millichap") != "original source details unverified"
+            or rejects != 0 or current.get("marcus-millichap") != len(staged)):
+        raise ValueError("Marcus inventory gate evidence differs")
+    validate_report_scope(report, manifest, "marcus-millichap", artifact_path)
+    summary, gate = report["summary"], report["per_source"]["marcus-millichap"]
+    if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
+            or summary.get("baseline_updated") is not False or summary.get("baseline_update_sources") != []
+            or gate.get("current_active") != len(staged) or gate.get("mark_missing_safe") is not False):
+        raise ValueError("Marcus inventory coverage gate differs")
+    verdict = "ok_additive_verified_subset"
+    reasons = {("first_seen", "no baseline row; cannot gate (first sight); a source pass also errored this run"),
+               ("hold", "source pass error: original source details unverified")}
+    pair = ((gate.get("raw_verdict"), gate.get("raw_reason")) if gate.get("verdict") == verdict
+            else (gate.get("verdict"), gate.get("reason")))
+    if pair not in reasons:
+        raise ValueError("Marcus inventory gate reason differs")
+    binding = {"schema": "marcus-inventory-partial-v1", "scope": "marcus_inventory_partial_v1",
+               "source_key": "marcus-millichap", "artifact_sha256": verified["sha256"],
+               "source_sha256": source["source_sha256"], "producer_sha": current_code_sha,
+               "database_target_sha256": source["target_sha256"], "generation_id": manifest["run_id"],
+               "generation_started_at": manifest["started_at"], "attempt": source["attempt"],
+               "staged_sha256": staged_sha, "preimage_sha256": probe["preimage_sha256"], "held": held,
+               "held_count": len(held) + len(source["partition"]["held"]), "emitted_count": len(staged) - len(held),
+               "detail_qualified": 0, "detail_errors": source["detail_errors"],
+               "original_source_outcome": "detail_freshness_rejected", "whole_source_coverage": False}
+    if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
+        raise ValueError("Marcus source gate changed")
+    gate.update(raw_verdict=pair[0], raw_reason=pair[1], verdict=verdict,
+                reason="source-bound Marcus inventory observations admitted additively; detail unverified",
+                mark_missing_safe=False, admission_scope="marcus_inventory_partial_v1", current_inventory_proof=binding)
+    for key in ("hold_sources", "mark_missing_safe_sources", "mark_missing_safe_brokerages"):
+        if isinstance(summary.get(key), list):
+            summary[key] = [value for value in summary[key] if value != "marcus-millichap"]
+    if isinstance(report.get("per_brokerage"), dict) and isinstance(report["per_brokerage"].get("marcus-millichap"), dict):
+        report["per_brokerage"]["marcus-millichap"]["mark_missing_safe"] = False
+    if isinstance(summary.get("verdict_counts"), dict):
+        counts = {}
+        for item in report["per_source"].values():
+            value = item.get("verdict")
+            counts[value] = counts.get(value, 0) + 1
+        summary["verdict_counts"] = counts
+    report["scope"] = {"kind": ("marcus_inventory_partial_v1" if phase == "source" else "collector_registry_verified_subset"),
+                       "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
+    return deepcopy(binding)
