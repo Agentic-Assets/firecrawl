@@ -370,6 +370,44 @@ if(-not $fixture.tasks[$daum.key].enabled) {throw 'DAUM task enabled state not r
 $fixture.tasks.Remove($daum.key);$rows=@($rows[0..2])
 foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
 $fixture.successor=$false;$fixture.events.Clear()
+# The qualified fleet can retain DAUM's existing V2 subset only within its
+# exact source list and with its explicit policy preserved through repin.
+$qualifiedBase=([string]$snapshot[2].xml).Replace('"-Sources" "interra-realty,newmark"','"-Sources" "interra-realty,newmark,daum-commercial" "-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2"')
+foreach($enabled in @($false,$true)) {
+ foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+ $fixture.tasks['qualified'].xml=Set-CreHandoffEnabledXml $qualifiedBase $enabled
+ $fixture.tasks['qualified'].enabled=$enabled
+ $qualifiedRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark,daum-commercial';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
+ $qualifiedSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $qualifiedRelease $old $new)
+ & $realFleetCheck $qualifiedRelease
+ foreach($mutation in @(
+   @('"-AdmitDaumVerifiedSubset"',''),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitDaumVerifiedSubset"'),
+   @('"-DaumSubsetPolicy" "tenure-and-empty-title-v2"',''),
+   @('"tenure-and-empty-title-v2"','"tenure-only-v1"'),
+   @('"-Pipeline"',''),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitCurrentInventorySource" "daum-commercial"'),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitBaselineHoldAdditively"')
+ )) {
+  $fixture.tasks['qualified'].xml=([string]$qualifiedSnapshot[2].xml).Replace($mutation[0],$mutation[1])
+  try {$null=Get-CreReviewedTaskSnapshot $qualifiedRelease $old $new;throw 'invalid qualified DAUM task accepted'} catch {if($_.Exception.Message -ceq 'invalid qualified DAUM task accepted'){throw}}
+ }
+ $fixture.tasks['qualified'].xml=[string]$qualifiedSnapshot[2].xml
+ $fixture.tasks['qualified'].xml=$fixture.tasks['qualified'].xml.Replace($old,('c'*40))
+ try {$null=Get-CreReviewedTaskSnapshot $qualifiedRelease $old $new;throw 'changed qualified pin accepted'} catch {if($_.Exception.Message -ceq 'changed qualified pin accepted'){throw}}
+ $fixture.tasks['qualified'].xml=[string]$qualifiedSnapshot[2].xml
+ $d=Get-CreReviewedSnapshotDigest $qualifiedRelease $qualifiedSnapshot $old $new
+ Invoke-CreReviewedTaskHold $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ Invoke-CreReviewedTaskRepin $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ Invoke-CreReviewedTaskRestore $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ $expected=Set-CreHandoffEnabledXml (Pin-ReviewedXml ([string]$qualifiedSnapshot[2].xml) $old $new) $enabled
+ if($fixture.tasks['qualified'].enabled -ne $enabled -or (Get-CreTaskContract $fixture.tasks['qualified'].xml) -cne (Get-CreTaskContract $expected)) {throw 'Qualified DAUM task changed beyond pin or enabled state'}
+ $fixture.successor=$false;$fixture.events.Clear()
+}
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$noDaum=([string]$snapshot[2].xml).Replace('"-Pipeline"','"-Pipeline" "-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2"')
+try {Assert-CreReviewedAction $release $rows[2] $noDaum $old;throw 'DAUM subset without source accepted'} catch {if($_.Exception.Message -ceq 'DAUM subset without source accepted'){throw}}
+$fixture.successor=$false;$fixture.events.Clear()
 # Named Colliers partial task must remain a singleton pipeline and share pin/owner handling.
 $colliers=@{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Colliers Partial Refresh'}
 $rows=@($rows)+@($colliers)

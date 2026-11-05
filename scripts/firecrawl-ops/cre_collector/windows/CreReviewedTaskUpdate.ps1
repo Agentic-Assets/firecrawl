@@ -210,8 +210,8 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     if((Get-CreReviewedArgument $argv '-ExpectedSha') -cne $OldSha) {throw 'Task pin differs'}
     $single=@($argv|Where-Object {$_ -ieq '-Source'}).Count;$many=@($argv|Where-Object {$_ -ieq '-Sources'}).Count
     $daumFlag=@($argv|Where-Object {$_ -ieq '-AdmitDaumVerifiedSubset'}).Count
-    if($Row.key -cne 'daum-subset' -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
-    if($Row.key -cne 'daum-subset' -and $currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy on wrong task'}
+    if($Row.key -cnotin @('daum-subset','qualified') -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
+    if($Row.key -cnotin @('daum-subset','qualified') -and $currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy on wrong task'}
     if($Row.key -clike 'enrich:*') {
         $source=$Row.key.Substring(7)
         if($tier -cne 'enrich' -or $single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $source -or $source -cnotin @($Release.supported_sources)) {throw 'Enrichment task source scope differs'}
@@ -233,6 +233,19 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
         if($single -ne 0 -or $many -ne 1 -or -not $Release.qualified_sources -or
            (Get-CreReviewedArgument $argv '-Sources') -cne [string]$Release.qualified_sources -or
            @($argv|Where-Object {$_ -ieq '-Pipeline'}).Count -ne 1) {throw 'Qualified task source scope differs'}
+        if($daumFlag -eq 1) {
+            $sourceKeys=@(([string]$Release.qualified_sources).Split(',') | ForEach-Object { $_.Trim() })
+            $completeKeys=@()
+            foreach($name in @('-AdmitCurrentInventorySource','-AdmitCurrentInventorySources')) {
+                if($currentArguments.parameters.ContainsKey($name)) {
+                    $completeKeys+=@(([string]$currentArguments.parameters[$name]).Split(',') | ForEach-Object { $_.Trim() })
+                }
+            }
+            if('daum-commercial' -cnotin $sourceKeys -or 'daum-commercial' -cin $completeKeys -or
+               $currentArguments.seen.ContainsKey('-AdmitBaselineHoldAdditively') -or
+               -not $currentArguments.parameters.ContainsKey('-DaumSubsetPolicy') -or
+               $currentArguments.parameters['-DaumSubsetPolicy'] -cne 'tenure-and-empty-title-v2') {throw 'Qualified DAUM subset scope differs'}
+        } elseif($currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy without admission'}
     } else {
         $expected=if($Row.key -ceq 'interra'){'interra-realty'}else{'newmark'}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $expected -or
