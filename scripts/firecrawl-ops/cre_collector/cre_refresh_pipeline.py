@@ -1053,7 +1053,8 @@ def run_bounded_pipeline(
                 state["source_timings"][item.source]["collection_finished_at"] = (
                     getattr(item, "attempt", None) or {}
                 ).get("finished_at") or refresh.utc_now()
-            elif (item.source == "colliers" and item.attempt.get("rc") == refresh.COHORT_SETTLED_FAILURE_EXIT
+            elif (item.source == "colliers" and not item.attempt.get("clock_order_refused")
+                  and item.attempt.get("rc") == refresh.COHORT_SETTLED_FAILURE_EXIT
                   and (item.attempt.get("colliers_partial") or {}).get("state") == "sealed_local"
                   and item.attempt["colliers_partial"].get("outcome") == "source_error"
                   and not manifest["sources"][item.source].get("terminal_collection_failure")):
@@ -1127,6 +1128,8 @@ def run_bounded_pipeline(
                     clock_deadlines.pop(clock_key, None)
                     pending.remove(source)
                     manifest["sources"][source]["state"] = "collect_infrastructure_failed"
+                    manifest["sources"][source]["clock_hold"] = {"phase": "start", "generation_id": manifest["run_id"],
+                        "attempt_count": len(manifest["sources"][source]["attempts"])}
                     retry_or_fail(source, "wall clock did not reach generation start")
                 else:
                     pending.remove(source)

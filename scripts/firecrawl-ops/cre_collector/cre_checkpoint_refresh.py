@@ -3945,6 +3945,7 @@ def _cohort_attempt(
     attempt_started = utc_now()
     if parse_iso8601(attempt_started, field="attempt start") < parse_iso8601(manifest["started_at"], field="generation start"):
         raise ClockOrderingPending("wall clock precedes generation start")
+    checkpoint.pop("clock_hold", None)
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
     tmp_artifact = run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -4142,7 +4143,19 @@ def _finalize_cohort_collection(
             raise ClockOrderingPending("wall clock precedes attempt start")
         item.log_handle.write(f"[{finished_at}] coordinator refused reversed attempt clock\n")
         item.log_handle.close()
-        item.attempt.update(rc=rc, finished_at=finished_at, error="wall clock did not reach attempt start")
+        item.attempt.update(rc=rc, finished_at=finished_at, error="wall clock did not reach attempt start",
+                            clock_order_refused=True)
+        mark_source_document_settlement(manifest, item.attempt)
+        if item.attempt.get("native_source_evidence"):
+            from source_evidence import native_pages
+            native_pages.settle(run_dir, manifest, item.source, item.attempt, save_manifest)
+        item.attempt["rejected_artifact"], item.attempt["rejected_artifact_sha256"] = archive_rejected_with_evidence(
+            item.tmp_artifact, run_dir, manifest, item.source, item.attempt)
+        rejected = item.attempt["rejected_artifact"]
+        seal_source_evidence(run_dir, manifest, item.source, item.attempt,
+                             run_dir / rejected if rejected else item.tmp_artifact)
+        checkpoint["clock_hold"] = {"phase": "finish", "generation_id": manifest["run_id"],
+                                    "attempt_count": len(checkpoint["attempts"])}
         checkpoint["state"] = "collect_infrastructure_failed"
         save_manifest(run_dir, manifest)
         return False

@@ -181,6 +181,42 @@ def test_mixed_failure_reconciliation_preserves_verified_peers_without_replay(tm
     assert manifest["sources"]["savills"]["state"] == "interrupted"
 
 
+@pytest.mark.parametrize("phase", ["start", "finish"])
+def test_clock_hold_and_partial_resume_without_replay(tmp_path, monkeypatch, phase):
+    settings = config(pipeline=True, sources=["cbre", "colliers", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child.update(status="failed", error="source clock hold",
+        config=series._expected_child_config("cbre,colliers,savills", settings))
+    attempts = [] if phase == "start" else [{"number": 1, "started_at": "2026-10-15T12:00:01Z",
+        "finished_at": "2026-10-15T12:00:00Z", "rc": 80, "clock_order_refused": True}]
+    child["sources"]["savills"] = {"state": "collect_infrastructure_failed", "attempts": attempts,
+        "clock_hold": {"phase": phase, "generation_id": RUN_ID, "attempt_count": len(attempts)}}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "wall clock"}
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert [manifest["sources"][key]["state"] for key in settings["sources"]] == ["complete", "qualified_partial_subset", "failed_source"]
+    assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
+    child["pipeline"]["commit_outcome_unknown"] = True
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    child["pipeline"]["commit_outcome_unknown"] = False
+    child["sources"]["savills"]["ingest"] = {"state": "unknown"}
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    child["sources"]["savills"]["ingest"] = None
+    child["sources"]["savills"]["clock_hold"]["generation_id"] = "foreign"
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+
+
 def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
     import cre_source_health as health
 

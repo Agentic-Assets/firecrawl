@@ -1,5 +1,7 @@
 """Real source dispatch and settlement retain observed wall timestamps."""
 import io
+import hashlib
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -26,6 +28,30 @@ def test_real_colliers_source_recovers_after_dispatch_clock_reversal(tmp_path, m
     monkeypatch.setattr(refresh, "_cohort_attempt", inject_once)
     run_source(tmp_path, monkeypatch, False)
     assert len(calls) >= 2
+
+
+def test_real_colliers_finished_evidence_is_sealed_when_clock_expires(tmp_path, monkeypatch):
+    original = refresh._finalize_cohort_collection
+
+    def expire(root, manifest, item, **kwargs):
+        prior = refresh.parse_iso8601(item.attempt_started_at, field="start") - timedelta(milliseconds=60)
+        with monkeypatch.context() as patcher:
+            patcher.setattr(refresh, "utc_now", lambda: prior.isoformat())
+            return original(root, manifest, item, candidate_only=True, clock_expired=True)
+
+    monkeypatch.setattr(refresh, "_finalize_cohort_collection", expire)
+    with pytest.raises(AssertionError):
+        run_source(tmp_path, monkeypatch, False)
+    root = tmp_path / "generation"
+    child = json.loads((root / "manifest.json").read_text())
+    checkpoint = child["sources"]["colliers"]
+    attempt = checkpoint["attempts"][-1]
+    rejected = root / attempt["rejected_artifact"]
+    assert rejected.stat().st_mode & 0o077 == 0
+    assert hashlib.sha256(rejected.read_bytes()).hexdigest() == attempt["rejected_artifact_sha256"]
+    assert attempt["colliers_partial"]["state"] == "sealed_local"
+    assert attempt["clock_order_refused"] is True and checkpoint["clock_hold"]["phase"] == "finish"
+    assert checkpoint["state"] == "collect_infrastructure_failed" and not (tmp_path / "detail-called").exists()
 
 
 @pytest.mark.parametrize("expires", [False, True])

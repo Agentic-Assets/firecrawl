@@ -2009,9 +2009,9 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
                 unit_cache=unit_cache,
                 parent_attempts=row["attempts"],
             )
-            else ("failed_source" if (child.get("sources", {}).get(key, {}).get("state") in {
+            else ("failed_source" if ((child.get("sources", {}).get(key, {}).get("state") in {
                 "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
-                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} or settled_clock_hold(child, key))
                 and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed"
                 and child.get("pipeline", {}).get("commit_outcome_unknown") is not True
                 and child.get("pipeline", {}).get("status") != "reconciliation_required")
@@ -2026,6 +2026,33 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
                 row["subset_counts"] = pyramid_subset_counts(child)
         row["attempts"][-1]["finished_at"] = child["finished_at"]
     save_manifest(series_dir, manifest)
+
+
+def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
+    """Recognize only a terminal coordinator clock refusal with no unknown write."""
+    try:
+        checkpoint = child["sources"][source]
+        pipeline = child["pipeline"]
+        hold, attempts = checkpoint["clock_hold"], checkpoint["attempts"]
+        if (checkpoint.get("state") != "collect_infrastructure_failed"
+                or checkpoint.get("ingest") is not None
+                or pipeline.get("commit_outcome_unknown") is True
+                or pipeline.get("status") == "reconciliation_required"
+                or pipeline["source_results"][source].get("state") != "failed"
+                or not isinstance(hold, dict) or hold.get("generation_id") != child.get("run_id")
+                or not isinstance(attempts, list) or type(hold.get("attempt_count")) is not int
+                or hold["attempt_count"] != len(attempts)):
+            return False
+        if hold.get("phase") == "start":
+            return True
+        if hold.get("phase") != "finish" or not attempts:
+            return False
+        last = attempts[-1]
+        return (last.get("clock_order_refused") is True and type(last.get("rc")) is int
+                and _parse_utc_timestamp(last.get("finished_at"), field="attempt finished_at")
+                    < _parse_utc_timestamp(last.get("started_at"), field="attempt started_at"))
+    except (KeyError, TypeError, ValueError, AttributeError, SeriesError):
+        return False
 
 
 def _pipeline_member_report_matches(
@@ -2442,9 +2469,9 @@ def run_pipeline_series(
             expected_config=_expected_child_config(",".join(sources), config))
         pipeline = child.get("pipeline") or {}
         if (pipeline.get("commit_outcome_unknown") is True or pipeline.get("status") == "reconciliation_required"
-                or any((child.get("sources", {}).get(key, {}).get("state") not in {
+                or any(((child.get("sources", {}).get(key, {}).get("state") not in {
                     "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
-                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} and not settled_clock_hold(child, key))
                     or pipeline.get("source_results", {}).get(key, {}).get("state") != "failed") for key in failed)):
             raise SeriesError("handled subset has unresolved source failure")
         cache = {}
@@ -2601,7 +2628,7 @@ def run_pipeline_series(
             if (key, state) in {("pyramid-brokerage", "pyramid_historical_guard_refused"), ("transwestern", "transwestern_image_guard_refused"), ("jll", "jll_image_guard_refused")}:
                 from cre_pyramid_rollback_result import verified_rollback
                 outcome = "failed_source" if verified_rollback(child_run, child, key) else "failed_global"
-            elif state in {
+            elif settled_clock_hold(child, key) or state in {
                 "collect_failed",
                 "artifact_rejected",
                 "gate_failed",
