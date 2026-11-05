@@ -180,44 +180,59 @@ def main():
         next_staged = [stage_detail_record(second, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z")]
         next_probe = sql(identity_probe_sql(next_staged)).split("|", 3)
         assert next_probe[:3] == ["1", "1", "[]"], next_probe
+        next_job = str(uuid.uuid4())
         next_sql, holds = build_partial_sql([second], next_staged, json.loads(next_probe[2]), json.loads(next_probe[3]),
-            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", str(uuid.uuid4()))
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", next_job)
         assert not holds
         sql(next_sql)
-        assert sql("SELECT jsonb_array_length(raw_data#>'{colliersNativeObservations,entries}') FROM credeals.cre_listings WHERE external_id='43';") == "1"
-        # A bounded history probe holds a large existing member but admits a new peer.
+        assert sql("SELECT jsonb_array_length(raw_data#>'{colliersNativeObservations,entries}') FROM credeals.cre_listings WHERE external_id='43';") == "2"
+        duplicate_readback, _ = partial.partial_readback_sql([second], next_staged, json.loads(next_probe[2]), json.loads(next_probe[3]),
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", next_job)
+        assert sql(duplicate_readback) == "1|1|0"
         sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T16:02:00Z' WHERE external_id='43'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
-        bounded_peer = copy.deepcopy(second)
-        bounded_peer["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "47"}})
-        bounded_peer["nativeBase64"] = base64.b64encode(bounded_peer["decodedDetail"].encode()).decode()
-        bounded_peer["source"].update(mapProjectId="47",
-            decodedDetailSha256=hashlib.sha256(bounded_peer["decodedDetail"].encode()).hexdigest(),
-            nativeSha256=hashlib.sha256(bounded_peer["decodedDetail"].encode()).hexdigest(),
-            detailTokenSha256=hashlib.sha256(b"bounded").hexdigest())
-        bounded_peer["listing"].update(id="47", url=url.replace("fixture", "bounded"),
-            colliersSalesTrackerDetail={"projectId": "47"},
-            colliersPartialEvidence={"schema": "colliers-partial-detail-v1", **bounded_peer["source"]})
-        bounded_items = [second, bounded_peer]
-        bounded_staged = [stage_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z",
-                          "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z") for item in bounded_items]
-        prior43 = sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='43';")
-        old_limit = partial.MAX_HISTORY_PROBE_BYTES
-        try:
-            partial.MAX_HISTORY_PROBE_BYTES = 1
-            bounded_probe = sql(identity_probe_sql(bounded_staged)).split("|", 3)
-            bounded_preimage = json.loads(bounded_probe[3])
-            prior = next(row["listing"] for row in bounded_preimage if row["external_id"] == "43")
-            assert prior["native_history_available"] is False and prior["native_history"] is None
-            assert "raw_data" not in prior and len(prior["raw_data_sha256"]) == 64
-            bounded_sql, bounded_holds = build_partial_sql(bounded_items, bounded_staged, json.loads(bounded_probe[2]),
-                bounded_preimage, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
-                "2026-11-04T16:04:00Z", str(uuid.uuid4()))
-            assert list(bounded_holds) == ["43"]
-            sql(bounded_sql)
-        finally:
-            partial.MAX_HISTORY_PROBE_BYTES = old_limit
-        assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='43';") == prior43
-        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='47' AND status IS NULL;") == "1"
+        duplicate_probe = sql(identity_probe_sql(next_staged)).split("|", 3)
+        duplicate_job = str(uuid.uuid4())
+        duplicate_sql, _ = build_partial_sql([second], next_staged, json.loads(duplicate_probe[2]), json.loads(duplicate_probe[3]),
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", duplicate_job)
+        sql(duplicate_sql)
+        assert sql("SELECT jsonb_array_length(raw_data#>'{colliersNativeObservations,entries}') FROM credeals.cre_listings WHERE external_id='43';") == "2"
+        duplicate_readback, _ = partial.partial_readback_sql([second], next_staged, json.loads(duplicate_probe[2]), json.loads(duplicate_probe[3]),
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", duplicate_job)
+        assert sql(duplicate_readback) == "1|1|0"
+        # Preserve a prior history over 4 MiB and accept a new native body over 3 MiB.
+        sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T16:02:00Z' WHERE external_id='43'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
+        large = copy.deepcopy(second)
+        large["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "43"}, "padding": "x" * (3 * 1024 * 1024 + 64)})
+        large["nativeBase64"] = base64.b64encode(large["decodedDetail"].encode()).decode()
+        large["source"]["nativeSha256"] = hashlib.sha256(large["decodedDetail"].encode()).hexdigest()
+        large["source"]["decodedDetailSha256"] = large["source"]["nativeSha256"]
+        large["listing"]["colliersPartialEvidence"] = {"schema": "colliers-partial-detail-v1", **large["source"]}
+        # Install a synthetic previously captured native entry over 4 MiB.
+        prior_bytes = json.dumps({"ProjectSummary": {"ProjectId": "43"}, "padding": "y" * (3 * 1024 * 1024 + 64)}).encode()
+        prior_digest = hashlib.sha256(prior_bytes).hexdigest()
+        previous = {"source": {**large["source"], "nativeSha256": prior_digest, "decodedDetailSha256": prior_digest},
+                    "nativeBase64": base64.b64encode(prior_bytes).decode(), "lastObservedAt": large["source"]["detailObservedAt"]}
+        sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; "
+            "UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{colliersNativeObservations,entries}',"
+            + ingest.sql_lit(json.dumps([previous])) + "::jsonb) WHERE external_id='43'; "
+            "ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
+        assert int(sql("SELECT octet_length((raw_data->'colliersNativeObservations')::text) FROM credeals.cre_listings WHERE external_id='43';")) > 4 * 1024 * 1024
+        large_staged = [stage_detail_record(large, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z")]
+        large_probe = sql(identity_probe_sql(large_staged)).split("|", 3)
+        large_preimage = json.loads(large_probe[3])
+        assert large_preimage[0]["listing"]["native_history_valid"] is True
+        assert "native_history" not in large_preimage[0]["listing"]
+        large_job = str(uuid.uuid4())
+        large_sql, large_holds = build_partial_sql([large], large_staged, json.loads(large_probe[2]), large_preimage,
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", large_job)
+        assert not large_holds
+        large_readback, _ = partial.partial_readback_sql([large], large_staged, json.loads(large_probe[2]), large_preimage,
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z", large_job)
+        sql(large_sql)
+        assert sql(large_readback) == "1|1|0"
+        assert sql("SELECT jsonb_array_length(raw_data#>'{colliersNativeObservations,entries}') FROM credeals.cre_listings WHERE external_id='43';") == "2"
+        hashes = sql("SELECT encode(sha256(decode(e->>'nativeBase64','base64')),'hex') FROM credeals.cre_listings t CROSS JOIN LATERAL jsonb_array_elements(t.raw_data#>'{colliersNativeObservations,entries}') e WHERE t.external_id='43' ORDER BY 1;").splitlines()
+        assert hashes == sorted([prior_digest, large["source"]["nativeSha256"]])
 
         # An unrecognized reserved member holds just that identity, not a valid peer.
         unknown_old = {**old, "id": "44", "url": url.replace("fixture", "unknown")}
@@ -249,10 +264,16 @@ def main():
                        "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z") for item in peers]
         peer_probe = sql(identity_probe_sql(peer_staged)).split("|", 3)
         assert peer_probe[:3] == ["2", "2", "[]"], peer_probe
+        peer_job = str(uuid.uuid4())
         peer_sql, peer_holds = build_partial_sql(peers, peer_staged, json.loads(peer_probe[2]), json.loads(peer_probe[3]),
-            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z", str(uuid.uuid4()))
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z", peer_job)
         assert list(peer_holds) == ["44"]
         sql(peer_sql)
+        peer_readback, _ = partial.partial_readback_sql(peers, peer_staged, json.loads(peer_probe[2]), json.loads(peer_probe[3]),
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z", peer_job)
+        assert sql(peer_readback) == "1|1|0"
+        assert sql("BEGIN; UPDATE credeals.cre_listings SET city='wrong' WHERE external_id='45'; " + peer_readback + "; ROLLBACK;") == "1|1|1"
+        assert sql("BEGIN; UPDATE credeals.cre_listings SET title='wrong' WHERE external_id='44'; " + peer_readback + "; ROLLBACK;") == "1|1|1"
         assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='44';") == held_before
         # An all-held window records a partial zero-save job, leaving the row
         # unchanged so its settled cursor can reach later source positions.
@@ -263,6 +284,10 @@ def main():
             "2026-11-04T16:02:00Z", zero_job)
         assert list(zero_holds) == ["44"]
         sql(zero_sql)
+        zero_readback, _ = partial.partial_readback_sql([peers[0]], [peer_staged[0]], json.loads(only_held_probe[2]),
+            json.loads(only_held_probe[3]), "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
+            "2026-11-04T16:02:00Z", zero_job)
+        assert sql(zero_readback) == "1|0|0"
         assert sql("SELECT status||'|'||listings_saved FROM credeals.cre_scrape_jobs WHERE id='" + zero_job + "'::uuid;") == "partial|0"
         assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='44';") == held_before
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='45' AND status IS NULL AND city IS NULL;") == "1"

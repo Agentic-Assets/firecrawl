@@ -216,96 +216,15 @@ def stage_detail_record(item, generation, attempt, started_at, finished_at, arti
             "inventory_at": item["source"]["inventoryObservedAt"], "detail_at": item["source"]["detailObservedAt"]}
 
 
-# Bound the additional per-listing member, not pre-existing parent raw_data.
-# Overflow is a held record; the sealed private evidence remains available.
-MAX_NATIVE_HISTORY_BYTES = 4 * 1024 * 1024
-MAX_HISTORY_PROBE_BYTES = 16 * 1024 * 1024
-NATIVE_HISTORY_KEY = "colliersNativeObservations"
-
-
 class PartialHistoryHold(ValueError):
     """A prior or incoming source observation cannot be preserved safely."""
 
 
-def merge_native_observation(prior_raw, item, generation, attempt, started_at, finished_at):
-    """Return a bounded member preserving each distinct source-native body.
-
-    The caller must authenticate source/page bytes, bind the exact DB preimage,
-    and preserve this reserved member across a later full ingest.
-    """
-    verified = verify_detail_record(item, generation, attempt, started_at, finished_at)
-    external_id = verified["external_id"]
-    if not isinstance(prior_raw, dict):
-        raise PartialHistoryHold("prior raw_data is not an object")
-    previous = prior_raw.get(NATIVE_HISTORY_KEY)
-    if previous is None and NATIVE_HISTORY_KEY in prior_raw:
-        raise PartialHistoryHold("reserved native history is unknown")
-    if previous is None:
-        previous = {"schema": "colliers-native-history/v1", "sourceKey": "colliers",
-                    "externalId": external_id, "entries": []}
-    if (not isinstance(previous, dict) or set(previous) != {"schema", "sourceKey", "externalId", "entries"}
-            or previous["schema"] != "colliers-native-history/v1" or previous["sourceKey"] != "colliers"
-            or previous["externalId"] != external_id or not isinstance(previous["entries"], list)):
-        raise PartialHistoryHold("reserved native history is unknown")
-    # Copy by value: never mutate the caller's DB snapshot.
-    serialized_previous = json.dumps(previous, ensure_ascii=False, separators=(",", ":"))
-    if len(serialized_previous.encode("utf-8")) > MAX_NATIVE_HISTORY_BYTES:
-        raise PartialHistoryHold("native history exceeds bounded storage")
-    history = json.loads(serialized_previous)
-    entries, seen = history["entries"], set()
-    for entry in entries:
-        if (not isinstance(entry, dict) or set(entry) != {"source", "nativeBase64", "lastObservedAt"}
-                or not isinstance(entry["source"], dict)):
-            raise PartialHistoryHold("prior native observation is unknown")
-        source = entry["source"]
-        expected_source = {"generation", "attempt", "start", "page", "pageSize", "offset",
-                           "inventoryObservedAt", "detailObservedAt", "mapProjectId", "listSha256",
-                           "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256"}
-        hashes = ("listSha256", "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256")
-        positions = ("start", "page", "pageSize", "offset")
-        if (set(source) != expected_source or source["mapProjectId"] != external_id
-                or any(not isinstance(source[key], str) or not _HASH.fullmatch(source[key]) for key in hashes)
-                or source["nativeSha256"] in seen or not isinstance(source["generation"], str)
-                or not source["generation"] or type(source["attempt"]) is not int or source["attempt"] < 1
-                or any(type(source[key]) is not int or source[key] < (0 if key == "offset" else 1) for key in positions)
-                or source["offset"] >= source["pageSize"]):
-            raise PartialHistoryHold("prior native observation is unknown")
-        try:
-            encoded = entry["nativeBase64"]
-            if not isinstance(encoded, str) or len(encoded) > ((MAX_NATIVE_HISTORY_BYTES + 2) // 3) * 4:
-                raise ValueError("invalid native encoding")
-            native = base64.b64decode(encoded, validate=True)
-            decoded = native.decode("utf-8-sig")
-            document = json.loads(decoded)
-            summary = document.get("ProjectSummary") if isinstance(document, dict) else None
-            visibility = summary.get("AttributeVisibility") if isinstance(summary, dict) else None
-            observed = visibility.get("ProjectId") if isinstance(visibility, dict) else None
-            if observed is None and isinstance(summary, dict):
-                observed = summary.get("ProjectId")
-            if (base64.b64encode(native).decode("ascii") != encoded
-                    or hashlib.sha256(native).hexdigest() != source["nativeSha256"]
-                    or hashlib.sha256(decoded.encode("utf-8")).hexdigest() != source["decodedDetailSha256"]
-                    or _native_project_id(observed) != external_id
-                    or _time(source["inventoryObservedAt"]) > _time(source["detailObservedAt"])
-                    or _time(entry["lastObservedAt"]) < _time(source["detailObservedAt"])):
-                raise ValueError("invalid native binding")
-        except (TypeError, ValueError, UnicodeDecodeError, binascii.Error, RecursionError) as exc:
-            raise PartialHistoryHold("prior native observation is unknown") from exc
-        seen.add(source["nativeSha256"])
-    incoming_at = _time(item["source"]["detailObservedAt"])
-    if any(incoming_at < _time(entry["lastObservedAt"]) for entry in entries):
-        raise PartialHistoryHold("incoming native observation is stale")
-    existing = next((entry for entry in entries if entry["source"]["nativeSha256"] == item["source"]["nativeSha256"]), None)
-    if existing is None and any(incoming_at <= _time(entry["lastObservedAt"]) for entry in entries):
-        raise PartialHistoryHold("incoming native observation has ambiguous ordering")
-    if existing is None:
-        entries.append({"source": item["source"], "nativeBase64": item["nativeBase64"],
-                        "lastObservedAt": item["source"]["detailObservedAt"]})
-    elif incoming_at > _time(existing["lastObservedAt"]):
-        existing["lastObservedAt"] = item["source"]["detailObservedAt"]
-    if len(json.dumps(history, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_NATIVE_HISTORY_BYTES:
-        raise PartialHistoryHold("native history exceeds bounded storage")
-    return history
+def native_observation(item, generation, attempt, started_at, finished_at):
+    """Prepare one authenticated observation; old database history stays in PostgreSQL."""
+    verify_detail_record(item, generation, attempt, started_at, finished_at)
+    return {"source": item["source"], "nativeBase64": item["nativeBase64"],
+            "lastObservedAt": item["source"]["detailObservedAt"]}
 
 def _validate_staged(staged):
     if not isinstance(staged, list) or not staged:
@@ -342,16 +261,6 @@ WITH candidate AS (
 ), scoped AS (
  SELECT b.id AS brokerage_id, c.* FROM candidate c
  JOIN credeals.cre_brokerages b ON b.slug=c.slug AND b.slug='colliers'
-), history_sizes AS (
- SELECT s.external_id,s.input_order,
-   CASE WHEN jsonb_typeof(own.raw_data)='object' AND own.raw_data ? 'colliersNativeObservations'
-     THEN octet_length((own.raw_data->'colliersNativeObservations')::text) ELSE 0 END AS size
- FROM scoped s LEFT JOIN credeals.cre_listings own
-   ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
-), history_budget AS (
- SELECT external_id,size,sum(CASE WHEN size <= {MAX_NATIVE_HISTORY_BYTES} THEN size ELSE 0 END)
-   OVER (ORDER BY input_order ROWS UNBOUNDED PRECEDING) AS cumulative
- FROM history_sizes
 ), conflicts AS (
  SELECT DISTINCT s.external_id FROM scoped s
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
@@ -389,19 +298,25 @@ SELECT (SELECT count(*) FROM candidate) AS staged, (SELECT count(*) FROM scoped)
  COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.external_id,
    'listing', CASE WHEN own.id IS NULL THEN NULL ELSE jsonb_build_object('id',own.id,'source_url',own.source_url,
      'canonical_url',own.canonical_url,'status',own.status,'deleted_at',own.deleted_at,'scraped_at',own.scraped_at,'updated_at',own.updated_at,
+     'title',own.title,'address',own.address,'city',own.city,'state',own.state,'zip',own.zip,
+     'description',own.description,'size_sf',own.size_sf,'lot_size_sf',own.lot_size_sf,'units',own.units,
+     'parent_sha256',encode(sha256(convert_to(to_jsonb(own)::text,'UTF8')),'hex'),
+     'parent_static_sha256',encode(sha256(convert_to((to_jsonb(own) - ARRAY['updated_at','raw_data','title','address','city','state','zip','description','size_sf','lot_size_sf','units'])::text,'UTF8')),'hex'),
      'raw_data_sha256',encode(sha256(convert_to(COALESCE(own.raw_data::text,''),'UTF8')),'hex'),
      'raw_data_is_object',jsonb_typeof(own.raw_data)='object',
      'native_history_present',COALESCE(own.raw_data ? 'colliersNativeObservations',false),
-     'native_history_size',hb.size,
-     'native_history_available',(hb.size = 0 OR (hb.size <= {MAX_NATIVE_HISTORY_BYTES} AND hb.cumulative <= {MAX_HISTORY_PROBE_BYTES})),
-     'native_history',CASE WHEN (hb.size = 0 OR (hb.size <= {MAX_NATIVE_HISTORY_BYTES} AND hb.cumulative <= {MAX_HISTORY_PROBE_BYTES}))
-       THEN own.raw_data->'colliersNativeObservations' ELSE NULL END) END,
+     'native_history_valid',CASE WHEN NOT COALESCE(own.raw_data ? 'colliersNativeObservations',false) THEN true
+       ELSE COALESCE(jsonb_typeof(own.raw_data->'colliersNativeObservations')='object'
+         AND ((own.raw_data->'colliersNativeObservations') - 'schema' - 'sourceKey' - 'externalId' - 'entries')='{{}}'::jsonb
+         AND own.raw_data#>>'{{colliersNativeObservations,schema}}'='colliers-native-history/v1'
+         AND own.raw_data#>>'{{colliersNativeObservations,sourceKey}}'='colliers'
+         AND own.raw_data#>>'{{colliersNativeObservations,externalId}}'=s.external_id
+         AND jsonb_typeof(own.raw_data#>'{{colliersNativeObservations,entries}}')='array', false) END) END,
    'source_index', CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
      'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END)
    ORDER BY s.external_id) FROM scoped s
    LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
-   LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
-   JOIN history_budget hb ON hb.external_id=s.external_id), '[]'::jsonb) AS preimage
+   LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id), '[]'::jsonb) AS preimage
 """
 
 
@@ -489,21 +404,14 @@ def prepare_partial_rows(items, staged, held, preimage, generation, attempt, sta
         seen.add(external_id)
         row = to_row(item["listing"], {}, artifact_finished_at)
         parent = prior[external_id].get("listing")
-        history = None
+        observation = None
         if external_id not in held:
             try:
                 if parent is not None and parent.get("raw_data_is_object") is not True:
                     raise PartialHistoryHold("prior raw_data is unknown")
-                if parent is not None and parent.get("native_history_available") is not True:
-                    if type(parent.get("native_history_size")) is not int:
-                        raise PartialHistoryHold("prior native history size is unknown")
-                    if parent["native_history_size"] > MAX_NATIVE_HISTORY_BYTES:
-                        raise PartialHistoryHold("prior native history exceeds per-row bound")
-                    raise PartialHistoryHold("prior native history deferred by probe budget")
-                raw_before = {}
-                if parent is not None and parent.get("native_history_present") is True:
-                    raw_before[NATIVE_HISTORY_KEY] = parent.get("native_history")
-                history = merge_native_observation(raw_before, item, generation, attempt, started_at, finished_at)
+                if parent is not None and parent.get("native_history_valid") is not True:
+                    raise PartialHistoryHold("reserved native history is unknown")
+                observation = native_observation(item, generation, attempt, started_at, finished_at)
             except PartialHistoryHold as exc:
                 history_held[external_id] = str(exc)
         # Only the already-supported status gate may allow an explicit source signal.
@@ -535,7 +443,7 @@ def prepare_partial_rows(items, staged, held, preimage, generation, attempt, sta
         projection["raw_data"] = {"sourceKey": "colliers", "id": external_id,
                                   "inventoryObservedAt": item["source"]["inventoryObservedAt"],
                                   "detailObservedAt": item["source"]["detailObservedAt"]}
-        rows.append(projection | {"partial_history": history,
+        rows.append(projection | {"partial_observation": observation,
                                   "status": explicit_status if activate_status else None})
     if seen != set(expected):
         raise ValueError("partial staged membership differs")
@@ -570,7 +478,7 @@ CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, r.* FROM jsonb_to_recordset({payload}::jsonb)
 AS r(slug text,external_id text,source_url text,canonical_url text,transaction_type text,title text,
  address text,city text,state text,zip text,description text,size_sf numeric,lot_size_sf numeric,units integer,
- raw_data jsonb,scraped_at timestamptz,partial_history jsonb,status text)
+ raw_data jsonb,scraped_at timestamptz,partial_observation jsonb,status text)
 JOIN credeals.cre_brokerages b ON b.slug=r.slug AND b.slug='colliers';
 {guard}
 CREATE TEMP TABLE _colliers_location ON COMMIT DROP AS
@@ -592,7 +500,15 @@ UPDATE credeals.cre_listings t SET
               THEN COALESCE(t.zip,s.zip) ELSE t.zip END,
  description=COALESCE(t.description,s.description),size_sf=COALESCE(t.size_sf,s.size_sf),
  lot_size_sf=COALESCE(t.lot_size_sf,s.lot_size_sf),units=COALESCE(t.units,s.units),
- raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',s.partial_history)
+ raw_data=CASE WHEN t.raw_data ? 'colliersNativeObservations' AND EXISTS (
+   SELECT 1 FROM jsonb_array_elements(t.raw_data#>'{{colliersNativeObservations,entries}}') e
+   WHERE e=s.partial_observation)
+   THEN t.raw_data ELSE jsonb_set(t.raw_data,'{{colliersNativeObservations}}',
+   CASE WHEN t.raw_data ? 'colliersNativeObservations'
+     THEN jsonb_set(t.raw_data->'colliersNativeObservations','{{entries}}',
+       (t.raw_data#>'{{colliersNativeObservations,entries}}') || jsonb_build_array(s.partial_observation))
+     ELSE jsonb_build_object('schema','colliers-native-history/v1','sourceKey','colliers',
+       'externalId',s.external_id,'entries',jsonb_build_array(s.partial_observation)) END) END
 FROM _src s JOIN _colliers_location loc ON loc.brokerage_id=s.brokerage_id AND loc.external_id=s.external_id
 WHERE t.id=loc.id;
 INSERT INTO credeals.cre_listings
@@ -600,7 +516,9 @@ INSERT INTO credeals.cre_listings
   size_sf,lot_size_sf,units,scraped_at,raw_data)
 SELECT s.brokerage_id,s.external_id,s.source_url,s.canonical_url,s.status,s.transaction_type,s.title,s.address,s.city,s.state,s.zip,
  s.description,s.size_sf,s.lot_size_sf,s.units,s.scraped_at,
- jsonb_build_object('sourceKey','colliers','id',s.external_id,'colliersNativeObservations',s.partial_history)
+ jsonb_build_object('sourceKey','colliers','id',s.external_id,'colliersNativeObservations',
+   jsonb_build_object('schema','colliers-native-history/v1','sourceKey','colliers',
+     'externalId',s.external_id,'entries',jsonb_build_array(s.partial_observation)))
 FROM _src s WHERE NOT EXISTS (SELECT 1 FROM credeals.cre_listings t
  WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.external_id);
 COMMIT;
@@ -619,12 +537,25 @@ def partial_readback_sql(items, staged, held, preimage, generation, attempt, sta
     rows, history_held = prepare_partial_rows(items, staged, held, preimage, generation, attempt,
                                               started_at, finished_at, artifact_finished_at)
     prior = {item["external_id"]: item for item in preimage}
-    expected = [{"row": row, "before": prior[row["external_id"]]} for row in rows]
+    held_ids = set(held) | set(history_held)
+    expected = [{"row": row, "before": prior[row["external_id"]]} for row in rows if row["external_id"] not in held_ids]
+    held_expected = [prior[external_id] for external_id in sorted(held_ids)]
     payload = sql_lit(json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+    held_payload = sql_lit(json.dumps(held_expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
     return f"""
 WITH expected AS (SELECT value->'row' AS r,value->'before' AS p FROM jsonb_array_elements({payload}::jsonb)),
 observed AS (
  SELECT e.*, t.id AS listing_id, t.source_url,t.canonical_url,t.status,t.deleted_at,t.scraped_at,t.raw_data,
+   t.title,t.address,t.city,t.state,t.zip,t.description,t.size_sf,t.lot_size_sf,t.units,
+   encode(sha256(convert_to((to_jsonb(t) - ARRAY['updated_at','raw_data','title','address','city','state','zip','description','size_sf','lot_size_sf','units'])::text,'UTF8')),'hex') AS parent_static_sha256,
+   ((e.p#>>'{{listing,address}}' IS NULL OR e.r->>'address' IS NULL OR lower(btrim(e.p#>>'{{listing,address}}'))=lower(btrim(e.r->>'address')))
+    AND (e.p#>>'{{listing,city}}' IS NULL OR e.r->>'city' IS NULL OR lower(btrim(e.p#>>'{{listing,city}}'))=lower(btrim(e.r->>'city')))
+    AND (e.p#>>'{{listing,state}}' IS NULL OR e.r->>'state' IS NULL OR lower(btrim(e.p#>>'{{listing,state}}'))=lower(btrim(e.r->>'state')))
+    AND (e.p#>>'{{listing,zip}}' IS NULL OR e.r->>'zip' IS NULL OR lower(btrim(e.p#>>'{{listing,zip}}'))=lower(btrim(e.r->>'zip')))) AS location_compatible,
+   COALESCE(e.p->'listing' <> 'null'::jsonb AND (e.p#>>'{{listing,native_history_present}}')::boolean
+     AND encode(sha256(convert_to(t.raw_data::text,'UTF8')),'hex')=e.p#>>'{{listing,raw_data_sha256}}'
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(t.raw_data#>'{{colliersNativeObservations,entries}}') prior
+       WHERE prior=e.r->'partial_observation'),false) AS retained_identical,
    CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
      'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END AS source_index
  FROM expected e JOIN credeals.cre_brokerages b ON b.slug='colliers'
@@ -632,27 +563,51 @@ observed AS (
  LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=b.id AND si.external_id=e.r->>'external_id'
 ), mismatches AS (
  SELECT 1 FROM observed WHERE listing_id IS NULL OR source_url IS DISTINCT FROM r->>'source_url'
- OR raw_data->'colliersNativeObservations' IS DISTINCT FROM r->'partial_history'
+ OR raw_data#>>'{{colliersNativeObservations,schema}}' IS DISTINCT FROM 'colliers-native-history/v1'
+ OR raw_data#>>'{{colliersNativeObservations,sourceKey}}' IS DISTINCT FROM 'colliers'
+ OR raw_data#>>'{{colliersNativeObservations,externalId}}' IS DISTINCT FROM r->>'external_id'
+ OR (NOT retained_identical AND (raw_data#>'{{colliersNativeObservations,entries}}')->-1 IS DISTINCT FROM r->'partial_observation')
  OR source_index IS DISTINCT FROM NULLIF(p->'source_index','null'::jsonb)
+ OR to_jsonb(title) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,title}}','null'::jsonb),NULLIF(r->'title','null'::jsonb))
+ OR to_jsonb(description) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,description}}','null'::jsonb),NULLIF(r->'description','null'::jsonb))
+ OR to_jsonb(size_sf) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,size_sf}}','null'::jsonb),NULLIF(r->'size_sf','null'::jsonb))
+ OR to_jsonb(lot_size_sf) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,lot_size_sf}}','null'::jsonb),NULLIF(r->'lot_size_sf','null'::jsonb))
+ OR to_jsonb(units) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,units}}','null'::jsonb),NULLIF(r->'units','null'::jsonb))
+ OR to_jsonb(address) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,address}}','null'::jsonb),CASE WHEN location_compatible THEN NULLIF(r->'address','null'::jsonb) END)
+ OR to_jsonb(city) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,city}}','null'::jsonb),CASE WHEN location_compatible THEN NULLIF(r->'city','null'::jsonb) END)
+ OR to_jsonb(state) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,state}}','null'::jsonb),CASE WHEN location_compatible THEN NULLIF(r->'state','null'::jsonb) END)
+ OR to_jsonb(zip) IS DISTINCT FROM COALESCE(NULLIF(p#>'{{listing,zip}}','null'::jsonb),CASE WHEN location_compatible THEN NULLIF(r->'zip','null'::jsonb) END)
  OR (p->'listing' = 'null'::jsonb AND (status IS NOT NULL OR deleted_at IS NOT NULL
      OR canonical_url IS DISTINCT FROM r->>'canonical_url' OR scraped_at IS DISTINCT FROM (r->>'scraped_at')::timestamptz))
  OR (p->'listing' <> 'null'::jsonb AND (
      listing_id::text IS DISTINCT FROM p#>>'{{listing,id}}'
+     OR parent_static_sha256 IS DISTINCT FROM p#>>'{{listing,parent_static_sha256}}'
      OR canonical_url IS DISTINCT FROM p#>>'{{listing,canonical_url}}'
      OR status IS DISTINCT FROM p#>>'{{listing,status}}'
      OR to_jsonb(deleted_at) IS DISTINCT FROM NULLIF(p#>'{{listing,deleted_at}}','null'::jsonb)
      OR to_jsonb(scraped_at) IS DISTINCT FROM NULLIF(p#>'{{listing,scraped_at}}','null'::jsonb)
-     OR encode(sha256(convert_to((CASE WHEN (p#>>'{{listing,native_history_present}}')::boolean
-          THEN (raw_data - 'colliersNativeObservations') || jsonb_build_object('colliersNativeObservations',p#>'{{listing,native_history}}')
+     OR (NOT retained_identical AND encode(sha256(convert_to((CASE WHEN (p#>>'{{listing,native_history_present}}')::boolean
+          THEN jsonb_set(raw_data,'{{colliersNativeObservations,entries}}',
+             (raw_data#>'{{colliersNativeObservations,entries}}') - (jsonb_array_length(raw_data#>'{{colliersNativeObservations,entries}}') - 1))
           ELSE raw_data - 'colliersNativeObservations' END)::text,'UTF8')),'hex')
-        IS DISTINCT FROM p#>>'{{listing,raw_data_sha256}}'))
+        IS DISTINCT FROM p#>>'{{listing,raw_data_sha256}}')))
+), held_expected AS (SELECT value AS p FROM jsonb_array_elements({held_payload}::jsonb)), held_mismatches AS (
+ SELECT 1 FROM held_expected h JOIN credeals.cre_brokerages b ON b.slug='colliers'
+ LEFT JOIN credeals.cre_listings t ON t.brokerage_id=b.id AND t.external_id=h.p->>'external_id'
+ LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=b.id AND si.external_id=h.p->>'external_id'
+ WHERE (h.p->'listing'='null'::jsonb AND t.id IS NOT NULL)
+ OR (h.p->'listing'<>'null'::jsonb AND (t.id IS NULL OR encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') IS DISTINCT FROM h.p#>>'{{listing,parent_sha256}}'))
+ OR (CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
+     'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END)
+    IS DISTINCT FROM NULLIF(h.p->'source_index','null'::jsonb)
 )
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
  WHERE b.slug='colliers' AND j.id={sql_lit(job)}::uuid AND j.status='partial'
- AND j.listings_discovered={len(rows)} AND j.listings_scraped={len(rows)} AND j.listings_saved={len(rows)}
+ AND j.listings_discovered={len(rows)} AND j.listings_scraped={len(rows)} AND j.listings_saved={len(expected)}
  AND j.errors_count=1 AND j.started_at={sql_lit(started_at)}::timestamptz
  AND j.completed_at={sql_lit(artifact_finished_at)}::timestamptz) AS jobs,
- (SELECT count(*) FROM observed) AS observed, (SELECT count(*) FROM mismatches) AS mismatches
+ (SELECT count(*) FROM observed) AS observed,
+ ((SELECT count(*) FROM mismatches)+(SELECT count(*) FROM held_mismatches)) AS mismatches
 """, history_held
 
 
@@ -735,7 +690,7 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
 
 
 def cursor_after_database_holds(data, history_holds):
-    """Resume at the first budget-deferred row; other holds remain explicit."""
+    """Advance only a well-formed window; held identities remain explicit."""
     if not isinstance(history_holds, dict) or not isinstance(data, dict):
         raise TypeError("partial cursor partition invalid")
     cursor = data["cursor"]
@@ -745,15 +700,10 @@ def cursor_after_database_holds(data, history_holds):
     ids = [item.get("id") for item in records if isinstance(item, dict)]
     if len(ids) != len(records) or len(set(ids)) != len(ids) or not set(history_holds) <= set(ids):
         raise ValueError("partial cursor identities differ")
-    ordered = sorted(records, key=lambda item: (
-        item["colliersPartialRecord"]["source"]["start"] + item["colliersPartialRecord"]["source"]["offset"] < cursor,
-        item["colliersPartialRecord"]["source"]["start"] + item["colliersPartialRecord"]["source"]["offset"],
-    ))
-    for listing in ordered:
-        if history_holds.get(listing.get("id")) == "prior native history deferred by probe budget":
-            source = listing["colliersPartialRecord"]["source"]
-            return source["start"] + source["offset"]
-    return data["proposedCursor"]
+    proposed = data["proposedCursor"]
+    if type(proposed) is not int or proposed < 1:
+        raise ValueError("partial proposed cursor invalid")
+    return proposed
 
 
 def _read_private_file(path, maximum):
@@ -1063,7 +1013,9 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
     return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
             "generation_id": source["generation"], "attempt_id": attempt_id,
             "database_target_sha256": target, "expected": expected, "held": before["held"],
-            "history_holds": history_holds, "staged_sha256": before["binding"]["staged_sha256"]}
+            "history_holds": history_holds, "staged_sha256": before["binding"]["staged_sha256"],
+            "checked": ["partial_job", "projected_scalars", "native_history", "parent_lifecycle", "source_index", "held_parents"],
+            "child_collections_verified": False}
 
 
 def run_window_worker(run_dir, manifest, owner, runner, save):
