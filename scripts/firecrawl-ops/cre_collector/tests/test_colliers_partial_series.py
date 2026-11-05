@@ -198,3 +198,33 @@ def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
     child["sources"]["colliers"]["readback"]["observation"]["generation_id"] = "other"
     assert not health._qualified_subset_attempt(checkpoint, child, observed,
         computed_at="2026-10-15T12:02:01Z", source_key="colliers")
+
+
+def test_source_health_receipt_uses_real_partial_shape_without_whole_source_clock(tmp_path):
+    import cre_source_health as health
+
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    # Real Colliers readback has no whole-inventory observation clocks.
+    assert "earliest_inventory_observed_at" not in child["sources"]["colliers"]["readback"]
+    (run / "manifest.json").write_text(json.dumps(child))
+    manifest = {"series_id": "series-1", "status": "qualified_partial_subset",
+        "updated_at": "2026-10-15T12:02:01Z", "sources": {"colliers": {
+            "state": "qualified_partial_subset", "checkpoint_run": f"runs/{RUN_ID}",
+            "attempts": [{"started_at": child["started_at"], "finished_at": child["finished_at"]}]}}}
+    result = health.build_receipt(tmp_path, manifest)["sources"]["colliers"]
+    assert result["attemptStatus"] == "succeeded" and result["publicationStatus"] == "partial"
+    assert result["lastAttemptObservationAt"] is None
+    assert result["lastSuccessfulObservationAt"] is None and result["state"] == "unknown"
+    previous = {"sources": {"colliers": {"lastSuccessfulObservationAt": "2026-10-14T12:00:00Z"}}}
+    retained = health.build_receipt(tmp_path, manifest, previous=previous)["sources"]["colliers"]
+    assert retained["lastSuccessfulObservationAt"] == "2026-10-14T12:00:00Z"
+    assert retained["lastAttemptObservationAt"] is None and retained["publicationStatus"] == "partial"
+    child["sources"]["colliers"]["readback"]["observation"]["generation_id"] = "foreign"
+    (run / "manifest.json").write_text(json.dumps(child))
+    invalid = health.build_receipt(tmp_path, manifest)["sources"]["colliers"]
+    assert invalid["publicationStatus"] != "partial" and invalid["lastSuccessfulObservationAt"] is None
+    child["sources"]["colliers"]["readback"]["observation"]["generation_id"] = RUN_ID
+    child["finished_at"] = "2026-10-15T12:30:00Z"
+    (run / "manifest.json").write_text(json.dumps(child))
+    assert health.build_receipt(tmp_path, manifest)["sources"]["colliers"]["publicationStatus"] != "partial"
