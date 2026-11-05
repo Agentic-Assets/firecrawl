@@ -261,7 +261,7 @@ def test_franklin_missing_or_malformed_attempt_never_qualifies(tmp_path, attempt
     assert child["sources"]["franklin-street"]["readback"]["ok"] is False
 
 
-@pytest.mark.parametrize("foreign", ["binding_source", "producer", "missing_code", "bad_digest", "artifact_marker", "binding_marker"])
+@pytest.mark.parametrize("foreign", ["binding_source", "producer", "missing_code", "bad_digest", "gate_scope", "artifact_marker", "binding_marker"])
 def test_franklin_partial_source_binding_is_not_transferred(tmp_path, foreign):
     run = tmp_path / RUN_ID
     child = add_franklin(mixed_child(run), run)
@@ -275,9 +275,28 @@ def test_franklin_partial_source_binding_is_not_transferred(tmp_path, foreign):
         child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["producer_sha"] = None
     elif foreign == "bad_digest":
         child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["staged_sha256"] = "invalid"
+    elif foreign == "gate_scope":
+        child["sources"]["franklin-street"]["gate"]["admission_scope"] = "other"
     elif foreign == "artifact_marker":
         child["sources"]["cbre"]["artifact"]["franklin_partial"] = True
     else:
         child["sources"]["cbre"]["gate"] = {"current_inventory_proof": {"scope": "franklin_site_partial_v1"}}
     assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
     assert not series.pipeline_source_qualified(child, "franklin-street", **qualification_context(run))
+
+
+def test_franklin_boolean_job_count_never_qualifies(tmp_path):
+    import cre_checkpoint_refresh as refresh
+
+    run = tmp_path / RUN_ID
+    child = add_franklin(mixed_child(run), run)
+    checkpoint = child["sources"]["franklin-street"]
+    observed = checkpoint["readback"]["observation"]
+    observed["matching_jobs"] = True
+    report = {"franklin_partial_readback": copy.deepcopy(observed),
+              "queries": {"freshness_generations": [], "inventory_only_index": []}}
+    assert not series._pipeline_member_report_matches(report, checkpoint, "franklin-street", RUN_ID)
+    child["config"]["sources"] = ["franklin-street"]
+    result = refresh.verify_validation_readback(
+        run, child, report, persist_manifest=False, sources=["franklin-street"])
+    assert result["ok"] is False

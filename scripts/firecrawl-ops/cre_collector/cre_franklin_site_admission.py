@@ -320,7 +320,8 @@ def run_readback(artifact_path, manifest, claims, *, target_sha256, env_file, pr
     expected = len(claims["listings"]) - len(claims["held"])
     invalid = value.get("invalid")
     allowed = {row["id"] for row in claims["listings"]} - set(claims["held"])
-    if (value.get("expected") != expected or value.get("matching_jobs") != 1
+    if (type(value.get("expected")) is not int or value["expected"] != expected
+            or type(value.get("matching_jobs")) is not int or value["matching_jobs"] != 1
             or not isinstance(invalid, list) or invalid != sorted(set(invalid)) or not set(invalid) <= allowed):
         raise ValueError("Franklin readback partition invalid")
     current_url, _ = load_db_url(env_file)

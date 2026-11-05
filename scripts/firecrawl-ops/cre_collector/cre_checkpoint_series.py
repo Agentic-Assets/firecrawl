@@ -314,6 +314,8 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
         source = child["sources"]["franklin-street"]
         artifact, gate = source["artifact"], source["gate"]
         binding = gate["current_inventory_proof"]
+        if not isinstance(binding, Mapping) or not isinstance(binding.get("identity_uncertainty"), Mapping):
+            return False
         return (isinstance(child.get("collector_git_sha"), str)
                 and re.fullmatch(r"[0-9a-f]{40}", child["collector_git_sha"]) is not None
                 and isinstance(child.get("run_id"), str) and bool(child["run_id"])
@@ -322,6 +324,7 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and artifact.get("franklin_partial") is True
                 and gate.get("verdict") == "ok_additive_verified_subset"
                 and gate.get("mark_missing_safe") is False
+                and gate.get("admission_scope") == "franklin_site_partial_v1"
                 and binding.get("schema") == "franklin-site-partial-v1"
                 and binding.get("scope") == "franklin_site_partial_v1"
                 and binding.get("source_key") == "franklin-street"
@@ -340,7 +343,7 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and binding.get("identity_uncertainty", {}).get("siteToBuildout") == "unresolved"
                 and type(artifact.get("staged_unique")) is int
                 and artifact["staged_unique"] == binding["emitted_count"] + binding["held_count"])
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return False
 
 
@@ -2115,7 +2118,8 @@ def _pipeline_member_report_matches(
         return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
                 and readback.get("ok") is True and readback.get("kind") == "franklin_site_partial"
                 and readback.get("whole_source_coverage") is False
-                and observed.get("ok") is True and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
+                and observed.get("ok") is True and observed.get("invalid") == []
+                and type(observed.get("matching_jobs")) is int and observed["matching_jobs"] == 1
                 and observed.get("generation_id") == binding.get("generation_id") == run_id
                 and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
                 and observed.get("database_target_sha256") == binding.get("database_target_sha256")

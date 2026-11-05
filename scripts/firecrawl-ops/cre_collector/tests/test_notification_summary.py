@@ -1902,7 +1902,7 @@ def test_jll_singleton_hold_notifies_verified_peer_without_whole_watermark(evide
     assert "verified_listings" not in result
 
 
-@pytest.mark.parametrize("tamper", [None, "attempt", "target", "pending"])
+@pytest.mark.parametrize("tamper", [None, "attempt", "target", "pending", "identity_type", "binding_type", "ingest_type"])
 def test_pipeline_franklin_partial_summary_preserves_verified_peer(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="franklin-street")
     parent, child = setup["parent"], setup["child"]
@@ -1945,6 +1945,9 @@ def test_pipeline_franklin_partial_summary_preserves_verified_peer(evidence, tam
     if tamper == "attempt": checkpoint["subset_ingest_attempt_id"] = "0" * 32
     elif tamper == "target": binding["database_target_sha256"] = "0" * 64
     elif tamper == "pending": result["buildout_pending"] = 0
+    elif tamper == "identity_type": binding["identity_uncertainty"] = 1
+    elif tamper == "binding_type": checkpoint["gate"]["current_inventory_proof"] = 1
+    elif tamper == "ingest_type": checkpoint["ingest"] = 1
     evidence["save"]()
     result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
     rows = {row["source_key"]: row for row in result["per_source_summaries"]}

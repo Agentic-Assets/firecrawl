@@ -1187,12 +1187,14 @@ def verified_pipeline_summary(
             if franklin_partial_candidate:
                 from cre_checkpoint_series import _pipeline_member_report_matches, franklin_partial_child
 
-                binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
-                artifact = checkpoint.get("artifact") or {}
+                binding = source_binding if isinstance(source_binding, dict) else {}
+                artifact = source_artifact if isinstance(source_artifact, dict) else {}
+                ingest = checkpoint.get("ingest")
+                ingest = ingest if isinstance(ingest, dict) else {}
                 count = binding.get("emitted_count")
                 proven = (checkpoint.get("state") == "ingested"
-                        and type((checkpoint.get("ingest") or {}).get("rc")) is int
-                        and checkpoint["ingest"]["rc"] == 0
+                        and type(ingest.get("rc")) is int
+                        and ingest["rc"] == 0
                         and parent_entry.get("state") == "qualified_partial_subset"
                         and franklin_partial_child(child)
                         and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)

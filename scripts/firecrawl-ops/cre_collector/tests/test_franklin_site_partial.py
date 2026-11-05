@@ -374,6 +374,10 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
         "whole_source_coverage": False, "observation": result}
     assert series._pipeline_member_report_matches(
         {"franklin_partial_readback": result}, actual_checkpoint, "franklin-street", "run-1")
+    monkeypatch.setattr(validation, "_run_psql_script",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"expected":1,"invalid":[],"matching_jobs":true}\n'))
+    with pytest.raises(ValueError, match="readback partition invalid"):
+        admission.run_readback(path, manifest, context, target_sha256="b" * 64, env_file=None, process_env=env)
     claims_dir = run / "claims"
     claims_dir.mkdir(mode=0o700)
     claims = claims_dir / "claims.json"
@@ -420,7 +424,7 @@ def test_series_recognizes_only_exact_partial_binding():
                                                             "staged_unique": 1},
                          "franklin_original": {"sha256": "2" * 64},
                          "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
-                                  "current_inventory_proof": binding}}}}
+                                  "admission_scope": "franklin_site_partial_v1", "current_inventory_proof": binding}}}}
     assert series.franklin_partial_child(child)
     binding["whole_source_coverage"] = True
     assert not series.franklin_partial_child(child)
