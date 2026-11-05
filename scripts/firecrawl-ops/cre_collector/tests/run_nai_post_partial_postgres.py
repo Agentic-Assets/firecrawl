@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -50,8 +51,8 @@ def main():
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,scraped_at,raw_data)
-SELECT id,'infabode:1','https://infabode.com/services/listings/1',NULL,'active','Existing title',
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,lat,scraped_at,raw_data)
+SELECT id,'infabode:1','https://infabode.com/services/listings/1',NULL,'active','Existing title',45.123456789012345,
  '2026-11-05T09:00:00Z','{"sourceKey":"nai-global","id":"infabode:1","existing":true}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,raw_data)
@@ -69,7 +70,7 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         staged = [stage_post(value, "gen-1") for value in (post(1), post(2), incomplete)]
         result = sql(identity_probe_sql(staged)).split("|", 3)
         assert result[:2] == ["3", "3"]
-        held, before = json.loads(result[2]), json.loads(result[3])
+        held, before = json.loads(result[2]), json.loads(result[3], parse_float=Decimal)
         assert held == ["infabode:2"], held
         job_id = str(uuid.uuid4())
         sql(build_partial_sql(staged, held, before, job_id,

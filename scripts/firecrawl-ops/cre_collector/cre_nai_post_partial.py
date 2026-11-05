@@ -10,6 +10,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
 SOURCE = "nai-global"
@@ -83,7 +84,10 @@ def stage_post(listing, generation):
                                next(iter(categories)) != (4 if tx == "sale" else 10)):
         raise ValueError("NAI source transaction category differs")
     provenance = listing.get("freshnessProvenance")
-    if not isinstance(provenance, dict) or provenance.get("generationId") != generation:
+    if (not isinstance(provenance, dict) or provenance.get("generationId") != generation
+            or provenance.get("method") != "infabode_public_posts_graphql"
+            or provenance.get("cacheDisposition") != "live"
+            or provenance.get("detailScope") != "source_native_public_record"):
         raise ValueError("NAI source generation differs")
     inventory = _timestamp(listing.get("inventoryObservedAt"))
     detail = _timestamp(listing.get("detailObservedAt")) if listing.get("detailObservedAt") else inventory
@@ -146,7 +150,7 @@ def stage_post(listing, generation):
             **projected}
 
 
-def partition_posts(listings, generation):
+def partition_posts(listings, generation, *, capture_start=None, capture_finish=None):
     """Hold invalid or duplicate source identities; never discard source rows."""
     if not isinstance(listings, list) or not isinstance(generation, str) or not generation:
         raise ValueError("NAI source partition invalid")
@@ -175,7 +179,12 @@ def partition_posts(listings, generation):
             for alias in normalized_aliases:
                 alias_counts[alias] = alias_counts.get(alias, 0) + 1
         try:
-            staged.append((index, stage_post(listing, generation)))
+            row = stage_post(listing, generation)
+            if (capture_start is not None and capture_finish is not None
+                    and not (capture_start <= _timestamp(listing.get("inventoryObservedAt"))
+                             <= _timestamp(row["observed_at"]) <= capture_finish)):
+                raise ValueError("NAI source observation outside capture")
+            staged.append((index, row))
         except (TypeError, ValueError, KeyError, RecursionError):
             held.append({"index": index, "reason": "unqualified_source_post"})
     accepted = []
@@ -207,8 +216,24 @@ def _validated(staged):
 def _payload(value):
     from cre_ingest import sql_lit
 
-    return sql_lit(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                              ensure_ascii=True, allow_nan=False))
+    # A PostgreSQL preimage may include numeric values with more precision than
+    # a Python float. Callers parse probe JSON with parse_float=Decimal; encode
+    # those values as JSON numbers rather than rounding or stringifying them.
+    def encode(item):
+        if isinstance(item, Decimal):
+            if not item.is_finite():
+                raise ValueError("NAI preimage number invalid")
+            return str(item)
+        if isinstance(item, dict):
+            if not all(isinstance(key, str) for key in item):
+                raise ValueError("NAI preimage key invalid")
+            return "{" + ",".join(json.dumps(key, ensure_ascii=True) + ":" + encode(item[key])
+                                  for key in sorted(item)) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(value) for value in item) + "]"
+        return json.dumps(item, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+
+    return sql_lit(encode(value))
 
 
 def _url_key(expression):

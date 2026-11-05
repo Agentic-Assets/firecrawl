@@ -18,7 +18,8 @@ def post(number=1, alias=None, tx="sale"):
             "name": "Fixture post", "feedRow": raw, "publicPost": dict(raw),
             "inventoryObservedAt": "2026-11-05T10:00:00Z",
             "detailObservedAt": "2026-11-05T10:00:01Z",
-            "freshnessProvenance": {"generationId": "gen-1", "detailScope": "detail_page"}}
+            "freshnessProvenance": {"generationId": "gen-1", "detailScope": "source_native_public_record",
+                                    "method": "infabode_public_posts_graphql", "cacheDisposition": "live"}}
 
 
 def test_source_post_retains_full_input_without_fabricating_status_or_location():
