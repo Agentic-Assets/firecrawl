@@ -65,6 +65,7 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_APPROVAL_REF AGENTIC-5257",
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
+        schema += "\nCREATE VIEW credeals.v_cre_market_summary AS SELECT 1 WHERE false;\n"
         subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=schema, text=True,
                        env=psql_connection_env(uri), stdout=subprocess.DEVNULL, check=True, timeout=60)
 
