@@ -50,6 +50,7 @@ def run_schedule(
     pyramid_guard_refusal=False,
     pyramid_guard_valid=True,
     transwestern_guard_refusal=False,
+    jll_guard_refusal=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -169,6 +170,9 @@ def run_schedule(
         if transwestern_guard_refusal and "transwestern" in unit["sources"]:
             owner["sources"]["transwestern"]["state"] = "transwestern_image_guard_refused"
             raise refresh.TranswesternImageGuardRefusal("Transwestern protected image multiplicity lost")
+        if jll_guard_refusal and "jll" in unit["sources"]:
+            owner["sources"]["jll"]["state"] = "jll_image_guard_refused"
+            raise refresh.JllImageGuardRefusal("JLL image-loss guard refused")
         if db_failure:
             raise refresh.GlobalStageError("synthetic DB fault")
         until = clock["now"] + 0.6
@@ -190,7 +194,7 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
-    if pyramid_guard_refusal or transwestern_guard_refusal:
+    if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
 
@@ -741,3 +745,21 @@ def test_transwestern_singleton_hold_continues_peers_only_when_bound(tmp_path, m
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
     assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
     assert [event[1] for event in events if event[0] == "db_start" and "transwestern" in event[1]] == [("transwestern",)]
+
+
+def test_jll_rolled_back_image_guard_keeps_other_sources_moving(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 2, sources=("jll", "svn", "savills"),
+        jll_guard_refusal=True,
+    )
+    assert failures == ["jll"]
+    assert manifest["pipeline"]["source_results"]["jll"]["state"] == "failed"
+    assert manifest["pipeline"]["source_results"]["svn"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert next(e for e in events if e[0] == "db_start" and "jll" in e[1])[1] == ("jll",)
+
+
+def test_jll_unverified_rollback_stops_pipeline(tmp_path, monkeypatch):
+    with pytest.raises(refresh.GlobalStageError, match="rollback evidence"):
+        run_schedule(tmp_path, monkeypatch, 2, sources=("jll", "svn"),
+                     jll_guard_refusal=True, pyramid_guard_valid=False)

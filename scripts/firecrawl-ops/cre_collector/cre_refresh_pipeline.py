@@ -988,7 +988,7 @@ def run_bounded_pipeline(
                 or state["source_results"].get(source, {}).get("state") == "verified"
                 or (
                     source in terminal_source_holds
-                    and checkpoint.get("state") in {"gate_blocked", "baseline_seed_required", "pyramid_historical_guard_refused", "transwestern_image_guard_refused"}
+                    and checkpoint.get("state") in {"gate_blocked", "baseline_seed_required", "pyramid_historical_guard_refused", "transwestern_image_guard_refused", "jll_image_guard_refused"}
                 )
             )
         }
@@ -1059,7 +1059,7 @@ def run_bounded_pipeline(
                     # A Pyramid write owns a singleton unit. Previously
                     # completed siblings therefore use the normal verified
                     # unit/baseline chain before a source-local rollback.
-                    guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern"}), None)
+                    guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll"}), None)
                     if guarded is not None:
                         index = ready.index(guarded)
                         take = index if index else 1
@@ -1146,14 +1146,14 @@ def run_bounded_pipeline(
                     except refresh.SourceGuardRefusal:
                         from cre_pyramid_rollback_result import verified_rollback
                         require_pipeline_owner(manifest, _OWNER_LEASE.get())
-                        if (len(sealed) != 1 or sealed[0] not in {"pyramid-brokerage", "transwestern"}
+                        if (len(sealed) != 1 or sealed[0] not in {"pyramid-brokerage", "transwestern", "jll"}
                                 or not verified_rollback(run_dir, manifest, sealed[0])):
                             raise refresh.GlobalStageError("source-local rollback evidence changed")
                         source = sealed[0]
                         manifest["sources"][source]["pipeline_stage"] = "failed"
                         terminal_source_holds.add(source)
                         state["source_results"][source] = {
-                            "state": "failed", "reason": ("pyramid_historical_identity_guard" if source == "pyramid-brokerage" else "Transwestern protected image multiplicity lost"),
+                            "state": "failed", "reason": ("pyramid_historical_identity_guard" if source == "pyramid-brokerage" else "jll_image_guard_refusal" if source == "jll" else "Transwestern protected image multiplicity lost"),
                             "unit_id": unit_id,
                         }
                         unit.update(state="source_held", finished_at=refresh.utc_now())

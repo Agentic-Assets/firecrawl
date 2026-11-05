@@ -6827,3 +6827,77 @@ def test_serial_multi_source_guard_remains_global_after_an_earlier_commit(tmp_pa
     assert calls == ["savills", "pyramid-brokerage"]
     assert manifest["sources"]["savills"]["state"] == "ingested"
     assert "serial_guard_holds" not in manifest
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_serial_jll_rollback_continues_only_after_verified_owner_and_receipt(tmp_path, monkeypatch, valid):
+    import cre_pyramid_rollback_result as outcome
+    sources = ["savills", "jll", "hanley"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *a: None)
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: valid)
+    calls = []
+    owners = []
+    def ingest(run, owner, source, artifact, env):
+        calls.append(source)
+        if source == "jll":
+            owner["sources"][source]["state"] = "jll_image_guard_refused"
+            raise refresh.JllImageGuardRefusal("typed")
+        owner["sources"][source]["state"] = "ingested"
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    if valid:
+        assert refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: owners.append(1)) == ["jll"]
+        assert calls == sources
+        assert manifest["serial_guard_holds"] == ["jll"]
+        assert manifest["sources"]["savills"]["state"] == "ingested"
+        assert manifest["sources"]["hanley"]["state"] == "ingested"
+        assert len(owners) == 4
+    else:
+        with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+            refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=lambda: owners.append(1))
+        assert calls == ["savills", "jll"]
+        assert "serial_guard_holds" not in manifest
+
+
+def test_serial_hold_validates_all_committed_peers_then_reports_partial(tmp_path, monkeypatch):
+    sources = ["savills", "jll", "hanley"]
+    observed = []
+    monkeypatch.setattr(refresh, "run_final_validation", lambda path, manifest, env, **kw: observed.append(kw))
+    with pytest.raises(refresh.RefreshError, match="serial source checkpoints remain incomplete: jll"):
+        refresh.validate_serial_sources(tmp_path, {}, None, sources, ["jll"])
+    assert observed == [{"sources": ["savills", "hanley"]}]
+
+
+def test_serial_hold_does_not_hide_failed_peer_validation(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise refresh.GlobalStageError("peer readback failed")
+    monkeypatch.setattr(refresh, "run_final_validation", fail)
+    with pytest.raises(refresh.GlobalStageError, match="peer readback failed"):
+        refresh.validate_serial_sources(tmp_path, {}, None, ["savills", "jll"], ["jll"])
+
+
+def test_serial_jll_owner_loss_fences_siblings_after_refusal(tmp_path, monkeypatch):
+    import cre_pyramid_rollback_result as outcome
+    sources = ["savills", "jll", "hanley"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    checked = []
+    def owner_check():
+        checked.append(True)
+        if len(checked) == 3:
+            raise refresh.GlobalStageError("owner lost")
+    calls = []
+    def ingest(run, state, source, artifact, env):
+        calls.append(source)
+        if source == "jll":
+            raise refresh.JllImageGuardRefusal("typed")
+        state["sources"][source]["state"] = "ingested"
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pytest.fail("must check owner first"))
+    with pytest.raises(refresh.GlobalStageError, match="owner lost"):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=owner_check)
+    assert calls == ["savills", "jll"]
+    assert "serial_guard_holds" not in manifest

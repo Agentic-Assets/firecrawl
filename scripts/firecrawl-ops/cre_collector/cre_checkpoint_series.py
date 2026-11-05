@@ -2470,7 +2470,7 @@ def run_pipeline_series(
                 row["subset_counts"] = pyramid_subset_counts(child)
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
-            if (key, state) in {("pyramid-brokerage", "pyramid_historical_guard_refused"), ("transwestern", "transwestern_image_guard_refused")}:
+            if (key, state) in {("pyramid-brokerage", "pyramid_historical_guard_refused"), ("transwestern", "transwestern_image_guard_refused"), ("jll", "jll_image_guard_refused")}:
                 from cre_pyramid_rollback_result import verified_rollback
                 outcome = "failed_source" if verified_rollback(child_run, child, key) else "failed_global"
             elif state in {
@@ -2884,7 +2884,7 @@ def run_series(
                     if control is None:
                         _require_completed_group_settlement(proc._cre_owned_group)
                     local_guard = (
-                        source in {"pyramid-brokerage", "transwestern"}
+                        source in {"pyramid-brokerage", "transwestern", "jll"}
                         and child_manifest.get("status") == "failed"
                         and child_manifest.get("serial_guard_holds") == [source]
                         and child_manifest.get("preflight", {}).get("database_target") == manifest.get("database_target")
