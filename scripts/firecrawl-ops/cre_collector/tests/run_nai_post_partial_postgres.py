@@ -166,6 +166,40 @@ SELECT json_build_object(
         assert run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
                    "-v", "ON_ERROR_STOP=1", text=full_sql({**full, "naiPublicPostHistory": {}}),
                    check=False).returncode != 0
+        # A second cooperating writer must serialize and invalidate the exact
+        # parent preimage before this partial transaction writes a job or row.
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
+SELECT id,'infabode:6','https://infabode.com/services/listings/6','active','Before',
+       '{"sourceKey":"nai-global","id":"infabode:6"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        race_rows = [stage_post(post(6), "gen-1"), stage_post(post(7), "gen-1")]
+        race_probe = sql(identity_probe_sql(race_rows)).split("|", 3)
+        race_held = json.loads(race_probe[2])
+        race_before = json.loads(race_probe[3], parse_float=Decimal)
+        race_job = str(uuid.uuid4())
+        writer = subprocess.Popen(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q",
+                                   "-v", "ON_ERROR_STOP=1"], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        writer.stdin.write("BEGIN;\n" + ingest.lifecycle_transaction_lock_sql() + "\n"
+                           "UPDATE credeals.cre_listings SET title='Concurrent' WHERE external_id='infabode:6';\n"
+                           "SELECT pg_sleep(2);\nCOMMIT;\n")
+        writer.stdin.close()
+        for _ in range(100):
+            if sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND granted;") != "0":
+                break
+            time.sleep(.02)
+        else:
+            raise RuntimeError("cooperating writer did not acquire lifecycle lock")
+        raced = run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
+                    "-v", "ON_ERROR_STOP=1", text=build_partial_sql(
+                        race_rows, race_held, race_before, race_job, "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z"),
+                    check=False)
+        assert writer.wait(timeout=10) == 0
+        assert raced.returncode != 0 and "NAI post identity partition changed" in raced.stderr
+        assert sql(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{race_job}'::uuid;") == "0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:7';") == "0"
         print("NAI post partial real-schema proof passed")
     finally:
         run("docker", "rm", "-f", name, check=False)
