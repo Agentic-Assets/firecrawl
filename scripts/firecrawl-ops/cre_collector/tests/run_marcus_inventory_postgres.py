@@ -35,6 +35,12 @@ def main():
     if cpu is not None and not re.fullmatch(r"[0-9]+", cpu):
         raise ValueError("invalid disposable PostgreSQL CPU")
     cpu_args = ["--cpuset-cpus=" + cpu] if cpu is not None else []
+    # psql's validation script writes framed results to a client-side temp
+    # file. The client runs in this disposable container, so bind only a new
+    # proof-owned directory at the same path on both sides.
+    proof_tmp = Path("/tmp") / name
+    proof_tmp.mkdir(mode=0o700)
+    os.environ["MARCUS_TEST_TMPDIR"] = str(proof_tmp)
 
     def sql(query, check=True):
         result = run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
@@ -45,7 +51,7 @@ def main():
 
     owned = False
     try:
-        run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--label", "codex.marcus-proof=" + name, "--network=none", "--cpus=0.5",
+        run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--label", "codex.marcus-proof=" + name, "--network=none", "--cpus=0.5", "--volume", str(proof_tmp) + ":" + str(proof_tmp),
             *cpu_args, "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
             "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
         owned = True

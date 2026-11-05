@@ -57,7 +57,7 @@ globalThis.fetch=async (input,init={})=>{ const u=String(input);
             page_cap=3, concurrency=1, source_workers=2, pipeline=True,
             database_target={"algorithm": "sha256", "value": target})
         env = {"PATH": os.environ["PATH"], "HOME": str(root), "PSQL_BIN": str(shim),
-               "NODE_OPTIONS": "--import=" + preload.as_uri()}
+               "NODE_OPTIONS": "--import=" + preload.as_uri(), "TMPDIR": os.environ["MARCUS_TEST_TMPDIR"]}
         original_start = refresh._start_cohort_collection
 
         def start(directory, owner, source, **kwargs):
