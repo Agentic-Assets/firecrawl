@@ -45,6 +45,19 @@ def test_identified_inventory_post_survives_missing_detail_and_category():
     assert json.loads(base64.b64decode(row["observation_base64"])) == source
 
 
+def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis():
+    sale = post()
+    sale["salePriceUsd"] = 2500000
+    sale["publicPost"].update(currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
+    assert stage_post(sale, "gen-1")["sale_price_usd"] == 2500000
+    sale["publicPost"]["locations"] = [{"path": "Toronto, ON, Canada"}]
+    assert stage_post(sale, "gen-1")["sale_price_usd"] is None
+    lease = post(2, tx="lease")
+    lease["leaseRateMin"] = 12
+    lease["publicPost"].update(currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
+    assert stage_post(lease, "gen-1")["lease_rate_min"] is None
+
+
 def test_alias_and_native_id_collisions_hold_only_affected_peers():
     alias = "https://www.naiglobal.com/listings/?propertyId=collision"
     records = [post(1, alias), post(2, alias), post(3), post(3), post(4)]

@@ -117,10 +117,26 @@ def stage_post(listing, generation):
     fields = ("title", "city", "state", "description", "transaction_type",
               "property_type", "size_sf", "available_sf", "min_divisible_sf",
               "max_divisible_sf", "lot_size_sf", "year_built", "sale_price_usd",
-              "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type")
+              "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights")
     projected = {key: row.get(key) for key in fields}
     if tx is None or not categories:
         projected["transaction_type"] = None
+    # The native price has a currency label but no lease-rate unit/basis. Do
+    # not turn a lease amount into $/SF/year. DOLLAR supports USD only when a
+    # source location explicitly says United States; the mapper defaults US.
+    price_source = listing.get("publicPost") or listing["feedRow"]
+    locations = price_source.get("locations")
+    explicit_us = (isinstance(locations, list) and any(
+        isinstance(location, dict) and isinstance(location.get("path") or location.get("name"), str)
+        and any(part.strip().lower() == "united states" for part in
+                (location.get("path") or location.get("name")).split(","))
+        for location in locations))
+    if str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us:
+        projected["sale_price_usd"] = None
+        projected["sale_price_per_sf"] = None
+    projected["lease_rate_min"] = None
+    projected["lease_rate_max"] = None
+    projected["lease_rate_type"] = None
     for key, value in projected.items():
         if isinstance(value, str) and ("\x00" in value or
                 any(0xD800 <= ord(character) <= 0xDFFF for character in value)):
@@ -130,6 +146,12 @@ def stage_post(listing, generation):
     state = projected["state"]
     if state is not None and (not isinstance(state, str) or not re.fullmatch(r"[A-Z]{2}", state)):
         projected["state"] = None
+    if isinstance(projected["highlights"], list):
+        projected["highlights"] = [value for value in projected["highlights"]
+                                   if isinstance(value, str) and "\x00" not in value
+                                   and not any(0xD800 <= ord(character) <= 0xDFFF for character in value)]
+    else:
+        projected["highlights"] = None
     year = projected["year_built"]
     if type(year) not in {int, float} or not math.isfinite(year) or int(year) != year or not -(2**31) <= year < 2**31:
         projected["year_built"] = None
@@ -417,7 +439,7 @@ FROM _nai_partial_rows s WHERE l.brokerage_id=s.brokerage_id AND l.external_id=r
 INSERT INTO credeals.cre_listings
  (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,property_type,
   title,city,state,lat,lng,description,size_sf,available_sf,min_divisible_sf,max_divisible_sf,
-  lot_size_sf,year_built,sale_price_usd,sale_price_per_sf,lease_rate_min,lease_rate_max,lease_rate_type,
+  lot_size_sf,year_built,sale_price_usd,sale_price_per_sf,lease_rate_min,lease_rate_max,lease_rate_type,highlights,
   country,scraped_at,raw_data)
 SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transaction_type',r->>'property_type',
  r->>'title',r->>'city',r->>'state',(r->>'lat')::double precision,(r->>'lng')::double precision,
@@ -425,6 +447,7 @@ SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transactio
  (r->>'min_divisible_sf')::numeric,(r->>'max_divisible_sf')::numeric,(r->>'lot_size_sf')::numeric,
  (r->>'year_built')::integer,(r->>'sale_price_usd')::numeric,(r->>'sale_price_per_sf')::numeric,
  (r->>'lease_rate_min')::numeric,(r->>'lease_rate_max')::numeric,r->>'lease_rate_type',
+ CASE WHEN jsonb_typeof(r->'highlights')='array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'highlights')) END,
  NULL,NULL,jsonb_build_object('sourceKey','nai-global','id',r->>'external_id',
  'identityScope','infabode_public_post','naiPublicPostHistory',
  jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
@@ -473,7 +496,7 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
     fields = ("transaction_type", "property_type", "title", "city", "state",
               "description", "size_sf", "available_sf", "min_divisible_sf", "max_divisible_sf",
               "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-              "lease_rate_min", "lease_rate_max", "lease_rate_type")
+              "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights")
     projected = " OR ".join(f"listing->'{key}' IS DISTINCT FROM r->'{key}'" for key in fields)
     projected += (" OR (listing->>'lat')::double precision IS DISTINCT FROM (r->>'lat')::double precision"
                   " OR (listing->>'lng')::double precision IS DISTINCT FROM (r->>'lng')::double precision")

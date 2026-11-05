@@ -74,6 +74,7 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         incomplete.pop("transactionMode")
         incomplete["feedRow"].pop("contentType")
         incomplete.update(latitude=45.123456789012345, longitude=-117.98765432109876)
+        incomplete["highlights"] = ["Source tag one", "Source tag two"]
         root = Path(tmp.name) / "gen-1"
         (root / "sources").mkdir(parents=True)
         artifact = root / "sources" / "nai-global.json"
@@ -140,6 +141,7 @@ SELECT json_build_object(
  'held_untouched',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:2'),
  'new_rows',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:3'
     AND status IS NULL AND transaction_type IS NULL AND canonical_url IS NULL AND scraped_at IS NULL
+    AND highlights=ARRAY['Source tag one','Source tag two']::text[]
     AND raw_data->>'identityScope'='infabode_public_post'),
  'index_rows',(SELECT count(*) FROM credeals.cre_source_index si
     JOIN credeals.cre_brokerages b ON b.id=si.brokerage_id WHERE b.slug='nai-global'))::text;
