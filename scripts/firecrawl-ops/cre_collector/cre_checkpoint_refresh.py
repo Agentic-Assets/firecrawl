@@ -3943,7 +3943,8 @@ def _cohort_attempt(
             return None
     attempt_number = len(checkpoint["attempts"]) + 1
     attempt_started = utc_now()
-    if parse_iso8601(attempt_started, field="attempt start") < parse_iso8601(manifest["started_at"], field="generation start"):
+    if (manifest["config"].get("pipeline") is True
+            and parse_iso8601(attempt_started, field="attempt start") < parse_iso8601(manifest["started_at"], field="generation start")):
         raise ClockOrderingPending("wall clock precedes generation start")
     checkpoint.pop("clock_hold", None)
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
@@ -4138,7 +4139,8 @@ def _finalize_cohort_collection(
             f"{item.source} attempt {item.attempt.get('number')}"
         )
     finished_at = utc_now()
-    if parse_iso8601(finished_at, field="attempt finish") < parse_iso8601(item.attempt_started_at, field="attempt start"):
+    if (manifest["config"].get("pipeline") is True
+            and parse_iso8601(finished_at, field="attempt finish") < parse_iso8601(item.attempt_started_at, field="attempt start")):
         if not clock_expired:
             raise ClockOrderingPending("wall clock precedes attempt start")
         item.log_handle.write(f"[{finished_at}] coordinator refused reversed attempt clock\n")

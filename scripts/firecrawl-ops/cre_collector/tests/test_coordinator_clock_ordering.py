@@ -59,7 +59,7 @@ def test_settled_group_is_never_signalled_or_reproved_during_clock_deferral(tmp_
     run = tmp_path / "generation"
     run.mkdir()
     manifest = refresh.new_manifest(run, git_sha="a" * 40, git_dirty=False,
-        sources=("savills",), page_cap=1, concurrency=1)
+        sources=("savills",), page_cap=1, concurrency=1, pipeline=True)
     attempt, path, _, started = refresh._cohort_attempt(run, manifest, "savills", collector_concurrency=1)
     group = SimpleNamespace(gone=False)
     item = refresh.CohortCollectionProcess("savills", SimpleNamespace(poll=lambda: 80),
@@ -86,3 +86,23 @@ def test_settled_group_is_never_signalled_or_reproved_during_clock_deferral(tmp_
         assert not refresh._finalize_cohort_collection(run, manifest, item, candidate_only=True)
         assert attempt["finished_at"] == started
     assert proved == [group]
+
+
+def test_non_pipeline_cohort_keeps_existing_clock_handling(tmp_path, monkeypatch):
+    run = tmp_path / "generation"
+    run.mkdir()
+    manifest = refresh.new_manifest(run, git_sha="a" * 40, git_dirty=False,
+        sources=("savills",), page_cap=1, concurrency=1)
+    prior = refresh.parse_iso8601(manifest["started_at"], field="generation") - timedelta(milliseconds=60)
+    monkeypatch.setattr(refresh, "utc_now", lambda: prior.isoformat())
+    attempt, path, _, started = refresh._cohort_attempt(run, manifest, "savills", collector_concurrency=1)
+    assert attempt["started_at"] == started == prior.isoformat()
+    earlier = prior - timedelta(milliseconds=60)
+    monkeypatch.setattr(refresh, "utc_now", lambda: earlier.isoformat())
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", lambda group: None)
+    monkeypatch.setattr(refresh, "archive_rejected_with_evidence", lambda *args: (None, None))
+    monkeypatch.setattr(refresh, "seal_source_evidence", lambda *args: None)
+    item = refresh.CohortCollectionProcess("savills", SimpleNamespace(poll=lambda: 80), io.StringIO(),
+                                          path, attempt, started, SimpleNamespace(gone=False))
+    assert not refresh._finalize_cohort_collection(run, manifest, item)
+    assert attempt["finished_at"] == earlier.isoformat()
