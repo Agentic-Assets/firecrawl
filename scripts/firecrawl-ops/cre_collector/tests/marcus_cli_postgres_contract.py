@@ -85,7 +85,7 @@ def run_cli_contract(sql, container_name):
             assert observed_result["ok"] is True and observed_result["outcome"] == "exact_commit"
             assert observed_result["detail_qualified"] == 0 and observed_result["whole_source_coverage"] is False
             readback = refresh.verify_validation_readback(run_dir, manifest,
-                {"queries": {}, "marcus_inventory_readback": observed_result}, sources=("marcus-millichap",))
+                {"queries": {"freshness_generations": [], "inventory_only_index": []}, "marcus_inventory_readback": observed_result}, sources=("marcus-millichap",))
             assert readback["ok"] is True and checkpoint["readback"]["kind"] == "marcus_inventory_partial"
             assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='301' AND status IS NULL AND scraped_at IS NULL") == "1"
             print("Marcus real source/aggregate gates -> owned coordinator CLI -> bound readback PASS")
