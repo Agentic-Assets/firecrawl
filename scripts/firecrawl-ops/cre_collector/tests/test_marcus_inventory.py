@@ -306,3 +306,54 @@ def test_series_qualifies_only_exact_marcus_partial_owner_and_attempt():
     checkpoint["attempts"][0]["rejected_artifact_sha256"] = sha
     binding["detail_qualified"] = True
     assert not marcus_inventory_partial_child(child)
+
+
+@pytest.mark.parametrize("case", ["verified", "bad_attempt", "bad_children", "overclaim", "other_source"])
+def test_marcus_quality_allowance_requires_exact_readback_and_cannot_cover_peers(tmp_path, monkeypatch, case):
+    import cre_checkpoint_refresh as refresh
+    from tests.test_cre_checkpoint_refresh import absolute_quality_report
+
+    run = tmp_path / "run"
+    (run / "logs").mkdir(parents=True)
+    before = absolute_quality_report(source="marcus-millichap", missing_canonical_url="10")
+    after = absolute_quality_report(source="marcus-millichap", missing_canonical_url="12")
+    if case == "other_source":
+        after["queries"]["quality_by_source"].append({"source_key": "jll", "missing_canonical_url": "1"})
+    after["queries"]["freshness_generations"] = []
+    after["queries"]["inventory_only_index"] = []
+    (run / "pre-validation.json").write_text(json.dumps(before), encoding="utf8")
+    manifest = refresh.new_manifest(run, git_sha="a" * 40, git_dirty=False,
+                                   sources=("marcus-millichap",), page_cap=400, concurrency=1)
+    manifest["preflight"]["validation_path"] = "pre-validation.json"
+    binding = {"artifact_sha256": "b" * 64, "generation_id": manifest["run_id"],
+               "database_target_sha256": "c" * 64, "staged_sha256": "d" * 64,
+               "held": [], "emitted_count": 3}
+    checkpoint = manifest["sources"]["marcus-millichap"]
+    checkpoint.update(state="ingested", artifact={"marcus_inventory_partial": True, "sha256": "b" * 64},
+                      gate={"current_inventory_proof": binding}, subset_ingest_attempt_id="e" * 32)
+    observed = {"ok": True, "outcome": "exact_commit", "artifact_sha256": "b" * 64,
+                "generation_id": manifest["run_id"], "database_target_sha256": "c" * 64,
+                "attempt_id": "e" * 32, "staged_sha256": "d" * 64, "held": [], "expected": 3,
+                "new_missing_canonical_count": 2, "child_collections_verified": True,
+                "detail_qualified": 0, "whole_source_coverage": False}
+    if case == "bad_attempt":
+        observed["attempt_id"] = "f" * 32
+    elif case == "bad_children":
+        observed["child_collections_verified"] = False
+    elif case == "overclaim":
+        observed["new_missing_canonical_count"] = 4
+
+    def write_validation(argv, _log, env):
+        from pathlib import Path
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(after), encoding="utf8")
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", write_validation)
+    monkeypatch.setattr(refresh, "marcus_inventory_readback", lambda *_: observed)
+    if case == "verified":
+        result = refresh.run_final_validation(run, manifest, None)
+        assert result["quality_no_regression"] is True
+        assert result["marcus_new_missing_canonical_count"] == 2
+    else:
+        with pytest.raises(refresh.GlobalStageError):
+            refresh.run_final_validation(run, manifest, None)
