@@ -4,11 +4,16 @@ This is not a writer or an admission gate. A future refresh owner must rederive
 and seal the projection from the retained artifact, bind code/generation/target,
 and reconcile uncertain commits before invoking this plan.
 """
+import hashlib
 import json
 import re
+import uuid
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from cre_ingest import (
+    _RUN_UUID_NAMESPACE,
+    artifact_run_identity_from_digests,
     lifecycle_transaction_lock_sql,
     parse_strict_freshness_timestamp,
     sql_lit,
@@ -80,6 +85,37 @@ def _partition(staged, held):
         raise ValueError("invalid Franklin held partition")
 
 
+def _binding(staged, held, binding):
+    required = {"artifact_sha256", "attempt_id", "generation_id", "producer_sha",
+                "database_target_sha256", "started_at", "finished_at"}
+    if not isinstance(binding, dict) or set(binding) != required:
+        raise ValueError("invalid Franklin transaction binding")
+    if (any(not isinstance(binding.get(key), str) for key in required)
+            or not re.fullmatch(r"[0-9a-f]{64}", binding["artifact_sha256"])
+            or not re.fullmatch(r"[0-9a-f]{64}", binding.get("database_target_sha256", ""))
+            or not re.fullmatch(r"[0-9a-f]{40}", binding.get("producer_sha", ""))
+            or not re.fullmatch(r"[0-9a-f]{32}", binding.get("attempt_id", ""))
+            or not isinstance(binding.get("generation_id"), str)
+            or any(row["observation"]["generationId"] != binding["generation_id"] for row in staged)):
+        raise ValueError("invalid Franklin identity binding")
+    started = parse_strict_freshness_timestamp(binding["started_at"], field="started_at")
+    finished = parse_strict_freshness_timestamp(binding["finished_at"], field="finished_at")
+    if started > finished:
+        raise ValueError("invalid Franklin attempt clocks")
+    for row in staged:
+        observed = parse_strict_freshness_timestamp(row["observation"]["observedAt"], field="observedAt")
+        if observed < started or observed > finished + timedelta(minutes=5):
+            raise ValueError("Franklin observation outside bound attempt")
+    staged_digest = hashlib.sha256(json.dumps(staged, sort_keys=True, separators=(",", ":"),
+                                             ensure_ascii=False).encode()).hexdigest()
+    claims = {**binding, "held": held, "staged_sha256": staged_digest}
+    claims_digest = hashlib.sha256(json.dumps(claims, sort_keys=True, separators=(",", ":"),
+                                             ensure_ascii=False).encode()).hexdigest()
+    key, _ = artifact_run_identity_from_digests([binding["artifact_sha256"]])
+    job_id = str(uuid.uuid5(_RUN_UUID_NAMESPACE, f"{key}:franklin-street"))
+    return {"key": key, "job_id": job_id, "notes": "franklin-site-partial-v1:" + claims_digest}
+
+
 def _site_query(payload):
     return f"""SELECT b.id AS brokerage_id, x.*
 FROM jsonb_to_recordset({payload}::jsonb) AS x(
@@ -122,10 +158,11 @@ SELECT json_build_object('staged', {len(staged)}, 'joined', (SELECT count(*) FRO
 """
 
 
-def build_sql(listings, held):
+def build_sql(listings, held, binding):
     """Create a transaction rechecking its prebound identity partition."""
     staged = stage(listings)
     _partition(staged, held)
+    job = _binding(staged, held, binding)
     payload = sql_lit(json.dumps(staged, ensure_ascii=False, separators=(",", ":")))
     expected_held = sql_lit(json.dumps(held, separators=(",", ":")))
     return f"""
@@ -151,6 +188,22 @@ DO $$ BEGIN
  IF COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id) FROM _franklin_site_held), '[]'::jsonb)
       IS DISTINCT FROM {expected_held}::jsonb THEN
    RAISE EXCEPTION 'Franklin identity partition changed';
+ END IF;
+END $$;
+INSERT INTO credeals.cre_scrape_jobs
+ (id, brokerage_id, status, started_at, completed_at, listings_discovered,
+  listings_scraped, listings_saved, errors_count, notes, artifact_run_key)
+SELECT {sql_lit(job["job_id"])}::uuid, b.id, 'partial',
+       {sql_lit(binding["started_at"])}::timestamptz, {sql_lit(binding["finished_at"])}::timestamptz,
+       {len(staged)}, 0, {len(staged) - len(held)}, 1, {sql_lit(job["notes"])}, {sql_lit(job["key"])}
+FROM credeals.cre_brokerages b WHERE b.slug='franklin-street'
+ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs j
+  JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
+  WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
+    AND j.status='partial' AND j.notes={sql_lit(job["notes"])}) THEN
+  RAISE EXCEPTION 'Franklin partial job binding differs';
  END IF;
 END $$;
 INSERT INTO credeals.cre_listings AS target
@@ -181,10 +234,11 @@ SELECT json_build_object('held', COALESCE((SELECT json_agg(external_id ORDER BY 
 COMMIT;
 """
 
-def readback_sql(listings, held):
+def readback_sql(listings, held, binding):
     """Build exact generation/card readback for the transaction's unheld partition."""
     staged = stage(listings)
     _partition(staged, held)
+    job = _binding(staged, held, binding)
     accepted = [row for row in staged if row["external_id"] not in set(held)]
     payload = sql_lit(json.dumps(accepted, ensure_ascii=False, separators=(",", ":")))
     return f"""
@@ -202,5 +256,9 @@ WITH expected AS (
     OR l.raw_data->'franklinSiteObservations'->-1->'card' IS DISTINCT FROM e.observation->'card'
 )
 SELECT json_build_object('expected', (SELECT count(*) FROM expected),
- 'invalid', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM invalid), '[]'::json));
+ 'invalid', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM invalid), '[]'::json),
+ 'matching_jobs', (SELECT count(*) FROM credeals.cre_scrape_jobs j
+   JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
+   WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
+    AND j.status='partial' AND j.notes={sql_lit(job["notes"])}));
 """

@@ -1,7 +1,7 @@
 import copy
 
 import pytest
-from run_franklin_site_ingest_postgres import item
+from run_franklin_site_ingest_postgres import binding, item
 
 import cre_franklin_site_sql as partial
 
@@ -37,4 +37,4 @@ def test_staging_rejects_duplicate_and_mixed_generation():
 
 def test_readback_rejects_unbound_held_ids():
     with pytest.raises(ValueError):
-        partial.readback_sql([valid()], ["foreign"])
+        partial.readback_sql([valid()], ["foreign"], binding([valid()]))
