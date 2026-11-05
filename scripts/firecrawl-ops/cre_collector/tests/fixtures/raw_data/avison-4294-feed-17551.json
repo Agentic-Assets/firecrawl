@@ -1,0 +1,47 @@
+{
+  "availabilities_max_surface_sqft": 4397,
+  "country": "US",
+  "availabilities_max_rent": 26,
+  "state_long": "Texas",
+  "featured": false,
+  "city": "Dripping Springs",
+  "total_surface_sqft": 4397,
+  "off_market_at": null,
+  "description": "<ul><li>Pylon signage available </li><li>Private restroom in premises </li><li>Tenant controlled HVAC </li><li>Elevator &amp; private stairway </li><li>Great location with Highway 290 frontage </li><li>Nine private offices, two large conference rooms",
+  "type": [
+    "office.office_building"
+  ],
+  "availabilities_min_rent": 26,
+  "external_url": "https://www.avisonyoung.us/properties/721-hwy-290-w-dripping-springs-lease",
+  "on_market_at": "2024-07-16T00:00:00.000Z",
+  "updated_at": "2026-10-13T13:29:07.000Z",
+  "sale_currency": "USD",
+  "id": 17551,
+  "state": "TX",
+  "slug": "721-hwy-290-w-dripping-springs-lease",
+  "zip": "78620",
+  "total_surface": 4397,
+  "availabilities_min_surface_sqft": 4397,
+  "address": "721 Hwy 290 W ",
+  "meta_title": "Prosperity Bank",
+  "submarket": "",
+  "url": "https://ayusprosperitybank.sharplaunch.com",
+  "yearbuilt": 2005,
+  "total_surface_unit": "sqft",
+  "meta_description": "For lease - Prosperity Bank, 721 Hwy 290 W , Dripping Springs, TX 78620",
+  "locales": [
+    "en-CA"
+  ],
+  "image_path": "website-17551/6686252eda08e/photo-42a362d8ce39e8b1904c918ceb75bfb31c856b75f64c4288797f06ec1240e420.jpg",
+  "name": "Prosperity Bank",
+  "location": {
+    "lng": -96.4011804,
+    "lat": 30.1445083
+  },
+  "order_id": 17551,
+  "transaction": [
+    "lease"
+  ],
+  "username": "ayusprosperitybank",
+  "status": "active"
+}

@@ -1165,6 +1165,29 @@ export function assertAvisonYoungDetailDoc(
         || !subjectMatches(point?.name) || point?.lat !== base.latitude || point?.lng !== base.longitude))) return false;
     return physicalSubjectClaimsAgree && strictPhysicalDescriptionsAgree();
   })();
+  // A suite marketing heading can coexist with an exact source-owned subject.
+  // Require the complete official envelope and both source addresses; the suite
+  // label supplies no cross-property or postal-code inference.
+  const officialSuiteOffering = (() => {
+    const heading = /^(?:\u00b1|~)?\s*[1-9]\d*(?:,\d{3})*(?:\.\d+)?\s+SF\s+office\s+space\s+for\s+lease$/i
+      .test(clean($("h1").text()) ?? "");
+    const subtitle = /^(.*?)\s*\|\s*suite\s+[A-Za-z0-9-]+$/i.exec(clean($(".hero__sub-title").text()) ?? "");
+    const types = base?.rawSharpLaunch?.type;
+    const transactions = base?.rawSharpLaunch?.transaction;
+    return exactOfficialEnvelope() && heading && subtitle !== null && subjectMatches(subtitle[1])
+      && $(".hero__text .hero__title").length === 1
+      && building.length === 1 && hasBuildingOverview && ownedIdentityMetadata
+      && strictStructuredAddresses && completeDescriptionIdentity && !descriptionConflicts
+      && physicalSubjectClaimsAgree && strictPhysicalDescriptionsAgree()
+      && Array.isArray(types) && types.length === 1 && types[0] === "office.office_building"
+      && Array.isArray(transactions) && transactions.length === 1 && transactions[0] === "lease"
+      && clean(base?.transactionType)?.toLowerCase() === "lease"
+      && record?.propertyListing?.["@type"] === "Place"
+      && Array.isArray(record?.propertyListing?.category)
+      && record.propertyListing.category.length === 1 && record.propertyListing.category[0] === types[0]
+      && clean(record?.offers?.businessFunction)?.toLowerCase() === "lease";
+  })();
+
   // This registered-page role keeps the feed's ordered range as the property
   // identity while allowing the publisher's endpoint marker as its locator.
   // It is intentionally independent of the older endpoint-first range scope.
@@ -1392,7 +1415,7 @@ export function assertAvisonYoungDetailDoc(
       && physicalDescriptionsAgree;
     const structuredPhysicalIdentity = officialPhysicalAnchor && (offeringHeading || marketingOfferingHeading)
       && $("h1").length === 1 && physicalDescriptionsAgree;
-    const acceptedNewOfficialRole = officialIntersectionOffering || officialOfficeSublease;
+    const acceptedNewOfficialRole = officialIntersectionOffering || officialOfficeSublease || officialSuiteOffering;
     if (!(identityMetadataMatches || structuredDisplayIdentity || structuredPhysicalIdentity
       || officialStreetAcreageWitness || officialRangeScopeWitness || acceptedNewOfficialRole)
       || (!acceptedNewOfficialRole && !structuredIdentityMatches) || !urlMatches) {
