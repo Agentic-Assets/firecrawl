@@ -196,7 +196,8 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         "    AND (claimed_at IS NULL OR claimed_at < now() - interval "
         + sql_lit(reclaim_interval) + ")",
         *where_source,
-        "  ORDER BY " + ("claimed_at NULLS FIRST, " if source_page_witness else "") + "priority, enqueued_at",
+        "  ORDER BY " + ("claimed_at NULLS FIRST, " if source_page_witness else "")
+        + "priority, enqueued_at" + (", attempts, id" if source_page_witness else ""),
         "  LIMIT {}".format(batch),
         "  FOR UPDATE SKIP LOCKED",
         ")",
