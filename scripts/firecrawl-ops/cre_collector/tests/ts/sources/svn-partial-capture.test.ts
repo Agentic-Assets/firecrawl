@@ -1,9 +1,59 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
+
+test("SVN page serialization streams large strings and preserves exact JSON", () => {
+  const dir = mkdtempSync(join(tmpdir(), "svn-stream-"));
+  try {
+    const path = join(dir, "attempt.jsonl");
+    let largest = 0;
+    const spool = new PartialPageSpool(path, "generation", 1, {
+      write: (fd, buffer, offset, length) => { largest = Math.max(largest, buffer.length); return writeSync(fd, buffer, offset, length); },
+      sync: fd => fsyncSync(fd),
+    }, "svn");
+    const text = ("a".repeat(16383) + "😀\\\"\n").repeat(256);
+    const page = { transaction: "sale" as const, pass: 1, page: 1, kind: "buildout_inventory" as const,
+      observedAt: "2026-11-05T10:00:00Z", documents: [{ text }] };
+    spool.recordStreamed(page);
+    const receipt = spool.finish();
+    assert.equal(receipt.state, "sealed");
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(lines[1], JSON.stringify(page));
+    const rows = lines.map(line => JSON.parse(line));
+    assert.deepEqual(rows[1], page);
+    assert.ok(largest < 128 * 1024, `unexpected write buffer size ${largest}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a failed streamed write seals only earlier complete observations", () => {
+  const dir = mkdtempSync(join(tmpdir(), "svn-stream-fail-"));
+  try {
+    const path = join(dir, "attempt.jsonl");
+    let failing = false, writes = 0;
+    const spool = new PartialPageSpool(path, "generation", 1, {
+      write: (fd, buffer, offset, length) => {
+        if (failing && ++writes === 2) throw new Error("synthetic disk failure");
+        return writeSync(fd, buffer, offset, length);
+      }, sync: fd => fsyncSync(fd),
+    }, "svn");
+    const page = { transaction: "sale" as const, pass: 1, page: 1, kind: "buildout_inventory" as const,
+      observedAt: "2026-11-05T10:00:00Z", documents: [{ text: "prior" }] };
+    spool.recordStreamed(page); failing = true;
+    spool.recordStreamed({ ...page, page: 2, documents: [{ text: "x".repeat(100000) }] });
+    const receipt = spool.finish();
+    assert.equal(receipt.state, "sealed_partial");
+    const bytes = readFileSync(path);
+    assert.equal(receipt.state === "sealed_partial" && receipt.sha256, createHash("sha256").update(bytes).digest("hex"));
+    const rows = bytes.toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows[1], page);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("SVN source seals parsed pages and the changed response while retaining its failure", () => {
   const dir = mkdtempSync(join(tmpdir(), "svn-capture-"));
@@ -90,7 +140,7 @@ test("an SVN drift capture does not discard a healthy peer", () => {
       registerHooks({resolve(s,ctx,next){if(ctx.parentURL?.endsWith('/collect.ts')&&s==='./sources/newmark.js')return {url:peer,shortCircuit:true};return next(s,ctx);}});
       const timer=globalThis.setTimeout; globalThis.setTimeout=(fn,ms,...args)=>timer(fn,ms===15000?0:ms,...args);
       globalThis.fetch=async input=>{const u=new URL(String(input)); if(u.hostname!=='buildout.com')throw new Error('unexpected network');
-        const page=Number(u.searchParams.get('page')); return Response.json({meta:{total:page===0?4:5,limit:2},inventory:[{id:page*2+1,sale:true},{id:page*2+2,sale:false}]});};`);
+        const page=Number(u.searchParams.get('page')); return Response.json({meta:{total:page===0?4:5,limit:2},inventory:[{id:page*2+1,sale:true,note:page===0?'x'.repeat(4*1024*1024):''},{id:page*2+2,sale:false}]});};`);
     const child = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
       "--source=svn,newmark", "--transaction=both", `--out=${out}`], {
       cwd: process.cwd(), encoding: "utf8", timeout: 30000,
@@ -101,6 +151,8 @@ test("an SVN drift capture does not discard a healthy peer", () => {
     const artifact = JSON.parse(readFileSync(out, "utf8"));
     assert.ok(artifact.listings.some((listing: any) => listing.sourceKey === "newmark" && listing.id === "peer"));
     assert.equal(artifact.sources.find((entry: any) => entry.sourceKey === "svn" && entry.partialCapture).partialCapture.outcome, "source_error");
+    const rows = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(rows.find(row => row.kind === "buildout_inventory" && row.documents[0].page === 0).documents[0].data.inventory[0].note.length, 4 * 1024 * 1024);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

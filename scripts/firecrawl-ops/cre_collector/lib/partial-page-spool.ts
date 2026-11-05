@@ -23,6 +23,35 @@ export type PartialPageObservation = {
   pairAttempt?: number;
 };
 
+// Encode large parsed pages without materializing a second whole-page string
+// or Buffer. The caller supplies only validated JSON values.
+function* jsonChunks(value: unknown): Generator<string> {
+  if (typeof value === "string") {
+    yield '"';
+    for (let start = 0; start < value.length;) {
+      let end = Math.min(start + 16384, value.length);
+      if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1]!) && /[\uDC00-\uDFFF]/.test(value[end]!)) end--;
+      yield JSON.stringify(value.slice(start, end)).slice(1, -1);
+      start = end;
+    }
+    yield '"';
+  } else if (Array.isArray(value)) {
+    yield "[";
+    for (let i = 0; i < value.length; i++) { if (i) yield ","; yield* jsonChunks(value[i]); }
+    yield "]";
+  } else if (value !== null && typeof value === "object") {
+    yield "{";
+    let first = true;
+    for (const [key, item] of Object.entries(value)) {
+      if (!first) yield ",";
+      first = false; yield* jsonChunks(key); yield ":"; yield* jsonChunks(item);
+    }
+    yield "}";
+  } else {
+    yield JSON.stringify(value);
+  }
+}
+
 export class PartialPageSpool {
   private fd: number | null = null;
   private hash = createHash("sha256");
@@ -81,6 +110,37 @@ export class PartialPageSpool {
     if (this.failed) return;
     this.write({ ...page, kind: page.kind ?? (this.sourceKey === "colliers" ? "parsed_page" : "validated_page") });
     if (!this.failed) this.observationRecords++;
+  }
+
+  /** Stream a validated JSON observation and discard its partial line on failure. */
+  recordStreamed(page: PartialPageObservation): void {
+    if (this.fd === null || this.failed) return;
+    const priorHash = this.hash.copy();
+    let writtenBytes = 0, text = "";
+    try {
+      const flush = () => {
+        if (!text) return;
+        const bytes = Buffer.from(text, "utf8"); text = "";
+        const space = statfsSync(dirname(this.path));
+        if (space.bavail * space.bsize - bytes.length < 1024 ** 3) throw new Error();
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = this.io.write(this.fd!, bytes, offset, bytes.length - offset);
+          if (written <= 0) throw new Error();
+          offset += written;
+        }
+        this.hash.update(bytes); writtenBytes += bytes.length;
+      };
+      for (const chunk of jsonChunks(page)) {
+        text += chunk;
+        if (text.length >= 32768) flush();
+      }
+      text += "\n"; flush();
+      this.bytes += writtenBytes; this.observationRecords++;
+    } catch {
+      this.hash = priorHash;
+      this.fail();
+    }
   }
 
   markFailure(): void { this.failed = true; }

@@ -199,7 +199,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
           onPartialPage: (page) => {
             try {
               if (!preservesJsonValue(page.data)) { spools.svn!.markFailure(); return; }
-              spools.svn!.record({ transaction: tx, page: page.page + 1, pass: 1,
+              spools.svn!.recordStreamed({ transaction: tx, page: page.page + 1, pass: 1,
                 kind: "buildout_inventory", observedAt: observationNow(), documents: [{ ...page,
                   representation: "collector_parsed_json_not_response_bytes" }] });
             } catch { spools.svn!.markFailure(); }

@@ -731,6 +731,8 @@ export async function buildoutInventory(
       }
     }
 
+    // A worker interruption can precede this accounting record. Its absence
+    // is never a completeness or source-settlement claim.
     opts.onPartialSummary?.({ total, limit, declaredPages,
       attempted: [...attemptedPages].sort((a, b) => a - b),
       accepted: [...observedPages.keys()].sort((a, b) => a - b),
