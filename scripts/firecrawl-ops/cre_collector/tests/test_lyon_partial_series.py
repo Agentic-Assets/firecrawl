@@ -236,3 +236,26 @@ def test_franklin_readback_tampering_fences_unit(tmp_path, field):
     else: observed["invalid"] = ["bad"]
     assert not series.pipeline_source_qualified(child, "franklin-street", **qualification_context(run))
     assert not series.pipeline_source_qualified(child, "lyon-stahl", **qualification_context(run))
+
+
+@pytest.mark.parametrize("attempt", [None, "not-an-attempt"])
+def test_franklin_missing_or_malformed_attempt_never_qualifies(tmp_path, attempt):
+    import cre_checkpoint_refresh as refresh
+
+    run = tmp_path / RUN_ID
+    child = add_franklin(mixed_child(run), run)
+    checkpoint = child["sources"]["franklin-street"]
+    observed = checkpoint["readback"]["observation"]
+    if attempt is None:
+        checkpoint.pop("subset_ingest_attempt_id")
+        observed.pop("attempt_id")
+    else:
+        checkpoint["subset_ingest_attempt_id"] = observed["attempt_id"] = attempt
+    report = {"franklin_partial_readback": copy.deepcopy(observed),
+              "queries": {"freshness_generations": [], "inventory_only_index": []}}
+    assert not series._pipeline_member_report_matches(report, checkpoint, "franklin-street", RUN_ID)
+    child["config"]["sources"] = ["franklin-street"]
+    result = refresh.verify_validation_readback(
+        run, child, report, persist_manifest=False, sources=["franklin-street"])
+    assert result["ok"] is False
+    assert child["sources"]["franklin-street"]["readback"]["ok"] is False

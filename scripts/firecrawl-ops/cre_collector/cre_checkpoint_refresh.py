@@ -6905,7 +6905,9 @@ def verify_validation_readback(
                   and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
                   and observed.get("generation_id") == binding.get("generation_id")
                   and observed.get("database_target_sha256") == binding.get("database_target_sha256")
-                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
                   and observed.get("staged_sha256") == binding.get("staged_sha256")
                   and observed.get("held") == binding.get("held")
                   and type(observed.get("expected")) is int
