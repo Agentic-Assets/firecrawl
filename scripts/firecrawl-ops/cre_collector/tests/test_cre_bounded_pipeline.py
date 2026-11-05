@@ -53,6 +53,7 @@ def run_schedule(
     jll_guard_refusal=False,
     colliers_partial=None,
     colliers_failure_nonzero=False,
+    lyon_partial=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -137,6 +138,13 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"], item.attempt_number))
+        if lyon_partial and item.source == "lyon-stahl":
+            checkpoint["state"] = "collect_failed"
+            item.attempt = checkpoint["attempts"][-1]
+            item.attempt.update(rc=(refresh.COHORT_SETTLED_INTERRUPT_EXIT if lyon_partial == "interrupted"
+                                   else refresh.COHORT_SETTLED_FAILURE_EXIT), finished_at=refresh.utc_now(),
+                **{"lyon-stahl_partial": {"state": "sealed_local", "outcome": "source_error"}})
+            return False
         if colliers_failure_nonzero and item.source == "colliers":
             checkpoint["state"] = "collect_failed"
             item.attempt = checkpoint["attempts"][-1]
@@ -168,6 +176,9 @@ def run_schedule(
         if colliers_partial and source == "colliers":
             checkpoint["artifact"]["colliers_partial"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 1}}
+        if lyon_partial and source == "lyon-stahl":
+            checkpoint["artifact"]["lyon_partial"] = True
+            checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 0}}
         if pyramid_partial and source == "pyramid-brokerage":
             checkpoint["artifact"]["pyramid_subset"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"inventory_count": 102, "emitted_count": 100, "held_count": 2}}
@@ -223,6 +234,18 @@ def run_schedule(
 
         monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive)
         monkeypatch.setattr(partial, "run_window_worker", worker)
+    if lyon_partial:
+        import cre_lyon_partial_checkpoint as partial
+
+        def lyon_worker(root, owner, _lock, _save):
+            checkpoint = owner["sources"]["lyon-stahl"]
+            checkpoint["partial_attempted"] = True
+            if lyon_partial == "held":
+                checkpoint["state"] = "partial_held_no_write"
+                return None
+            return root / checkpoint["candidate"]["path"]
+
+        monkeypatch.setattr(partial, "run_replay_worker", lyon_worker)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
@@ -281,6 +304,23 @@ def test_pipeline_interrupted_colliers_attempt_never_dispatches_partial(tmp_path
     assert failures == ["colliers"]
     assert not manifest["sources"]["colliers"].get("partial_attempted")
     assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "held", "interrupted"])
+def test_pipeline_lyon_partial_keeps_peer_running(tmp_path, monkeypatch, outcome):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("lyon-stahl", "savills"), lyon_partial=outcome)
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["status"] == "partial"
+    if outcome == "accepted":
+        assert failures == []
+        assert manifest["pipeline"]["source_results"]["lyon-stahl"]["partial"] is True
+        assert any(event[0] == "db_start" and "lyon-stahl" in event[1] for event in events)
+    else:
+        assert failures == ["lyon-stahl"]
+        assert not any(event[0] == "db_start" and "lyon-stahl" in event[1] for event in events)
+        if outcome == "interrupted":
+            assert not manifest["sources"]["lyon-stahl"].get("partial_attempted")
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])

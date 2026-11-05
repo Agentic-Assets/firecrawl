@@ -70,7 +70,12 @@ def replay_settled_source(run_dir, manifest, attempt_number, current_code_sha, c
     keys = ("state", "path", "coverage", "outcome", "bytes", "observationRecords", "sha256", "main_sha256")
     if directories() != before or any(probe["lyon-stahl_partial"].get(key) != state.get(key) for key in keys):
         raise ValueError("Lyon source receipt changed")
-    main_raw = _read_private_file(run_dir / main_rel, 32 * 1024 * 1024)
+    from source_evidence.automatic import _read_private
+    main_path = run_dir / main_rel
+    main_size = main_path.lstat().st_size
+    main_raw = _read_private(main_path, main_size)
+    if len(main_raw) != main_size:
+        raise ValueError("Lyon source main artifact size changed")
     if hashlib.sha256(main_raw).hexdigest() != state["main_sha256"]:
         raise ValueError("Lyon source main artifact changed")
     summary = validate_source_artifact(json.loads(main_raw))
@@ -163,7 +168,7 @@ def run_replay_worker(run_dir, manifest, owner, save):
     Caller has settled the collector group. This does not grant admission.
     """
     import cre_checkpoint_refresh as refresh
-    from cre_stop_guarded_tier import _safe_stat
+    from cre_stop_guarded_tier import StopRefused, _safe_stat
 
     run_dir = Path(run_dir)
     if not run_dir.is_absolute() or not isinstance(owner, refresh.SharedLock) or not callable(save):
@@ -190,7 +195,17 @@ def run_replay_worker(run_dir, manifest, owner, save):
         raise ValueError("Lyon source attempt missing")
     number = attempts[-1].get("number")
     producer, dirty = refresh.git_identity()
-    source = replay_settled_source(run_dir, manifest, number, producer, dirty)
+    if dirty is not False or producer != manifest.get("collector_git_sha"):
+        raise ValueError("Lyon replay code changed")
+    try:
+        source = replay_settled_source(run_dir, manifest, number, producer, dirty)
+    except (OSError, ValueError, TypeError, KeyError, StopRefused):
+        # The settled source is held; loss of the owner itself still raises.
+        check_owner()
+        checkpoint["lyon_partial_worker"] = {"state": "source_held", "attempt": number}
+        checkpoint["state"] = "partial_held_no_write"
+        save(run_dir, manifest)
+        return None
     checkpoint["lyon_partial_worker"] = {"state": "preparing", "attempt": number}
     save(run_dir, manifest)
     try:

@@ -54,6 +54,19 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
+        # Exercise source custody, gate claims, and the actual ingest CLI SQL on
+        # this disposable schema rather than only calling the SQL builder.
+        from tests.test_lyon_partial_checkpoint import LyonCheckpointTests
+        fixture = LyonCheckpointTests(methodName="test_owned_replay_worker_produces_bound_private_candidate")
+        fixture.capture_sql = []
+        fixture.test_owned_replay_worker_produces_bound_private_candidate()
+        generated_sql, context = fixture.capture_sql[0]
+        sql(generated_sql)
+        source = context["source"]
+        actual_readback = partial_readback_sql(context["staged"], context["held"], context["preimage"],
+            context["job_id"], source["started_at"], source["finished_at"])
+        assert sql(actual_readback) == "1|1|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='example' AND status IS NULL AND transaction_type IS NULL") == "1"
         sql("""
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,address,raw_data)
 SELECT id,'legacy','https://lyonstahl.com/properties/legacy/','active','Same address',

@@ -2,6 +2,8 @@
 import copy
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -112,7 +114,7 @@ class LyonCheckpointTests(unittest.TestCase):
                 self.assertEqual(len(verified["staged"]), 1)
                 import cre_ingest as ingest
                 import cre_validate
-                preimage = [{"external_id": "example", "listing": None, "source_index": None, "children": {}}]
+                preimage = [{"external_id": "example", "listing": None, "source_index": None, "children": {"contacts": [], "documents": [], "images": []}}]
                 output = chr(9).join(["staged", "joined", "held", "preimage"]) + chr(10)
                 output += chr(9).join(["1", "1", "[]", json.dumps(preimage)]) + chr(10)
                 result = SimpleNamespace(returncode=0, stdout=output)
@@ -147,6 +149,25 @@ class LyonCheckpointTests(unittest.TestCase):
                                                     attempt_id="e" * 32, env_file=None)
                 self.assertTrue(readback["ok"])
                 self.assertTrue(readback["child_collections_verified"])
+                claims_path = root / "lyon-stahl-partial" / "claims.json"
+                claims_path.write_text(json.dumps(envelope))
+                claims_path.chmod(0o600)
+                dry_dir = root / "dry"
+                shim = "import cre_checkpoint_refresh as c; c.git_identity=lambda: (" + repr("a" * 40) + ",False); import cre_ingest; cre_ingest.main()"
+                command = [sys.executable, "-c", shim, "--in", str(path), "--dry-run", "--lyon-partial-claims", str(claims_path),
+                           "--require-strict-freshness", "--expected-db-target-sha256", "b" * 64, "--checkpoint-ingest-attempt", "e" * 32,
+                           "--keep-artifacts", str(dry_dir)]
+                cli = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30)
+                self.assertEqual(cli.returncode, 0, cli.stderr)
+                sql_path = dry_dir / "ingest.sql"
+                self.assertEqual(sql_path.stat().st_mode & 0o077, 0)
+                self.assertIn("lyonSearchObservations", sql_path.read_text())
+                if hasattr(self, "capture_sql"):
+                    self.capture_sql.append((sql_path.read_text(), context))
+                no_claim = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(path), "--dry-run"],
+                    cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(no_claim.returncode, 0)
+                self.assertIn("without guarded checkpoint admission", no_claim.stderr)
                 changed = copy.deepcopy(aggregate)
                 changed["per_source"]["lyon-stahl"]["mark_missing_safe"] = True
                 with self.assertRaises(ValueError):
