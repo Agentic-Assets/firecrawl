@@ -273,3 +273,28 @@ def candidate_structure(data):
         raise ValueError("Lyon candidate generation missing") from exc
     validate_candidate(data, source, generation_started_at)
     return source
+
+
+def verify_candidate_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty):
+    """Recheck candidate bytes against the original sealed source and owner."""
+    path = Path(artifact_path)
+    run_dir = path.parent.parent
+    checkpoint = manifest["sources"]["lyon-stahl"]
+    worker, info = checkpoint.get("lyon_partial_worker"), checkpoint.get("artifact")
+    if (not isinstance(worker, dict) or worker.get("state") != "settled"
+            or type(worker.get("attempt")) is not int or worker["attempt"] < 1
+            or not isinstance(info, dict)):
+        raise ValueError("Lyon candidate settlement invalid")
+    attempt = worker["attempt"]
+    relative = f"lyon-stahl-partial/candidate-{attempt}.json"
+    if path != run_dir / relative or info.get("path") != relative or type(info.get("bytes")) is not int or info["bytes"] < 1:
+        raise ValueError("Lyon candidate path differs")
+    source = replay_settled_source(run_dir, manifest, attempt, current_code_sha, current_git_dirty)
+    raw = _read_private_file(path, info["bytes"])
+    digest = hashlib.sha256(raw).hexdigest()
+    if len(raw) != info["bytes"] or digest != info.get("sha256") or digest != worker.get("sha256"):
+        raise ValueError("Lyon candidate bytes differ")
+    data = json.loads(raw)
+    staged = validate_candidate(data, source, manifest["started_at"])
+    return {"run_dir": run_dir, "path": path, "checkpoint": checkpoint, "info": info, "source": source,
+            "data": data, "staged": staged, "attempt": attempt}

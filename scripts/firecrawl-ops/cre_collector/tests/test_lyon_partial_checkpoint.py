@@ -7,8 +7,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate
+from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact
 from cre_partial_page_custody import prepare, settle
+from cre_stop_guarded_tier import StopRefused
 from tests.test_lyon_search_replay import spool
 
 
@@ -103,6 +104,13 @@ class LyonCheckpointTests(unittest.TestCase):
                     expected_generation_id=root.name, expected_generation_started_at=manifest["started_at"])
                 self.assertIs(stats["lyon_partial"], True)
                 self.assertIs(stats["strict_freshness"], False)
+                checkpoint = manifest["sources"]["lyon-stahl"]
+                checkpoint["artifact"] = {**stats, "path": str(path.relative_to(root))}
+                verified = verify_candidate_artifact(path, manifest, current_code_sha="a" * 40, current_git_dirty=False)
+                self.assertEqual(len(verified["staged"]), 1)
+                path.write_bytes(path.read_bytes() + b" ")
+                with self.assertRaises(StopRefused):
+                    verify_candidate_artifact(path, manifest, current_code_sha="a" * 40, current_git_dirty=False)
                 with self.assertRaises(ValueError):
                     run_replay_worker(root, manifest, owner, lambda *_: None)
 
