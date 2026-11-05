@@ -65,7 +65,10 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
       pending = row; return;
     }
     if (row.kind === "recovery_hole") {
-      if (pending && (!failureOnlyPair(pending) || pending.start !== row.start || pending.pageSize !== row.pageSize))
+      // The final request can ask for a full page even when fewer rows remain;
+      // its error-only pair then legitimately covers a smaller terminal hole.
+      if (pending && (!failureOnlyPair(pending) || pending.start !== row.start || pending.page !== row.page ||
+          !Number.isSafeInteger(pending.pageSize) || pending.pageSize < row.pageSize))
         heldPages++;
       pending = null; holes++;
       if (total === null || !Number.isSafeInteger(row.pageSize) || row.pageSize < 1 ||
