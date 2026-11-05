@@ -1003,7 +1003,7 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
   let parseOmissions = 0;
   let duplicateIdentities = 0;
   let exhausted = false;
-  for (let page = 1; page <= PAGE_CAP && listingsByIdentity.size < want; page++) {
+  for (let page = 1; (PAGE_CAP === 0 || page <= PAGE_CAP) && listingsByIdentity.size < want; page++) {
     const pageSize = Math.min(CBRE_DEALFLOW_PAGE_SIZE, want - listingsByIdentity.size);
     const data = await cbreDealflowPostJson(
       `/api/AjaxEngine/GetListingsHtml?&pv=${encodeURIComponent(engineKey)}`,
@@ -1031,6 +1031,7 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     const cards = parseCbreDealflowCards(pageHtml, tx);
     providerRowsScanned += providerCardCount;
     parseOmissions += Math.max(0, providerCardCount - cards.length);
+    const identitiesBeforePage = listingsByIdentity.size;
     for (const card of cards) {
       const identity = card.id ?? card.url;
       if (!identity) {
@@ -1050,6 +1051,10 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     const numProjects = cbreDealflowAssertPageCount(data.numProjects, providerCardCount, start);
     if (numProjects === 0) {
       exhausted = true;
+      break;
+    }
+    if (listingsByIdentity.size === identitiesBeforePage) {
+      // A nonempty provider page with no new identities is not exhaustion.
       break;
     }
     start += numProjects;

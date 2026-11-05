@@ -2003,9 +2003,11 @@ export async function srcJll(
     JLL_PROPERTY_TYPES.map((propertyType) => [propertyType, new Set<string>()]),
   );
   const observedIdentityPairs: Array<{ id?: unknown; url?: unknown }> = [];
+  const exhaustedFilters = new Set<string>();
+  let paginationIncomplete = false;
   const strictFreshness = requireFreshDetails();
 
-  for (let page = 1; listings.length < max && page <= PAGE_CAP; page++) {
+  for (let page = 1; listings.length < max && (PAGE_CAP === 0 || page <= PAGE_CAP); page++) {
     const activePropertyTypes = JLL_PROPERTY_TYPES.filter((propertyType) => {
       const maxPage = maxByFilterPage[propertyType];
       return maxPage === undefined || maxPage === null || page <= maxPage;
@@ -2040,10 +2042,22 @@ export async function srcJll(
 
     for (const result of pageResults) {
       const urls = filterUrls.get(result.propertyType)!;
+      const before = urls.size;
       for (const listing of result.listings) {
         observedIdentityPairs.push(listing);
         const url = clean(listing?.url);
         if (url) urls.add(url);
+      }
+      const declaredLast = maxByFilterPage[result.propertyType];
+      if (result.listings.length === 0 || urls.size === before) {
+        // A repeated or malformed nonempty page does not prove exhaustion.
+        if (result.listings.length || (declaredLast !== null && page < declaredLast)) {
+          paginationIncomplete = true;
+        }
+        exhaustedFilters.add(result.propertyType);
+        maxByFilterPage[result.propertyType] = page;
+      } else if (declaredLast !== null && page >= declaredLast) {
+        exhaustedFilters.add(result.propertyType);
       }
     }
     assertJllIdentityReconciliation(observedIdentityPairs);
@@ -2085,7 +2099,13 @@ export async function srcJll(
   const total = knownTotals.length
     ? knownTotals.reduce((sum, n) => sum + n, 0)
     : null;
-  let coverageTruncated = false;
+  let coverageTruncated = paginationIncomplete || exhaustedFilters.size !== JLL_PROPERTY_TYPES.length;
+  for (const propertyType of JLL_PROPERTY_TYPES) {
+    const totalForFilter = filterTotals[propertyType];
+    if (typeof totalForFilter === "number" && filterUrls.get(propertyType)!.size !== totalForFilter) {
+      coverageTruncated = true;
+    }
+  }
   for (const propertyType of JLL_PROPERTY_TYPES) {
     try {
       assertJllFilterCoverage(

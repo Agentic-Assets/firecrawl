@@ -779,7 +779,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   let exhausted = false;
   const providerProjectIds = new Set<string>();
   let start = 1;
-  for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
+  for (let page = 1; (PAGE_CAP === 0 || page <= PAGE_CAP) && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
     let listData: any, mapData: any;
     try {
@@ -871,7 +871,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
           const last = Math.min(total, want);
           let tailStart = start + rangeSize;
           let tailPage = page + 1;
-          while (tailStart <= last && tailPage <= PAGE_CAP) {
+          while (tailStart <= last && (PAGE_CAP === 0 || tailPage <= PAGE_CAP)) {
             const tailSize = Math.min(COLLIERS_PAGE_SIZE, last - tailStart + 1);
             try {
               await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));

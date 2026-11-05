@@ -3241,9 +3241,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("pipeline automatic resource recovery is disabled")
     except ValueError as exc:
         parser.error(str(exc))
-    if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
+    if args.page_cap < 0 or args.page_cap > 9007199254740991 or not 1 <= args.concurrency <= 6:
         parser.error(
-            "page-cap must be positive and concurrency must be between 1 and 6"
+            "page-cap must be a nonnegative safe integer and concurrency must be between 1 and 6"
         )
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")

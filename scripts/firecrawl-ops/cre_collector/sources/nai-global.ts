@@ -846,9 +846,10 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
   const collectBatch = async (sourceIds: number[], batchIndex: number) => {
     const batchRows: any[] = [];
     const seenPageSignatures = new Set<string>();
+    const seenIds = new Set<string>();
     let enumeratedFeedRows = 0;
     let stoppedOnShortPage = false;
-    for (let offset = 0; offset < PAGE_CAP * NAI_PAGE_SIZE; offset += NAI_PAGE_SIZE) {
+    for (let offset = 0; (PAGE_CAP === 0 || offset < PAGE_CAP * NAI_PAGE_SIZE); offset += NAI_PAGE_SIZE) {
       const page = await fetchNaiFeedPage(offset, sourceIds);
       const signature = naiPageSignature(page);
       if (signature && seenPageSignatures.has(signature)) {
@@ -860,12 +861,14 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
         }
         console.error(
           `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
-            "repeated page; treating the prior page as the end of the public feed"
+            "repeated page; provider enumeration remains incomplete"
         );
-        stoppedOnShortPage = true;
         break;
       }
       if (signature) seenPageSignatures.add(signature);
+      const pageIds = page.map((row: any) => naiPublicPostId(row?.id)).filter((id: string | null): id is string => !!id);
+      const noNewIds = pageIds.length > 0 && pageIds.every((id: string) => seenIds.has(id));
+      for (const id of pageIds) seenIds.add(id);
       enumeratedFeedRows += page.length;
       // The public feed contains historical and inactive posts. Use the same
       // conservative eligibility rule on full and monitor paths so their
@@ -876,8 +879,18 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
         `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
           `${page.length} feed rows, ${batchRows.length} ${tx} collected`
       );
+      if (noNewIds) {
+        if (requireFreshDetails()) throw new Error(`NAI ${tx} page has no new source identities`);
+        console.error(`  nai-global/${tx}: page has no new source identities; enumeration incomplete`);
+        break;
+      }
       if (page.length < NAI_PAGE_SIZE) {
         stoppedOnShortPage = true;
+        break;
+      }
+      if (!signature) {
+        // Cannot establish progress for another full page without stable IDs.
+        console.error(`  nai-global/${tx}: full page lacks stable identities; enumeration incomplete`);
         break;
       }
     }

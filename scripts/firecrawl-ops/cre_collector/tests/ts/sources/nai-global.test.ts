@@ -327,6 +327,51 @@ test("NAI strict freshness fails closed on a repeated full provider page", async
   );
 });
 
+test("NAI non-strict repeated page remains incomplete", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalRequireFresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const liveChunkUrl = new URL("/_next/static/chunks/office-config.js", NAI_WIDGET_URL).href;
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    title: `Listing ${index + 1}`,
+    contentType: { id: 4, name: "Sale Listings" },
+    listingStatus: "FOR_SALE_ON_MARKET",
+    source: { name: "NAI Test" },
+  }));
+  naiFeedPageCache.clear();
+  delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REFRESH_GENERATION = "nai-repeat-test";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === NAI_WIDGET_URL) {
+      return new Response(`<script src="${liveChunkUrl}"></script>`, { status: 200 });
+    }
+    if (url === liveChunkUrl) {
+      return new Response(naiOfficeConfigScript(NAI_SOURCE_IDS), { status: 200 });
+    }
+    if (init?.method === "POST") {
+      return new Response(JSON.stringify({ data: { publicPosts: rows } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    naiFeedPageCache.clear();
+    if (originalRequireFresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalRequireFresh;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const result = await srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.truncated, true);
+  assert.equal(result.listings.length, 100);
+});
+
 test("naiLocation parses Infabode location path", () => {
   assert.deepEqual(naiLocation([{ path: "Dallas, TX, United States" }]), {
     city: "Dallas",
