@@ -42,7 +42,7 @@ trap 'rc=$?; echo "[daily] FAILED at step: ${STEP} (rc=${rc}); see ${LOG}" | tee
 
 SOURCES="${CRE_SOURCES:-all}"
 CONCURRENCY="${CRE_CONCURRENCY:-3}"
-PAGE_CAP="${CRE_PAGE_CAP:-400}"
+PAGE_CAP="${CRE_PAGE_CAP:-0}"
 MARK_MISSING="--mark-missing"
 for arg in "$@"; do
   [ "$arg" = "--no-mark-missing" ] && MARK_MISSING=""
