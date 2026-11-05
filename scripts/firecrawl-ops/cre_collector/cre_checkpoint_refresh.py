@@ -38,6 +38,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 
+# Script and module consumers must share lock and exception class identity.
+if __name__ == "__main__":
+    sys.modules["cre_checkpoint_refresh"] = sys.modules[__name__]
+
 import cre_recovery_guard_journal as recovery_guard_journal
 from cre_partial_page_custody import PARTIAL_PAGE_SOURCES, partial_env_name
 import cre_current_inventory_admission as current_inventory
