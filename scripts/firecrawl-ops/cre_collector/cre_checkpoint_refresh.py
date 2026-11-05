@@ -8491,6 +8491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settlement_unknown = False
     guards_stopped = False
     local_refusal = False
+    pre_acquisition_refusal = False
     local_refusal_settled = False
     details = None
 
@@ -8530,7 +8531,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        ownership.enter_context(lock)
+        try:
+            ownership.enter_context(lock)
+        except LockFlockBusyError as exc:
+            # Only synchronizer contention occurs before any lock ownership or work.
+            pre_acquisition_refusal = exc.lock_object == "recovery_synchronizer" and not args.resume
+            raise
         if args.resume and automatic_source_evidence is not None:
             from source_evidence import automatic
             automatic.prepare_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
@@ -8917,6 +8923,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     terminal_evidence_saved=terminal_evidence_saved
                     and not terminal_publication_failed,
+                    pre_acquisition_refusal=pre_acquisition_refusal,
                 )
             if local_refusal and not local_refusal_settled and sys.exception() is None:
                 raise GlobalStageError("source refusal local settlement is unknown")
