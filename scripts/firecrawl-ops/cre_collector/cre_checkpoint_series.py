@@ -833,8 +833,7 @@ def build_checkpoint_argv(
         argv.append("--admit-baseline-hold-additively")
     if current_subset(config):
         from cre_current_inventory_admission import subset_policy
-        if subset_policy(config) != "tenure-only-v1":
-            argv.extend(["--daum-subset-policy", subset_policy(config)])
+        argv.extend(["--daum-subset-policy", subset_policy(config)])
     return argv
 
 
@@ -2177,6 +2176,17 @@ def _pipeline_member_report_matches(
                 and binding.get("whole_source_coverage") is False)
     staged = artifact["staged_unique"]
     binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+    if source == "daum-commercial" and "target_held" in binding:
+        from cre_daum_fallback_partition import bound_held_count
+        try:
+            held = bound_held_count(binding, checkpoint)
+            emitted = binding["emitted_count"]
+            if (type(staged) is not int or staged != emitted + held
+                    or binding.get("artifact_sha256") != artifact.get("sha256")):
+                return False
+            staged = emitted
+        except (KeyError, TypeError, ValueError):
+            return False
     if source == "pyramid-brokerage" and binding.get("schema") == "pyramid-incomplete-v2":
         if not allow_pyramid_v2:
             return False
@@ -3362,9 +3372,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--admit-daum-verified-subset", action="store_true")
-    parser.add_argument("--daum-subset-policy", choices=("tenure-only-v1", "tenure-and-empty-title-v2"), default="tenure-only-v1")
+    parser.add_argument("--daum-subset-policy", choices=("tenure-only-v1", "tenure-and-empty-title-v2"), default=None)
     parser.add_argument("--nice", type=int, default=10)
     args = parser.parse_args(argv)
+    import cre_current_inventory_admission as current_inventory
+    try:
+        args.daum_subset_policy = current_inventory.invocation_subset_policy(
+            args.daum_subset_policy, args.admit_daum_verified_subset, args.resume)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        parser.error(f"DAUM subset resume policy unavailable: {exc}")
 
     if args.work_deadline_seconds is not None:
         from cre_series_control import validate_control_budget

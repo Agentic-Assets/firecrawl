@@ -153,7 +153,7 @@ def _subset_summary_fields(child, source, count):
     for key in ("inventory_count", "emitted_count", "held_count"):
         require(type(binding.get(key)) is int and binding[key] >= 0)
     require(binding["inventory_count"] == binding["emitted_count"] + binding["held_count"]
-            and binding["emitted_count"] == count and count >= (1 if pyramid else 100)
+            and binding["emitted_count"] == count and count >= (1 if pyramid or "target_held" in binding else 100)
             and (not pyramid or binding["inventory_count"] >= 100)
             and binding.get("staged_count") == count)
     if pyramid and scope == "pyramid_incomplete_v2":
@@ -199,11 +199,11 @@ def _daum_unknown_breakdown(child, source, count):
     if source != "daum-commercial":
         return None
     binding = child["sources"][source].get("gate", {}).get("current_inventory_proof", {})
-    if "retained_unknown_tenure_count" not in binding:
+    if "retained_unknown_tenure_count" not in binding and "target_held" not in binding:
         return None
     require(_subset_summary_fields(child, source, count).get("partial") is True)
-    sale, lease, unknown = (binding.get(key) for key in
-                            ("sale_count", "lease_count", "retained_unknown_tenure_count"))
+    sale, lease = binding.get("sale_count"), binding.get("lease_count")
+    unknown = binding.get("retained_unknown_tenure_count", 0)
     require(all(type(value) is int and 0 <= value <= count for value in (sale, lease, unknown)))
     both = sale + lease + unknown - count
     require(0 <= both <= min(sale, lease))
@@ -227,6 +227,12 @@ def _artifact_expected_count(child, source, count):
         return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
     if _pyramid_emitted_breakdown(child, source, count) is not None:
         return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
+    if source == "daum-commercial":
+        checkpoint = child["sources"][source]
+        binding = checkpoint["gate"]["current_inventory_proof"]
+        if "target_held" in binding:
+            from cre_daum_fallback_partition import bound_held_count
+            return count + bound_held_count(binding, checkpoint)
     return count
 
 
@@ -1334,6 +1340,12 @@ def verified_pipeline_summary(
                 and 0 < artifact_bytes <= MAX_ARTIFACT_BINDING_BYTES
                 and result.get("artifact_sha256") == artifact_sha
             )
+            try:
+                expected_artifact_count = _artifact_expected_count(child, source, count)
+            except (KeyError, TypeError, ValueError):
+                failed.append(source)
+                unverifiable.append(source)
+                continue
             require(
                 readback.get("ok") is True
                 and (readback.get("latest_inventory_batch_active") == count
@@ -1341,7 +1353,7 @@ def verified_pipeline_summary(
                      and readback.get("observation", {}).get("expected") == count))
                 and readback.get("generation_id") == run_id
                 and artifact.get("path") == f"sources/{source}.json"
-                and artifact.get("staged_unique") == _artifact_expected_count(child, source, count)
+                and artifact.get("staged_unique") == expected_artifact_count
                 and artifact.get("rejected_by_ingest") == 0
             )
             if not jll_partial_candidate:

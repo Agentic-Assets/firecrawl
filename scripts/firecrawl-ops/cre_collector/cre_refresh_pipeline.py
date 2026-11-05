@@ -516,6 +516,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         )
     try:
         refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.DaumPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "daum-commercial" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("DAUM held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     except refresh.LyonPartialProbeHold:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "lyon-stahl" or refresh.git_identity() != (binding["collector_git_sha"], False)

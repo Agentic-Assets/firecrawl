@@ -669,7 +669,9 @@ def test_preseal_accepts_maintained_admission_rewrite_of_raw_hold(
         daum_subset_policy="tenure-and-empty-title-v2" if subset else "tenure-only-v1",
     )
     artifact = root / "sources" / (source + ".json")
-    artifact.write_text("closed already-validated artifact")
+    # DAUM's source gate inspects the already-validated artifact for fallback
+    # witnesses, so the closed fixture must remain valid JSON.
+    artifact.write_text(json.dumps({"sources": []}) if subset else "closed already-validated artifact")
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     manifest["sources"][source]["artifact"] = {
         "path": str(artifact.relative_to(root)),

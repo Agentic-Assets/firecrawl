@@ -201,6 +201,58 @@ def test_mixed_pipeline_partitions_subset_without_full_complete_credit(evidence)
     assert rows["cbre"]["verified_listings"] == 3
 
 
+def test_pipeline_target_held_fallback_keeps_complete_peer_and_rejects_tamper(evidence):
+    from cre_daum_current_inventory import _sha
+
+    setup = support.pipeline_evidence(evidence, primary_source=SOURCE)
+    support.qualify_pipeline_second_source(evidence, setup)
+    parent, child = setup["parent"], setup["child"]
+    for config in (parent["config"], child["config"]):
+        config.pop("current_inventory_admission", None)
+        config["current_inventory_admissions"] = {
+            SOURCE: admission.subset_configuration("tenure-and-empty-title-v2")
+        }
+    parent["status"] = child["status"] = "qualified_partial_subset"
+    parent["sources"][SOURCE]["state"] = "qualified_partial_subset"
+    result = child["pipeline"]["source_results"][SOURCE]
+    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False)
+    parent["sources"][SOURCE]["pipeline_result"] = result
+    for source in (SOURCE, "cbre"):
+        parent["sources"][source]["checkpoint_status"] = child["status"]
+    other = child["sources"]["cbre"]
+    other["artifact"]["staged_unique"] = 3
+    other["readback"].update(expected_staged_unique=3, latest_inventory_batch_active=3)
+    checkpoint = child["sources"][SOURCE]
+    checkpoint["artifact"]["staged_unique"] = 101
+    gate = checkpoint["gate"]
+    gate["admission_scope"] = "daum_verified_subset_v2"
+    partition = [{"native_id": "50100", "external_id": "property/example",
+                  "source_url": "https://daumcommercial.com/property/example/",
+                  "hold_reason": "identity_conflict", "preimage": "f" * 64}]
+    checkpoint["daum_fallback_probe"] = {
+        "artifact_sha256": checkpoint["artifact"]["sha256"], "generation_id": child["run_id"],
+        "producer_sha": child["collector_git_sha"],
+        "database_target_sha256": child["preflight"]["database_target"]["value"],
+        "members_sha256": "a" * 64, "partition": partition,
+    }
+    gate["current_inventory_proof"].update(
+        schema="daum-verified-subset-v2", scope="daum_verified_subset_v2",
+        subset_policy="tenure-and-empty-title-v2", source_emitted_count=101, source_held_count=1,
+        fallback_partition_sha256=_sha(partition),
+        target_held=[{"native_id": "50100", "external_id": "property/example", "reason": "identity_conflict"}],
+        sale_count=100, lease_count=0)
+    evidence["save"]()
+    outcome = support.read_pipeline(evidence, [SOURCE, "cbre"])
+    rows = {row["source_key"]: row for row in outcome["per_source_summaries"]}
+    assert rows[SOURCE]["verified_listings"] == 100 and rows[SOURCE]["held_count"] == 2
+    assert rows["cbre"]["verified_listings"] == 3
+    checkpoint["daum_fallback_probe"]["partition"][0]["hold_reason"] = None
+    evidence["save"]()
+    outcome = support.read_pipeline(evidence, [SOURCE, "cbre"])
+    assert SOURCE in outcome["unverifiable_source_keys"]
+    assert {row["source_key"] for row in outcome["per_source_summaries"]} == {"cbre"}
+
+
 def test_handled_partial_serial_attempt_never_replays_on_resume(tmp_path, monkeypatch):
     config = series.series_config(
         sources=[SOURCE],

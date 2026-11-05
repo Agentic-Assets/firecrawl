@@ -255,6 +255,10 @@ class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
 
+class DaumPartialProbeHold(SourceGuardRefusal):
+    """Settled DAUM source identity output cannot be qualified."""
+
+
 class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
 
@@ -2491,7 +2495,7 @@ def build_cohort_collect_worker_argv(
         "--transactions",
         "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
     ] + (["--admit-daum-verified-subset"] if daum_verified_subset else []) + (
-        ["--daum-subset-policy", daum_subset_policy] if daum_subset_policy != "tenure-only-v1" else [])
+        ["--daum-subset-policy", daum_subset_policy] if daum_verified_subset else [])
 
 
 def build_gate_argv(
@@ -3087,6 +3091,7 @@ def _validate_source_artifact_local(
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
     daum_retained_unknown_ids = frozenset()
+    daum_fallback_ids = frozenset()
     if daum_verified_subset:
         if (
             expected_source != "daum-commercial"
@@ -3099,6 +3104,9 @@ def _validate_source_artifact_local(
 
         try:
             daum_retained_unknown_ids = checkpoint_retained_unknown_ids(data)
+            if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations") for entry in data["sources"]):
+                from cre_daum_fallback_partition import staged_fallback_members
+                daum_fallback_ids = frozenset(row["native_id"] for row in staged_fallback_members(data))
         except (KeyError, TypeError, ValueError) as exc:
             raise ArtifactValidationError(
                 "DAUM subset structural evidence refused"
@@ -3356,7 +3364,11 @@ def _validate_source_artifact_local(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
             elif child_preservation_rows != (
-                len(daum_retained_unknown_ids) if daum_verified_subset and tx == "sale"
+                ((len(daum_retained_unknown_ids) if tx == "sale" else 0)
+                 + sum(1 for listing in data["listings"]
+                       if listing.get("transactionMode") == tx
+                       and listing.get("daumPostId") in daum_fallback_ids))
+                if daum_verified_subset
                 else len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial
                 else 0
             ):
@@ -3528,6 +3540,7 @@ def _validate_source_artifact_local(
                      and bool((listing.get("missingFieldEvidence") or {}).get("fields")))
                     or (daum_verified_subset and listing.get("transactionMode") == "sale"
                         and listing.get("daumPostId") in daum_retained_unknown_ids)
+                    or (daum_verified_subset and listing.get("daumPostId") in daum_fallback_ids)
                 ):
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
@@ -5606,6 +5619,19 @@ def gate_source(
                         artifact, manifest, env_file=env_file, process_env=safe_process_env())
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("Franklin partial identity classification failed") from exc
+            if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+                from cre_daum_fallback_partition import DaumSourceProbeRefusal, run_identity_probe
+                try:
+                    daum_data = _load_json(artifact)
+                    if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations")
+                           for entry in (daum_data.get("sources") or [])):
+                        checkpoint["daum_fallback_probe"] = run_identity_probe(
+                            artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                            manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except DaumSourceProbeRefusal as exc:
+                    raise DaumPartialProbeHold("DAUM source identity could not be qualified") from exc
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("DAUM fallback identity classification failed") from exc
             if source == "pyramid-brokerage":
                 from cre_pyramid_identity_probe import run_probe
                 try:
@@ -6963,6 +6989,10 @@ def verify_validation_readback(
             continue
         try:
             staged = int(artifact["staged_unique"])
+            if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+                binding = checkpoint["gate"]["current_inventory_proof"]
+                if "target_held" in binding:
+                    staged = int(binding["emitted_count"])
             if source == "pyramid-brokerage" and pyramid_subset_candidate(manifest, source):
                 binding = checkpoint["gate"]["current_inventory_proof"]
                 if binding.get("schema") == "pyramid-incomplete-v2":
@@ -8118,7 +8148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None, action="append", dest="admit_current_inventory_sources",
         help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
     )
-    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default="tenure-only-v1")
+    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default=None)
     parser.add_argument(
         "--admit-daum-verified-subset",
         action="store_true",
@@ -8202,6 +8232,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        args.daum_subset_policy = current_inventory.invocation_subset_policy(
+            args.daum_subset_policy, args.admit_daum_verified_subset, args.resume)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        parser.error(f"DAUM subset resume policy unavailable: {exc}")
     try:
         args.source_workers = resolve_source_workers(args.pipeline, args.source_workers)
     except ValueError as exc:

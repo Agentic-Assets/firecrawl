@@ -17,10 +17,11 @@ $rows=@(
  @{key='interra';task_path='\Agentic Assets\CRE\';task_name='Interra Refresh'},
  @{key='newmark';task_path='\Agentic Assets\CRE\';task_name='Newmark Refresh'},
  @{key='qualified';task_path='\Agentic Assets\CRE\';task_name='Qualified Brokerage Pipeline'},
+ @{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Colliers Partial Refresh'},
  @{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'},
  @{key='enrich:newmark';task_path='\Agentic Assets\CRE\';task_name='Enrichment - newmark'}
 )
-if(@(Get-CreMaintenanceTaskInstances @{task_baseline=$rows}).Count -ne 0 -or $script:lookups.Count -ne 5) {throw 'optional fleet lookup failed'}
+if(@(Get-CreMaintenanceTaskInstances @{task_baseline=$rows}).Count -ne 0 -or $script:lookups.Count -ne 6) {throw 'optional fleet lookup failed'}
 $script:runningTask='DAUM Verified Subset'
 $instances=@(Get-CreMaintenanceTaskInstances @{task_baseline=$rows})
 if($instances.Count -ne 1 -or $instances[0].key -cne 'daum-subset') {throw 'active optional task was not detected'}
@@ -28,6 +29,8 @@ foreach($row in @(
  @{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='Newmark Refresh'},
  @{key='enrich:newmark';task_path='\Agentic Assets\CRE\';task_name='Enrichment - svn'},
  @{key='enrich:../bad';task_path='\Agentic Assets\CRE\';task_name='Enrichment - ../bad'},
+ @{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Newmark Refresh'},
+ @{key='colliers-partial';task_path='\Other\';task_name='Colliers Partial Refresh'},
  @{key='other';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'},
  @{key='daum-subset';task_path='\Other\';task_name='DAUM Verified Subset'}
 )) {

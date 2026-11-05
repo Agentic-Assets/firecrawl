@@ -347,6 +347,7 @@ export type DaumDetail = {
   observedCanonicalUrl?: string | null;
   facts: Record<string, string>;
   title: string;
+  titleFallback?: { cardTitle: string; documentTitle: string };
   tenure: DaumTenureProof;
   tenureText: string | null;
   city: string | null;
@@ -408,6 +409,7 @@ export type DaumEmptyTitleSubsetProof = Omit<DaumVerifiedSubsetInventoryProof, "
   schema: "daum-verified-subset-v2";
   subsetPolicy: "tenure-and-empty-title-v2";
   titleObservations: Array<[string, 1, "empty"]>;
+  titleFallbackObservations?: Array<{ postId: string; cardTitle: string; documentTitle: string }>;
   held: Array<[string, "unknown_inventory_and_detail_tenure" | "empty_required_property_title"]>;
 };
 
