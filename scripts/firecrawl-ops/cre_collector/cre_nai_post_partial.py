@@ -53,7 +53,7 @@ def _timestamp(value):
     return parsed
 
 
-def stage_post(listing, generation):
+def stage_post(listing, generation, *, exact_observation=None):
     """Validate exact source-post identity; retain the complete input record."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != SOURCE:
         raise ValueError("NAI source differs")
@@ -176,8 +176,7 @@ def stage_post(listing, generation):
     else:
         projected.update(lat=None, lng=None)
     try:
-        payload = json.dumps(listing, sort_keys=True, separators=(",", ":"),
-                             ensure_ascii=True, allow_nan=False).encode("ascii")
+        payload = _encode_json(listing if exact_observation is None else exact_observation).encode("ascii")
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("NAI source observation cannot be retained") from exc
     return {"external_id": native, "source_url": expected_url, "alias_key": alias_key, "generation_id": generation,
@@ -186,10 +185,12 @@ def stage_post(listing, generation):
             **projected}
 
 
-def partition_posts(listings, generation, *, capture_start=None, capture_finish=None):
+def partition_posts(listings, generation, *, capture_start=None, capture_finish=None, exact_listings=None):
     """Hold invalid or duplicate source identities; never discard source rows."""
     if not isinstance(listings, list) or not isinstance(generation, str) or not generation:
         raise ValueError("NAI source partition invalid")
+    if exact_listings is not None and (not isinstance(exact_listings, list) or len(exact_listings) != len(listings)):
+        raise ValueError("NAI exact source partition differs")
     staged, held = [], []
     id_counts, alias_counts = {}, {}
     # An invalid peer can still witness a competing identity. Never count only
@@ -217,7 +218,7 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
             for alias in normalized_aliases:
                 alias_counts[alias] = alias_counts.get(alias, 0) + 1
         try:
-            row = stage_post(listing, generation)
+            row = stage_post(listing, generation, exact_observation=exact_listings[index] if exact_listings is not None else None)
             if (capture_start is not None and capture_finish is not None
                     and not (capture_start <= _timestamp(listing.get("inventoryObservedAt"))
                              <= _timestamp(row["observed_at"]) <= capture_finish)):
@@ -244,7 +245,8 @@ def _validated(staged):
         try:
             raw = base64.b64decode(row["observation_base64"], validate=True)
             original = json.loads(raw)
-            expected = stage_post(original, row["generation_id"])
+            exact = json.loads(raw, parse_float=Decimal)
+            expected = stage_post(original, row["generation_id"], exact_observation=exact)
         except (KeyError, TypeError, ValueError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("NAI staged record invalid") from exc
         if expected != row or row["external_id"] in seen:
@@ -252,9 +254,7 @@ def _validated(staged):
         seen.add(row["external_id"])
 
 
-def _payload(value):
-    from cre_ingest import sql_lit
-
+def _encode_json(value):
     # A PostgreSQL preimage may include numeric values with more precision than
     # a Python float. Callers parse probe JSON with parse_float=Decimal; encode
     # those values as JSON numbers rather than rounding or stringifying them.
@@ -272,7 +272,12 @@ def _payload(value):
             return "[" + ",".join(encode(value) for value in item) + "]"
         return json.dumps(item, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
 
-    return sql_lit(encode(value))
+    return encode(value)
+
+
+def _payload(value):
+    from cre_ingest import sql_lit
+    return sql_lit(_encode_json(value))
 
 
 def _url_key(expression):

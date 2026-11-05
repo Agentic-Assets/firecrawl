@@ -59,6 +59,7 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     if digest != info.get("sha256") or len(raw) != info.get("bytes"):
         raise ValueError("NAI source artifact differs")
     data = json.loads(raw)
+    exact_data = json.loads(raw, parse_float=Decimal)
     meta = data["runMeta"]
     if (meta.get("transactions") != ["sale", "lease"] or meta.get("mode") != "full"
             or (meta.get("freshness") or {}).get("generationId") != manifest["run_id"]
@@ -82,7 +83,7 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
         raise ValueError("NAI source freshness bound invalid")
     partition = partition_posts(data["listings"], manifest["run_id"],
                                 capture_start=max(capture_start, now - timedelta(hours=max_age)),
-                                capture_finish=capture_finish)
+                                capture_finish=capture_finish, exact_listings=exact_data["listings"])
     if not partition["staged"]:
         raise NaiSourceProbeRefusal("NAI partial has no qualified posts")
     target = manifest["preflight"]["database_target"]

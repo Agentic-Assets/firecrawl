@@ -1,5 +1,6 @@
 import base64
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -30,6 +31,20 @@ def test_source_post_retains_full_input_without_fabricating_status_or_location()
     assert row["lat"] is None and row["lng"] is None
     assert "status" not in row
     assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
+def test_source_observation_retains_decimal_precision_through_partition():
+    from cre_nai_post_partial import _validated
+
+    original = post()
+    raw = json.dumps(original).replace('"unusedSourceField": {"x": [1, null]}',
+                                       '"unusedSourceField": {"x": [0.12345678901234567890123456789, null]}')
+    ordinary = json.loads(raw)
+    exact = json.loads(raw, parse_float=Decimal)
+    staged = partition_posts([ordinary], "gen-1", exact_listings=[exact])["staged"]
+    _validated(staged)
+    retained = json.loads(base64.b64decode(staged[0]["observation_base64"]), parse_float=Decimal)
+    assert retained["feedRow"]["unusedSourceField"]["x"][0] == Decimal("0.12345678901234567890123456789")
 
 
 def test_identified_inventory_post_survives_missing_detail_and_category():
