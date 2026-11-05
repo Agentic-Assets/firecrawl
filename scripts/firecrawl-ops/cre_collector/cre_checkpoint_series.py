@@ -319,6 +319,7 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and gate.get("mark_missing_safe") is False
                 and binding.get("schema") == "franklin-site-partial-v1"
                 and binding.get("scope") == "franklin_site_partial_v1"
+                and binding.get("source_key") == "franklin-street"
                 and binding.get("whole_source_coverage") is False
                 and binding.get("artifact_sha256") == artifact.get("sha256")
                 and binding.get("source_artifact_sha256") == source["franklin_original"]["sha256"]
@@ -2435,7 +2436,9 @@ def pipeline_source_qualified(
                     or binding.get("schema") == "lyon-search-partial-v1"
                     or binding.get("scope") == "lyon_partial_search_v1") and not lyon_partial:
                 return False
-            if key == "franklin-street" and (checkpoint.get("artifact") or {}).get("franklin_partial") is True and not franklin_partial:
+            if ((checkpoint.get("artifact") or {}).get("franklin_partial") is True
+                    or binding.get("schema") == "franklin-site-partial-v1"
+                    or binding.get("scope") == "franklin_site_partial_v1") and not franklin_partial:
                 return False
             if ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
                     or binding.get("schema") == "colliers-partial-window-v1"

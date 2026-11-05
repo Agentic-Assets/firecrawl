@@ -259,3 +259,17 @@ def test_franklin_missing_or_malformed_attempt_never_qualifies(tmp_path, attempt
         run, child, report, persist_manifest=False, sources=["franklin-street"])
     assert result["ok"] is False
     assert child["sources"]["franklin-street"]["readback"]["ok"] is False
+
+
+@pytest.mark.parametrize("foreign", ["binding_source", "artifact_marker", "binding_marker"])
+def test_franklin_partial_source_binding_is_not_transferred(tmp_path, foreign):
+    run = tmp_path / RUN_ID
+    child = add_franklin(mixed_child(run), run)
+    if foreign == "binding_source":
+        child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["source_key"] = "cbre"
+    elif foreign == "artifact_marker":
+        child["sources"]["cbre"]["artifact"]["franklin_partial"] = True
+    else:
+        child["sources"]["cbre"]["gate"] = {"current_inventory_proof": {"scope": "franklin_site_partial_v1"}}
+    assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+    assert not series.pipeline_source_qualified(child, "franklin-street", **qualification_context(run))

@@ -409,7 +409,7 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
 
 def test_series_recognizes_only_exact_partial_binding():
     binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1",
-               "whole_source_coverage": False, "artifact_sha256": "1" * 64,
+               "source_key": "franklin-street", "whole_source_coverage": False, "artifact_sha256": "1" * 64,
                "source_artifact_sha256": "2" * 64, "generation_id": "run-1",
                "collector_git_sha": "a" * 40, "database_target_sha256": "b" * 64,
                "held_count": 0, "held": [], "emitted_count": 1, "buildout_pending": 1,
