@@ -42,10 +42,11 @@ async function main() {
   const request = JSON.parse(privateText(requestPath, 16384));
   const expected = ["attempt", "authorityToken", "cursor", "finishedAt", "generation", "generationStartedAt", "lockLease",
     "originalSourceMainSha256", "ownerPid", "producerSha", "runDir", "sourceBytes", "sourceSha256",
-    "startedAt", "targetSha256"].sort().join(",");
+    "startedAt", "targetSha256", ...(request?.windowIndex === undefined ? [] : ["windowIndex"])].sort().join(",");
   if (!request || typeof request !== "object" || Array.isArray(request) || Object.keys(request).sort().join(",") !== expected ||
       !Number.isSafeInteger(request.ownerPid) || request.ownerPid !== process.ppid ||
-      !Number.isSafeInteger(request.attempt) || request.attempt < 1 || !request.runDir.startsWith("/") ||
+      !Number.isSafeInteger(request.attempt) || request.attempt < 1 ||
+      (request.windowIndex !== undefined && (!Number.isSafeInteger(request.windowIndex) || request.windowIndex < 2)) || !request.runDir.startsWith("/") ||
       basename(request.runDir) !== request.generation || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.generation) ||
       !/^(?:operator-recovery-required:)?[A-Za-z0-9_-]{43}$/.test(request.lockLease) ||
       !/^[A-Za-z0-9_-]{43}$/.test(request.authorityToken))
@@ -56,7 +57,8 @@ async function main() {
     if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() ||
         (path === partialDir && (info.mode & 0o077) !== 0)) throw new Error("worker directory invalid");
   }
-  if (requestPath !== join(partialDir, `window-${request.attempt}-request.json`)) throw new Error("worker request path differs");
+  const windowName = `window-${request.attempt}${request.windowIndex === undefined ? "" : `-${request.windowIndex}`}`;
+  if (requestPath !== join(partialDir, `${windowName}-request.json`)) throw new Error("worker request path differs");
   const root = resolve(process.cwd(), "../../..");
   const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     { cwd: root, encoding: "utf8", timeout: 10000 }).trim();
@@ -80,14 +82,15 @@ async function main() {
   };
   owner(); code();
   const sourcePath = join(partialDir, `attempt-${request.attempt}.jsonl`);
-  const evidencePath = join(partialDir, `window-${request.attempt}-evidence.jsonl`);
-  const artifactPath = join(partialDir, `window-${request.attempt}-artifact.json`);
+  const evidencePath = join(partialDir, `${windowName}-evidence.jsonl`);
+  const artifactPath = join(partialDir, `${windowName}-artifact.json`);
   const result = await buildColliersWindowArtifact({ ...request, sourcePath, evidencePath, artifactPath },
     async token => { owner(); const value = await fetchColliersPartialDetail(token); owner(); return value; });
   owner(); code();
-  writeReceipt(join(partialDir, `window-${request.attempt}-receipt.json`),
+  writeReceipt(join(partialDir, `${windowName}-receipt.json`),
     { schema: "colliers-window-worker-receipt/v1", generation: request.generation, attempt: request.attempt,
-      producerSha: request.producerSha, targetSha256: request.targetSha256, ...result });
+      producerSha: request.producerSha, targetSha256: request.targetSha256,
+      ...(request.windowIndex === undefined ? {} : { windowIndex: request.windowIndex }), ...result });
 }
 
 main().catch(error => {

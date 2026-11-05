@@ -226,6 +226,13 @@ def _read_private_file(path, maximum):
         os.close(directory)
 
 
+def _window_base(attempt, window_index=1):
+    """Name independent windows without changing the original first-window path."""
+    if type(attempt) is not int or attempt < 1 or type(window_index) is not int or window_index < 1:
+        raise ValueError("partial window identity invalid")
+    suffix = "" if window_index == 1 else f"-{window_index}"
+    return f"colliers-partial/window-{attempt}{suffix}"
+
 def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty, allow_empty=False):
     """Recheck the settled worker and both private artifacts, without DB access."""
     from pathlib import Path
@@ -239,7 +246,8 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
     path = Path(artifact_path)
     run_dir = path.parent.parent
     attempt = worker["attempt"]
-    base = f"colliers-partial/window-{attempt}"
+    window_index = worker.get("window_index", 1)
+    base = _window_base(attempt, window_index)
     if (path != run_dir / f"{base}-artifact.json"
             or checkpoint["artifact"].get("path") != f"{base}-artifact.json"
             or worker.get("receipt_path") != f"{base}-receipt.json"
@@ -252,8 +260,11 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
     receipt = json.loads(receipt_raw)
     receipt_keys = {"schema", "generation", "attempt", "producerSha", "targetSha256", "artifact", "evidence",
                     "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted"}
+    if window_index != 1:
+        receipt_keys.add("windowIndex")
     if (not isinstance(receipt, dict) or set(receipt) != receipt_keys
             or receipt["schema"] != "colliers-window-worker-receipt/v1"
+            or (window_index != 1 and receipt.get("windowIndex") != window_index)
             or receipt["generation"] != manifest["run_id"] or receipt["attempt"] != attempt
             or receipt["producerSha"] != current_code_sha
             or receipt["targetSha256"] != source_receipt["database_target_sha256"]):
@@ -522,7 +533,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
             "child_collections_verified": False}
 
 
-def run_window_worker(run_dir, manifest, owner, runner, save):
+def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1):
     """Run one source-specific child under the existing canonical checkpoint owner."""
     import os
     import secrets
@@ -561,19 +572,21 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
     source = revalidate_source_receipt(run_dir, manifest, attempt, producer, dirty)
     target = source["database_target_sha256"]
     cursor, _ = read_cursor(owner.path, "colliers", target)
-    base = f"colliers-partial/window-{attempt}"
+    base = _window_base(attempt, window_index)
     request_path, receipt_path = run_dir / f"{base}-request.json", run_dir / f"{base}-receipt.json"
     evidence_path, artifact_path = run_dir / f"{base}-evidence.jsonl", run_dir / f"{base}-artifact.json"
     for path in (request_path, receipt_path, evidence_path, artifact_path):
         if path.exists() or path.is_symlink():
             raise ValueError("partial worker output already exists")
-    request = {"generation": source["generation"], "generationStartedAt": source["generation_started_at"],
+    request = {**({"windowIndex": window_index} if window_index != 1 else {}),
+               "generation": source["generation"], "generationStartedAt": source["generation_started_at"],
                "attempt": attempt, "startedAt": source["started_at"], "finishedAt": source["finished_at"],
                "runDir": str(run_dir), "sourceBytes": source["bytes"], "sourceSha256": source["sha256"],
                "originalSourceMainSha256": source["main_sha256"], "producerSha": producer,
                "targetSha256": target, "cursor": cursor, "ownerPid": os.getpid(),
                "lockLease": owner.lease_token, "authorityToken": owner.authority_token}
     checkpoint["colliers_partial_worker"] = {"state": "dispatching", "attempt": attempt, "rc": None,
+        **({"window_index": window_index} if window_index != 1 else {}),
         "receipt_path": str(receipt_path.relative_to(run_dir)), "evidence_path": str(evidence_path.relative_to(run_dir)),
         "artifact_path": str(artifact_path.relative_to(run_dir)), "cursor": cursor}
     save(run_dir, manifest)

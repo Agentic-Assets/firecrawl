@@ -18,9 +18,10 @@ def command(*args, cwd, env=None):
     return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=True, timeout=60)
 
 
+@pytest.mark.parametrize("window_index", [1, 2])
 @pytest.mark.parametrize(("detail_id", "expected_state", "expected_cursor"),
                          [("a", "candidate", 1), ("different", "partial_held_no_write", 2), ("clock", "worker_failed", 1)])
-def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor):
+def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor, window_index):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -93,20 +94,22 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
                 else:
                     assert child.returncode == 0, child.stderr
                 return child.returncode
-            result = partial.run_window_worker(run_dir, manifest, lock, runner, save)
+            result = partial.run_window_worker(run_dir, manifest, lock, runner, save, window_index=window_index)
             if detail_id == "clock":
                 assert result is None and not sentinel.exists()
                 assert manifest["sources"]["colliers"]["colliers_partial_worker"]["state"] == "failed"
                 return
             assert sentinel.read_text() == "fake"
-            receipt = json.loads((partial_path(run_dir) / "window-1-receipt.json").read_text())
+            name = "window-1" if window_index == 1 else f"window-1-{window_index}"
+            receipt = json.loads((partial_path(run_dir) / f"{name}-receipt.json").read_text())
+            assert receipt.get("windowIndex", 1) == window_index
             assert receipt["admitted"] == (1 if detail_id == "a" else 0)
             checkpoint = manifest["sources"]["colliers"]
             assert checkpoint["state"] == expected_state
             assert read_cursor(lock.path, "colliers", "b" * 64)[0] == expected_cursor
             assert snapshots[0]["sources"]["colliers"]["colliers_partial_worker"]["state"] == "dispatching"
             assert (result is not None) == (detail_id == "a")
-            artifact = json.loads((partial_path(run_dir) / "window-1-artifact.json").read_text())
+            artifact = json.loads((partial_path(run_dir) / f"{name}-artifact.json").read_text())
             assert artifact["sourceOutcome"] == "source_error"
         finally:
             lock.clear_recovery_requirement()
