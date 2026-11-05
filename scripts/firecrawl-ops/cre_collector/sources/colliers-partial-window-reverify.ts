@@ -59,7 +59,7 @@ export async function reverifyColliersWindow(
       if (typeof encoded !== "string" || encoded.length > Math.ceil(16 * 1024 * 1024 / 3) * 4)
         throw new Error("partial native bytes invalid");
       const native = Buffer.from(encoded, "base64");
-      if (native.toString("base64") !== encoded) throw new Error("partial native encoding invalid");
+      if (native.length > 16 * 1024 * 1024 || native.toString("base64") !== encoded) throw new Error("partial native encoding invalid");
       if (row.kind === "detail") {
         if (createHash("sha256").update(native).digest("hex") !== row.source.nativeSha256)
           throw new Error("partial native hash differs");
