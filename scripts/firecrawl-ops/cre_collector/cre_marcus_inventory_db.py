@@ -24,6 +24,11 @@ def validate_staged(staged, generation, started_at, finished_at):
         urls.add(row["source_url"].rstrip("/"))
 
 
+def _url_deal_id(expression):
+    """Conservatively recognize source URL aliases by native numeric DealId."""
+    return (f"substring({expression} from "
+            "'(?i)^https?://(?:[^/@]*@)?(?:www[.])?marcusmillichap[.]com(?::(?:80|443))?/properties/([1-9][0-9]*)(?:/|[?#]|$)')")
+
 def identity_probe_sql(staged, generation, started_at, finished_at, *, _transaction_input=False):
     """Build a read-only exact-ID/URL partition; caller binds target and owner.
 
@@ -47,7 +52,7 @@ conflicts AS (
  SELECT s.r->>'external_id' external_id FROM scoped s
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.r->>'external_id'
  LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.r->>'external_id'
- WHERE (own.id IS NOT NULL AND (rtrim(own.source_url,'/') IS DISTINCT FROM rtrim(s.r->>'source_url','/')
+ WHERE (own.id IS NOT NULL AND ({_url_deal_id('own.source_url')} IS DISTINCT FROM s.r->>'external_id'
    OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
    OR (own.raw_data ? 'marcusInventoryObservations' AND NOT COALESCE(
        jsonb_typeof(own.raw_data->'marcusInventoryObservations')='object'
@@ -55,13 +60,13 @@ conflicts AS (
        AND own.raw_data#>>'{{marcusInventoryObservations,externalId}}'=s.r->>'external_id'
        AND jsonb_typeof(own.raw_data#>'{{marcusInventoryObservations,entries}}')='array',false))))
  OR (si.id IS NOT NULL AND (si.source_key IS DISTINCT FROM 'marcus-millichap'
-       OR rtrim(si.url,'/') IS DISTINCT FROM rtrim(s.r->>'source_url','/')))
+       OR (si.url IS NOT NULL AND {_url_deal_id('si.url')} IS DISTINCT FROM s.r->>'external_id')))
  OR EXISTS (SELECT 1 FROM credeals.cre_listings other
    WHERE (own.id IS NULL OR other.id<>own.id)
-   AND (rtrim(other.source_url,'/')=rtrim(s.r->>'source_url','/')
-     OR rtrim(other.canonical_url,'/')=rtrim(s.r->>'source_url','/')))
+   AND ({_url_deal_id('other.source_url')}=s.r->>'external_id'
+     OR {_url_deal_id('other.canonical_url')}=s.r->>'external_id'))
  OR EXISTS (SELECT 1 FROM credeals.cre_source_index other
-   WHERE (si.id IS NULL OR other.id<>si.id) AND rtrim(other.url,'/')=rtrim(s.r->>'source_url','/'))
+   WHERE (si.id IS NULL OR other.id<>si.id) AND {_url_deal_id('other.url')}=s.r->>'external_id')
 )
 SELECT (SELECT count(*) FROM candidate) AS staged,(SELECT count(*) FROM scoped) AS joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text AS held,
@@ -132,13 +137,13 @@ DO $$ BEGIN
  PERFORM si.id FROM credeals.cre_source_index si WHERE EXISTS
   (SELECT 1 FROM _marcus_input c
    WHERE (si.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
-          AND si.external_id=c.r->>'external_id') OR rtrim(si.url,'/')=rtrim(c.r->>'source_url','/'))
+          AND si.external_id=c.r->>'external_id') OR {_url_deal_id('si.url')}=c.r->>'external_id')
  ORDER BY si.id FOR UPDATE;
  PERFORM t.id FROM credeals.cre_listings t WHERE EXISTS
   (SELECT 1 FROM _marcus_input c
    WHERE (t.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
-          AND t.external_id=c.r->>'external_id') OR rtrim(t.source_url,'/')=rtrim(c.r->>'source_url','/')
-          OR rtrim(t.canonical_url,'/')=rtrim(c.r->>'source_url','/'))
+          AND t.external_id=c.r->>'external_id') OR {_url_deal_id('t.source_url')}=c.r->>'external_id'
+          OR {_url_deal_id('t.canonical_url')}=c.r->>'external_id')
  ORDER BY t.id FOR UPDATE;
 END $$;
 CREATE TEMP TABLE _marcus_probe ON COMMIT DROP AS {probe};

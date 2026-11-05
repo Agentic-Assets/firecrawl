@@ -58,7 +58,7 @@ SELECT id,'101','https://www.marcusmillichap.com/properties/101/source-name',
 INSERT INTO credeals.cre_listing_images (listing_id,url)
 SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE external_id='101';
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
-SELECT id,'other','https://www.marcusmillichap.com/properties/103/source-name','active','{}'::jsonb
+SELECT id,'other','HTTPS://MARCUSMILLICHAP.COM:443/properties/103/different-slug?view=1','active','{}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
 """)
         staged = [stage_inventory(listing(str(i), "activity-" + str(i)), GENERATION, START, FINISH)
