@@ -227,3 +227,27 @@ def test_referenced_brokers_are_retained_as_unverified_source_observations():
     envelope["brokers"] = []
     with pytest.raises(ValueError):
         stage_envelope(envelope, GENERATION, START, FINISH)
+
+
+def test_artifact_validator_checks_inventory_freshness_without_detail_claim(tmp_path):
+    from datetime import datetime
+    from cre_checkpoint_refresh import ArtifactValidationError, _validate_source_artifact_local
+    from cre_marcus_inventory import candidate_data
+
+    row = stage(listing())
+    source = {"schema": "marcus-inventory-custody/v1", "generation": GENERATION,
+              "generation_started_at": START, "attempt": 1, "started_at": START, "finished_at": FINISH,
+              "coordinator_finished_at": FINISH, "source_sha256": "a" * 64, "source_bytes": 100,
+              "producer_sha": "b" * 40, "target_sha256": "c" * 64, "detail_errors": 1,
+              "partition": {"staged": [row], "held": []}}
+    path = tmp_path / "candidate.json"
+    path.write_text(json.dumps(candidate_data(source)), encoding="utf8")
+    kwargs = {"require_strict_freshness": True, "expected_generation_id": GENERATION,
+              "expected_generation_started_at": START, "expected_transactions": ("sale", "lease"),
+              "now": datetime.fromisoformat(FINISH.replace("Z", "+00:00"))}
+    stats = _validate_source_artifact_local(path, "marcus-millichap", START, **kwargs)
+    assert stats["marcus_inventory_partial"] is True
+    assert stats["strict_freshness"] is False
+    kwargs["max_observation_age_hours"] = 0
+    with pytest.raises(ArtifactValidationError):
+        _validate_source_artifact_local(path, "marcus-millichap", START, **kwargs)

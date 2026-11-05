@@ -2969,6 +2969,46 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "marcus-inventory-partial/v1":
+        # Structural validation only. Source custody, owner and target are
+        # rechecked at the source-specific partial gate before any write.
+        from cre_marcus_inventory_checkpoint import candidate_structure
+
+        try:
+            if expected_source != "marcus-millichap" or tuple(expected_transactions) != TRANSACTIONS:
+                raise ValueError("Marcus inventory source scope differs")
+            source = candidate_structure(data)
+            started = parse_iso8601(source["started_at"], field="marcus.startedAt")
+            finished = parse_iso8601(source["finished_at"], field="marcus.finishedAt")
+            generation_start = parse_iso8601(source["generation_started_at"], field="marcus.generationStartedAt")
+            expected_attempt = (attempt_started_at if isinstance(attempt_started_at, datetime)
+                                else parse_iso8601(attempt_started_at, field="attempt_started_at"))
+            expected_generation = (expected_generation_started_at if isinstance(expected_generation_started_at, datetime)
+                                   else parse_iso8601(expected_generation_started_at, field="expected_generation_started_at"))
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            cutoff = current - timedelta(hours=max_observation_age_hours)
+            if (source["generation"] != expected_generation_id or started != expected_attempt
+                    or generation_start != expected_generation or started < generation_start or finished < started
+                    or finished > current + timedelta(minutes=5)):
+                raise ValueError("Marcus inventory time binding differs")
+            for row in source["partition"]["staged"]:
+                observed = parse_iso8601(row["inventory_observed_at"], field="marcus.inventoryObservedAt")
+                if observed < cutoff or not started <= observed <= finished:
+                    raise ValueError("Marcus inventory observation is stale or outside its attempt")
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["detail_errors"] or stats["staged_unique"] != len(source["partition"]["staged"]):
+                raise ValueError("Marcus inventory staging count differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("Marcus inventory artifact invalid") from exc
+        artifact_sha256, artifact_bytes = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes, "generation_id": source["generation"]}
+        return {**stats, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
+                "max_observation_age_hours": max_observation_age_hours, "observation_cutoff_at": cutoff.isoformat(),
+                "strict_freshness": False, "property_detail_freshness": False, "marcus_inventory_partial": True,
+                "freshness_generation_id": source["generation"], "freshness_generation_started_at": generation_start.isoformat(),
+                "sha256": artifact_sha256, "bytes": artifact_bytes}
     if isinstance(data, dict) and data.get("schema") == "lyon-search-partial/v1":
         # Structure only: source custody and database identity are independently
         # rechecked at the source-specific subset gate before any write.
