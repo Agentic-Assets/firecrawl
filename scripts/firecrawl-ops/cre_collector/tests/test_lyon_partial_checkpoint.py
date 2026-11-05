@@ -304,3 +304,41 @@ class LyonCheckpointTests(unittest.TestCase):
             attempt["lyon-stahl_partial"]["main_sha256"] = digest
             with self.assertRaises(ValueError):
                 replay_settled_source(root, manifest, 1, "a" * 40, False)
+
+
+def test_top_level_cli_uses_owned_lyon_replay_worker(tmp_path):
+    """Exercise the sealed Lyon worker with the actual CLI module as lock owner."""
+    collector = Path(__file__).resolve().parents[1]
+    site = tmp_path / "sitecustomize.py"
+    site.write_text(
+        "import sys\n"
+        "def probe(frame, event, arg):\n"
+        "    if event == 'call' and frame.f_code.co_name == 'main' and "
+        "frame.f_globals.get('__file__', '').endswith('/cre_checkpoint_refresh.py'):\n"
+        "        sys.setprofile(None)\n"
+        "        import tempfile\n"
+        "        from pathlib import Path\n"
+        "        from unittest.mock import patch\n"
+        "        from tests.test_lyon_partial_checkpoint import LyonCheckpointTests, run_replay_worker\n"
+        "        module = sys.modules['__main__']\n"
+        "        with tempfile.TemporaryDirectory() as tmp:\n"
+        "            root = Path(tmp)\n"
+        "            manifest, _, _ = LyonCheckpointTests().case(root)\n"
+        "            manifest['config'] = {'additive': True, 'mark_missing': False, 'status_activation': False, "
+        "'transactions': ['sale', 'lease'], 'max_items': 0, 'sources': ['lyon-stahl']}\n"
+        "            lock_path = root / 'lock'\n"
+        "            with patch.object(module, 'canonical_shared_lock_dir', return_value=lock_path), "
+        "patch.object(module, 'git_identity', return_value=('a' * 40, False)), module.SharedLock(lock_path) as owner:\n"
+        "                path = run_replay_worker(root, manifest, owner, lambda *_: None)\n"
+        "                assert path.is_file() and manifest['sources']['lyon-stahl']['state'] == 'candidate'\n"
+        "        print('CLI_LYON_REPLAY_WORKER_VERIFIED', flush=True)\n"
+        "sys.setprofile(probe)\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(collector)))
+    result = subprocess.run(
+        [sys.executable, str(collector / "cre_checkpoint_refresh.py"), "--help"],
+        cwd=collector, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CLI_LYON_REPLAY_WORKER_VERIFIED" in result.stdout
