@@ -154,6 +154,7 @@ def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
     assert "Marcus identity partition changed" in sql
     assert "'detailQualified',false" in sql
     assert "'partial'" in sql
+    assert "country,scraped_at,raw_data" in sql
     assert "UPDATE credeals.cre_source_index" not in sql
     assert "DELETE FROM" not in sql
     receipt["detail_errors"] = "0); SELECT 1; --"
@@ -173,6 +174,7 @@ def test_readback_covers_parent_index_and_all_five_children():
     preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None, "children": children}]
     sql = partial_readback_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
     assert "source_index IS DISTINCT FROM" in sql and "children IS DISTINCT FROM" in sql
+    assert "listing->>'scraped_at' IS NOT NULL" in sql
     assert all(f"cre_listing_{name}" in sql for name in children)
     assert "'detailQualified'" not in sql  # expected JSON is bound as data, not SQL code
 

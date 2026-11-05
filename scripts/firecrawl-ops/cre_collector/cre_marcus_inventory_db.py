@@ -162,9 +162,9 @@ UPDATE credeals.cre_listings t SET raw_data=jsonb_set(t.raw_data,'{{marcusInvent
        'externalId',r->>'external_id','entries',jsonb_build_array({entry})) END)
 FROM _marcus_rows s WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.r->>'external_id';
 INSERT INTO credeals.cre_listings
- (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,title,lat,lng,raw_data)
+ (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,title,lat,lng,country,scraped_at,raw_data)
 SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,'sale',r->>'title',
- (r->>'lat')::double precision,(r->>'lng')::double precision,
+ (r->>'lat')::double precision,(r->>'lng')::double precision,NULL,NULL,
  jsonb_build_object('sourceKey','marcus-millichap','id',r->>'external_id','marcusInventoryObservations',
   jsonb_build_object('schema','marcus-inventory-history/v1','sourceKey','marcus-millichap',
    'externalId',r->>'external_id','entries',jsonb_build_array({entry})))
@@ -224,6 +224,7 @@ observed AS (
    OR (p->'listing'='null'::jsonb AND (
        listing->>'source_url' IS DISTINCT FROM r->>'source_url' OR listing->>'canonical_url' IS NOT NULL
        OR listing->>'status' IS NOT NULL OR listing->>'deleted_at' IS NOT NULL
+       OR listing->>'country' IS NOT NULL OR listing->>'scraped_at' IS NOT NULL
        OR listing->>'transaction_type' IS DISTINCT FROM 'sale' OR listing->>'title' IS DISTINCT FROM r->>'title'
        OR listing->'lat' IS DISTINCT FROM r->'lat' OR listing->'lng' IS DISTINCT FROM r->'lng'))
    OR (p->'listing'<>'null'::jsonb AND
