@@ -77,7 +77,7 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
         producerSha: input.producerSha, targetSha256: input.targetSha256,
         source: { bytes: input.sourceBytes, sha256: input.sourceSha256, mainSha256: input.originalSourceMainSha256 },
         sourceOutcome: "source_error", coverage: "unverified", cursor: input.cursor, proposedCursor: result.proposedCursor,
-        selected: result.selection.selected, heldOther: result.selection.heldOther,
+        selected: result.selection.selected, total: result.selection.total, heldOther: result.selection.heldOther,
         unattempted: result.unattempted, evidence: receipt };
       artifact.write(JSON.stringify(header).slice(0, -1) + ',"listings":[');
       replay = await withColliersPartialSpool(input.evidencePath, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>

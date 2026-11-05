@@ -148,6 +148,21 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     assert fixture["rows"][0]["listing"]["city"] == "Native City"
     assert fixture["rows"][0]["listing"]["units"] == 10
 
+    from cre_colliers_partial import validate_window_artifact
+
+    artifact = json.loads((tmp_path / "artifact").read_text())
+    source = artifact["source"]
+    receipt = {"generation": "gen", "attempt": 1, "started_at": "2026-11-04T15:00:00Z",
+               "finished_at": "2026-11-04T16:00:00Z", "bytes": source["bytes"], "sha256": source["sha256"],
+               "main_sha256": "c" * 64, "producer_sha": "a" * 40, "database_target_sha256": "b" * 64}
+    result = validate_window_artifact(artifact, receipt, artifact["evidence"])
+    assert result == [staged]
+    for key, value in [("targetSha256", "0" * 64), ("sourceOutcome", "success"), ("unattempted", 999)]:
+        changed = copy.deepcopy(artifact)
+        changed[key] = value
+        with pytest.raises(ValueError):
+            validate_window_artifact(changed, receipt, artifact["evidence"])
+
 def test_native_byte_change_is_rejected_even_when_decoded_text_matches():
     item = sample()
     item["nativeBase64"] = base64.b64encode(b"\xef\xbb\xbf" + item["decodedDetail"].encode()).decode()

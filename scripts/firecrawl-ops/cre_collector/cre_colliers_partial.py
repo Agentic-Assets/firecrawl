@@ -568,3 +568,48 @@ FROM _src s WHERE NOT EXISTS (SELECT 1 FROM credeals.cre_listings t
 COMMIT;
 """
     return sql, history_held
+
+
+def validate_window_artifact(data, source_receipt, evidence_receipt):
+    """Bind a trusted settled worker result to its exact source and target.
+
+    Caller must authenticate the manifest/lock, child settlement and artifact
+    bytes; this function does not independently replay either sidecar.
+    """
+    keys = {"schema", "sourceKey", "binding", "detailFinishedAt", "producerSha", "targetSha256",
+            "source", "sourceOutcome", "coverage", "cursor", "proposedCursor", "selected", "total",
+            "heldOther", "unattempted", "evidence", "listings", "held"}
+    if not isinstance(data, dict) or set(data) != keys or not isinstance(source_receipt, dict):
+        raise ValueError("partial worker artifact shape invalid")
+    binding = {"generation": source_receipt.get("generation"), "attempt": source_receipt.get("attempt"),
+               "startedAt": source_receipt.get("started_at"), "finishedAt": source_receipt.get("finished_at")}
+    expected_source = {"bytes": source_receipt.get("bytes"), "sha256": source_receipt.get("sha256"),
+                       "mainSha256": source_receipt.get("main_sha256")}
+    if (data["schema"] != "colliers-partial-window/v1" or data["sourceKey"] != "colliers"
+            or data["sourceOutcome"] != "source_error" or data["coverage"] != "unverified"
+            or data["binding"] != binding or data["source"] != expected_source
+            or data["producerSha"] != source_receipt.get("producer_sha")
+            or data["targetSha256"] != source_receipt.get("database_target_sha256")
+            or data["evidence"] != evidence_receipt):
+        raise ValueError("partial worker owner binding differs")
+    if (not isinstance(evidence_receipt, dict) or set(evidence_receipt) != {"bytes", "records", "sha256"}
+            or type(evidence_receipt["bytes"]) is not int or evidence_receipt["bytes"] < 1
+            or type(evidence_receipt["records"]) is not int or evidence_receipt["records"] < 1
+            or not isinstance(evidence_receipt["sha256"], str) or not _HASH.fullmatch(evidence_receipt["sha256"])):
+        raise ValueError("partial worker evidence receipt invalid")
+    numeric = ("cursor", "proposedCursor", "selected", "total", "heldOther", "unattempted", "held")
+    if (any(type(data[key]) is not int or data[key] < (1 if key in {"cursor", "proposedCursor", "total"} else 0)
+            for key in numeric)
+            or data["selected"] > 2048
+            or (data["proposedCursor"] > data["total"] and data["proposedCursor"] != data["cursor"])
+            or not isinstance(data["listings"], list)
+            or len(data["listings"]) + data["held"] != evidence_receipt["records"]
+            or evidence_receipt["records"] + data["unattempted"] != data["selected"]):
+        raise ValueError("partial worker counts differ")
+    if not (_time(binding["finishedAt"]) <= _time(data["detailFinishedAt"]) <= datetime.now(UTC) + timedelta(minutes=5)):
+        raise ValueError("partial worker finish invalid")
+    staged = [stage_detail_record(item, binding["generation"], binding["attempt"], binding["startedAt"],
+                                   binding["finishedAt"], data["detailFinishedAt"]) for item in data["listings"]]
+    if staged:
+        _validate_staged(staged)
+    return staged
