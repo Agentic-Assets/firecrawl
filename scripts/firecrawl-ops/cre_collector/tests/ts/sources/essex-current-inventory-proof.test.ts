@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { observationNow } from "../../../lib/observation-clock.js";
+import { NativeEvidenceTerminalError } from "../../../lib/source-evidence/terminal-error.js";
 import { srcEssexRealty } from "../../../sources/essex-realty.js";
 
 const base = "https://essexrealtygroup.com/properties/";
@@ -63,6 +64,24 @@ test("Essex proof cache is immutable and limited to the exact successful full ge
   });
   assert.equal(failed.calls.length, 6);
   assert.equal((await srcEssexRealty("lease", Infinity, false, failed)).currentInventoryProof, undefined);
+  for (const failure of [new Error("second pass failed"), new NativeEvidenceTerminalError("unsettled")]) {
+    const baseTransport = transport();
+    let calls = 0;
+    const broken = { async getText(url: string) {
+      if (++calls === 4) throw failure;
+      return baseTransport.getText(url);
+    } };
+    await assert.rejects(() => srcEssexRealty("sale", Infinity, false, broken), (error: any) => {
+      if (failure instanceof NativeEvidenceTerminalError) assert.equal(error, failure);
+      else {
+        assert.equal(error.cause, failure);
+        assert.equal(error.retainedObservations.length, 1);
+        assert.match(error.retainedObservations[0].responseText.current, /Current/);
+        assert.equal(error.retainedObservations[0].coverage, "partial_unknown");
+      }
+      return true;
+    });
+  }
   const capped = await srcEssexRealty("sale", 1, false, transport());
   assert.equal(capped.currentInventoryProof, undefined);
 });

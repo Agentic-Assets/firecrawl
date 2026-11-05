@@ -176,7 +176,11 @@ the closed archive reconciles coverage but never inflates current counts. With
 an archive/sitemap mismatch, a current/closed overlap, or drift between complete
 passes, the source fails and carries every completed pass's decoded response text,
 parsed archive rows, sitemap URLs, discrepancy sets, observation clocks and
-response-text hashes as private unqualified evidence. Each response retains the
+response-text hashes as private unqualified evidence.
+If the second pass fails normally before completion, the first completed pass is
+retained; incomplete second-pass responses are not captured by this path.
+Terminal or unsettled evidence errors keep their original classification.
+Each response retains the
 existing 32 MiB transport limit; two passes can contain six such responses and
 JSON output can exceed 192 MiB after decoding and serialization. Decoded text is not original response bytes;
 the separate source-evidence publication path has its own 16 MiB limit, so a

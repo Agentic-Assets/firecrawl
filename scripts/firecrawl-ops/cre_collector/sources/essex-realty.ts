@@ -1,5 +1,6 @@
 import { observationNow } from "../lib/observation-clock.js";
 import { RetainedSourceError } from "../lib/source-observations.js";
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import {
@@ -664,8 +665,9 @@ export async function srcEssexRealty(
     let second: typeof first;
     try { second = await fetchEssexInventoryPass(transport); }
     catch (error) {
-      if (!(error instanceof RetainedSourceError)) throw error;
-      throw new RetainedSourceError(error, [retainedPass(first), ...error.retainedObservations]);
+      if (!(error instanceof Error) || error instanceof NativeEvidenceTerminalError) throw error;
+      throw new RetainedSourceError(error, [retainedPass(first),
+        ...(error instanceof RetainedSourceError ? error.retainedObservations : [])]);
     }
     if (first.pass.fingerprint !== second.pass.fingerprint) {
       throw new RetainedSourceError(new Error("Essex complete inventory passes drifted"),
