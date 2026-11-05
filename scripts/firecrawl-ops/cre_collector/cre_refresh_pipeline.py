@@ -309,6 +309,22 @@ def pending_disk_bytes(run_dir: Path, excluded: set[Path]) -> int:
     return total
 
 
+def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None:
+    import cre_checkpoint_refresh as refresh
+
+    checkpoint = manifest["sources"][source]
+    attempt = checkpoint["attempts"][-1]
+    # Franklin may already have archived the original before derivation failed.
+    # Keep both that evidence and any derived candidate in their private paths.
+    if source == "franklin-street" and attempt.get("rejected_artifact"):
+        return
+    attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
+        refresh.archive_rejected_with_evidence(
+            run_dir / checkpoint["candidate"]["path"], run_dir, manifest, source, attempt
+        )
+    )
+
+
 def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
     import cre_checkpoint_refresh as refresh
 
@@ -319,31 +335,55 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
         source in refresh.STRICT_FRESHNESS_SOURCE_KEYS
         or source in refresh.PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
     )
-    stats = run_artifact_compute(
-        run_dir,
-        "validate",
-        {
-            "path": str(path),
-            "source": source,
-            "file_identity": candidate["file_identity"],
-            "attempt_started_at": candidate["attempt_started_at"],
-            "kwargs": {
-                "require_strict_freshness": source
-                in refresh.STRICT_FRESHNESS_SOURCE_KEYS,
-                "expected_generation_id": manifest["run_id"]
-                if generation_bound
-                else None,
-                "expected_generation_started_at": manifest["started_at"]
-                if generation_bound
-                else None,
-                "expected_transactions": manifest["config"]["transactions"],
-                "daum_verified_subset": refresh.current_inventory.is_verified_subset(
-                    manifest["config"], source
-                ),
-                "pyramid_subset_allowed": refresh.pyramid_subset_authorized(manifest["config"], source),
+    try:
+        stats = run_artifact_compute(
+            run_dir,
+            "validate",
+            {
+                "path": str(path),
+                "source": source,
+                "file_identity": candidate["file_identity"],
+                "attempt_started_at": candidate["attempt_started_at"],
+                "kwargs": {
+                    "require_strict_freshness": source
+                    in refresh.STRICT_FRESHNESS_SOURCE_KEYS,
+                    "expected_generation_id": manifest["run_id"]
+                    if generation_bound
+                    else None,
+                    "expected_generation_started_at": manifest["started_at"]
+                    if generation_bound
+                    else None,
+                    "expected_transactions": manifest["config"]["transactions"],
+                    "daum_verified_subset": refresh.current_inventory.is_verified_subset(
+                        manifest["config"], source
+                    ),
+                    "pyramid_subset_allowed": refresh.pyramid_subset_authorized(manifest["config"], source),
+                },
             },
-        },
-    )
+        )
+    except refresh.ArtifactValidationError:
+        if source != "franklin-street" or checkpoint.get("franklin_original"):
+            raise
+        attempts = checkpoint.get("attempts") or []
+        if not attempts or attempts[-1].get("number") != candidate.get("attempt_number"):
+            raise refresh.GlobalStageError("Franklin candidate attempt changed")
+        attempt = attempts[-1]
+        original_stat = path.lstat()
+        identity = [original_stat.st_dev, original_stat.st_ino, original_stat.st_size,
+                    original_stat.st_mtime_ns, original_stat.st_ctime_ns]
+        if identity != candidate.get("file_identity"):
+            raise refresh.GlobalStageError("Franklin candidate changed after inspection")
+        rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
+        if os.path.lexists(rejected):
+            raise refresh.GlobalStageError("Franklin rejected evidence path already occupied")
+        # Archive the original exactly once before creating the private subset.
+        relative, digest = refresh.archive_rejected_with_evidence(path, run_dir, manifest, source, attempt)
+        attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = relative, digest
+        if not refresh.prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=True):
+            raise
+        candidate = checkpoint["candidate"]
+        path = run_dir / candidate["path"]
+        return prepare_candidate(run_dir, manifest, source)
     # The subprocess cannot replace the parent's canonical source state.
     checkpoint["artifact"] = {
         **stats,
@@ -1193,18 +1233,7 @@ def run_bounded_pipeline(
                             candidate = checkpoint["candidate"]
                             checkpoint["state"] = "artifact_rejected"
                             checkpoint["attempts"][-1]["error"] = str(exc)
-                            (
-                                checkpoint["attempts"][-1]["rejected_artifact"],
-                                checkpoint["attempts"][-1][
-                                    "rejected_artifact_sha256"
-                                ],
-                            ) = refresh.archive_rejected_with_evidence(
-                                run_dir / candidate["path"],
-                                run_dir,
-                                manifest,
-                                source,
-                                checkpoint["attempts"][-1],
-                            )
+                            archive_failed_candidate(run_dir, manifest, source)
                             partial = checkpoint["attempts"][-1].get("colliers_partial") or {}
                             if (source == "colliers" and partial.get("state") == "sealed_local"
                                     and partial.get("outcome") == "source_error"):
@@ -1311,6 +1340,13 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "franklin-site-partial-v1":
+                                state["source_results"][source].update(
+                                    buildout_pending=binding.get("buildout_pending"),
+                                    held_observations=binding.get("held_observations"),
+                                    identity_uncertainty=binding.get("identity_uncertainty"),
+                                    visibility_limitation="site-card rows without explicit ACTIVE status are excluded from active views",
+                                )
                             if binding.get("schema") == "pyramid-incomplete-v2":
                                 state["source_results"][source].update(
                                     incomplete_count=binding.get("incomplete_count"),
