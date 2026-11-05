@@ -367,3 +367,41 @@ test("finite CBRE Deal Flow request reports early empty page as incomplete", asy
   assert.equal(result.listings.length, 2);
   assert.equal(result.truncated, true);
 });
+
+test("finite Colliers requested limit remains incomplete when total is larger", async (t) => {
+  const { srcColliers } = await import("../../../sources/colliers.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two"] : [];
+    if (url.pathname.endsWith("GetListingsHtml")) return Response.json({
+      success: true, total: 4, totalAvail: 4, numProjects: ids.length,
+      html: `<ul>${ids.map(id => `<li class="item"><a class="headline">${id}</a></li>`).join("")}</ul>`,
+    });
+    return Response.json({ success: true, projectLocations: ids.map(ProjectId => ({ ProjectId, Latitude: 30, Longitude: -90 })) });
+  });
+  const result = await srcColliers("sale", 2, false);
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.truncated, true);
+});
+
+
+test("finite CBRE Deal Flow requested limit remains incomplete when total is larger", async (t) => {
+  const { srcCbreDealflow } = await import("../../../sources/cbre-dealflow.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (!init?.method || init.method === "GET") return new Response("<html></html>");
+    if (url.pathname.endsWith("GetFilters")) return Response.json({});
+    const start = Number(new URLSearchParams(String(init.body)).get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two"] : [];
+    return Response.json({ success: true, total: 4, totalAvail: 4, numProjects: ids.length,
+      html: `<ul class="gridview">${ids.map(id => `<li class="item"><div class="headline">${id}</div><div class="location"><div class="city">Dallas, TX</div></div><div class="details">Investment Sale</div></li>`).join("")}</ul>`,
+    });
+  });
+  const result = await srcCbreDealflow("sale", 2, false);
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.truncated, true);
+});
