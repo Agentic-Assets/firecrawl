@@ -300,7 +300,9 @@ pages, missing progress or malformed responses. Other source-specific limits
 and the pipeline work deadline still apply. A partial result is never evidence
 of whole-source coverage or permission to retire absent records.
 
-The Windows series launcher accepts `-PageCap 0`; its default remains 400.
+The Windows series installer and launcher accept `-PageCap 0`; the launcher
+default remains 400. Deploy the reviewed launcher before registering a task
+with this option, so both current and selected launcher metadata accept it.
 This option is code capability only: production uses unlimited mode only after
 the reviewed code and task/default configuration are deployed and read back.
 The cap does not govern API-paginated or sitemap-driven sources such as
