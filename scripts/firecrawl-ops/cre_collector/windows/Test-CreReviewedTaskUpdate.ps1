@@ -380,6 +380,9 @@ foreach($enabled in @($false,$true)) {
  $colliersSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $colliersRelease $old $new)
  if($colliersSnapshot.Count -ne 4 -or $colliersSnapshot[3].key -cne 'colliers-partial' -or $colliersSnapshot[3].enabled -ne $enabled) {throw 'Colliers task discovery failed'}
  & $realFleetCheck $colliersRelease
+ $rows=@($rows)+@(@{key='unknown';task_path='\Agentic Assets\CRE\';task_name='Other'})
+ try {& $realFleetCheck $colliersRelease;throw 'unexpected task beside Colliers accepted'} catch {if($_.Exception.Message -ceq 'unexpected task beside Colliers accepted'){throw}}
+ $rows=@($rows[0..3])
  foreach($mutation in @(
    @('"-Source" "colliers"','"-Source" "newmark"'),
    @('"-Source" "colliers"','"-Sources" "colliers,newmark"'),
@@ -398,7 +401,8 @@ foreach($enabled in @($false,$true)) {
  Invoke-CreReviewedTaskRepin $colliersRelease $colliersSnapshot $old $new $d $assertOwner
  if($fixture.tasks[$colliers.key].xml -cnotmatch $new) {throw 'Colliers task not repinned'}
  Invoke-CreReviewedTaskRestore $colliersRelease $colliersSnapshot $old $new $d $assertOwner
- if($fixture.tasks[$colliers.key].enabled -ne $enabled) {throw 'Colliers enabled state not restored'}
+ $expected=Set-CreHandoffEnabledXml (Pin-ReviewedXml ([string]$colliersSnapshot[3].xml) $old $new) $enabled
+ if($fixture.tasks[$colliers.key].enabled -ne $enabled -or (Get-CreTaskContract $fixture.tasks[$colliers.key].xml) -cne (Get-CreTaskContract $expected)) {throw 'Colliers task changed beyond pin or enabled state'}
  foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
  $fixture.successor=$false;$fixture.events.Clear()
 }
