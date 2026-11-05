@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
@@ -220,4 +221,21 @@ test("worker seals an all-held source stop without claiming an admitted listing"
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
   assert.deepEqual(artifact.listings, []); assert.equal(artifact.sourceOutcome, "source_error");
   assert.equal(artifact.coverage, "unverified"); assert.equal(artifact.targetSha256, "b".repeat(64));
+});
+
+test("worker entry refuses a request without its canonical owned lock", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-entry-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const runDir = join(dir, "gen"), partialDir = join(runDir, "colliers-partial");
+  mkdirSync(runDir, { mode: 0o700 }); mkdirSync(partialDir, { mode: 0o700 });
+  const request = { ...binding, generationStartedAt: "2026-11-04T14:00:00Z", runDir,
+    sourceBytes: 1, sourceSha256: "a".repeat(64), originalSourceMainSha256: "b".repeat(64),
+    producerSha: "c".repeat(40), targetSha256: "d".repeat(64), cursor: 1,
+    lockLease: "z".repeat(43), ownerPid: process.pid };
+  const path = join(partialDir, "window-1-request.json");
+  writeFileSync(path, JSON.stringify(request), { mode: 0o600 });
+  const child = spawnSync(process.execPath, ["--import", "tsx", "sources/colliers-partial-window-entry.ts"],
+    { cwd: process.cwd(), env: { ...process.env, COLLIERS_PARTIAL_WORKER_REQUEST: path }, encoding: "utf8", timeout: 10000 });
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /Colliers partial worker failed/);
 });
