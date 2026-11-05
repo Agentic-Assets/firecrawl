@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
 import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
 import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
@@ -140,7 +141,7 @@ test("replay refuses evidence after a source-wide stop", async t => {
   const replay = await withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
     withColliersPartialSpool(path, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>
       reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
-        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 1, result.proposedCursor, async () => {}, 2)));
+        { ...binding, detailFinishedAt: observationNow() }, 1, 1, result.proposedCursor, async () => {}, 2)));
   assert.equal(replay.emitted, 0); assert.equal(replay.held, 1);
   const records = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
   records.push({ ...records[1], candidate: { ...records[1].candidate, mapProjectId: "b" } });
@@ -149,7 +150,7 @@ test("replay refuses evidence after a source-wide stop", async t => {
   await assert.rejects(withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
     withColliersPartialSpool(forgedPath, forged.length, createHash("sha256").update(forged).digest("hex"), (openEvidence, verifyEvidence) =>
       reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
-        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
+        { ...binding, detailFinishedAt: observationNow() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
 });
 
 test("unsupported control-character token does not block a supported peer", async () => {
