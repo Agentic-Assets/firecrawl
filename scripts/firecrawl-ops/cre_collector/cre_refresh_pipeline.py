@@ -933,6 +933,7 @@ def run_bounded_pipeline(
     }
     active = []
     ready = []
+    partial_ready = []
     pending = list(selected)
     terminal_source_holds: set[str] = set()
     sealed = ()
@@ -951,7 +952,7 @@ def run_bounded_pipeline(
         source_results = state["source_results"]
         new = {
             "fetching": len(active),
-            "pending": len(ready),
+            "pending": len(ready) + len(partial_ready),
             "validating": sum(
                 manifest["sources"][source].get("pipeline_stage") == "validating"
                 for source in (*sealed, *preparing)
@@ -1004,9 +1005,19 @@ def run_bounded_pipeline(
                 state["source_timings"][item.source]["collection_finished_at"] = (
                     getattr(item, "attempt", None) or {}
                 ).get("finished_at") or refresh.utc_now()
+            elif (item.source == "colliers" and (item.attempt.get("colliers_partial") or {}).get("state") == "sealed_local"
+                  and item.attempt["colliers_partial"].get("outcome") == "source_error"
+                  and not manifest["sources"][item.source].get("terminal_collection_failure")):
+                # Process only on the foreground lane. Finalization proved the
+                # child group settled and sealed the original failed artifact.
+                partial_ready.append(item.source)
             else:
                 retry_or_fail(item.source)
         counts()
+        if partial_ready:
+            # Do not start an exclusive source before the foreground partial
+            # lane has had a chance to claim its settled work.
+            return
         oversized = any(
             (manifest["sources"][source].get("candidate") or {}).get("bytes", 0)
             >= budget.soft_bytes
@@ -1072,11 +1083,33 @@ def run_bounded_pipeline(
 
     try:
         with command_poll_hook(tick) as poll:
-            while pending or active or ready:
+            while pending or active or ready or partial_ready:
                 poll()
                 # Sealing may occur inside tick's poll callback. Database writes
                 # run only here, on the foreground coordinator's serial lane.
                 refresh.pump_source_evidence(run_dir, manifest)
+                if partial_ready:
+                    from cre_colliers_partial import run_window_worker
+                    source = partial_ready.pop(0)
+                    preparing = (source,)
+                    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                    owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                    candidate_path = run_window_worker(
+                        run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
+                    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                    preparing = ()
+                    if candidate_path is not None:
+                        ready.append(source)
+                    else:
+                        checkpoint = manifest["sources"][source]
+                        terminal_source_holds.add(source)
+                        checkpoint["pipeline_stage"] = "failed"
+                        state["source_results"][source] = {"state": "failed", "partial": True,
+                            "reason": "partial source window did not admit listing writes"}
+                        refresh.save_manifest(run_dir, manifest)
+                        counts()
+                        continue
+                    counts()
                 if ready:
                     oversized_index = next(
                         (

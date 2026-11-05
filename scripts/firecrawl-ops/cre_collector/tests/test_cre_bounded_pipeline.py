@@ -52,6 +52,7 @@ def run_schedule(
     transwestern_guard_refusal=False,
     jll_guard_refusal=False,
     colliers_partial=None,
+    colliers_failure_nonzero=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -136,6 +137,12 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"], item.attempt_number))
+        if colliers_failure_nonzero and item.source == "colliers":
+            checkpoint["state"] = "collect_failed"
+            item.attempt = checkpoint["attempts"][-1]
+            item.attempt.update(rc=refresh.COHORT_SETTLED_FAILURE_EXIT, finished_at=refresh.utc_now(),
+                colliers_partial={"state": "sealed_local", "outcome": "source_error"})
+            return False
         if item.source == failure or (
             item.source == failure_once and item.attempt_number == 1
         ):
@@ -243,6 +250,21 @@ def test_pipeline_colliers_partial_preserves_other_sources(tmp_path, monkeypatch
         sources=("colliers", "savills"), artifact_failure="colliers", colliers_partial=outcome)
     assert manifest["pipeline"]["status"] == "partial"
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    if outcome == "accepted":
+        assert failures == []
+        assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
+        assert any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+    else:
+        assert failures == ["colliers"]
+        assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "held"])
+def test_pipeline_settled_nonzero_colliers_evidence_reaches_foreground(tmp_path, monkeypatch, outcome):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("colliers", "savills"), colliers_partial=outcome, colliers_failure_nonzero=True)
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["status"] == "partial"
     if outcome == "accepted":
         assert failures == []
         assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
