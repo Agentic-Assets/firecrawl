@@ -121,8 +121,14 @@ SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE exte
         assert result.returncode != 0 and "Lyon search evidence key collision" in result.stderr
         assert json.loads(sql("SELECT raw_data FROM credeals.cre_listings WHERE external_id='legacy'")) == after
         sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{lyonSearchObservations}', '[]'::jsonb) WHERE external_id='legacy'")
-        malformed = sql(full_sql(full), check=False)
-        assert malformed.returncode != 0 and "Lyon search evidence malformed" in malformed.stderr
+        # Preserve malformed prior history opaquely on an ordinary refresh.
+        # The source-specific partial probe still holds that identity.
+        peer = {**full, "id": "peer-full", "url": "https://lyonstahl.com/properties/peer-full/", "name": "Peer listing"}
+        rows = [ingest.to_row(item, {}, "2026-11-05T06:05:00Z") for item in (full, peer)]
+        sql(ingest.build_sql(rows, jobs, "2026-11-05T06:05:00Z", set()))
+        assert sql("SELECT raw_data->'lyonSearchObservations' FROM credeals.cre_listings WHERE external_id='legacy'") == "[]"
+        assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='peer-full'") == "Peer listing"
+        assert json.loads(sql(identity_probe_sql([staged[0]])).split("|", 3)[2]) == ["legacy"]
         sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(after)) + "::jsonb WHERE external_id='legacy'")
         sql("UPDATE credeals.cre_listings SET canonical_url='https://lyonstahl.com/properties/collision/' WHERE external_id='legacy'")
         collision = stage_record(record("https://lyonstahl.com/properties/collision/", "property_path", "collision"))
