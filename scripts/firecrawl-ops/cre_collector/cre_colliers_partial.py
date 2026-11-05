@@ -608,6 +608,54 @@ COMMIT;
     return sql, history_held
 
 
+def partial_readback_sql(items, staged, held, preimage, generation, attempt, started_at,
+                         finished_at, artifact_finished_at, job_id):
+    """Check the committed job and exact raw/lifecycle postconditions, read only."""
+    import uuid
+
+    from cre_ingest import sql_lit
+
+    job = str(uuid.UUID(job_id))
+    rows, history_held = prepare_partial_rows(items, staged, held, preimage, generation, attempt,
+                                              started_at, finished_at, artifact_finished_at)
+    prior = {item["external_id"]: item for item in preimage}
+    expected = [{"row": row, "before": prior[row["external_id"]]} for row in rows]
+    payload = sql_lit(json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+    return f"""
+WITH expected AS (SELECT value->'row' AS r,value->'before' AS p FROM jsonb_array_elements({payload}::jsonb)),
+observed AS (
+ SELECT e.*, t.id AS listing_id, t.source_url,t.canonical_url,t.status,t.deleted_at,t.scraped_at,t.raw_data,
+   CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
+     'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END AS source_index
+ FROM expected e JOIN credeals.cre_brokerages b ON b.slug='colliers'
+ LEFT JOIN credeals.cre_listings t ON t.brokerage_id=b.id AND t.external_id=e.r->>'external_id'
+ LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=b.id AND si.external_id=e.r->>'external_id'
+), mismatches AS (
+ SELECT 1 FROM observed WHERE listing_id IS NULL OR source_url IS DISTINCT FROM r->>'source_url'
+ OR raw_data->'colliersNativeObservations' IS DISTINCT FROM r->'partial_history'
+ OR source_index IS DISTINCT FROM NULLIF(p->'source_index','null'::jsonb)
+ OR (p->'listing' = 'null'::jsonb AND (status IS NOT NULL OR deleted_at IS NOT NULL
+     OR canonical_url IS DISTINCT FROM r->>'canonical_url' OR scraped_at IS DISTINCT FROM (r->>'scraped_at')::timestamptz))
+ OR (p->'listing' <> 'null'::jsonb AND (
+     listing_id::text IS DISTINCT FROM p#>>'{{listing,id}}'
+     OR canonical_url IS DISTINCT FROM p#>>'{{listing,canonical_url}}'
+     OR status IS DISTINCT FROM p#>>'{{listing,status}}'
+     OR to_jsonb(deleted_at) IS DISTINCT FROM NULLIF(p#>'{{listing,deleted_at}}','null'::jsonb)
+     OR to_jsonb(scraped_at) IS DISTINCT FROM NULLIF(p#>'{{listing,scraped_at}}','null'::jsonb)
+     OR encode(sha256(convert_to((CASE WHEN (p#>>'{{listing,native_history_present}}')::boolean
+          THEN (raw_data - 'colliersNativeObservations') || jsonb_build_object('colliersNativeObservations',p#>'{{listing,native_history}}')
+          ELSE raw_data - 'colliersNativeObservations' END)::text,'UTF8')),'hex')
+        IS DISTINCT FROM p#>>'{{listing,raw_data_sha256}}'))
+)
+SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
+ WHERE b.slug='colliers' AND j.id={sql_lit(job)}::uuid AND j.status='partial'
+ AND j.listings_discovered={len(rows)} AND j.listings_scraped={len(rows)} AND j.listings_saved={len(rows)}
+ AND j.errors_count=1 AND j.started_at={sql_lit(started_at)}::timestamptz
+ AND j.completed_at={sql_lit(artifact_finished_at)}::timestamptz) AS jobs,
+ (SELECT count(*) FROM observed) AS observed, (SELECT count(*) FROM mismatches) AS mismatches
+""", history_held
+
+
 def unpack_window_records(data):
     """Separate the worker's private byte binding from canonical listing data."""
     records = []

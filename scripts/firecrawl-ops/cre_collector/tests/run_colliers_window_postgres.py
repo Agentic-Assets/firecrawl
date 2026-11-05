@@ -92,11 +92,18 @@ def main():
         assert json.loads(persisted_probe[2]) == ["43"], persisted_probe
         probe = sql(identity_probe_sql(staged)).split("|", 3)
         assert probe[:3] == ["2", "2", "[]"], probe
+        job_id = str(uuid.uuid4())
         output, holds = build_partial_sql(items, staged, json.loads(probe[2]), json.loads(probe[3]),
             "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
-            "2026-11-04T16:02:00Z", str(uuid.uuid4()))
+            "2026-11-04T16:02:00Z", job_id)
         assert not holds
+        readback, readback_holds = partial.partial_readback_sql(items, staged, json.loads(probe[2]), json.loads(probe[3]),
+            "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z", job_id)
+        assert not readback_holds
+        assert sql(readback) == "0|2|2"
         sql(output)
+        assert sql(readback) == "1|2|0"
+        assert sql("BEGIN; UPDATE credeals.cre_listings SET raw_data=raw_data || '{\"unexpected\":true}'::jsonb WHERE external_id='42'; " + readback + "; ROLLBACK;") == "1|2|1"
         parent = json.loads(sql("SELECT json_build_array(title,city,state,status,raw_data)::text FROM credeals.cre_listings WHERE external_id='42';"))
         assert parent[:4] == ["Old title", "Source City", "TX", "active"]
         assert sql("SELECT units FROM credeals.cre_listings WHERE external_id='42';") == "10"
