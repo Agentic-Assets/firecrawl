@@ -466,17 +466,14 @@ UPDATE credeals.cre_scrape_jobs j SET status='partial',
 """
 
 
-def build_partial_sql(items, staged, held, preimage, generation, attempt, started_at,
-                      finished_at, artifact_finished_at, job_id, *, activate_status=False):
-    """Build one guarded partial transaction; caller owns source, gates and target."""
-    import uuid
-
-    from cre_ingest import _status_from_signal, sql_lit, to_row
+def prepare_partial_rows(items, staged, held, preimage, generation, attempt, started_at,
+                         finished_at, artifact_finished_at, *, activate_status=False):
+    """Build the exact writable/held partition from authenticated inputs."""
+    from cre_ingest import _status_from_signal, to_row
 
     _validate_staged(staged)
     if type(activate_status) is not bool:
         raise ValueError("invalid status activation")
-    job = str(uuid.UUID(job_id))
     if not isinstance(items, list) or len(items) != len(staged):
         raise ValueError("partial artifact partition differs")
     expected = {row["external_id"]: row for row in staged}
@@ -544,6 +541,20 @@ def build_partial_sql(items, staged, held, preimage, generation, attempt, starte
                                   "status": explicit_status if activate_status else None})
     if seen != set(expected):
         raise ValueError("partial staged membership differs")
+    return rows, history_held
+
+
+def build_partial_sql(items, staged, held, preimage, generation, attempt, started_at,
+                      finished_at, artifact_finished_at, job_id, *, activate_status=False):
+    """Build one guarded partial transaction; caller owns source, gates and target."""
+    import uuid
+
+    from cre_ingest import sql_lit
+
+    job = str(uuid.UUID(job_id))
+    rows, history_held = prepare_partial_rows(items, staged, held, preimage, generation, attempt,
+                                              started_at, finished_at, artifact_finished_at,
+                                              activate_status=activate_status)
     payload = sql_lit(json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
     guard = transaction_guard_sql(staged, held, preimage, history_held)
     # Existing source-index and child rows are untouched. Raw bytes live under a
@@ -599,6 +610,19 @@ COMMIT;
     return sql, history_held
 
 
+def unpack_window_records(data):
+    """Separate the worker's private byte binding from canonical listing data."""
+    records = []
+    for listing in data["listings"]:
+        if not isinstance(listing, dict) or not isinstance(listing.get("colliersPartialRecord"), dict):
+            raise TypeError("partial worker record invalid")
+        payload = listing["colliersPartialRecord"]
+        if set(payload) != {"source", "decodedDetail", "nativeBase64"}:
+            raise TypeError("partial worker record invalid")
+        records.append({"listing": {key: value for key, value in listing.items() if key != "colliersPartialRecord"}, **payload})
+    return records
+
+
 def validate_window_artifact(data, source_receipt, evidence_receipt):
     """Bind a trusted settled worker result to its exact source and target.
 
@@ -650,14 +674,7 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
         raise ValueError("partial worker counts differ")
     if not (_time(binding["finishedAt"]) <= _time(data["detailFinishedAt"]) <= datetime.now(UTC) + timedelta(minutes=5)):
         raise ValueError("partial worker finish invalid")
-    records = []
-    for listing in data["listings"]:
-        if not isinstance(listing, dict) or not isinstance(listing.get("colliersPartialRecord"), dict):
-            raise TypeError("partial worker record invalid")
-        payload = listing["colliersPartialRecord"]
-        if set(payload) != {"source", "decodedDetail", "nativeBase64"}:
-            raise TypeError("partial worker record invalid")
-        records.append({"listing": {key: value for key, value in listing.items() if key != "colliersPartialRecord"}, **payload})
+    records = unpack_window_records(data)
     # Source replay can emit physical pages out of cursor order. Preserve the
     # producer's rotation order for bounded DB history selection.
     records.sort(key=lambda item: (

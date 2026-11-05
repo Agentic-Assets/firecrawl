@@ -40,14 +40,15 @@ async function main() {
   const requestPath = process.env.COLLIERS_PARTIAL_WORKER_REQUEST;
   if (!requestPath || !requestPath.startsWith("/")) throw new Error("worker request missing");
   const request = JSON.parse(privateText(requestPath, 16384));
-  const expected = ["attempt", "cursor", "finishedAt", "generation", "generationStartedAt", "lockLease",
+  const expected = ["attempt", "authorityToken", "cursor", "finishedAt", "generation", "generationStartedAt", "lockLease",
     "originalSourceMainSha256", "ownerPid", "producerSha", "runDir", "sourceBytes", "sourceSha256",
     "startedAt", "targetSha256"].sort().join(",");
   if (!request || typeof request !== "object" || Array.isArray(request) || Object.keys(request).sort().join(",") !== expected ||
       !Number.isSafeInteger(request.ownerPid) || request.ownerPid !== process.ppid ||
       !Number.isSafeInteger(request.attempt) || request.attempt < 1 || !request.runDir.startsWith("/") ||
       basename(request.runDir) !== request.generation || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.generation) ||
-      !/^[A-Za-z0-9_-]{43}$/.test(request.lockLease))
+      !/^(?:operator-recovery-required:)?[A-Za-z0-9_-]{43}$/.test(request.lockLease) ||
+      !/^[A-Za-z0-9_-]{43}$/.test(request.authorityToken))
     throw new Error("worker request invalid");
   const runDir = resolve(request.runDir), partialDir = join(runDir, "colliers-partial");
   for (const path of [runDir, partialDir]) {
@@ -62,7 +63,11 @@ async function main() {
   const lock = join(dirname(common), "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock");
   const owner = () => {
     const dir = lstatSync(lock);
-    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o077) !== 0 ||
+    const authority = privateText(lock + ".authority", 512).trim().split(/\s+/);
+    const authorityState = request.lockLease.startsWith("operator-recovery-required:") ? "recovery-required" : "normal";
+    if (authority.length !== 5 || authority[0] !== "v1" || authority[1] !== String(request.ownerPid) ||
+        authority[2] !== request.authorityToken || authority[3] !== request.lockLease || authority[4] !== authorityState ||
+        !dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o077) !== 0 ||
         Number(privateText(join(lock, "pid"), 128).trim().split(/\s+/)[0]) !== request.ownerPid ||
         privateText(join(lock, "lease"), 256).trim() !== request.lockLease || process.ppid !== request.ownerPid)
       throw new Error("checkpoint lock ownership changed");

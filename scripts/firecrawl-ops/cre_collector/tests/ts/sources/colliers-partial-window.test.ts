@@ -231,7 +231,7 @@ test("worker entry refuses a request without its canonical owned lock", async t 
   const request = { ...binding, generationStartedAt: "2026-11-04T14:00:00Z", runDir,
     sourceBytes: 1, sourceSha256: "a".repeat(64), originalSourceMainSha256: "b".repeat(64),
     producerSha: "c".repeat(40), targetSha256: "d".repeat(64), cursor: 1,
-    lockLease: "z".repeat(43), ownerPid: process.pid };
+    lockLease: "z".repeat(43), authorityToken: "y".repeat(43), ownerPid: process.pid };
   const path = join(partialDir, "window-1-request.json");
   writeFileSync(path, JSON.stringify(request), { mode: 0o600 });
   const child = spawnSync(process.execPath, ["--import", "tsx", "sources/colliers-partial-window-entry.ts"],
