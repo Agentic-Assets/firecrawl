@@ -23,6 +23,9 @@ export async function selectColliersWindow(
       undefined, visit, hole);
   const first = await scan((card, supported) => {
     if (!supported || Buffer.byteLength(JSON.stringify(card), "utf8") > MAX_IDENTITY_BYTES) return;
+    // Repeated positions are counted in the second pass. Keep one
+    // representative so the conflict is held without blocking other peers.
+    if (selected.some(existing => position(existing) === position(card))) return;
     let low = 0, high = selected.length;
     while (low < high) {
       const mid = (low + high) >>> 1;

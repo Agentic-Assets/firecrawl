@@ -21,7 +21,7 @@ type Hold = { candidate: Candidate; reason: string; evidence?: Uint8Array; statu
 export async function produceColliersWindow(
   open: () => Readable, verify: () => Promise<void>, binding: Binding, cursor: number,
   sink: (item: { listing: any; source: any; decodedDetail: string; nativeBytes: Uint8Array }) => Promise<"continue" | "stop">,
-  hold: (item: Hold) => Promise<void>,
+  hold: (item: Hold) => Promise<"continue" | "stop" | void>,
   fetchDetail: (token: string) => Promise<Native> = fetchColliersPartialDetail,
   limit?: number,
 ) {
@@ -34,12 +34,18 @@ export async function produceColliersWindow(
     byPosition.set(p, member);
   }
   const processed = new Set<number>(), unadmitted = new Set<number>();
-  for (const member of selection.window) if (!member.eligible) {
-    const p = member.candidate.start + member.candidate.offset;
-    await hold({ candidate: member.candidate, reason: "identity_conflict" });
-    processed.add(p); unadmitted.add(p);
-  }
   let stopped = false;
+  const drainHeldPrefix = async () => {
+    while (!stopped) {
+      const member = selection.window.find(item => !processed.has(item.candidate.start + item.candidate.offset));
+      if (!member || member.eligible) return;
+      const p = member.candidate.start + member.candidate.offset;
+      const decision = await hold({ candidate: member.candidate, reason: "identity_conflict" });
+      processed.add(p); unadmitted.add(p);
+      if (decision === "stop") stopped = true;
+    }
+  };
+  await drainHeldPrefix();
   const hash = (v: string | Uint8Array) => createHash("sha256").update(v).digest("hex");
   // Captured pages need not be in rotating cursor order. Re-scan as needed
   // so an early physical page cannot starve a later cursor position.
@@ -88,9 +94,10 @@ export async function produceColliersWindow(
             const reason = error instanceof ColliersIdentityError ? "detail_identity" : error.reason;
             const evidence = error instanceof ColliersIdentityError ? native?.nativeBytes : error.evidence;
             const status = error instanceof ColliersIdentityError ? undefined : error.status;
-            await hold({ candidate, reason, evidence, status });
+            const decision = await hold({ candidate, reason, evidence, status });
             processed.add(p); unadmitted.add(p);
-            if (error instanceof ColliersSettledSourceStop) stopped = true;
+            if (decision === "stop" || error instanceof ColliersSettledSourceStop) stopped = true;
+            await drainHeldPrefix();
             continue;
           }
           throw error;
@@ -100,6 +107,7 @@ export async function produceColliersWindow(
         if (decision !== "continue" && decision !== "stop") throw new Error("invalid sink decision");
         processed.add(p);
         if (decision === "stop") stopped = true;
+        await drainHeldPrefix();
       }
     }, () => {});
   await verify();

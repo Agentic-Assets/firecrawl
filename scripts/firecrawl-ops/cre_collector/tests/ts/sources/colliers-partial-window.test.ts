@@ -1,8 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
+import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
-import { ColliersIdentityError } from "../../../sources/colliers.js";
+import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
+import { ColliersAccessStop, ColliersIdentityError } from "../../../sources/colliers.js";
 import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
 
 const binding = { generation: "gen", attempt: 1, startedAt: "2026-11-04T15:00:00Z", finishedAt: "2026-11-04T16:00:00Z" };
@@ -54,4 +61,40 @@ test("producer never converts sink custody failure into a record hold", async ()
     async token => { const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
       return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) }; }, 1), /sink failed/);
   assert.equal(held, 0);
+});
+
+test("byte budget stops only after storing complete native evidence", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-window-test-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "evidence");
+  const evidence = new ColliersWindowEvidence(path, "gen", 1, 1024);
+  const native = Buffer.from(JSON.stringify({ ProjectSummary: { ProjectId: "a" }, padding: "x".repeat(4096) }));
+  const sourceBytes = Buffer.from([header,pair,page,hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"); writeFileSync(sourcePath, sourceBytes, { mode: 0o600 });
+  const result = await withColliersPartialSpool(sourcePath, sourceBytes.length, createHash("sha256").update(sourceBytes).digest("hex"),
+    (open, verify) => produceColliersWindow(open, verify, binding, 1,
+      async item => evidence.detail(item), async item => evidence.hold(item),
+      async () => ({ detail: JSON.parse(native.toString()), decodedText: native.toString(), nativeBytes: native }), 2));
+  const receipt = evidence.finish(), bytes = readFileSync(path);
+  assert.equal(result.unattempted, 1); assert.equal(result.proposedCursor, 2);
+  assert.equal(receipt.bytes, bytes.length);
+  assert.equal(receipt.sha256, createHash("sha256").update(bytes).digest("hex"));
+  const records = bytes.toString().trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(Buffer.from(records[1].nativeBase64, "base64"), native);
+});
+
+test("a settled provider stop records the hold without fetching later peers", async () => {
+  let calls = 0; const reasons: string[] = [];
+  const result = await produceColliersWindow(source([header,pair,page,hole]), async () => {}, binding, 1,
+    async () => "continue", async item => { reasons.push(item.reason); },
+    async () => { calls++; throw new ColliersSettledSourceStop("detail_http_failure", 503); }, 2);
+  assert.equal(calls, 1); assert.deepEqual(reasons, ["detail_http_failure"]);
+  assert.equal(result.unattempted, 1); assert.equal(result.proposedCursor, 2);
+});
+test("access refusal aborts without fetching later peers", async () => {
+  let calls = 0;
+  await assert.rejects(produceColliersWindow(source([header,pair,page,hole]), async () => {}, binding, 1,
+    async () => "continue", async () => {},
+    async () => { calls++; throw new ColliersAccessStop("denied"); }, 2), /denied/);
+  assert.equal(calls, 1);
 });
