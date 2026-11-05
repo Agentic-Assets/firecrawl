@@ -1,10 +1,11 @@
 import copy
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from cre_nai_post_admission import candidate
+from cre_nai_post_admission import admit, candidate, run_identity_probe
 from tests.test_nai_post_partial import post
 
 
@@ -51,6 +52,55 @@ def test_clock_unqualified_post_is_held_while_peer_proceeds(tmp_path):
     binding, partition = candidate(path, manifest, code_sha=sha, dirty=False)
     assert binding["source_count"] == 2 and binding["staged_count"] == 1
     assert partition["held"] == [{"index": 1, "reason": "unqualified_source_post"}]
+
+
+def test_probe_keeps_numeric_preimage_as_exact_json_text(tmp_path, monkeypatch):
+    import cre_checkpoint_refresh as refresh
+    import cre_ingest as ingest
+    import cre_validate as validate
+
+    path, manifest, sha = fixture(tmp_path)
+    before = ('[{"external_id":"infabode:1","listing":{"lat":45.1234567890123456789},'
+              '"source_index":null,"children":{}}]')
+    monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
+    monkeypatch.setattr(ingest, "load_db_url", lambda _: ("fixture-only", None))
+    monkeypatch.setattr(ingest, "database_target_fingerprint_from_url", lambda _: {"value": "b" * 64})
+    monkeypatch.setattr(ingest, "find_psql", lambda: "psql")
+    monkeypatch.setattr(validate, "_run_psql_script", lambda *a, **k: SimpleNamespace(returncode=0, stdout="fixture"))
+    monkeypatch.setattr(validate, "parse_tsv", lambda _: [{"staged": "1", "joined": "1", "held": "[]", "preimage": before}])
+    result = run_identity_probe(path, manifest, None)
+    assert result["preimage"] == before
+    assert result["preimage_sha256"] == hashlib.sha256(before.encode()).hexdigest()
+    assert json.loads(json.dumps(result))["preimage"] == before
+
+
+def test_only_count_hold_is_source_partial_and_preserves_failed_peer(tmp_path, monkeypatch):
+    import cre_gate
+    path, manifest, sha = fixture(tmp_path)
+    manifest["scope"] = {}
+    binding, _ = candidate(path, manifest, code_sha=sha, dirty=False)
+    preimage = ('[{"external_id":"infabode:1","listing":null,"source_index":null,'
+                '"children":{}}]')
+    manifest["sources"]["nai-global"]["nai_post_identity_probe"] = {
+        **binding, "held": [], "preimage": preimage,
+        "preimage_sha256": hashlib.sha256(preimage.encode()).hexdigest()}
+    monkeypatch.setattr(cre_gate, "count_artifacts", lambda *a, **k: ({"nai-global": 1}, {}, {"nai-global"}, None, 0))
+    # Exercise aggregate member handling without manufacturing a second artifact.
+    monkeypatch.setattr("cre_current_inventory_admission.validate_report_scope", lambda *a: None)
+    report = {"summary": {"mode": "live", "torow_errors": 0, "baseline_updated": False,
+              "baseline_update_sources": [], "hold_sources": ["nai-global", "peer"],
+              "mark_missing_safe_sources": []}, "per_source": {
+              "nai-global": {"current_active": 1, "verdict": "hold", "mark_missing_safe": False,
+                             "reason": "current_active 1 below floor 100"},
+              "peer": {"verdict": "hold", "reason": "provider error"}}}
+    proof = admit(path, manifest, report, code_sha=sha, dirty=False, phase="source")
+    assert proof["emitted_count"] == 1 and proof["whole_source_coverage"] is False
+    assert report["summary"]["hold_sources"] == ["peer"]
+    assert report["per_source"]["peer"]["reason"] == "provider error"
+    bad = copy.deepcopy(report)
+    bad["per_source"]["nai-global"].update(verdict="hold", reason="source pass error: access denied")
+    with pytest.raises(ValueError, match="coverage-only"):
+        admit(path, manifest, bad, code_sha=sha, dirty=False, phase="source")
 
 
 @pytest.mark.parametrize("change", [
