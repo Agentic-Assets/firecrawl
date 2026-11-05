@@ -311,6 +311,10 @@ try:
                 child.pop("isPrimary", None)
             unknown["raw_data"].update({
                 "daumUnknownTenure": True,
+                "daumAvailableSpaceObservations": [
+                    {"html": "<li>$0 PSF <p>$6,600 per month</p></li>",
+                     "text": "$0 PSF $6,600 per month"}
+                ],
                 "preserveChildCollections": True,
                 "detailObservedWithChildPreservation": True,
                 "daumTenureEvidence": {"inventory": "unknown", "detail": "unknown", "resolved": "unknown"},
@@ -379,6 +383,7 @@ try:
                         "WHERE external_id='property/Synthetic-101';", db
                     ).stdout)
                     assert raw_after["contactsDetailed"] == unknown["contacts"]
+                    assert raw_after["daumAvailableSpaceObservations"] == unknown["raw_data"]["daumAvailableSpaceObservations"]
                     sql(generated([row(index) for index in range(100)] + [unknown], unknown_claims), db)
                     assert len(children("cre_listing_contacts")) == 5
                 if case.startswith("unknown_existing"):
@@ -386,7 +391,9 @@ try:
                         "SELECT raw_data::text FROM credeals.cre_listings "
                         "WHERE external_id='property/Synthetic-101';", db
                     ).stdout)
-                    assert raw_after.pop("latestDaumUnknownTenureObservation") == unknown["raw_data"]
+                    latest = raw_after.pop("latestDaumUnknownTenureObservation")
+                    assert latest == unknown["raw_data"]
+                    assert latest["daumAvailableSpaceObservations"] == unknown["raw_data"]["daumAvailableSpaceObservations"]
                     assert raw_after == prior_raw
                     freshness_rows = sql(validate.QUERIES["freshness_generations"], db).stdout
                     assert "daum-commercial|strict_detail|current_strict_detail|new-generation|" in freshness_rows, freshness_rows

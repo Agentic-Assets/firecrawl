@@ -156,12 +156,19 @@ def _held_detail_observations(proof, held, native, details, v2, empty_titles):
         require(detail.get("observedCanonicalUrl") == native[post][0])
         require(detail.get("tenure") == native[post][4]
                 and detail.get("tenureText") == native[post][5])
+        optional_fields = {"availableSpaceObservations"} if "availableSpaceObservations" in detail else set()
+        if optional_fields:
+            spaces = detail["availableSpaceObservations"]
+            require(isinstance(spaces, list))
+            require(all(isinstance(space, dict) and set(space) == {"html", "text"}
+                        and isinstance(space["html"], str) and isinstance(space["text"], str)
+                        for space in spaces))
         if reason == "empty_required_property_title":
-            require(v2 and post in empty_titles and set(detail) == marker_fields)
+            require(v2 and post in empty_titles and set(detail) == marker_fields | optional_fields)
             require(detail["emptyRequiredTitle"] is True)
             continue
         require(reason == "unknown_inventory_and_detail_tenure")
-        require(set(detail) == full_fields and post not in empty_titles)
+        require(set(detail) == full_fields | optional_fields and post not in empty_titles)
         require(detail["tenure"] in TENURES)
         require(isinstance(detail["title"], str) and bool(detail["title"].strip()))
         require(isinstance(detail["facts"], dict)
@@ -217,6 +224,7 @@ def _unknown_projection(inventory, detail, *, generation, inventory_at, detail_a
         "assetType": choose(facts.get("Property Type"), inventory["assetType"]),
         "propertySubtype": facts.get("Primary Use"),
         "description": detail["description"], "highlights": detail["highlights"],
+        "daumAvailableSpaceObservations": detail.get("availableSpaceObservations"),
         "city": choose(detail["city"], inventory["city"]),
         "state": choose(detail["state"], inventory["state"]),
         "postalCode": choose(detail["postalCode"], inventory["postalCode"]),
