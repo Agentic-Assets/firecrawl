@@ -6226,6 +6226,13 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if colliers_partial_candidate(manifest, source):
+        # A generic validation report does not prove the native partial history
+        # or cursor outcome. Never replay a potentially committed write.
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_colliers_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Colliers partial ingest requires exact readback")
     guard_reasons = {"pyramid-brokerage": "pyramid_historical_guard_refusal", "transwestern": "transwestern_image_guard_refusal"}
     if source in guard_reasons and (checkpoint.get("ingest_recovery") or {}).get("reason") != guard_reasons[source]:
         # After an interrupted parent, no persisted process-group identity proves

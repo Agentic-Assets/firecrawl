@@ -1,4 +1,5 @@
 """Synthetic owner/worker proof in a disposable repository; no provider traffic."""
+import copy
 import hashlib
 import json
 import os
@@ -6,14 +7,20 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import cre_checkpoint_refresh as refresh
+import cre_colliers_partial as partial
+import pytest
 from cre_checkpoint_refresh import SharedLock
+from cre_partial_cursor import read_cursor
 
 
 def command(*args, cwd, env=None):
     return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=True, timeout=60)
 
 
-def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path):
+@pytest.mark.parametrize(("detail_id", "expected_state", "expected_cursor"),
+                         [("a", "candidate", 1), ("different", "partial_held_no_write", 2)])
+def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -28,8 +35,8 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
             "commit", "-qm", "fixture", cwd=repo)
     sha = command("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     run_dir = tmp_path / "gen"
-    partial = run_dir / "colliers-partial"
-    partial.mkdir(parents=True, mode=0o700)
+    partial_dir = run_dir / "colliers-partial"
+    partial_dir.mkdir(parents=True, mode=0o700)
     common = {"transaction": "sale", "pass": 1, "page": 1, "start": 1}
     listing = {"success": True, "total": 2, "totalAvail": 2, "numProjects": 1,
                "html": '<li class="item"><span class="headline">Fixture</span><a href="/handler/modern.aspx?pv=a">View</a></li>'}
@@ -44,7 +51,7 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
          "kind": "recovery_hole", "reason": "provider_failure", "documents": []},
     ]
     source = ("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)).encode()
-    source_path = partial / "attempt-1.jsonl"
+    source_path = partial_dir / "attempt-1.jsonl"
     source_path.write_bytes(source)
     source_path.chmod(0o600)
     sentinel = tmp_path / "fake-fetch-called"
@@ -52,31 +59,47 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
     mock.write_text(
         "import {writeFileSync} from 'node:fs';\n"
         "globalThis.fetch = async () => { writeFileSync(" + json.dumps(str(sentinel)) + ", 'fake');"
-        "return new Response(JSON.stringify({ProjectSummary:{ProjectId:'a'}}),"
+        "return new Response(JSON.stringify({ProjectSummary:{ProjectId:" + json.dumps(detail_id) + "}}),"
         "{status:200,headers:{'content-type':'application/json'}}); };\n"
     )
     lock = SharedLock(target / "out" / "daily" / ".cre.lock", recovery_required=True)
     with lock:
         try:
-            request = {"generation": "gen", "generationStartedAt": "2026-11-04T14:00:00Z", "attempt": 1,
-                       "startedAt": "2026-11-04T15:00:00Z", "finishedAt": "2026-11-04T16:00:00Z",
-                       "sourceBytes": len(source), "sourceSha256": hashlib.sha256(source).hexdigest(),
-                       "originalSourceMainSha256": "c" * 64, "targetSha256": "b" * 64, "producerSha": sha,
-                       "cursor": 1, "ownerPid": os.getpid(), "runDir": str(run_dir),
-                       "lockLease": lock.lease_token, "authorityToken": lock.authority_token}
-            request_path = partial / "window-1-request.json"
-            request_path.write_text(json.dumps(request))
-            request_path.chmod(0o600)
-            env = {**os.environ, "NODE_OPTIONS": "--import=" + mock.as_uri(),
-                   "COLLIERS_PARTIAL_WORKER_REQUEST": str(request_path)}
-            child = subprocess.run(["node", "--import", "tsx", "sources/colliers-partial-window-entry.ts"],
-                                   cwd=target, env=env, capture_output=True, text=True, timeout=30, check=False)
-            assert child.returncode == 0, child.stderr
+            source_receipt = {"generation": "gen", "generation_started_at": "2026-11-04T14:00:00Z", "attempt": 1,
+                "started_at": "2026-11-04T15:00:00Z", "finished_at": "2026-11-04T16:00:00Z",
+                "bytes": len(source), "sha256": hashlib.sha256(source).hexdigest(), "main_sha256": "c" * 64,
+                "producer_sha": sha, "database_target_sha256": "b" * 64}
+            manifest = {"run_id": "gen", "started_at": source_receipt["generation_started_at"],
+                "collector_git_sha": sha, "collector_git_dirty": False,
+                "config": {"additive": True, "mark_missing": False, "status_activation": False,
+                           "transactions": ["sale", "lease"], "max_items": 0, "sources": ["colliers"]},
+                "sources": {"colliers": {"attempts": [{"number": 1}]}}}
+            env = {**os.environ, "NODE_OPTIONS": "--import=" + mock.as_uri()}
+            monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock.path)
+            monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
+            monkeypatch.setattr(refresh, "safe_process_env", lambda: dict(env))
+            monkeypatch.setattr(partial, "revalidate_source_receipt", lambda *_: source_receipt)
+            snapshots = []
+            def save(_run, value):
+                snapshots.append(copy.deepcopy(value))
+            def runner(argv, _log, *, env):
+                child = subprocess.run(argv, cwd=target, env=env, capture_output=True, text=True, timeout=30, check=False)
+                assert child.returncode == 0, child.stderr
+                return child.returncode
+            result = partial.run_window_worker(run_dir, manifest, lock, runner, save)
             assert sentinel.read_text() == "fake"
-            receipt = json.loads((partial / "window-1-receipt.json").read_text())
-            assert receipt["admitted"] == 1 and receipt["held"] == 0
-            artifact = json.loads((partial / "window-1-artifact.json").read_text())
+            receipt = json.loads((partial_path(run_dir) / "window-1-receipt.json").read_text())
+            assert receipt["admitted"] == (1 if detail_id == "a" else 0)
+            checkpoint = manifest["sources"]["colliers"]
+            assert checkpoint["state"] == expected_state
+            assert read_cursor(lock.path, "colliers", "b" * 64)[0] == expected_cursor
+            assert snapshots[0]["sources"]["colliers"]["colliers_partial_worker"]["state"] == "dispatching"
+            assert (result is not None) == (detail_id == "a")
+            artifact = json.loads((partial_path(run_dir) / "window-1-artifact.json").read_text())
             assert artifact["sourceOutcome"] == "source_error"
-            assert artifact["listings"][0]["id"] == "a"
         finally:
             lock.clear_recovery_requirement()
+
+
+def partial_path(run_dir):
+    return run_dir / "colliers-partial"

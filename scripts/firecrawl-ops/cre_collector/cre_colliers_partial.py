@@ -725,7 +725,7 @@ def _read_private_file(path, maximum):
         os.close(directory)
 
 
-def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty):
+def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty, allow_empty=False):
     """Recheck the settled worker and both private artifacts, without DB access."""
     from pathlib import Path
 
@@ -768,7 +768,7 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
         raise ValueError("partial worker bytes changed")
     data = json.loads(artifact_raw)
     staged = validate_window_artifact(data, source_receipt, receipt["evidence"])
-    if (not staged or receipt["admitted"] != len(staged) or receipt["held"] != data["held"]
+    if ((not staged and not allow_empty) or receipt["admitted"] != len(staged) or receipt["held"] != data["held"]
             or receipt["heldOther"] != data["heldOther"] or receipt["unattempted"] != data["unattempted"]
             or receipt["proposedCursor"] != data["proposedCursor"] or receipt["detailFinishedAt"] != data["detailFinishedAt"]):
         raise ValueError("partial worker result differs")
@@ -975,3 +975,138 @@ def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_
             "records": unpack_window_records(verified["data"]), "source_receipt": verified["source_receipt"],
             "artifact_finished_at": verified["data"]["detailFinishedAt"],
             "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
+
+
+def run_window_worker(run_dir, manifest, owner, runner, save):
+    """Run one source-specific child under the existing canonical checkpoint owner."""
+    import os
+    import secrets
+    from pathlib import Path
+
+    import cre_checkpoint_refresh as refresh
+    from cre_partial_cursor import advance_cursor, read_cursor
+
+    run_dir = Path(run_dir)
+    if not run_dir.is_absolute():
+        raise ValueError("partial worker run directory must be absolute")
+    if not isinstance(owner, refresh.SharedLock) or not callable(runner) or not callable(save):
+        raise TypeError("partial worker owner invalid")
+
+    def check_owner():
+        owner._require_authority()
+        descriptor = owner._owned_directory_fd()
+        os.close(descriptor)
+        if owner.path.resolve() != refresh.canonical_shared_lock_dir().resolve():
+            raise ValueError("partial worker lock differs")
+
+    check_owner()
+    config = manifest["config"]
+    if (config.get("additive") is not True or config.get("mark_missing") is not False
+            or config.get("status_activation") is not False or config.get("transactions") != ["sale", "lease"]
+            or config.get("max_items") != 0 or "colliers" not in config.get("sources", [])):
+        raise ValueError("partial worker scope invalid")
+    checkpoint = manifest["sources"]["colliers"]
+    if checkpoint.get("colliers_partial_worker") is not None:
+        raise ValueError("partial worker already attempted; do not replay")
+    attempts = checkpoint.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise ValueError("partial source attempt missing")
+    attempt = attempts[-1].get("number")
+    producer, dirty = refresh.git_identity()
+    source = revalidate_source_receipt(run_dir, manifest, attempt, producer, dirty)
+    target = source["database_target_sha256"]
+    cursor, _ = read_cursor(owner.path, "colliers", target)
+    base = f"colliers-partial/window-{attempt}"
+    request_path, receipt_path = run_dir / f"{base}-request.json", run_dir / f"{base}-receipt.json"
+    evidence_path, artifact_path = run_dir / f"{base}-evidence.jsonl", run_dir / f"{base}-artifact.json"
+    for path in (request_path, receipt_path, evidence_path, artifact_path):
+        if path.exists() or path.is_symlink():
+            raise ValueError("partial worker output already exists")
+    request = {"generation": source["generation"], "generationStartedAt": source["generation_started_at"],
+               "attempt": attempt, "startedAt": source["started_at"], "finishedAt": source["finished_at"],
+               "runDir": str(run_dir), "sourceBytes": source["bytes"], "sourceSha256": source["sha256"],
+               "originalSourceMainSha256": source["main_sha256"], "producerSha": producer,
+               "targetSha256": target, "cursor": cursor, "ownerPid": os.getpid(),
+               "lockLease": owner.lease_token, "authorityToken": owner.authority_token}
+    checkpoint["colliers_partial_worker"] = {"state": "dispatching", "attempt": attempt, "rc": None,
+        "receipt_path": str(receipt_path.relative_to(run_dir)), "evidence_path": str(evidence_path.relative_to(run_dir)),
+        "artifact_path": str(artifact_path.relative_to(run_dir)), "cursor": cursor}
+    save(run_dir, manifest)
+    encoded = (json.dumps(request, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    descriptor = os.open(request_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        directory = os.open(request_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        check_owner()
+        env = refresh.safe_process_env()
+        env["COLLIERS_PARTIAL_WORKER_REQUEST"] = str(request_path)
+        rc = runner(["node", "--import", "tsx", "sources/colliers-partial-window-entry.ts"],
+                    run_dir / "logs" / "colliers-partial-worker.log", env=env)
+        check_owner()
+        if rc != 0:
+            checkpoint["colliers_partial_worker"].update(state="failed", rc=rc)
+            save(run_dir, manifest)
+            return None
+        raw = _read_private_file(receipt_path, 16384)
+        receipt = json.loads(raw)
+        worker = checkpoint["colliers_partial_worker"]
+        worker.update(state="settled", rc=0, receipt_sha256=hashlib.sha256(raw).hexdigest())
+        info = receipt.get("artifact") if isinstance(receipt, dict) else None
+        if not isinstance(info, dict):
+            raise TypeError("partial worker artifact receipt missing")
+        checkpoint["artifact"] = {"path": str(artifact_path.relative_to(run_dir)),
+                                  "sha256": info.get("sha256"), "bytes": info.get("bytes")}
+        try:
+            verified = verify_worker_artifact(artifact_path, manifest, current_code_sha=producer,
+                                              current_git_dirty=False, allow_empty=True)
+        except BaseException:
+            checkpoint.pop("artifact", None)
+            raise
+        if refresh.git_identity() != (producer, False) or revalidate_source_receipt(run_dir, manifest, attempt, producer, False) != source:
+            checkpoint.pop("artifact", None)
+            raise ValueError("partial worker source or code changed")
+        check_owner()
+        if not verified["staged"]:
+            # A fully classified, settled no-write window can advance only to
+            # the worker's verified prefix; source-wide stops leave it unchanged.
+            proposed = receipt["proposedCursor"]
+            checkpoint.pop("artifact", None)
+            if proposed != cursor:
+                attempt_id = secrets.token_hex(16)
+                proof = {"ok": True, "artifact_sha256": info["sha256"], "generation_id": source["generation"],
+                         "attempt_id": attempt_id, "database_target_sha256": target, "outcome": "settled_no_write"}
+                worker.update(state="cursor_publishing", cursor_attempt_id=attempt_id, proposed_cursor=proposed)
+                save(run_dir, manifest)
+                advance_cursor(owner.path, "colliers", target, cursor, proposed, generation=source["generation"],
+                               artifact_sha256=info["sha256"], attempt_id=attempt_id, outcome="settled_no_write",
+                               proof=proof, owner_check=check_owner)
+            worker["state"] = "settled_no_write"
+            checkpoint["state"] = "partial_held_no_write"
+            save(run_dir, manifest)
+            return None
+        identity = artifact_path.stat()
+        checkpoint["candidate"] = {"path": str(artifact_path.relative_to(run_dir)), "attempt_started_at": source["started_at"],
+            "attempt_number": attempt, "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                                                           identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size}
+        checkpoint.pop("artifact", None)
+        checkpoint["state"] = "candidate"
+        save(run_dir, manifest)
+        return artifact_path
+    except BaseException as exc:
+        checkpoint.pop("artifact", None)
+        worker = checkpoint["colliers_partial_worker"]
+        worker["state"] = ("cursor_recovery_required" if worker["state"] == "cursor_publishing" else
+                           "settlement_unknown" if refresh._cleanup_unknown_in_chain(exc) else "failed")
+        try:
+            save(run_dir, manifest)
+        except BaseException as save_error:  # noqa: BLE001 - preserve an interrupt and the original failure
+            raise BaseExceptionGroup("partial worker failure and checkpoint save failure", [exc, save_error]) from exc
+        raise
