@@ -155,7 +155,7 @@ def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
                "generation": GENERATION, "attempt": 1, "source_sha256": "a" * 64,
                "detail_qualified": 0, "detail_errors": 1, "started_at": START, "finished_at": FINISH,
                "partition": {"staged": [row], "held": []}}
-    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None, "children": {"contacts": [], "documents": [], "images": [], "media": [], "links": []}}]
+    preimage = [{"external_id": row["external_id"], "listing": None, "lat_hex": None, "lng_hex": None, "source_index": None, "children": {"contacts": [], "documents": [], "images": [], "media": [], "links": []}}]
     sql = build_partial_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
     assert "Marcus identity partition changed" in sql
     assert "'detailQualified',false" in sql
@@ -178,7 +178,7 @@ def test_readback_covers_parent_index_and_all_five_children():
                "detail_qualified": 0, "detail_errors": 1, "started_at": START, "finished_at": FINISH,
                "partition": {"staged": [row], "held": []}}
     children = {name: [] for name in ("contacts", "documents", "images", "media", "links")}
-    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None, "children": children}]
+    preimage = [{"external_id": row["external_id"], "listing": None, "lat_hex": None, "lng_hex": None, "source_index": None, "children": children}]
     sql = partial_readback_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
     assert "source_index IS DISTINCT FROM" in sql and "children IS DISTINCT FROM" in sql
     assert "listing->>'scraped_at' IS NOT NULL" in sql
@@ -199,7 +199,7 @@ def test_candidate_exposes_inventory_without_claiming_detail_or_coverage():
     assert candidate["coverage"] == "partial_unknown"
     assert candidate["detailQualified"] == 0 and candidate["detailErrors"] == 1
     assert candidate["sources"][0]["truncated"] is True
-    assert candidate["listings"][0]["marcusInventoryRecord"] == {"listing": listing(), "brokers": []}
+    assert json.loads(base64.b64decode(candidate["listings"][0]["marcusInventoryRecordBase64"])) == {"listing": listing(), "brokers": []}
     assert "detailObservedAt" not in candidate["listings"][0]
 
 
@@ -363,3 +363,16 @@ def test_marcus_quality_allowance_requires_exact_readback_and_cannot_cover_peers
     else:
         with pytest.raises(refresh.GlobalStageError):
             refresh.run_final_validation(run, manifest, None)
+
+
+def test_source_decimal_observation_is_retained_without_float_rounding():
+    from decimal import Decimal
+    from cre_marcus_inventory import stage_envelope
+
+    source = listing()
+    source["rawMarcusSearchRow"]["highPrecisionSourceValue"] = Decimal("0.123456789012345678901234567890123456789")
+    staged = stage(source)
+    encoded = base64.b64decode(staged["observation_base64"])
+    assert b"0.123456789012345678901234567890123456789" in encoded
+    envelope = json.loads(encoded, parse_float=Decimal)
+    assert stage_envelope(envelope, GENERATION, START, FINISH) == staged

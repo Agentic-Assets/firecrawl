@@ -1,5 +1,6 @@
 """Real-schema Marcus inventory proof in disposable, networkless PostgreSQL."""
 import json
+from decimal import Decimal
 import os
 import re
 import signal
@@ -63,11 +64,13 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
+        from tests.marcus_cli_postgres_contract import run_cli_contract
+        run_cli_contract(sql, name)
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,raw_data)
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,sale_price_usd,raw_data)
 SELECT id,'101','https://www.marcusmillichap.com/properties/101/source-name',
- 'https://www.marcusmillichap.com/properties/101/source-name','active','Existing title',
- '{"sourceKey":"marcus-millichap"}'::jsonb FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
+ 'https://www.marcusmillichap.com/properties/101/source-name','active','Existing title',12345678901234567890.12345678901234567890,
+ '{"sourceKey":"marcus-millichap","highPrecision":0.12345678901234567890123456789}'::jsonb FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
 INSERT INTO credeals.cre_source_index (brokerage_id,external_id,source_key,url)
 SELECT id,'101',NULL,'https://www.marcusmillichap.com/properties/101/older-slug'
 FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
@@ -81,7 +84,7 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
                   for i in (101, 102, 103)]
         probe = sql(identity_probe_sql(staged, GENERATION, START, FINISH)).split("|", 3)
         assert probe[:2] == ["3", "3"]
-        held, prior = json.loads(probe[2]), json.loads(probe[3])
+        held, prior = json.loads(probe[2]), json.loads(probe[3], parse_float=Decimal)
         assert held == ["103"]
         receipt = {"schema": "marcus-inventory-custody/v1", "source": "marcus-millichap", "coverage": "partial",
                    "generation": GENERATION, "attempt": 1, "source_sha256": "a" * 64,
@@ -93,12 +96,34 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
         sql(write)
         assert sql(readback) == "1|3|0"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='102' AND status IS NULL AND scraped_at IS NULL AND country IS NULL") == "1"
-        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='101' AND title='Existing title' AND status='active'") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='101' AND title='Existing title' AND status='active' AND lat=34.1 AND lng=-118.2") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listing_images") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='101' AND source_key IS NULL") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='103'") == "0"
         assert sql(write, check=False).returncode != 0
         assert sql("BEGIN; UPDATE credeals.cre_listings SET status='active' WHERE external_id='102'; " + readback + "; ROLLBACK;") == "1|3|1"
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,lat,lng,title,raw_data)
+SELECT id,'105','https://www.marcusmillichap.com/properties/105/source-name',
+ 'https://www.marcusmillichap.com/properties/202/other','active',NULL,NULL,NULL,'{"sourceKey":"marcus-millichap"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,lat,lng,title,raw_data)
+SELECT id,'107','https://www.marcusmillichap.com/properties/107/source-name',
+ 'active',40.123456789012345,NULL,NULL,'{"sourceKey":"marcus-millichap"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
+""")
+        conflict_rows = [stage_inventory(listing(str(i), "activity-" + str(i)), GENERATION, START, FINISH)
+                         for i in (105, 106, 107)]
+        conflict_probe = sql(identity_probe_sql(conflict_rows, GENERATION, START, FINISH)).split("|", 3)
+        conflict_held, conflict_prior = json.loads(conflict_probe[2]), json.loads(conflict_probe[3], parse_float=Decimal)
+        assert conflict_held == ["105"]
+        conflict_receipt = dict(receipt, partition={"staged": conflict_rows, "held": []})
+        conflict_job = str(uuid.uuid4())
+        sql(build_partial_sql(conflict_rows, conflict_held, conflict_prior, conflict_receipt, conflict_job))
+        assert sql(partial_readback_sql(conflict_rows, conflict_held, conflict_prior, conflict_receipt, conflict_job)) == "1|3|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='105' AND NOT (raw_data ? 'marcusInventoryObservations')") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='106' AND status IS NULL") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='107' AND title='Source title' AND lat=40.123456789012345::double precision AND lng IS NULL") == "1"
         history = json.loads(sql("SELECT raw_data->'marcusInventoryObservations' FROM credeals.cre_listings WHERE external_id='101'"))
         full = {"sourceKey": "marcus-millichap", "transactionMode": "sale", "id": "101",
                 "url": "https://www.marcusmillichap.com/properties/101/source-name", "name": "Full title"}
@@ -108,7 +133,7 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
         race_staged = [stage_inventory(listing(str(i), "activity-" + str(i)), GENERATION, START, FINISH)
                        for i in (101, 104)]
         race_probe = sql(identity_probe_sql(race_staged, GENERATION, START, FINISH)).split("|", 3)
-        race_held, race_prior = json.loads(race_probe[2]), json.loads(race_probe[3])
+        race_held, race_prior = json.loads(race_probe[2]), json.loads(race_probe[3], parse_float=Decimal)
         race_receipt = dict(receipt, partition={"staged": race_staged, "held": []})
         race_write = build_partial_sql(race_staged, race_held, race_prior, race_receipt, str(uuid.uuid4()))
         holder = subprocess.Popen(["docker", "exec", "-i", "-e", "PGAPPNAME=marcus-race-holder", name,

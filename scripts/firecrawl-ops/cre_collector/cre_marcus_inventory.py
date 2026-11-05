@@ -6,6 +6,7 @@ import json
 import math
 import re
 from datetime import datetime
+from decimal import Decimal
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -13,6 +14,30 @@ SOURCE = "marcus-millichap"
 BASE = "https://www.marcusmillichap.com"
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
+
+def exact_json(value):
+    """Encode JSON without converting source or database decimal numbers to float."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("nonfinite JSON number")
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return json.dumps(value, allow_nan=False)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=True)
+    if isinstance(value, list):
+        return "[" + ",".join(exact_json(item) for item in value) + "]"
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return "{" + ",".join(exact_json(key) + ":" + exact_json(value[key]) for key in sorted(value)) + "}"
+    raise ValueError("unsupported JSON value")
 
 def _time(value):
     if not isinstance(value, str):
@@ -145,8 +170,7 @@ def stage_inventory(listing, generation, started_at, finished_at, brokers=None):
             raise ValueError("Marcus broker record invalid")
         attached.append({"index": index, "broker": broker})
     try:
-        observation = json.dumps({"listing": listing, "brokers": attached}, sort_keys=True,
-                                 separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+        observation = exact_json({"listing": listing, "brokers": attached})
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("Marcus source observation cannot be retained") from exc
     return {"external_id": native, "activity_id": activity, "source_url": url,
@@ -271,7 +295,7 @@ def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sh
     raw = _read_rejected_artifact(path, size)
     if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("Marcus source artifact changed")
-    data = json.loads(raw)
+    data = json.loads(raw, parse_float=Decimal)
     meta = data.get("runMeta") if isinstance(data, dict) else None
     if not isinstance(meta, dict) or not isinstance(meta.get("freshness"), dict):
         raise ValueError("Marcus source run metadata missing")
@@ -323,7 +347,7 @@ def candidate_data(source):
     staged = partition.get("staged")
     validate_staged(staged, generation, start, finish)
     listings = [{"sourceKey": SOURCE, "id": row["external_id"], "url": row["source_url"],
-                 "marcusInventoryRecord": json.loads(base64.b64decode(row["observation_base64"], validate=True))}
+                 "marcusInventoryRecordBase64": row["observation_base64"]}
                 for row in staged]
     return {"schema": "marcus-inventory-partial/v1", "sourceKey": SOURCE,
             "binding": {"generation": generation, "attempt": source["attempt"], "startedAt": start,
@@ -354,6 +378,6 @@ def stage_envelope(envelope, generation, started_at, finished_at):
         raise ValueError("Marcus observation broker custody invalid")
     staged = stage_inventory(envelope["listing"], generation, started_at, finished_at,
                              {item["index"]: item["broker"] for item in attached})
-    if json.loads(base64.b64decode(staged["observation_base64"], validate=True)) != envelope:
+    if json.loads(base64.b64decode(staged["observation_base64"], validate=True), parse_float=Decimal) != envelope:
         raise ValueError("Marcus observation broker references differ")
     return staged

@@ -1,8 +1,9 @@
 """Read-only Marcus identity partition. This module grants no write authority."""
 import base64
 import json
+from decimal import Decimal
 
-from cre_marcus_inventory import stage_envelope
+from cre_marcus_inventory import exact_json, stage_envelope
 
 
 def validate_staged(staged, generation, started_at, finished_at):
@@ -12,7 +13,7 @@ def validate_staged(staged, generation, started_at, finished_at):
     identifiers, activities, urls = set(), set(), set()
     for row in staged:
         try:
-            original = json.loads(base64.b64decode(row["observation_base64"], validate=True))
+            original = json.loads(base64.b64decode(row["observation_base64"], validate=True), parse_float=Decimal)
             derived = stage_envelope(original, generation, started_at, finished_at)
         except (KeyError, TypeError, ValueError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("invalid Marcus inventory observation") from exc
@@ -61,6 +62,8 @@ conflicts AS (
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.r->>'external_id'
  LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.r->>'external_id'
  WHERE (own.id IS NOT NULL AND ({_url_deal_id('own.source_url')} IS DISTINCT FROM s.r->>'external_id'
+   OR ({_url_deal_id('own.canonical_url')} IS NOT NULL
+       AND {_url_deal_id('own.canonical_url')} IS DISTINCT FROM s.r->>'external_id')
    OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
    OR (own.raw_data ? 'marcusInventoryObservations' AND NOT COALESCE(
        jsonb_typeof(own.raw_data->'marcusInventoryObservations')='object'
@@ -77,7 +80,9 @@ conflicts AS (
 SELECT (SELECT count(*) FROM candidate) AS staged,(SELECT count(*) FROM scoped) AS joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text AS held,
  COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.r->>'external_id',
-  'listing',to_jsonb(own),'source_index',to_jsonb(si),'children',jsonb_build_object(
+  'listing',to_jsonb(own)-ARRAY['lat','lng'],
+  'lat_hex',encode(float8send(own.lat),'hex'),'lng_hex',encode(float8send(own.lng),'hex'),
+  'source_index',to_jsonb(si),'children',jsonb_build_object(
     'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=own.id),'[]'::jsonb),
     'documents',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=own.id),'[]'::jsonb),
     'images',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=own.id),'[]'::jsonb),
@@ -92,7 +97,7 @@ SELECT (SELECT count(*) FROM candidate) AS staged,(SELECT count(*) FROM scoped) 
 
 def _payload(value):
     from cre_ingest import sql_lit
-    return sql_lit(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False))
+    return sql_lit(exact_json(value))
 
 
 def _validate_partition(staged, held, preimage, generation, started_at, finished_at):
@@ -100,7 +105,7 @@ def _validate_partition(staged, held, preimage, generation, started_at, finished
     ids = {row["external_id"] for row in staged}
     if (not isinstance(held, list) or held != sorted(set(held)) or not set(held) <= ids
             or not isinstance(preimage, list) or len(preimage) != len(ids)
-            or any(not isinstance(row, dict) or set(row) != {"external_id", "listing", "source_index", "children"} for row in preimage)
+            or any(not isinstance(row, dict) or set(row) != {"external_id", "listing", "lat_hex", "lng_hex", "source_index", "children"} for row in preimage)
             or {row["external_id"] for row in preimage} != ids):
         raise ValueError("invalid Marcus target partition")
 
@@ -172,7 +177,13 @@ SELECT {sql_lit(job)}::uuid,id,'partial',{sql_lit(start)}::timestamptz,{sql_lit(
  {len(staged)},{len(staged)},{len(staged)-len(held)},{receipt['detail_errors']},
  'Marcus inventory observations; details unverified; coverage partial'
 FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
-UPDATE credeals.cre_listings t SET raw_data=jsonb_set(t.raw_data,'{{marcusInventoryObservations}}',
+UPDATE credeals.cre_listings t SET
+ title=COALESCE(t.title,r->>'title'),
+ lat=CASE WHEN t.lat IS NULL AND t.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lat')::double precision ELSE t.lat END,
+ lng=CASE WHEN t.lat IS NULL AND t.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lng')::double precision ELSE t.lng END,
+ raw_data=jsonb_set(t.raw_data,'{{marcusInventoryObservations}}',
  CASE WHEN t.raw_data ? 'marcusInventoryObservations' THEN
    CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(t.raw_data#>'{{marcusInventoryObservations,entries}}') old(value)
        WHERE old.value = {entry}) THEN t.raw_data->'marcusInventoryObservations'
@@ -227,7 +238,9 @@ def partial_readback_sql(staged, held, preimage, receipt, job_id):
 WITH expected AS (SELECT value->'r' r,value->'p' p,(value->>'held')::boolean held,value->'raw' raw
                   FROM jsonb_array_elements({payload}::jsonb)),
 observed AS (
- SELECT e.*,to_jsonb(t) listing,to_jsonb(si) source_index,jsonb_build_object(
+ SELECT e.*,to_jsonb(t)-ARRAY['lat','lng'] listing,
+ encode(float8send(t.lat),'hex') lat_hex,encode(float8send(t.lng),'hex') lng_hex,
+ to_jsonb(si) source_index,jsonb_build_object(
   'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=t.id),'[]'::jsonb),
   'documents',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=t.id),'[]'::jsonb),
   'images',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=t.id),'[]'::jsonb),
@@ -239,16 +252,26 @@ observed AS (
 ), mismatch AS (
  SELECT 1 FROM observed WHERE source_index IS DISTINCT FROM NULLIF(p->'source_index','null'::jsonb)
  OR children IS DISTINCT FROM p->'children'
- OR (held AND listing IS DISTINCT FROM NULLIF(p->'listing','null'::jsonb))
+ OR (held AND (listing IS DISTINCT FROM NULLIF(p->'listing','null'::jsonb)
+    OR lat_hex IS DISTINCT FROM p->>'lat_hex' OR lng_hex IS DISTINCT FROM p->>'lng_hex'))
  OR (NOT held AND (listing IS NULL OR listing->'raw_data' IS DISTINCT FROM raw
    OR (p->'listing'='null'::jsonb AND (
        listing->>'source_url' IS DISTINCT FROM r->>'source_url' OR listing->>'canonical_url' IS NOT NULL
        OR listing->>'status' IS NOT NULL OR listing->>'deleted_at' IS NOT NULL
        OR listing->>'country' IS NOT NULL OR listing->>'scraped_at' IS NOT NULL
        OR listing->>'transaction_type' IS DISTINCT FROM 'sale' OR listing->>'title' IS DISTINCT FROM r->>'title'
-       OR listing->'lat' IS DISTINCT FROM r->'lat' OR listing->'lng' IS DISTINCT FROM r->'lng'))
-   OR (p->'listing'<>'null'::jsonb AND
-       (listing - ARRAY['updated_at','raw_data']) IS DISTINCT FROM ((p->'listing') - ARRAY['updated_at','raw_data']))))
+       OR lat_hex IS DISTINCT FROM encode(float8send((r->>'lat')::double precision),'hex')
+       OR lng_hex IS DISTINCT FROM encode(float8send((r->>'lng')::double precision),'hex')))
+   OR (p->'listing'<>'null'::jsonb AND (
+       (listing - ARRAY['updated_at','raw_data','title']) IS DISTINCT FROM
+       ((p->'listing') - ARRAY['updated_at','raw_data','title'])
+       OR listing->>'title' IS DISTINCT FROM COALESCE(p#>>'{{listing,title}}',r->>'title')
+       OR lat_hex IS DISTINCT FROM CASE WHEN p->>'lat_hex' IS NULL AND p->>'lng_hex' IS NULL
+         AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+         THEN encode(float8send((r->>'lat')::double precision),'hex') ELSE p->>'lat_hex' END
+       OR lng_hex IS DISTINCT FROM CASE WHEN p->>'lat_hex' IS NULL AND p->>'lng_hex' IS NULL
+         AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+         THEN encode(float8send((r->>'lng')::double precision),'hex') ELSE p->>'lng_hex' END))))
 )
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
  WHERE b.slug='marcus-millichap' AND j.id={sql_lit(job)}::uuid AND j.status='partial'

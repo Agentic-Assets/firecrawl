@@ -1,10 +1,12 @@
 """Owner-bound local Marcus inventory candidate; no network or DB writes."""
+import base64
 import hashlib
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
 
-from cre_marcus_inventory import candidate_data, rederive_settled_artifact
+from cre_marcus_inventory import candidate_data, exact_json, rederive_settled_artifact
 
 
 def run_replay_worker(run_dir, manifest, owner, save):
@@ -164,9 +166,10 @@ def candidate_structure(data):
         raise ValueError("Marcus inventory held partition invalid")
     staged = []
     for listing in data["listings"]:
-        if not isinstance(listing, dict) or set(listing) != {"sourceKey", "id", "url", "marcusInventoryRecord"}:
+        if not isinstance(listing, dict) or set(listing) != {"sourceKey", "id", "url", "marcusInventoryRecordBase64"}:
             raise ValueError("Marcus inventory candidate listing invalid")
-        staged.append(stage_envelope(listing["marcusInventoryRecord"], binding["generation"],
+        staged.append(stage_envelope(json.loads(base64.b64decode(listing["marcusInventoryRecordBase64"], validate=True),
+                                                parse_float=Decimal), binding["generation"],
                                       binding["startedAt"], binding["finishedAt"]))
     validate_staged(staged, binding["generation"], binding["startedAt"], binding["finishedAt"])
     generation_start = data["runMeta"]["freshness"]["generationStartedAt"]
@@ -246,11 +249,11 @@ def run_identity_probe(artifact_path, manifest, env_file):
             or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
         raise RuntimeError("Marcus probe query scope differs")
     try:
-        held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
+        held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"], parse_float=Decimal)
         _validate_partition(staged, held, preimage, source["generation"], source["started_at"], source["finished_at"])
     except (ValueError, TypeError, KeyError) as exc:
         raise MarcusInventoryProbeRefusal("Marcus source identity partition was invalid") from exc
-    encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    encoded = exact_json(preimage).encode("ascii")
     staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     name = f"preimage-{source['attempt']}-{secrets.token_hex(8)}.json"
     directory = os.open(verified["run_dir"] / "marcus-millichap-partial", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -287,7 +290,7 @@ def load_probe_preimage(run_dir, attempt, probe):
     raw = _read_private_file(Path(run_dir) / relative, size)
     if len(raw) != size or hashlib.sha256(raw).hexdigest() != probe.get("preimage_sha256"):
         raise ValueError("Marcus inventory preimage changed")
-    result = json.loads(raw)
+    result = json.loads(raw, parse_float=Decimal)
     if not isinstance(result, list):
         raise ValueError("Marcus inventory preimage invalid")
     return result
