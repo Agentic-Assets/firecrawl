@@ -1977,6 +1977,85 @@ def reconcile_settled_interruption(series_dir: Path, manifest: dict, control) ->
     manifest["sources"] = candidate["sources"]
 
 
+def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dict) -> dict | None:
+    """Derive an order from the latest matching locally settled deadline.
+
+    This changes scheduling order only. Every selected source is still run in
+    the fresh generation, through its normal owner, gate and readback.
+    """
+    from cre_series_control import read_receipt
+    from cre_series_status import _read_regular_file
+    from scheduling.priority import after_deadline
+
+    try:
+        candidates = sorted(
+            (path for path in out_root.iterdir()
+             if path != current_dir and not path.is_symlink()
+             and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", path.name)
+             and path.is_dir()),
+            key=lambda path: path.name, reverse=True,
+        )
+        for prior_dir in candidates:
+            raw = _read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024)
+            prior = json.loads(raw)
+            if (not isinstance(prior, dict) or prior.get("series_id") != prior_dir.name
+                    or prior.get("collector_git_sha") != manifest["collector_git_sha"]
+                    or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))
+                    or not _exact_json_equal(prior.get("config"), manifest.get("config"))):
+                continue
+            # Never fall back to an older matching run if the latest cannot be
+            # qualified: the full default scope remains eligible as usual.
+            if prior.get("status") != "interrupted":
+                return None
+            invocation = (prior.get("latest_invocation_control") or {}).get("invocation_id")
+            receipt = read_receipt(prior_dir, invocation)
+            last = receipt.get("last_checkpoint") or {}
+            if (receipt.get("status") != "deadline_interrupted"
+                    or receipt.get("local_settlement") != "confirmed"):
+                return None
+            refs = {row.get("checkpoint_run") for row in prior["sources"].values()}
+            if len(refs) != 1 or not isinstance(next(iter(refs)), str):
+                return None
+            ref = Path(next(iter(refs)))
+            if (ref.is_absolute() or len(ref.parts) != 2 or ref.parts[0] != "runs"
+                    or ".." in ref.parts or last.get("run_id") != ref.name
+                    or not isinstance(last.get("child_invocation_id"), str)):
+                return None
+            if any(not row.get("attempts") or row["attempts"][-1].get("series_control_child_id")
+                   != last["child_invocation_id"] for row in prior["sources"].values()):
+                return None
+            source_dir = prior_dir / ref
+            if ((prior_dir / "runs").is_symlink() or source_dir.is_symlink()
+                    or (source_dir / "manifest.json").is_symlink()):
+                return None
+            sources = prior["config"]["sources"]
+            _, child = _load_child_manifest(
+                prior_dir / "runs", before=set(), source=",".join(sources),
+                git_sha=prior["collector_git_sha"], expected_path=prior_dir / ref / "manifest.json",
+                expected_config=_expected_child_config(",".join(sources), prior["config"]),
+            )
+            pipeline = child.get("pipeline") or {}
+            if (pipeline.get("commit_outcome_unknown") is not False
+                    or _pipeline_has_unresolved(child, prior["config"])
+                    or any(row.get("state") in {"ingesting", "ingest_recovery_required"}
+                           for row in child["sources"].values())):
+                return None
+            reconciled = copy.deepcopy(prior)
+            reconcile_pipeline_series(prior_dir, reconciled, publish=False)
+            if any(
+                (row.get("state") == "ingested" or row.get("ingest") is not None)
+                and reconciled["sources"][source].get("state") not in {"complete", "qualified_partial_subset"}
+                for source, row in child["sources"].items()
+            ):
+                return None
+            order = after_deadline(sources, reconciled, child)
+            return {"order": order, "previous_series": prior_dir.name,
+                    "previous_manifest_sha256": hashlib.sha256(raw).hexdigest()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+        return None
+    return None
+
+
 def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
     """Recognize only a terminal coordinator clock refusal with no unknown write."""
     try:
@@ -2497,6 +2576,13 @@ def run_pipeline_series(
         resume_run=resume,
         fresh_run_id=run_id,
     )
+    dispatch = manifest.get("pipeline_dispatch")
+    if dispatch is not None and resume is None:
+        order = dispatch.get("order") if isinstance(dispatch, dict) else None
+        if (not isinstance(order, list) or len(order) != len(sources)
+                or set(order) != set(sources)):
+            raise SeriesError("pipeline dispatch order differs from source scope")
+        argv.extend(["--pipeline-dispatch-order", ",".join(order)])
     if control is not None:
         control.prepare_checkpoint(child_run, manifest["collector_git_sha"])
         argv.extend(
@@ -3402,6 +3488,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config=config,
                     database_target=database_target,
                 )
+            if not args.resume and config.get("pipeline"):
+                priority = scheduled_deadline_priority(series_dir.parent, series_dir, manifest)
+                if priority is not None:
+                    manifest["pipeline_dispatch"] = priority
             # This is a replaceable latest-invocation observation, never config/history.
             manifest.pop("latest_invocation_admission", None)
             if invocation_admission is not None:
