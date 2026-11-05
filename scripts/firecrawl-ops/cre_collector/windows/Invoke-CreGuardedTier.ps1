@@ -19,6 +19,7 @@ param(
     [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
+    [ValidateRange(0, 2147483647)][int]$PageCap = 400,
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
@@ -56,6 +57,7 @@ if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
 if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
     throw '-Concurrency requires series.'
 }
+if ($PSBoundParameters.ContainsKey('PageCap') -and $Tier -ne 'series') { throw '-PageCap requires series.' }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
     throw '-SourceWorkers requires -Pipeline.'
@@ -952,7 +954,7 @@ try {
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
                 'python3', "$collector/cre_checkpoint_series.py",
                 '--sources', $selectedSourceArgument, '--concurrency', [string]$Concurrency, '--nice', '15',
-                '--page-cap', '400', '--attempts-per-source', [string][int]$AttemptsPerSource, '--max-resource-recoveries-per-source', '0',
+                '--page-cap', [string]$PageCap, '--attempts-per-source', [string][int]$AttemptsPerSource, '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",

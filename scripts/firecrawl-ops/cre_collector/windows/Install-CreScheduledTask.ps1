@@ -18,6 +18,7 @@ param(
     [switch]$Pipeline,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
+    [ValidateRange(0, 2147483647)][int]$PageCap,
     [ValidateRange(1, 2147483647)][int]$AttemptsPerSource,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [Parameter(Mandatory = $true)]
@@ -50,6 +51,9 @@ if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
 }
 if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
     throw '-Concurrency requires series.'
+}
+if ($PSBoundParameters.ContainsKey('PageCap') -and $Tier -ne 'series') {
+    throw '-PageCap requires series.'
 }
 if ($PSBoundParameters.ContainsKey('AttemptsPerSource') -and $Tier -ne 'series') {
     throw '-AttemptsPerSource requires series.'
@@ -198,6 +202,7 @@ if ($AdmitCurrentInventorySources) { $arguments += @('-AdmitCurrentInventorySour
 if ($Tier -eq 'series') {
     $arguments += @('-WorkDeadlineSeconds',"$WorkDeadlineSeconds",'-AcknowledgeDatabaseWrites')
     if ($PSBoundParameters.ContainsKey('Concurrency')) { $arguments += @('-Concurrency',"$Concurrency") }
+    if ($PSBoundParameters.ContainsKey('PageCap')) { $arguments += @('-PageCap',"$PageCap") }
     if ($PSBoundParameters.ContainsKey('AttemptsPerSource')) { $arguments += @('-AttemptsPerSource',"$AttemptsPerSource") }
     if ($AdmitCurrentInventorySource) { $arguments += @('-AdmitCurrentInventorySource',$AdmitCurrentInventorySource) }
     if ($AdmitDaumVerifiedSubset) { $arguments += '-AdmitDaumVerifiedSubset' }

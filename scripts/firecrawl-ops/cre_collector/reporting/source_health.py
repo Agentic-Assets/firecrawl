@@ -386,7 +386,7 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
         except (KeyError, TypeError, ValueError):
             return False
     if source_key == "franklin-street" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
-        from cre_checkpoint_series import _pipeline_member_report_matches, franklin_partial_child
+        from reporting.partial_qualification import partial_member_report_matches, franklin_partial_child
 
         try:
             source = _source_checkpoint(child, source_key)
@@ -397,13 +397,13 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
             return (franklin_partial_child(child) and child.get("status") in {"qualified_partial_subset", "failed"}
                     and source.get("state") == "ingested" and readback.get("ok") is True
                     and readback.get("kind") == "franklin_site_partial"
-                    and _pipeline_member_report_matches({"franklin_partial_readback": bound}, source, source_key, child["run_id"])
+                    and partial_member_report_matches({"franklin_partial_readback": bound}, source, source_key, child["run_id"])
                     and None not in (start, finished) and start <= finished
                     and _within_clock_skew(child.get("finished_at"), computed_at))
         except (KeyError, TypeError, ValueError):
             return False
     if source_key == "lyon-stahl" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
-        from cre_checkpoint_series import _pipeline_member_report_matches, lyon_partial_child
+        from reporting.partial_qualification import partial_member_report_matches, lyon_partial_child
 
         try:
             source = _source_checkpoint(child, source_key)
@@ -414,13 +414,13 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
             return (lyon_partial_child(child) and child.get("status") in {"qualified_partial_subset", "failed"}
                     and source.get("state") == "ingested" and readback.get("ok") is True
                     and readback.get("kind") == "lyon_partial_search"
-                    and _pipeline_member_report_matches({"lyon_partial_readback": bound}, source, source_key, child["run_id"])
+                    and partial_member_report_matches({"lyon_partial_readback": bound}, source, source_key, child["run_id"])
                     and None not in (start, finished) and start <= finished
                     and _within_clock_skew(child.get("finished_at"), computed_at))
         except (KeyError, TypeError, ValueError):
             return False
     if source_key == "colliers" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
-        from cre_checkpoint_series import _pipeline_member_report_matches, colliers_partial_child
+        from reporting.partial_qualification import partial_member_report_matches, colliers_partial_child
 
         try:
             source = _source_checkpoint(child, source_key)
@@ -434,7 +434,7 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
                     and bound.get("ok") is True and bound.get("outcome") == "exact_commit"
                     and bound.get("generation_id") == child.get("run_id")
                     and bound.get("attempt_id") == source.get("subset_ingest_attempt_id")
-                    and _pipeline_member_report_matches({"colliers_partial_readback": bound}, source, source_key, child["run_id"])
+                    and partial_member_report_matches({"colliers_partial_readback": bound}, source, source_key, child["run_id"])
                     and None not in (start, finished) and start <= finished
                     and _within_clock_skew(child.get("finished_at"), computed_at))
         except (KeyError, TypeError, ValueError):

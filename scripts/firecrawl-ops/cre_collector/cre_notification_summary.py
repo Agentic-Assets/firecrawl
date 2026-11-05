@@ -1234,7 +1234,7 @@ def verified_pipeline_summary(
                 qualified.append((source, count, checkpoint, unit, 0, summary, None))
                 continue
             if franklin_partial_candidate:
-                from cre_checkpoint_series import _pipeline_member_report_matches, franklin_partial_child
+                from reporting.partial_qualification import partial_member_report_matches, franklin_partial_child
 
                 binding = source_binding if isinstance(source_binding, dict) else {}
                 artifact = source_artifact if isinstance(source_artifact, dict) else {}
@@ -1246,7 +1246,7 @@ def verified_pipeline_summary(
                         and ingest["rc"] == 0
                         and parent_entry.get("state") == "qualified_partial_subset"
                         and franklin_partial_child(child)
-                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and partial_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
                         and result.get("qualification") == "qualified_partial_subset"
                         and result.get("partial") is True and result.get("whole_source_coverage") is False
                         and type(count) is int and 0 <= count <= 500000
@@ -1269,7 +1269,7 @@ def verified_pipeline_summary(
                 qualified.append((source, count, checkpoint, unit, 0, summary, None))
                 continue
             if lyon_partial_candidate:
-                from cre_checkpoint_series import _pipeline_member_report_matches, lyon_partial_child
+                from reporting.partial_qualification import partial_member_report_matches, lyon_partial_child
 
                 binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
                 artifact = checkpoint.get("artifact") or {}
@@ -1279,7 +1279,7 @@ def verified_pipeline_summary(
                         and checkpoint["ingest"]["rc"] == 0
                         and parent_entry.get("state") == "qualified_partial_subset"
                         and lyon_partial_child(child)
-                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and partial_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
                         and result.get("qualification") == "qualified_partial_subset"
                         and result.get("partial") is True and result.get("whole_source_coverage") is False
                         and type(count) is int and 0 <= count <= 500000
@@ -1297,7 +1297,7 @@ def verified_pipeline_summary(
                 qualified.append((source, count, checkpoint, unit, 0, summary, None))
                 continue
             if colliers_partial_candidate:
-                from cre_checkpoint_series import _pipeline_member_report_matches, colliers_partial_child
+                from reporting.partial_qualification import partial_member_report_matches, colliers_partial_child
 
 
                 binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -1309,7 +1309,7 @@ def verified_pipeline_summary(
                         and checkpoint["ingest"]["rc"] == 0
                         and parent_entry.get("state") == "qualified_partial_subset"
                         and colliers_partial_child(child)
-                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and partial_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
                         and result.get("qualification") == "qualified_partial_subset"
                         and result.get("partial") is True and result.get("whole_source_coverage") is False
                         and type(count) is int and 0 <= count <= 500000

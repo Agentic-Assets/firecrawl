@@ -32,6 +32,9 @@ foreach($row in $rows) {
  $enabled=$row.key -cne 'newmark'
  $fixture.tasks[$row.key]=@{xml=(Set-CreHandoffEnabledXml $xml $enabled);enabled=$enabled}
 }
+# Model an already-deployed qualified task with the explicit unlimited option.
+# The real snapshot, hold, repin and restore sequence below must preserve it.
+$fixture.tasks['qualified'].xml=$fixture.tasks['qualified'].xml.Replace('"-Pipeline"','"-Pipeline" "-PageCap" "0"')
 function Assert-CreHandoffFleet($Release) {}
 function Assert-CreMaintenanceIdle($Release) {if($fixture.successor){throw 'successor already running'}}
 function Export-ScheduledTask($TaskPath,$TaskName,$ErrorAction) {
@@ -57,6 +60,11 @@ function Update-CreReviewedTaskDefinition($Row,[string]$Xml) {
 }
 $assertOwner={if(-not $fixture.owner){throw 'owner lost'}}
 $release=@{roots=@{native=$native;runtime=$testRuntime;development=$native};task_baseline=$rows;qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark');wsl=@{distro='Ubuntu-24.04';user='cayman';env_file='/home/cayman/.config/cre/equire.env'}}
+$goodPageXml = $fixture.tasks['qualified'].xml
+$fixture.tasks['qualified'].xml=$goodPageXml.Replace('"-PageCap" "0"','"-PageCap" "1.5"')
+try {$null=Get-CreReviewedTaskSnapshot $release $old $new;throw 'invalid page cap accepted'} catch {if($_.Exception.Message -ceq 'invalid page cap accepted'){throw}}
+if($fixture.events.Count -ne 0) {throw 'Invalid page cap caused task mutation'}
+$fixture.tasks['qualified'].xml=$goodPageXml
 # Verify the native bridge checks the stable control bytes and passes the
 # exact owner identity, without invoking a real WSL process in this fixture.
 $control=Join-Path (Split-Path -Parent $PSScriptRoot) 'cre_reviewed_update.py'
@@ -261,6 +269,8 @@ if(-not $repinResult.complete -or -not $restoreResult.complete -or -not $restore
 if(-not $fixture.successor) {throw 'successor simulation did not start'}
 if($fixture.tasks['newmark'].enabled) {throw 'original disabled flag changed'}
 if(-not $fixture.tasks['qualified'].enabled) {throw 'later task was not restored'}
+if($fixture.tasks['qualified'].xml -cnotmatch '"-PageCap" "0"') {throw 'Qualified unlimited page cap lost during repin/restore'}
+if($fixture.tasks['qualified'].xml -cnotmatch $new) {throw 'Qualified unlimited task pin was not updated'}
 if(@($fixture.events|Where-Object {$_ -like 'disable:*'}).Count -ne 2) {throw 'restore disabled a successor'}
 # Owner loss after the first enable must not disable the now-running successor.
 foreach($row in $snapshot) {
@@ -326,6 +336,7 @@ $fixture.successor=$false;$fixture.events.Clear()
 $daum=@{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'}
 $rows=@($rows)+@($daum)
 $daumXml=Set-CreHandoffEnabledXml (([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "daum-commercial" "-AdmitDaumVerifiedSubset"')) $true
+$daumXml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-PageCap" "0"')
 $fixture.tasks[$daum.key]=@{xml=$daumXml;enabled=$true}
 $daumRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
 $daumSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $daumRelease $old $new)
@@ -362,7 +373,7 @@ $daumSnapshot=@(Get-CreReviewedTaskSnapshot $daumRelease $old $new)
 $daumDigest=Get-CreReviewedSnapshotDigest $daumRelease $daumSnapshot $old $new
 Invoke-CreReviewedTaskHold $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
 Invoke-CreReviewedTaskRepin $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
-if($fixture.tasks[$daum.key].xml -cnotmatch $new) {throw 'DAUM task not repinned'}
+if($fixture.tasks[$daum.key].xml -cnotmatch $new -or $fixture.tasks[$daum.key].xml -cnotmatch '"-PageCap" "0"') {throw 'DAUM unlimited task not repinned'}
 if($fixture.tasks[$daum.key].xml -cnotmatch 'tenure-and-empty-title-v2') {throw 'DAUM subset policy lost during repin'}
 if($fixture.tasks[$daum.key].xml -cnotmatch 'AttemptsPerSource') {throw 'DAUM attempt count lost during repin'}
 Invoke-CreReviewedTaskRestore $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
@@ -370,10 +381,48 @@ if(-not $fixture.tasks[$daum.key].enabled) {throw 'DAUM task enabled state not r
 $fixture.tasks.Remove($daum.key);$rows=@($rows[0..2])
 foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
 $fixture.successor=$false;$fixture.events.Clear()
+# The qualified fleet can retain DAUM's existing V2 subset only within its
+# exact source list and with its explicit policy preserved through repin.
+$qualifiedBase=([string]$snapshot[2].xml).Replace('"-Sources" "interra-realty,newmark"','"-Sources" "interra-realty,newmark,daum-commercial" "-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2"')
+foreach($enabled in @($false,$true)) {
+ foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+ $fixture.tasks['qualified'].xml=Set-CreHandoffEnabledXml $qualifiedBase $enabled
+ $fixture.tasks['qualified'].enabled=$enabled
+ $qualifiedRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark,daum-commercial';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
+ $qualifiedSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $qualifiedRelease $old $new)
+ & $realFleetCheck $qualifiedRelease
+ foreach($mutation in @(
+   @('"-AdmitDaumVerifiedSubset"',''),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitDaumVerifiedSubset"'),
+   @('"-DaumSubsetPolicy" "tenure-and-empty-title-v2"',''),
+   @('"tenure-and-empty-title-v2"','"tenure-only-v1"'),
+   @('"-Pipeline"',''),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitCurrentInventorySource" "daum-commercial"'),
+   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitBaselineHoldAdditively"')
+ )) {
+  $fixture.tasks['qualified'].xml=([string]$qualifiedSnapshot[2].xml).Replace($mutation[0],$mutation[1])
+  try {$null=Get-CreReviewedTaskSnapshot $qualifiedRelease $old $new;throw 'invalid qualified DAUM task accepted'} catch {if($_.Exception.Message -ceq 'invalid qualified DAUM task accepted'){throw}}
+ }
+ $fixture.tasks['qualified'].xml=[string]$qualifiedSnapshot[2].xml
+ $fixture.tasks['qualified'].xml=$fixture.tasks['qualified'].xml.Replace($old,('c'*40))
+ try {$null=Get-CreReviewedTaskSnapshot $qualifiedRelease $old $new;throw 'changed qualified pin accepted'} catch {if($_.Exception.Message -ceq 'changed qualified pin accepted'){throw}}
+ $fixture.tasks['qualified'].xml=[string]$qualifiedSnapshot[2].xml
+ $d=Get-CreReviewedSnapshotDigest $qualifiedRelease $qualifiedSnapshot $old $new
+ Invoke-CreReviewedTaskHold $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ Invoke-CreReviewedTaskRepin $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ Invoke-CreReviewedTaskRestore $qualifiedRelease $qualifiedSnapshot $old $new $d $assertOwner
+ $expected=Set-CreHandoffEnabledXml (Pin-ReviewedXml ([string]$qualifiedSnapshot[2].xml) $old $new) $enabled
+ if($fixture.tasks['qualified'].enabled -ne $enabled -or (Get-CreTaskContract $fixture.tasks['qualified'].xml) -cne (Get-CreTaskContract $expected)) {throw 'Qualified DAUM task changed beyond pin or enabled state'}
+ $fixture.successor=$false;$fixture.events.Clear()
+}
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$noDaum=([string]$snapshot[2].xml).Replace('"-Pipeline"','"-Pipeline" "-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2"')
+try {Assert-CreReviewedAction $release $rows[2] $noDaum $old;throw 'DAUM subset without source accepted'} catch {if($_.Exception.Message -ceq 'DAUM subset without source accepted'){throw}}
+$fixture.successor=$false;$fixture.events.Clear()
 # Named Colliers partial task must remain a singleton pipeline and share pin/owner handling.
 $colliers=@{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Colliers Partial Refresh'}
 $rows=@($rows)+@($colliers)
-$colliersXml=([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "colliers" "-Pipeline" "-SourceWorkers" "1"')
+$colliersXml=([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "colliers" "-Pipeline" "-SourceWorkers" "1" "-PageCap" "0"')
 foreach($enabled in @($false,$true)) {
  $fixture.tasks[$colliers.key]=@{xml=(Set-CreHandoffEnabledXml $colliersXml $enabled);enabled=$enabled}
  $colliersRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','colliers');wsl=$release.wsl}

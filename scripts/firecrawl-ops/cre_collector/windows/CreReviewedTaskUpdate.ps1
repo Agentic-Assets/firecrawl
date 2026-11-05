@@ -85,6 +85,8 @@ function Assert-CreReviewedSeriesArguments($Release,[string[]]$Argv,[string]$Lau
     } elseif($tier -cne 'series' -or -not $seen.ContainsKey('-AcknowledgeDatabaseWrites') -or -not $parameters.ContainsKey('-WorkDeadlineSeconds')) {throw 'Series task acknowledgement or deadline missing'}
     $deadline=0
     if($tier -ceq 'series' -and (-not [int]::TryParse($parameters['-WorkDeadlineSeconds'],[ref]$deadline) -or $deadline -le 0)) {throw 'Series task deadline invalid'}
+    $pageCap=0
+    if($parameters.ContainsKey('-PageCap') -and ($parameters['-PageCap'] -notmatch '^\+?[0-9]+$' -or -not [int]::TryParse($parameters['-PageCap'],[ref]$pageCap) -or $pageCap -lt 0)) {throw 'Series task page cap invalid'}
     $attempts=0
     if($parameters.ContainsKey('-AttemptsPerSource') -and ($parameters['-AttemptsPerSource'] -notmatch '^\+?[0-9]+$' -or -not [int]::TryParse($parameters['-AttemptsPerSource'],[ref]$attempts) -or $attempts -le 0)) {throw 'Series task attempt count invalid'}
     $ranges=@($known['WorkDeadlineSeconds'].Attributes|Where-Object {$_ -is [Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'ValidateRange'})
@@ -210,21 +212,21 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     if((Get-CreReviewedArgument $argv '-ExpectedSha') -cne $OldSha) {throw 'Task pin differs'}
     $single=@($argv|Where-Object {$_ -ieq '-Source'}).Count;$many=@($argv|Where-Object {$_ -ieq '-Sources'}).Count
     $daumFlag=@($argv|Where-Object {$_ -ieq '-AdmitDaumVerifiedSubset'}).Count
-    if($Row.key -cne 'daum-subset' -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
-    if($Row.key -cne 'daum-subset' -and $currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy on wrong task'}
+    if($Row.key -cnotin @('daum-subset','qualified') -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
+    if($Row.key -cnotin @('daum-subset','qualified') -and $currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy on wrong task'}
     if($Row.key -clike 'enrich:*') {
         $source=$Row.key.Substring(7)
         if($tier -cne 'enrich' -or $single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $source -or $source -cnotin @($Release.supported_sources)) {throw 'Enrichment task source scope differs'}
     } elseif($tier -cne 'series') {throw 'Task tier differs'}
     elseif($Row.key -ceq 'daum-subset') {
-        $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-DaumSubsetPolicy','-AttemptsPerSource','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-DaumSubsetPolicy','-AttemptsPerSource','-Concurrency','-PageCap','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
         foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedDaum) {throw 'Unsupported DAUM subset task argument'}}
         if($currentArguments.parameters.ContainsKey('-DaumSubsetPolicy') -and $currentArguments.parameters['-DaumSubsetPolicy'] -cnotin @('tenure-only-v1','tenure-and-empty-title-v2')) {throw 'DAUM subset policy is not canonical'}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'daum-commercial' -or
            $daumFlag -ne 1 -or @($argv|Where-Object {$_ -iin @('-Pipeline','-AdmitCurrentInventorySource','-AdmitCurrentInventorySources','-AdmitBaselineHoldAdditively')}).Count -ne 0) {throw 'DAUM subset task scope differs'}
     }
     elseif($Row.key -ceq 'colliers-partial') {
-        $allowedColliers=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-Pipeline','-SourceWorkers','-AttemptsPerSource','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        $allowedColliers=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-Pipeline','-SourceWorkers','-AttemptsPerSource','-Concurrency','-PageCap','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
         foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedColliers) {throw 'Unsupported Colliers partial task argument'}}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'colliers' -or
            -not $currentArguments.seen.ContainsKey('-Pipeline') -or 'colliers' -cnotin @($Release.supported_sources)) {throw 'Colliers partial task scope differs'}
@@ -233,6 +235,19 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
         if($single -ne 0 -or $many -ne 1 -or -not $Release.qualified_sources -or
            (Get-CreReviewedArgument $argv '-Sources') -cne [string]$Release.qualified_sources -or
            @($argv|Where-Object {$_ -ieq '-Pipeline'}).Count -ne 1) {throw 'Qualified task source scope differs'}
+        if($daumFlag -eq 1) {
+            $sourceKeys=@(([string]$Release.qualified_sources).Split(',') | ForEach-Object { $_.Trim() })
+            $completeKeys=@()
+            foreach($name in @('-AdmitCurrentInventorySource','-AdmitCurrentInventorySources')) {
+                if($currentArguments.parameters.ContainsKey($name)) {
+                    $completeKeys+=@(([string]$currentArguments.parameters[$name]).Split(',') | ForEach-Object { $_.Trim() })
+                }
+            }
+            if('daum-commercial' -cnotin $sourceKeys -or 'daum-commercial' -cin $completeKeys -or
+               $currentArguments.seen.ContainsKey('-AdmitBaselineHoldAdditively') -or
+               -not $currentArguments.parameters.ContainsKey('-DaumSubsetPolicy') -or
+               $currentArguments.parameters['-DaumSubsetPolicy'] -cne 'tenure-and-empty-title-v2') {throw 'Qualified DAUM subset scope differs'}
+        } elseif($currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy without admission'}
     } else {
         $expected=if($Row.key -ceq 'interra'){'interra-realty'}else{'newmark'}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $expected -or

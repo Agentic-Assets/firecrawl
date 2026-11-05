@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
+import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
+import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
+import { createHash } from "node:crypto";
 
 test("Colliers page retains provisional card fields without detail", () => {
   const dir = mkdtempSync(join(tmpdir(), "colliers-page-"));
@@ -111,5 +114,87 @@ test("real Colliers adapter seals recovered page evidence while remaining failed
     assert.ok(limitedRows.some(row => row.kind === "recovery_hole" && row.start === 201
       && row.pageSize === 3 && row.reason === "page_cap"));
     assert.ok(!limitedRows.some(row => row.kind === "parsed_page" && row.start === 201));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("regular count drift marks unexamined suffix only after settled transport", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-regular-drift-"));
+  try {
+    for (const mode of ["drift", "retry", "denial", "rate"]) {
+      const runDir = join(dir, mode), captureDir = join(runDir, "colliers-partial");
+      mkdirSync(captureDir, { recursive: true, mode: 0o700 });
+      const capture = join(captureDir, "attempt-1.jsonl"), out = join(runDir, "main.json"), preload = join(runDir, "fetch.mjs");
+      writeFileSync(preload, `globalThis.fetch=async (input)=>{
+        const u=new URL(String(input)); if(u.hostname==='sales.colliers.com')return new Response('<html></html>');
+        if(!u.pathname.endsWith('GetListingsHtml')&&!u.pathname.endsWith('GetMapData'))throw new Error('unexpected detail fetch');
+        const start=Number(u.searchParams.get('Start')), size=Number(u.searchParams.get('PageSize'));
+        const list=u.pathname.endsWith('GetListingsHtml'); const ids=Array.from({length:size},(_,i)=>'P'+(start+i));
+        const total=start===1?203:202;
+        const body=list?{success:true,total,totalAvail:203,numProjects:size,html:'<ul>'+ids.map(id=>'<li class="item"><a href="/handler/modern.aspx?pv='+id+'">Property</a></li>').join('')+'</ul>'}:{success:true,total,totalAvail:203,projectLocations:ids.map(ProjectId=>({ProjectId,Latitude:30,Longitude:-90}))};
+        const mode=${JSON.stringify(mode)}; const options=start===1?{}:mode==='retry'?{headers:{'Retry-After':'60'}}:mode==='denial'?{status:403}:mode==='rate'?{status:429}:{};
+        return Response.json(body,options);
+      };`);
+      const run = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
+        "--source=colliers", "--transaction=both", "--max-items=203", `--out=${out}`], {
+        cwd: process.cwd(), encoding: "utf8", timeout: 30000,
+        env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: capture, CRE_COLLIERS_PARTIAL_ATTEMPT: "1", CRE_REFRESH_GENERATION: mode },
+      });
+      assert.equal(run.status, 1, run.stderr);
+      const artifact = JSON.parse(readFileSync(out, "utf8"));
+      const failed = artifact.sources.find((entry: any) => entry.sourceKey === "colliers" && entry.error);
+      const rows = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(rows.filter(row => row.kind === "parsed_page").length, 1);
+      assert.equal(failed.partialCapture.coverage, "unverified");
+      const binding = { generation: mode, attempt: 1, startedAt: artifact.runMeta.startedAt, finishedAt: artifact.runMeta.finishedAt };
+      const open = () => createReadStream(capture);
+      if (mode === "drift") {
+        assert.match(failed.error, /total changed during pagination/);
+        assert.deepEqual(rows.filter(row => row.kind === "recovery_hole").map(row => [row.start, row.pageSize]), [[101, 100], [201, 3]]);
+        const selection = await selectColliersWindow(open, async () => {}, binding, 1, 2);
+        assert.equal(selection.eligible.length, 2);
+        const bytes = readFileSync(capture);
+        const worker = await buildColliersWindowArtifact({ ...binding, generationStartedAt: binding.startedAt,
+          cursor: 1, limit: 2, sourcePath: capture, sourceBytes: bytes.length,
+          sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+          originalSourceMainSha256: createHash("sha256").update(readFileSync(out)).digest("hex"),
+          producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+          evidencePath: join(captureDir, "worker-evidence"), artifactPath: join(captureDir, "worker-artifact") }, async token => {
+          const detail = { ProjectSummary: { ProjectId: token } }, decodedText = JSON.stringify(detail);
+          return { detail, decodedText, nativeBytes: Buffer.from(decodedText) };
+        });
+        const projection = JSON.parse(readFileSync(join(captureDir, "worker-artifact"), "utf8"));
+        assert.equal(worker.admitted, 2);
+        assert.equal(worker.proposedCursor, 3);
+        assert.equal(projection.sourceOutcome, "source_error");
+        assert.equal(projection.coverage, "unverified");
+        const staged = spawnSync("python3", ["-B", "-c", `import sys; from pathlib import Path
+from cre_checkpoint_refresh import _validate_source_artifact_local
+result = _validate_source_artifact_local(Path(sys.argv[1]), "colliers", sys.argv[3],
+  require_strict_freshness=True, expected_generation_id=sys.argv[2], expected_generation_started_at=sys.argv[3])
+assert result["colliers_partial"] and result["staged_unique"] == 2 and result["rejected_by_ingest"] == 0`,
+          join(captureDir, "worker-artifact"), mode, binding.startedAt], { cwd: process.cwd(), encoding: "utf8" });
+        assert.equal(staged.status, 0, staged.stderr);
+      } else {
+        assert.match(failed.error, mode === "retry" ? /Retry-After/ : mode === "denial" ? /403/ : /429/);
+        if (mode === "retry") {
+          const stopped = rows.find(row => row.kind === "unqualified_response_pair" && row.start === 101);
+          assert.equal(JSON.parse(stopped.documents[0].list).total, 202);
+          assert.equal(JSON.parse(stopped.documents[0].map).total, 202);
+        }
+        assert.equal(rows.filter(row => row.kind === "recovery_hole").length, 0);
+        await assert.rejects(selectColliersWindow(open, async () => {}, binding, 1, 2), /safely scoped/);
+        const bytes = readFileSync(capture);
+        let detailCalls = 0;
+        await assert.rejects(buildColliersWindowArtifact({ ...binding, generationStartedAt: binding.startedAt,
+          cursor: 1, limit: 2, sourcePath: capture, sourceBytes: bytes.length,
+          sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+          originalSourceMainSha256: createHash("sha256").update(readFileSync(out)).digest("hex"),
+          producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+          evidencePath: join(captureDir, "worker-evidence"), artifactPath: join(captureDir, "worker-artifact") }, async () => {
+          detailCalls++; throw new Error("unexpected detail fetch");
+        }), /safely scoped/);
+        assert.equal(detailCalls, 0);
+      }
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
