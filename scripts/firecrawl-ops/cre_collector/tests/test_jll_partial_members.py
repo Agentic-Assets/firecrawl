@@ -207,7 +207,7 @@ def test_partial_summary_reports_unknown_source_holds_without_inventory_claim():
     mutated = dict(observed, generation_id="other")
     assert not _pipeline_member_report_matches({"jll_partial_readback": mutated}, checkpoint, "jll-investor", "run")
 
-    from cre_source_health import _qualified_subset_attempt
+    from reporting.source_health import _qualified_subset_attempt
     checkpoint.update(state="ingested")
     checkpoint["readback"].update(kind="jll_investor_partial", generation_id="run")
     child.update(status="qualified_partial_subset", started_at="2026-11-04T15:00:00Z",

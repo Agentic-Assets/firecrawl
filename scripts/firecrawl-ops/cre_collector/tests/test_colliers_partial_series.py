@@ -218,7 +218,7 @@ def test_clock_hold_and_partial_resume_without_replay(tmp_path, monkeypatch, pha
 
 
 def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
-    import cre_source_health as health
+    from reporting import source_health as health
 
     child = mixed_child(tmp_path / RUN_ID)
     checkpoint = {"state": "qualified_partial_subset"}
@@ -237,7 +237,7 @@ def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
 
 
 def test_source_health_receipt_uses_real_partial_shape_without_whole_source_clock(tmp_path):
-    import cre_source_health as health
+    from reporting import source_health as health
 
     run = tmp_path / "runs" / RUN_ID
     child = mixed_child(run)

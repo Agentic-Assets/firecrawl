@@ -7,7 +7,7 @@ import multiprocessing
 from pathlib import Path
 
 import cre_checkpoint_series as series
-import cre_source_health as health
+from reporting import source_health as health
 
 
 def _manifest(

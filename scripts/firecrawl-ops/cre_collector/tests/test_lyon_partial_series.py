@@ -4,7 +4,7 @@ import hashlib
 import json
 
 import cre_checkpoint_series as series
-import cre_source_health as health
+from reporting import source_health as health
 import pytest
 from tests.test_pipeline_configuration import (
     PARENT_START,

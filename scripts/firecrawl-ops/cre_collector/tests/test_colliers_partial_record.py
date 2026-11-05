@@ -171,7 +171,10 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
 
     partial_stats = _validate_source_artifact_local(tmp_path / "artifact", "colliers", "2026-11-04T15:00:00Z",
         expected_generation_id="gen", expected_generation_started_at="2026-11-04T14:00:00Z",
-        expected_transactions=("sale", "lease"), require_strict_freshness=True)
+        expected_transactions=("sale", "lease"), require_strict_freshness=True,
+        # This fixture uses historical source clocks and a current worker finish.
+        # Keep the observation in scope without freezing the worker's live clock.
+        max_observation_age_hours=max(24, (datetime.now(UTC) - datetime(2026, 11, 4, 14, tzinfo=UTC)).total_seconds() / 3600 + 1))
     assert partial_stats["colliers_partial"] is True and partial_stats["staged_unique"] == 1
     unguarded = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(tmp_path / "artifact"), "--dry-run"],
                                cwd=collector, capture_output=True, text=True, timeout=30, check=False)

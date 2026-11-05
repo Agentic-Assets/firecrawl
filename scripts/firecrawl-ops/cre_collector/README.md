@@ -9,6 +9,7 @@ This directory contains the active collector and ingestor for the shared CRE lis
 | Brokerage inventory and listing detail | [sources/](sources/) and [collect.ts](collect.ts); shared scraping and parsing live in [lib/](lib/) |
 | Normalize and save listings | [cre_ingest.py](cre_ingest.py); existing listing validation is in [cre_validate.py](cre_validate.py) |
 | Run a refresh on Windows | [guarded incremental tiers and Windows launcher](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md); the shared refresh and series entrypoints are [cre_checkpoint_refresh.py](cre_checkpoint_refresh.py) and [cre_checkpoint_series.py](cre_checkpoint_series.py) |
+| Source health and partial-result qualification | [reporting/](reporting/); series, health, and notification code share source-bound proof checks |
 | Detail enrichment | [cre_guarded_tier.py](cre_guarded_tier.py) and [cre_enrich.py](cre_enrich.py) |
 | Source observations and document text | [source_evidence/](source_evidence/) and [document_text/](document_text/); GetCREdata owns the listing document archive |
 | Windows launcher and task tools | [windows/](windows/) |
@@ -17,8 +18,14 @@ This directory contains the active collector and ingestor for the shared CRE lis
 
 ## Root-level code by task
 
-The root also holds operational entrypoints and their supporting modules. Start
-with the entrypoint, then follow its imports and the applicable guide:
+The root holds operational entrypoints and existing legacy modules. Put new
+reusable modules in their owned area rather than adding them at the root. A new
+root entrypoint must be explicitly listed in
+[the root layout baseline](tests/fixtures/collector-root-layout.json); when a
+legacy module moves, remove it from that baseline. The
+[architecture test](tests/test_reporting_architecture.py) enforces this layout.
+
+Start with the entrypoint, then follow its imports and the applicable guide:
 
 | Work | Start here |
 | --- | --- |

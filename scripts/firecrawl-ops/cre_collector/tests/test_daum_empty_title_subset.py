@@ -383,7 +383,7 @@ def test_target_held_fallback_summary_is_bound_and_keeps_verified_peers(tmp_path
                          held_count=2, staged_count=99, sale_count=99)
     assert _subset_summary_fields(small, "daum-commercial", 99)["emitted_count"] == 99
     assert _artifact_expected_count(small, "daum-commercial", 99) == 100
-    from cre_source_health import _qualified_subset_attempt
+    from reporting.source_health import _qualified_subset_attempt
     assert _qualified_subset_attempt(parent["sources"]["daum-commercial"], child, child["finished_at"],
                                      computed_at=child["finished_at"], source_key="daum-commercial")
     checkpoint["daum_fallback_probe"]["partition"][0]["hold_reason"] = None
