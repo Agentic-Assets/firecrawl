@@ -152,6 +152,47 @@ $auditDefinition = @($ast.FindAll({ param($node)
 }, $true))[0]
 Invoke-Expression $auditDefinition.Extent.Text
 $auditFile = Join-Path $ProofDirectory 'atomic-audit.json'
+
+# Inject the evidenced HRESULT at the exact replace seam, then exercise the
+# actual atomic File.Replace. Other errors remain immediate failures.
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+public static class CreSyntheticAuditReplace {
+    public static int Calls;
+    public static int Failures;
+    public static int ErrorCode;
+    public static void Replace(string replacement, string target) {
+        Calls++;
+        if (Calls <= Failures) throw new IOException("synthetic", ErrorCode);
+        File.Replace(replacement, target, null);
+    }
+}
+"@
+$retryAudit = $auditDefinition.Extent.Text.Replace(
+    '[IO.File]::Replace($temporary, $Path, [NullString]::Value)',
+    '[CreSyntheticAuditReplace]::Replace($temporary, $Path)')
+Assert-True ($retryAudit -cne $auditDefinition.Extent.Text) 'Synthetic replacement seam must match exactly.'
+Invoke-Expression $retryAudit
+$retryFile = Join-Path $ProofDirectory 'retry-audit.json'
+Write-CreAudit $retryFile ([ordered]@{ generation = 1 })
+[CreSyntheticAuditReplace]::Calls = 0; [CreSyntheticAuditReplace]::Failures = 1; [CreSyntheticAuditReplace]::ErrorCode = -2147023721
+Write-CreAudit $retryFile ([ordered]@{ generation = 2 })
+Assert-True ([CreSyntheticAuditReplace]::Calls -eq 2 -and ([IO.File]::ReadAllText($retryFile) | ConvertFrom-Json).generation -eq 2) 'One synthetic 1175 must recover through real atomic replacement.'
+[CreSyntheticAuditReplace]::Calls = 0; [CreSyntheticAuditReplace]::Failures = 5
+$refused = $false
+try { Write-CreAudit $retryFile ([ordered]@{ generation = 3 }) } catch { $refused = $true }
+Assert-True ($refused -and [CreSyntheticAuditReplace]::Calls -eq 3 -and ([IO.File]::ReadAllText($retryFile) | ConvertFrom-Json).generation -eq 2) 'Persistent 1175 must stop after three attempts and preserve the prior audit.'
+Assert-True (@(Get-ChildItem $ProofDirectory -Filter 'retry-audit.json.*.tmp').Count -eq 0) 'Exhaustion must clean only its temporary file.'
+foreach ($code in @(-2147023720, -2147023719, -2147024864)) {
+    [CreSyntheticAuditReplace]::Calls = 0; [CreSyntheticAuditReplace]::Failures = 5; [CreSyntheticAuditReplace]::ErrorCode = $code
+    $refused = $false
+    try { Write-CreAudit $retryFile ([ordered]@{ generation = 4 }) } catch { $refused = $true }
+    Assert-True ($refused -and [CreSyntheticAuditReplace]::Calls -eq 1 -and ([IO.File]::ReadAllText($retryFile) | ConvertFrom-Json).generation -eq 2) 'An unrelated replace error must not retry.'
+}
+# Restore the exact production function for the remaining tests.
+Invoke-Expression $auditDefinition.Extent.Text
+
 Write-CreAudit $auditFile ([ordered]@{ generation = 1; value = 'original' })
 $original = [IO.File]::ReadAllText($auditFile)
 $reader = [IO.File]::Open($auditFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -168,7 +209,7 @@ $refused = $false
 try { Write-CreAudit $auditFile ([ordered]@{ value = ('x' * 65536) }) } catch { $refused = $true }
 Assert-True ($refused -and [IO.File]::ReadAllText($auditFile) -ceq $lastValid) 'Oversized audit must refuse publication and preserve its last valid receipt.'
 $hostExecutable = (Get-Process -Id $PID).Path
-foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pipes', 'flood', 'post-start-error', 'cached-helper', 'denied', 'telemetry-error', 'missing-exe', 'missing-identity', 'terminal-audit-error', 'initial-audit-error', 'check-only', 'check-denied', 'check-error')) {
+foreach ($scenario in @('admitted', 'audit-recover', 'audit-exhausted', 'native-nonzero', 'launch-failure', 'held-pipes', 'flood', 'post-start-error', 'cached-helper', 'denied', 'telemetry-error', 'missing-exe', 'missing-identity', 'terminal-audit-error', 'initial-audit-error', 'check-only', 'check-denied', 'check-error')) {
     $caseRoot = Join-Path $ProofDirectory $scenario
     $caseWindows = Join-Path $caseRoot 'windows'
     New-Item -ItemType Directory -Path $caseWindows -Force | Out-Null
@@ -193,6 +234,14 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
     if ($scenario -eq 'missing-exe') { $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) throw 'CREDENTIAL_CANARY_DO_NOT_LOG' }" }
     $transformed = $sourceText.Substring(0, $admissionDefinition[0].Extent.StartOffset) + $stub + $sourceText.Substring($admissionDefinition[0].Extent.EndOffset)
     $transformed = $transformed.Replace($readinessDefinition.Extent.Text, 'function Wait-CreLocalApi { return [ordered]@{ ready = $true; scope = "synthetic" } }')
+    if ($scenario -in @('audit-recover', 'audit-exhausted')) {
+        $failures = if ($scenario -eq 'audit-recover') { 1 } else { 100 }
+        $injected = "Add-Type -TypeDefinition 'using System; using System.IO; public static class AuditReplaceFault { public static int Calls; public static void Replace(string source, string target) { if (++Calls <= $failures) throw new IOException(`"synthetic`", unchecked((int)0x80070497)); File.Replace(source, target, null); } }'" + "`n"
+        $transformed = $transformed.Replace('Set-StrictMode -Version Latest', $injected + 'Set-StrictMode -Version Latest')
+        $before = $transformed
+        $transformed = $transformed.Replace('[IO.File]::Replace($temporary, $Path, [NullString]::Value)', '[AuditReplaceFault]::Replace($temporary, $Path)')
+        Assert-True ($before -cne $transformed) 'Launcher audit fault seam must match exactly.'
+    }
     if ($scenario -eq 'cached-helper') {
         $preload = "Add-Type -Path '" + (Join-Path $caseWindows 'CreNativeCapture.cs').Replace("'", "''") + "'`n"
         $transformed = $transformed.Replace('Set-StrictMode -Version Latest', $preload + 'Set-StrictMode -Version Latest')
@@ -238,7 +287,7 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
     $receiptText = [IO.File]::ReadAllText($audits[0].FullName)
     $receipt = $receiptText | ConvertFrom-Json
     Assert-True ($receipt.linuxSettlement -ceq 'unverified' -and $receiptText -notmatch 'CREDENTIAL_CANARY_DO_NOT_LOG') 'Audit must never infer Linux settlement or include exception text.'
-    if ($scenario -eq 'admitted') {
+    if ($scenario -in @('admitted', 'audit-recover')) {
         Assert-True ($receipt.status -ceq 'returned' -and $receipt.dispatch -ceq 'returned' -and $receipt.nativeExitCode -eq 0 -and $receipt.wrapperExitCode -eq 0 -and $launched.NativeExitCode -eq 0) 'Native success must retain distinct successful wrapper/native results.'
         Assert-True ([IO.File]::Exists($receipt.stdoutPath) -and [IO.File]::Exists($receipt.stderrPath)) 'Same-basename stream sidecars must exist.'
         Assert-True ([IO.File]::ReadAllText($caseOut).Contains($receipt.stdoutPath)) 'Log paths must be visible to the foreground operator.'
@@ -246,6 +295,9 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
         $admissionPending = [IO.File]::ReadAllText($caseScript).IndexOf("Write-CreAudit `$auditPath `$record")
         $sampleCall = [IO.File]::ReadAllText($caseScript).LastIndexOf('Wait-CreStartupAdmission $record $auditPath')
         Assert-True ($admissionPending -ge 0 -and $admissionPending -lt $sampleCall) 'Initial audit publication must precede admission telemetry.'
+    } elseif ($scenario -eq 'audit-exhausted') {
+        Assert-True ($launched.NativeExitCode -eq 1 -and $receipt.status -ceq 'admission_pending' -and $receipt.dispatch -ceq 'not_attempted' -and $null -eq $receipt.nativeExitCode) 'Exhausted atomic publication must retain the initial receipt and prevent dispatch.'
+        Assert-True (@(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.tmp').Count -eq 0) 'Exhausted launcher audit must clean its temporary files.'
     } elseif ($scenario -eq 'native-nonzero') {
         Assert-True ($launched.NativeExitCode -eq 23 -and $receipt.nativeExitCode -eq 23 -and $receipt.wrapperExitCode -eq 23 -and $receipt.status -ceq 'returned') 'Native failure must preserve its actual exit separately from successful capture.'
     } elseif ($scenario -eq 'launch-failure') {
