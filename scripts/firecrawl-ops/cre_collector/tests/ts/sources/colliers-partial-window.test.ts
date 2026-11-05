@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
+import { ColliersIdentityError } from "../../../sources/colliers.js";
 import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
 
 const binding = { generation: "gen", attempt: 1, startedAt: "2026-11-04T15:00:00Z", finishedAt: "2026-11-04T16:00:00Z" };
@@ -34,4 +36,22 @@ test("holds candidates overlapping another page or a recovery hole", async () =>
 test("refuses unidentified observed pages and changed custody", async () => {
   await assert.rejects(selectColliersWindow(source([header,pair,page,hole,pair]), async () => {}, binding, 1, 1), /safely scoped/);
   await assert.rejects(selectColliersWindow(source([header,pair,page,hole]), async () => { throw new Error("changed"); }, binding, 1, 1), /changed/);
+});
+
+test("producer obeys rotating order and stops after preserving the current row", async () => {
+  const requests: string[] = [], saved: string[] = [];
+  const result = await produceColliersWindow(source([header,pair,page,hole]), async () => {}, binding, 2,
+    async item => { saved.push(item.listing.id); return "stop"; }, async () => {},
+    async token => { requests.push(token); const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+      return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) }; }, 2);
+  assert.deepEqual(requests, ["b"]); assert.deepEqual(saved, ["b"]);
+  assert.equal(result.unattempted, 1); assert.equal(result.proposedCursor, 3);
+});
+test("producer never converts sink custody failure into a record hold", async () => {
+  let held = 0;
+  await assert.rejects(produceColliersWindow(source([header,pair,page,hole]), async () => {}, binding, 1,
+    async () => { throw new ColliersIdentityError("sink failed"); }, async () => { held++; },
+    async token => { const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+      return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) }; }, 1), /sink failed/);
+  assert.equal(held, 0);
 });
