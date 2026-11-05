@@ -70,8 +70,11 @@ def verify_detail_record(item, generation, attempt, started_at, finished_at):
         raise ValueError("partial detail exceeds bound")
     if hashlib.sha256(raw.encode("utf-8")).hexdigest() != source["decodedDetailSha256"]:
         raise ValueError("partial detail digest differs")
+    # Source and detail stamps come from different monotonic-anchored
+    # processes.  Their actual ordering is established by sealed-source
+    # custody and the owned worker, not by comparing their wall clocks.
     if not (_time(started_at) <= _time(source["inventoryObservedAt"]) <= _time(finished_at)
-            <= _time(source["detailObservedAt"])):
+            and _time(source["detailObservedAt"]) >= _time(started_at)):
         raise ValueError("partial observation clock differs")
     try:
         detail = json.loads(raw)

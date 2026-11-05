@@ -4,12 +4,15 @@ import { scanColliersPartial, type Candidate } from "./colliers-partial-spool.js
 
 // At most 4 MiB of serialized identity data, independent of source size.
 const MAX_CANDIDATES = 2048;
+// One bounded rotating window per source attempt; later runs resume at the
+// committed cursor. This limits time spent before saving progress.
+const DEFAULT_CANDIDATES = 100;
 const MAX_IDENTITY_BYTES = 2048;
 
 export async function selectColliersWindow(
   open: () => Readable, verify: () => Promise<void>,
   binding: { generation: string; attempt: number; startedAt: string; finishedAt: string },
-  cursor: number, limit = MAX_CANDIDATES,
+  cursor: number, limit = DEFAULT_CANDIDATES,
 ) {
   if (!Number.isSafeInteger(cursor) || cursor < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CANDIDATES)
     throw new Error("invalid partial window");

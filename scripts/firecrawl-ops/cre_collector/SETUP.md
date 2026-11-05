@@ -188,7 +188,11 @@ pre-spawn refusal tests still run. Broken entries and installed
 dependencies remain failures; a prerequisite skip does not satisfy full-suite
 verification. These controller tests do not require the sidecar's Node packages.
 Before a full suite, verify `node --import tsx --eval 'void 0'` from the sidecar
-directory; collector dependencies alone do not satisfy that import. Use
+directory; collector dependencies alone do not satisfy that import. The C10
+loopback integration tests launch this sidecar and require its pinned dependencies
+in the standalone clone. Missing sidecar tsx is a setup failure, not collector
+acceptance; install from the frozen lockfile, using an offline cache when available.
+Use
 `--maxfail=1` during iteration so a failure exposes its traceback promptly;
 a passing run still executes the entire suite. Preserve failed logs, fix the
 confirmed cause, then rerun the failed tests before the full suite.

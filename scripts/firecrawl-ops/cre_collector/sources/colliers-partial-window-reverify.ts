@@ -23,8 +23,8 @@ export async function reverifyColliersWindow(
 ) {
   if (!Number.isSafeInteger(expectedRecords) || expectedRecords < 1 || expectedRecords > 2048)
     throw new Error("invalid partial evidence count");
-  const detailFinish = Date.parse(binding.detailFinishedAt), sourceFinish = Date.parse(binding.finishedAt);
-  if (!Number.isFinite(detailFinish) || !Number.isFinite(sourceFinish) || detailFinish < sourceFinish ||
+  const detailFinish = Date.parse(binding.detailFinishedAt), sourceStart = Date.parse(binding.startedAt);
+  if (!Number.isFinite(detailFinish) || !Number.isFinite(sourceStart) || detailFinish < sourceStart ||
       detailFinish > Date.now() + 5 * 60_000) throw new Error("partial detail finish invalid");
   await verifySource(); await verifyEvidence();
   const selection = await selectColliersWindow(openSource, verifySource, binding, cursor, limit);
@@ -59,7 +59,7 @@ export async function reverifyColliersWindow(
       }
       const observed = typeof row.observedAt === "string" ? Date.parse(row.observedAt) : NaN;
       if (!Number.isFinite(observed) || new Date(observed).toISOString() !== row.observedAt ||
-          observed < sourceFinish || observed > detailFinish) throw new Error("partial held observation invalid");
+          observed < sourceStart || observed > detailFinish) throw new Error("partial held observation invalid");
       const withBody = ["detail_identity", "detail_empty", "detail_invalid_json", "detail_invalid_response",
         "detail_invalid_utf8", "detail_oversized", "detail_provider_rejected", "detail_nonjson_html"].includes(row.reason);
       if (withBody !== (row.nativeBase64 !== undefined) ||

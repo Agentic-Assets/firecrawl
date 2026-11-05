@@ -362,3 +362,18 @@ def test_native_project_id_matches_javascript_safe_integer_semantics():
     assert _native_project_id(1.5) is None
     assert _native_project_id(9007199254740992) is None
     assert _native_project_id(10 ** 1000) is None
+
+
+def test_independent_source_and_detail_clocks_do_not_fabricate_order():
+    item = sample()
+    source = item["source"]
+    source["inventoryObservedAt"] = "2026-11-04T16:00:00.806Z"
+    source["detailObservedAt"] = "2026-11-04T16:00:00.200Z"
+    item["listing"]["inventoryObservedAt"] = source["inventoryObservedAt"]
+    item["listing"]["detailObservedAt"] = source["detailObservedAt"]
+    item["listing"]["colliersPartialEvidence"] = {"schema": "colliers-partial-detail-v1", **source}
+    actual = verify_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00.900Z")
+    assert actual["external_id"] == source["mapProjectId"]
+    assert source["detailObservedAt"] == "2026-11-04T16:00:00.200Z"
+    with pytest.raises(ValueError, match="partial observation clock"):
+        verify_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00.700Z")
