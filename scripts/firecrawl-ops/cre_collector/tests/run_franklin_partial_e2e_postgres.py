@@ -106,7 +106,17 @@ def main():
         try:
             assert refresh.prepare_franklin_partial_candidate(run, manifest, attempt, candidate_only=False)
             path = run / checkpoint["artifact"]["path"]
-            refresh.gate_source(run, manifest, "franklin-street", path, str(env_file))
+            try:
+                refresh.gate_source(run, manifest, "franklin-street", path, str(env_file))
+            except Exception:
+                for request_path in (run / "pipeline" / "compute").glob("*.request.json"):
+                    request = json.loads(request_path.read_text())
+                    if request.get("action") == "admit":
+                        item = request["arguments"]
+                        refresh._admit_current_inventory(run, item["manifest"], item["report"],
+                                                         Path(item["path"]), item["phase"],
+                                                         source=item["source"], local=True)
+                raise
             source_binding = checkpoint["gate"]["current_inventory_proof"]
             source_report = refresh._load_json(run / checkpoint["gate"]["path"])
             aggregate_report = json.loads(json.dumps(source_report))
