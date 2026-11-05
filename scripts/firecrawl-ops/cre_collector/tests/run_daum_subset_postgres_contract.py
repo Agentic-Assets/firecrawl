@@ -283,6 +283,36 @@ try:
             sql("CREATE DATABASE " + db + ";")
             sql(schema, db)
             sql(generated([row(index) for index in range(102)]), db)
+            if case == "unknown_existing":
+                from cre_daum_fallback_partition import identity_probe_sql
+                members_probe = [
+                    {"native_id": "50000", "external_id": "property/Synthetic-0",
+                     "source_url": "https://daumcommercial.com/property/Synthetic-0/"},
+                    {"native_id": "59999", "external_id": "property/Synthetic-new",
+                     "source_url": "https://daumcommercial.com/property/Synthetic-new/"},
+                ]
+                probe_query = identity_probe_sql(members_probe)
+                def probe(prefix=""):
+                    result = sql("BEGIN;" + prefix + probe_query + "; ROLLBACK;", db).stdout.strip().split("|", 2)
+                    assert result[:2] == ["2", "2"]
+                    return {item["native_id"]: item for item in json.loads(result[2])}
+                normal = probe()
+                assert normal["50000"]["hold_reason"] is None, normal
+                assert normal["59999"]["hold_reason"] is None, normal
+                from cre_daum_fallback_partition import transaction_guard_sql
+                partition = [normal[key] for key in sorted(normal, key=lambda key: normal[key]["external_id"])]
+                guard = transaction_guard_sql(members_probe, partition)
+                sql("BEGIN;" + guard + "ROLLBACK;", db)
+                stale = sql("BEGIN; UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';" + guard + "ROLLBACK;", db, check=False)
+                assert stale.returncode and "DAUM fallback partition changed" in stale.stderr
+                terminal = probe("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';")
+                assert terminal["50000"]["hold_reason"] == "existing_parent_unqualified"
+                assert terminal["59999"]["hold_reason"] is None
+                assert terminal["50000"]["preimage"] != normal["50000"]["preimage"]
+                conflict = probe("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}'," + "'\"50000\"') WHERE external_id='property/Synthetic-1';")
+                assert conflict["50000"]["hold_reason"] == "identity_conflict"
+                assert conflict["59999"]["hold_reason"] is None
+                checks.append("fallback_probe_existing_new_terminal_conflict")
             sql("UPDATE credeals.cre_listings SET transaction_type='lease', "
                 "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\","
                 "\"inventoryObservedAt\":\"2026-10-15T00:00:00Z\","
