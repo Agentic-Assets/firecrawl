@@ -308,6 +308,52 @@ def jll_partial_child(child: Mapping[str, Any]) -> bool:
         return False
 
 
+def nai_post_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only a source/target-bound NAI post subset, never coverage."""
+    try:
+        checkpoint = child["sources"]["nai-global"]
+        artifact, gate = checkpoint["artifact"], checkpoint["gate"]
+        proof, probe = gate["current_inventory_proof"], checkpoint["nai_post_identity_probe"]
+        held, source_held = proof["held"], proof["source_held"]
+        return (isinstance(proof, Mapping) and isinstance(probe, Mapping)
+                and isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", child["collector_git_sha"]) is not None
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and all(isinstance(proof.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", proof[key]) is not None
+                        for key in ("artifact_sha256", "database_target_sha256", "partition_sha256", "preimage_sha256"))
+                and artifact.get("nai_post_partial") is True
+                and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False and gate.get("admission_scope") == "nai_public_post_partial_v1"
+                and proof.get("schema") == "nai-public-post-partial-v1"
+                and proof.get("scope") == "nai_public_post_partial_v1" and proof.get("source_key") == "nai-global"
+                and proof.get("whole_source_coverage") is False
+                and proof.get("artifact_sha256") == artifact.get("sha256")
+                and proof.get("generation_id") == child["run_id"]
+                and proof.get("producer_sha") == child["collector_git_sha"]
+                and proof.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
+                and all(_exact_json_equal(proof.get(key), probe.get(key)) for key in (
+                    "artifact_sha256", "producer_sha", "generation_id", "database_target_sha256",
+                    "partition_sha256", "preimage_sha256", "source_count", "source_held", "staged_count", "held"))
+                and isinstance(probe.get("preimage"), str)
+                and hashlib.sha256(probe["preimage"].encode("utf-8")).hexdigest() == proof["preimage_sha256"]
+                and isinstance(held, list) and len(held) == len(set(held))
+                and all(isinstance(item, str) for item in held)
+                and isinstance(source_held, list) and all(isinstance(item, Mapping) for item in source_held)
+                and all(set(item) == {"index", "reason"} and type(item["index"]) is int
+                        and 0 <= item["index"] < proof["source_count"]
+                        and item["reason"] in {"unqualified_source_post", "duplicate_post_id", "conflicting_source_alias"}
+                        for item in source_held)
+                and [item["index"] for item in source_held] == sorted({item["index"] for item in source_held})
+                and type(proof.get("source_count")) is int and type(proof.get("staged_count")) is int
+                and type(proof.get("emitted_count")) is int and type(proof.get("held_count")) is int
+                and proof["emitted_count"] > 0 and proof["held_count"] == len(held) + len(source_held)
+                and proof["staged_count"] == proof["emitted_count"] + len(held)
+                and proof["source_count"] == proof["staged_count"] + len(source_held)
+                and type(artifact.get("flat_listings")) is int and artifact["flat_listings"] == proof["source_count"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
 def franklin_partial_child(child: Mapping[str, Any]) -> bool:
     """Recognize only a target-bound Franklin partial with unresolved coverage."""
     try:
@@ -1288,6 +1334,12 @@ def _child_succeeded(
             and aggregate.get("baseline_advisory_holds") == ["savills"]
             and aggregate.get("mark_missing_safe_brokerages") == []
         )
+    if nai_post_partial_child(child_manifest):
+        scope = child_manifest.get("scope")
+        return (child_manifest.get("status") == "qualified_partial_subset"
+                and isinstance(scope, Mapping) and scope.get("kind") == "collector_registry_verified_subset"
+                and scope.get("whole_source_coverage") is False
+                and _exact_json_equal(child_manifest.get("config"), _expected_child_config("nai-global", config)))
     if franklin_partial_child(child_manifest):
         scope = child_manifest.get("scope")
         return (child_manifest.get("status") == "qualified_partial_subset"
@@ -1353,7 +1405,7 @@ def _reconciled_state(
         return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) else "complete"
+        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -2049,7 +2101,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -2111,6 +2163,25 @@ def _pipeline_member_report_matches(
     """Cross-bind saved exact readback fields to the hashed full query output."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "nai-global" and artifact.get("nai_post_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("nai_post_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "nai_public_post_partial"
+                and readback.get("whole_source_coverage") is False and observed.get("ok") is True
+                and observed.get("whole_source_coverage") is False and observed.get("children_verified") is True
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
+                and observed.get("partition_sha256") == binding.get("partition_sha256")
+                and observed.get("preimage_sha256") == binding.get("preimage_sha256")
+                and all(type(observed.get(key)) is int and observed[key] == binding.get(key)
+                        for key in ("staged_count", "emitted_count", "held_count"))
+                and type(observed.get("new_missing_canonical_count")) is int
+                and 0 <= observed["new_missing_canonical_count"] <= observed["emitted_count"])
     if source == "franklin-street" and artifact.get("franklin_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("franklin_partial_readback")
@@ -2453,6 +2524,11 @@ def pipeline_source_qualified(
             franklin_partial = key == "franklin-street" and franklin_partial_child(child)
             colliers_partial = key == "colliers" and colliers_partial_child(child)
             lyon_partial = key == "lyon-stahl" and lyon_partial_child(child)
+            nai_partial = key == "nai-global" and nai_post_partial_child(child)
+            if ((checkpoint.get("artifact") or {}).get("nai_post_partial") is True
+                    or binding.get("schema") == "nai-public-post-partial-v1"
+                    or binding.get("scope") == "nai_public_post_partial_v1") and not nai_partial:
+                return False
             if ((checkpoint.get("artifact") or {}).get("lyon_partial") is True
                     or binding.get("schema") == "lyon-search-partial-v1"
                     or binding.get("scope") == "lyon_partial_search_v1") and not lyon_partial:
@@ -2472,13 +2548,13 @@ def pipeline_source_qualified(
                          or binding.get("scope") == "pyramid_incomplete_v2")
                     and not pyramid_partial):
                 return False
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial or lyon_partial:
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial or lyon_partial or nai_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
                     or (key == "daum-commercial" and child.get("scope", {}).get("kind") != "collector_registry_verified_subset")):
                     return False
-                if (jll_partial or franklin_partial or colliers_partial or lyon_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
+                if (jll_partial or franklin_partial or colliers_partial or lyon_partial or nai_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
                     return False
                 if franklin_partial and any(not _exact_json_equal(proof.get(name), binding.get(name))
@@ -2719,7 +2795,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -3075,7 +3151,12 @@ def run_series(
                 save_manifest(series_dir, manifest)
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) else "complete"
+                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+                if nai_post_partial_child(child_manifest):
+                    binding = child_manifest["sources"]["nai-global"]["gate"]["current_inventory_proof"]
+                    checkpoint["partial_counts"] = {key: binding[key] for key in ("emitted_count", "held_count")}
+                    checkpoint["partial_counts"]["visibility_limitation"] = (
+                        "new post rows with unknown status are excluded from active listing views")
                 if pyramid_partial_child(child_manifest):
                     checkpoint["subset_counts"] = pyramid_subset_counts(child_manifest)
                 if franklin_partial_child(child_manifest):

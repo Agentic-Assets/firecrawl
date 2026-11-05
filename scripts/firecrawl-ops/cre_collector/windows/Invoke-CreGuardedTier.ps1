@@ -494,12 +494,12 @@ function Get-CreVerifiedSummary {
                 $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
                     ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted) -or
                     ($subsetMarked -and $entry.source_key -ceq 'jll-investor') -or
-                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key)
+                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street','nai-global') -ccontains $entry.source_key)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
                     if ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
-                    } elseif (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
+                    } elseif (@('colliers','lyon-stahl','franklin-street','nai-global') -ccontains $entry.source_key) {
                         if (-not (Test-CreSourceSubsetSummary $entry $entry.source_key)) { return $null }
                     } elseif (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
@@ -539,7 +539,7 @@ function Get-CreVerifiedSummary {
                 $unverifiableKeys = @($summary.unverifiable_source_keys)
                 if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
                 foreach ($key in $unverifiableKeys) {
-                    if (@('jll-investor','colliers','lyon-stahl','franklin-street') -cnotcontains $key -or
+                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','nai-global') -cnotcontains $key -or
                         @($summary.failed_source_keys) -cnotcontains $key) { return $null }
                 }
             }
@@ -644,12 +644,15 @@ function Get-CreNotificationText {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held database identity conflicts held; source exclusions unknown. Whole brokerage incomplete."
                     continue
                 }
-                if (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
+                if (@('colliers','lyon-stahl','franklin-street','nai-global') -ccontains $entry.source_key) {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
                     if ($entry.source_key -ceq 'franklin-street') {
                         $pendingBuildout = ([long]$entry.buildout_pending).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                         $heldObservations = ([long]$entry.held_observations).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                         $lines += "    *Buildout pending:* $pendingBuildout | *Source observations held:* $heldObservations; site and Buildout identities are unresolved and properties may overlap."
+                    }
+                    if ($entry.source_key -ceq 'nai-global') {
+                        $lines += '    New posts with unknown status are excluded from active listing views; source posts can refer to the same property.'
                     }
                     $property = $entry.PSObject.Properties['transaction_breakdown']
                     if ($null -ne $property -and $null -ne $property.Value) {

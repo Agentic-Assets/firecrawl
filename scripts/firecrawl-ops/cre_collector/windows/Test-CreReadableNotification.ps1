@@ -493,6 +493,25 @@ $mixedSources['unverifiable_source_keys'] = @('colliers','lyon-stahl','franklin-
 Save-Summary $mixedSources
 $unverifiableSources = Get-CreVerifiedSummary (New-Record) 'mixed-source-unverifiable'
 Assert-Cre ($null -ne $unverifiableSources -and (Get-CreNotificationText (New-Record) 'Terminal' 1 $unverifiableSources).Contains('*Unverifiable:* 3')) 'Unverifiable source summaries retain a complete peer without promoting counts.'
+$selectedSourceKeys = @('nai-global','newmark','savills')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$naiSummary = New-Summary
+$naiSummary['selected_source_keys'] = $selectedSourceKeys
+$naiSummary['per_source_summaries'] = @(
+    [ordered]@{source_key='nai-global';verified_listings=108;emitted_count=108;held_count=6;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$naiSummary['qualified_subset_source_keys'] = @('nai-global')
+$naiSummary['failed_source_keys'] = @('savills'); $naiSummary['pending_source_keys'] = @(); $naiSummary['complete'] = $false
+Save-Summary $naiSummary
+$naiRead = Get-CreVerifiedSummary (New-Record) 'nai-partial'
+$naiText = Get-CreNotificationText (New-Record) 'Terminal' 1 $naiRead
+Assert-Cre ($null -ne $naiRead -and $naiText.Contains('*NAI Global:* Verified subset refreshed; 108 emitted; 6 held') -and
+    $naiText.Contains('unknown status are excluded') -and $naiText.Contains('*For sale / lease / both:* unavailable') -and
+    $naiText.Contains('*Newmark:* 100 listings verified') -and $naiText.Contains('*Savills:* Failed')) 'NAI post subset preserves peer outcomes and does not invent a transaction breakdown.'
+$naiInvalid = $naiSummary | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$naiInvalid.per_source_summaries[0].whole_source_coverage = $true
+Save-Summary $naiInvalid
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'nai-false-complete')) 'NAI partial must not claim whole-source coverage.'
 $Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true
 $selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
 
