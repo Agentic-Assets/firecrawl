@@ -9,13 +9,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from cre_lyon_partial import (
+import cre_ingest as ingest  # noqa: E402
+from cre_lyon_partial import (  # noqa: E402
     build_partial_sql,
     identity_probe_sql,
     partial_readback_sql,
     stage_record,
 )
-from tests.test_lyon_partial_stage import record
+from tests.test_lyon_partial_stage import record  # noqa: E402
 
 
 def run(*args, text=None, check=True):
@@ -91,6 +92,25 @@ SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE exte
         sql(build_partial_sql(staged, held_again, before_again, next_job, start, finish))
         assert sql(partial_readback_sql(staged, held_again, before_again, next_job, start, finish)) == "1|3|0"
         assert sql("SELECT jsonb_array_length(raw_data#>'{lyonSearchObservations,entries}') FROM credeals.cre_listings WHERE external_id='legacy'") == "1"
+        # The ordinary full path must preserve the exact partial search history.
+        retained = json.loads(sql("SELECT raw_data->'lyonSearchObservations' FROM credeals.cre_listings WHERE external_id='legacy'"))
+        full = {"sourceKey": "lyon-stahl", "transactionMode": "sale", "id": "legacy",
+                "url": "https://lyonstahl.com/properties/legacy/", "name": "", "transactionType": "Investment Sale"}
+        jobs = [{"slug": "lyon-stahl", "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}]
+        def full_sql(value):
+            return ingest.build_sql([ingest.to_row(value, {}, "2026-11-05T06:05:00Z")],
+                                    jobs, "2026-11-05T06:05:00Z", set())
+        sql(full_sql(full))
+        after = json.loads(sql("SELECT raw_data FROM credeals.cre_listings WHERE external_id='legacy'"))
+        assert after["lyonSearchObservations"] == retained
+        collision = {**full, "lyonSearchObservations": {"unknown": "refuse"}}
+        result = sql(full_sql(collision), check=False)
+        assert result.returncode != 0 and "Lyon search evidence key collision" in result.stderr
+        assert json.loads(sql("SELECT raw_data FROM credeals.cre_listings WHERE external_id='legacy'")) == after
+        sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{lyonSearchObservations}', '[]'::jsonb) WHERE external_id='legacy'")
+        malformed = sql(full_sql(full), check=False)
+        assert malformed.returncode != 0 and "Lyon search evidence malformed" in malformed.stderr
+        sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(after)) + "::jsonb WHERE external_id='legacy'")
         sql("UPDATE credeals.cre_listings SET canonical_url='https://lyonstahl.com/properties/collision/' WHERE external_id='legacy'")
         collision = stage_record(record("https://lyonstahl.com/properties/collision/", "property_path", "collision"))
         assert json.loads(sql(identity_probe_sql([collision])).split("|", 3)[2]) == ["collision"]

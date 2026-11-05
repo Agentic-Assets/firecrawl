@@ -5114,6 +5114,35 @@ DO $$ BEGIN
     AND s.raw_data ? 'colliersNativeObservations')
  THEN RAISE EXCEPTION 'Colliers native evidence key collision'; END IF;
 END $$;
+-- Preserve private Lyon search history when an ordinary full source upsert
+-- refreshes raw_data. A malformed or incoming reserved envelope is ambiguous.
+CREATE TEMP TABLE _lyon_search_prior ON COMMIT DROP AS
+SELECT t.id, t.external_id, t.raw_data->'lyonSearchObservations' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='lyon-stahl' AND jsonb_typeof(t.raw_data)='object'
+ AND t.raw_data ? 'lyonSearchObservations';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='lyon-stahl' AND s.raw_data ? 'lyonSearchObservations')
+ THEN RAISE EXCEPTION 'Lyon search evidence key collision'; END IF;
+ IF EXISTS (
+   SELECT 1 FROM _lyon_search_prior p WHERE NOT COALESCE(
+     jsonb_typeof(p.evidence)='object'
+     AND CASE WHEN jsonb_typeof(p.evidence)='object' THEN
+       (p.evidence - ARRAY['schema','sourceKey','externalId','entries'])='{}'::jsonb ELSE false END
+     AND p.evidence->>'schema'='lyon-search-history/v1'
+     AND p.evidence->>'sourceKey'='lyon-stahl'
+     AND p.evidence->>'externalId'=p.external_id
+     AND CASE WHEN jsonb_typeof(p.evidence->'entries')='array' THEN NOT EXISTS (
+       SELECT 1 FROM jsonb_array_elements(p.evidence->'entries') e(value)
+       WHERE CASE WHEN jsonb_typeof(e.value)='object' THEN
+         e.value - 'recordBase64' <> '{}'::jsonb
+         OR jsonb_typeof(e.value->'recordBase64') IS DISTINCT FROM 'string'
+         OR COALESCE(e.value->>'recordBase64','') !~ '^[A-Za-z0-9+/]+={0,2}$'
+         OR length(e.value->>'recordBase64') % 4 <> 0 ELSE true END)
+       ELSE false END, false))
+ THEN RAISE EXCEPTION 'Lyon search evidence malformed'; END IF;
+END $$;
 {targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -5573,6 +5602,15 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',p.evidence)
 FROM _colliers_native_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _lyon_search_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'Lyon search evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('lyonSearchObservations',p.evidence)
+FROM _lyon_search_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
