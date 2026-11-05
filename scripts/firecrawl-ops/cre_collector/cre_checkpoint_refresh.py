@@ -5522,7 +5522,8 @@ def ingest_source(
         pyramid_binding = expected_binding(run_dir, manifest, attempt_id)
     if source == "jll":
         argv.extend(["--checkpoint-ingest-attempt", attempt_id,
-                     "--checkpoint-jll-code-sha", manifest["collector_git_sha"]])
+                     "--checkpoint-jll-code-sha", manifest["collector_git_sha"],
+                     "--checkpoint-jll-transactions", ",".join(manifest["config"]["transactions"])])
         from cre_jll_guard_result import expected_binding
         jll_binding = expected_binding(run_dir, manifest, attempt_id)
     if source == "colliers-main":
@@ -6076,8 +6077,9 @@ def ingest_admitted_sources(
     env_file: str | None,
     *,
     owner_check: Callable[[], None] | None = None,
-) -> None:
+) -> list[str]:
     """Ingest after every source clears the aggregate gate."""
+    held = []
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
         existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
@@ -6094,15 +6096,31 @@ def ingest_admitted_sources(
             ingest_source(run_dir, manifest, source, existing[0], env_file)
         except SourceGuardRefusal as exc:
             from cre_pyramid_rollback_result import verified_rollback
+            if owner_check is None:
+                raise GlobalStageError("serial rollback requires owner verification") from exc
             if (manifest["config"]["sources"] != [source]
-                    or owner_check is None):
+                    and (source != "jll" or not isinstance(exc, JllImageGuardRefusal))):
                 raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
             owner_check()
             if not verified_rollback(run_dir, manifest, source):
                 raise GlobalStageError("source-local rollback evidence changed") from exc
-            manifest["serial_guard_holds"] = [source]
-            raise
+            if manifest["config"]["sources"] == [source]:
+                manifest["serial_guard_holds"] = [source]
+                raise
+            held.append(source)
+            manifest["serial_guard_holds"] = list(held)
+            save_manifest(run_dir, manifest)
+    return held
 
+
+def validate_serial_sources(run_dir: Path, manifest: dict[str, Any], env_file: str | None,
+                            sources: Sequence[str], holds: Sequence[str]) -> None:
+    """Validate committed peers before reporting a serial source hold as failure."""
+    if holds:
+        run_final_validation(run_dir, manifest, env_file,
+                             sources=[source for source in sources if source not in holds])
+        raise RefreshError("serial source checkpoints remain incomplete: " + ", ".join(holds))
+    run_final_validation(run_dir, manifest, env_file)
 
 def _artifact_run_job_probe_is_exact(
     validation: Mapping[str, Any],
@@ -8247,7 +8265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     phase="ingest",
                     active_operation="serial_additive_ingest",
                 )
-                ingest_admitted_sources(
+                serial_holds = ingest_admitted_sources(
                     run_dir, manifest, args.env_file, owner_check=lock._require_authority
                 )
                 set_cpu_guard_context(
@@ -8255,7 +8273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     phase="readback",
                     active_operation="generation_exact_readback",
                 )
-                run_final_validation(run_dir, manifest, args.env_file)
+                validate_serial_sources(run_dir, manifest, args.env_file, sources, serial_holds)
             quiesce_resource_guards(memory_guard, cpu_guard)
             manifest["status"] = (
                 "additive_scope_complete_current_inventory"

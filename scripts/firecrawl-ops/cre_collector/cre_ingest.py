@@ -7421,7 +7421,7 @@ def jll_checkpoint_binding(args, data, original_bytes, artifact_run_key):
             or getattr(args, "jll_partial_claims", None) or args.matthews_targeted_claims):
         raise ValueError("unbound JLL image transition")
     validate_strict_artifact_freshness(data, require_strict_freshness=True)
-    scope = strict_full_source_scope(data, "jll")
+    scope = strict_full_source_scope(data, "jll", required_transactions=tuple(args.checkpoint_jll_transactions.split(",")))
     if (len(scope["entries"]) != len(data["sources"])
             or len(scope["listings"]) != len(data["listings"])):
         raise ValueError("mixed JLL image transition scope")
@@ -7442,7 +7442,7 @@ def jll_checkpoint_binding(args, data, original_bytes, artifact_run_key):
         "database_target_sha256": args.expected_db_target_sha256,
         "attempt_id": args.checkpoint_ingest_attempt, "collector_git_sha": code_sha,
     }
-    if not valid_binding(binding):
+    if not valid_binding(binding, require_collector_git_sha=True):
         raise ValueError("invalid JLL image transition binding")
     return binding
 
@@ -7469,6 +7469,7 @@ def main():
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-code-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-jll-transactions", choices=("sale", "lease", "sale,lease"), default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -7515,6 +7516,9 @@ def main():
     args = ap.parse_args()
     if (args.checkpoint_collector_git_sha is not None or args.checkpoint_jll_code_sha is not None) and not args.checkpoint_ingest_attempt:
         ap.error("collector code binding requires a checkpoint ingest attempt")
+
+    if (args.checkpoint_jll_code_sha is None) != (args.checkpoint_jll_transactions is None):
+        ap.error("JLL checkpoint code and transaction scope must be bound together")
 
     merged = {}  # (slug, external_id) -> row
     inventory_only_merged = {}  # (slug, external_id) -> source-index row

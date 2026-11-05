@@ -145,6 +145,7 @@ def test_checkpoint_consumes_only_bound_settled_jll_results(
     manifest = {
         "sources": {"jll": checkpoint},
         "collector_git_sha": "e" * 40,
+        "config": {"transactions": ["sale", "lease"]},
     }
     monkeypatch.setattr(refresh, "save_manifest", lambda *a: None)
     monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda *a: "c" * 64)
@@ -224,3 +225,35 @@ def test_jll_image_guard_receipt_precedes_commit_and_retains_general_guard():
     assert "b.source_key = 'jll' AND b.child_type = 'images'" in sql
     assert "CRE_JLL_IMAGE_GUARD_RESULT" in sql[rollback:general]
     assert '"outcome":"committed"' in sql[commit:]
+
+
+@pytest.mark.parametrize("transactions", [("sale",), ("lease",), ("sale", "lease")])
+def test_jll_binding_accepts_exact_configured_transaction_scope(tmp_path, monkeypatch, transactions):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+    import cre_checkpoint_refresh as refresh
+    import cre_ingest as ingest
+    from test_cre_checkpoint_refresh import strict_artifact
+
+    data = strict_artifact(source="jll", detail_scope="detail_page", preserve_children=False)
+    data["runMeta"]["transactions"] = list(transactions)
+    data["sources"] = [entry for entry in data["sources"] if entry["transaction"] in transactions]
+    data["listings"] = [row for row in data["listings"] if row["transactionMode"] in transactions]
+    data["totalListings"] = len(data["listings"])
+    raw = json.dumps(data).encode()
+    path = tmp_path / "artifact.json"
+    path.write_bytes(raw)
+    key, _ = ingest.artifact_run_identity_from_digests([hashlib.sha256(raw).hexdigest()])
+    args = SimpleNamespace(inputs=[str(path)], checkpoint_ingest_attempt="c" * 32,
+        checkpoint_jll_code_sha="d" * 40, checkpoint_jll_transactions=",".join(transactions),
+        checkpoint_pyramid_code_sha=None, checkpoint_collector_git_sha=None,
+        expected_db_target_sha256="b" * 64, require_strict_freshness=True,
+        mark_missing=False, activate_status=False, daum_verified_subset_claims=None,
+        pyramid_verified_subset_claims=None, matthews_targeted_claims=None)
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("d" * 40, False))
+    binding = ingest.jll_checkpoint_binding(args, data, raw, key)
+    assert binding["artifact_sha256"] == hashlib.sha256(raw).hexdigest()
+    args.checkpoint_jll_transactions = "lease" if transactions != ("lease",) else "sale"
+    with pytest.raises(ValueError):
+        ingest.jll_checkpoint_binding(args, data, raw, key)
