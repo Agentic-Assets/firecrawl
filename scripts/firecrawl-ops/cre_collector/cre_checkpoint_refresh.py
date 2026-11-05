@@ -5553,6 +5553,16 @@ def _admit_current_inventory(
         raise GlobalStageError("current-inventory admission refused") from exc
 
 
+def _partial_window_suffix(checkpoint, source):
+    """Keep per-window evidence distinct without changing ordinary source paths."""
+    if source != "colliers":
+        return ""
+    worker = checkpoint.get("colliers_partial_worker") or {}
+    index = worker.get("window_index", 1)
+    if type(index) is not int or index < 1:
+        raise GlobalStageError("partial window index invalid")
+    return "" if index == 1 else f"-window-{index}"
+
 def gate_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -5565,8 +5575,9 @@ def gate_source(
     additive_hold_enabled = (
         manifest["config"].get("admit_baseline_hold_additively") is True
     )
-    gate_path = run_dir / "gates" / f"{source}.json"
-    log_path = run_dir / "logs" / f"{source}-gate.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    gate_path = run_dir / "gates" / f"{source}{suffix}.json"
+    log_path = run_dir / "logs" / f"{source}{suffix}-gate.log"
     gate_path.parent.mkdir(parents=True, exist_ok=True)
     rc = run_command(
         build_gate_argv(
@@ -5774,8 +5785,9 @@ def dry_run_source(
         checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
         save_manifest(run_dir, manifest)
         return True
-    sql_dir = run_dir / "dry-run" / source
-    log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    sql_dir = run_dir / "dry-run" / f"{source}{suffix}"
+    log_path = run_dir / "logs" / f"{source}{suffix}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
     rc = run_command(
         build_ingest_dry_run_argv(
@@ -5813,7 +5825,8 @@ def ingest_source(
     env_file: str | None,
 ) -> None:
     checkpoint = manifest["sources"][source]
-    log_path = run_dir / "logs" / f"{source}-ingest.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    log_path = run_dir / "logs" / f"{source}{suffix}-ingest.log"
     started = utc_now()
     argv = build_ingest_argv(
         artifact,

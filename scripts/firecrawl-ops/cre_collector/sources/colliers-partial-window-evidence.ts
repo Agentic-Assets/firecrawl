@@ -58,9 +58,10 @@ export class ColliersWindowEvidence {
     return this.bytes >= this.softBytes ? "stop" : "continue";
   }
 
-  hold(item: { candidate: unknown; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number }) {
+  hold(item: { candidate: unknown; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number; retryAfter?: boolean }) {
     this.line({ kind: "held", candidate: item.candidate, reason: item.reason,
       ...(item.status === undefined ? {} : { status: item.status }),
+      ...(item.retryAfter === undefined ? {} : { retryAfter: item.retryAfter }),
       ...(item.observedAt === undefined ? {} : { observedAt: item.observedAt }) }, item.evidence,
       item.reason === "detail_oversized" ? MAX_NATIVE_BYTES + 1 : MAX_NATIVE_BYTES);
     this.records++;

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { observationNow } from "../lib/observation-clock.js";
 import { ColliersAccessStop, ColliersIdentityError, enrichColliersCard, groupColliersMapLocations, parseColliersCards } from "./colliers.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
-import { ColliersDetailHold, ColliersSettledSourceStop, fetchColliersPartialDetail } from "./colliers-partial-fetch.js";
+import { ColliersDetailHold, ColliersSettledAccessStop, ColliersSettledSourceStop, fetchColliersPartialDetail } from "./colliers-partial-fetch.js";
 import { scanColliersPartial, type Candidate } from "./pure/colliers-partial-spool.js";
 import { selectColliersWindow } from "./pure/colliers-partial-window.js";
 import { assertPartialNativeIdentity } from "./colliers-partial-native-id.js";
@@ -12,7 +12,7 @@ import { assertPartialNativeIdentity } from "./colliers-partial-native-id.js";
 type Binding = { generation: string; attempt: number; startedAt: string; finishedAt: string };
 type Native = { detail: any; decodedText: string; nativeBytes: Uint8Array };
 type WindowMember = { candidate: Candidate; eligible: boolean };
-type Hold = { candidate: Candidate; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number };
+type Hold = { candidate: Candidate; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number; retryAfter?: boolean };
 
 /**
  * Sink must persist the whole current item before returning stop. It owns byte
@@ -96,6 +96,13 @@ export async function produceColliersWindow(
             colliersPartialEvidence: { schema: "colliers-partial-detail-v1", ...source } };
           captured = { listing, source, decodedDetail: native.decodedText, nativeBytes: native.nativeBytes };
         } catch (error) {
+          if (error instanceof ColliersSettledAccessStop) {
+            const observedAt = observationNow();
+            await hold({ candidate, reason: "detail_access_stop", status: error.status,
+              retryAfter: error.retryAfter, observedAt });
+            processed.add(p); unadmitted.add(p); sourceStopPosition = p; stopped = true;
+            continue;
+          }
           if (error instanceof ColliersAccessStop || error instanceof NativeEvidenceTerminalError) throw error;
           if (error instanceof ColliersIdentityError || error instanceof ColliersDetailHold || error instanceof ColliersSettledSourceStop) {
             const reason = error instanceof ColliersIdentityError ? "detail_identity" : error.reason;

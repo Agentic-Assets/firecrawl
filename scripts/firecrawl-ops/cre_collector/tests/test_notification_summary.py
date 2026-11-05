@@ -1958,3 +1958,48 @@ def test_pipeline_franklin_partial_summary_preserves_verified_peer(evidence, tam
         assert "transaction_breakdown" not in rows[source]
     else:
         assert source not in rows and source in result["unverifiable_source_keys"]
+
+
+def test_colliers_multiwindow_notification_counts_verified_units_and_keeps_peer(evidence, monkeypatch):
+    import cre_checkpoint_series as series
+
+    test_pipeline_colliers_partial_summary_preserves_verified_peer(evidence, None)
+    parent = evidence["values"]["parent"]
+    child = evidence["values"]["child"]
+    checkpoint = child["sources"]["colliers"]
+    pipeline = child["pipeline"]
+    original = pipeline["units"][0]
+    original["sources"] = ["cbre"]
+    source_result = pipeline["source_results"]["colliers"]
+    validation_raw = (evidence["series"] / "runs" / RUN / original["validation_path"]).read_bytes()
+    entries = []
+    for index, unit_num in ((1, 2), (2, 3)):
+        unit = copy.deepcopy(original)
+        unit.update(unit_id=f"unit-{unit_num:04d}", sources=["colliers"],
+                    validation_path=f"pipeline/unit-{unit_num:04d}/validation.json")
+        path = evidence["series"] / "runs" / RUN / unit["validation_path"]
+        path.parent.mkdir(parents=True, mode=0o700)
+        path.write_bytes(validation_raw)
+        path.chmod(0o600)
+        pipeline["units"].append(unit)
+        result = copy.deepcopy(source_result)
+        result.update(unit_id=unit["unit_id"], validation_path=unit["validation_path"])
+        entries.append({"state": "verified", "unit_id": unit["unit_id"], "result": result})
+    checkpoint["partial_windows"] = entries
+    checkpoint["colliers_partial_worker"] = {"window_index": 2}
+    checkpoint["artifact"]["path"] = "colliers-partial/window-1-2-artifact.json"
+    pipeline["source_results"]["colliers"] = entries[-1]["result"]
+    parent["sources"]["colliers"]["pipeline_result"] = entries[-1]["result"]
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *_args, **_kwargs: True)
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=["colliers", "cbre"])
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert rows["colliers"]["verified_listings"] == 6
+    assert rows["colliers"]["held_count"] == 4
+    assert rows["colliers"]["whole_source_coverage"] is False
+    assert "cbre" in rows
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *_args, **_kwargs: False)
+    result = read_pipeline(evidence, source_keys=["colliers", "cbre"])
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert "colliers" not in rows and "colliers" in result["unverifiable_source_keys"]
+    assert "cbre" in rows
