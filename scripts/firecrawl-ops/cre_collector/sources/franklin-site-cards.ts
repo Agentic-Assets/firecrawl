@@ -1,10 +1,11 @@
 import * as cheerio from 'cheerio';
-import type { parseFranklinPage } from './franklin-street-evidence.js';
+import { parseFranklinPage } from './franklin-street-evidence.js';
+import type { Tx } from '../types.js';
 
 type Observation = ReturnType<typeof parseFranklinPage>;
 
 /** Offline projection only: no admission, persistence or completeness claim. */
-export function projectFranklinSiteCards(page: Observation) {
+function projectObservation(page: Observation) {
   const expectedPage = `https://franklinst.com/properties/for-${page.transaction}/`;
   if (page.schema !== 'franklin-street-page-observation-v1' || page.coverage !== 'partial_unknown'
       || page.sourceUrl !== expectedPage || !Number.isFinite(Date.parse(page.observedAt))
@@ -37,6 +38,9 @@ export function projectFranklinSiteCards(page: Observation) {
       sourceKey: 'franklin-street', id: `franklin-site:${page.transaction}:${c.id}`,
       url: c.url, canonicalUrl: c.url, transactionMode: page.transaction,
       name: c.card.attributes['data-listing-name'] || undefined,
+      state: c.card.attributes['data-state'] || undefined,
+      latitude: c.card.attributes['data-lat'] || undefined,
+      longitude: c.card.attributes['data-lng'] || undefined,
       preserveChildCollections: true,
       franklinSiteObservation: { coverage: 'partial_unknown', sourceUrl: page.sourceUrl,
         observedAt: page.observedAt, decodedHtmlSha256: page.decodedHtmlSha256,
@@ -44,4 +48,11 @@ export function projectFranklinSiteCards(page: Observation) {
     });
   }
   return { coverage: 'partial_unknown' as const, listings, held };
+}
+/** Derive each projection from the exact decoded page supplied by its caller.
+ * The caller must separately bind the bytes, clock, generation and target.
+ */
+export function projectFranklinSiteCards(html: string, observedAt: string, tx: Tx) {
+  if (typeof html !== 'string' || !['sale', 'lease'].includes(tx)) throw new Error('invalid Franklin page input');
+  return projectObservation(parseFranklinPage(html, observedAt, tx));
 }
