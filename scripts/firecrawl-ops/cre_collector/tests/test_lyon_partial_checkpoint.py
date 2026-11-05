@@ -219,6 +219,7 @@ class LyonCheckpointTests(unittest.TestCase):
                     readback = run_partial_readback(path, envelope, code_sha="a" * 40, target="b" * 64,
                                                     attempt_id="e" * 32, env_file=None)
                 self.assertTrue(readback["ok"])
+                self.assertEqual(readback["new_missing_canonical_count"], 1)
                 self.assertTrue(readback["child_collections_verified"])
                 claims_path = root / "lyon-stahl-partial" / "claims.json"
                 claims_path.write_text(json.dumps(envelope))

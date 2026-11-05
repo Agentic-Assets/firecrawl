@@ -201,6 +201,13 @@ def _validate_partition(staged, held, preimage):
         raise ValueError("invalid Lyon preimage")
 
 
+def new_missing_canonical_count(staged, held, preimage):
+    """Count admitted new parents whose INSERT deliberately leaves canonical URL unknown."""
+    _validate_partition(staged, held, preimage)
+    held_ids = set(held)
+    return sum(item["listing"] is None and item["external_id"] not in held_ids for item in preimage)
+
+
 def build_partial_sql(staged, held, preimage, job_id, started_at, finished_at):
     """Generate guarded additive SQL. Caller owns custody, gates and target binding."""
     import uuid
