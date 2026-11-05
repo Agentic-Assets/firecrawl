@@ -97,7 +97,8 @@ def revalidate_source_receipt(run_dir, manifest, attempt_number, current_code_sh
 
 def verify_detail_record(item, generation, attempt, started_at, finished_at):
     """Validate one private native detail against its exact partial listing."""
-    if not isinstance(item, dict) or set(item) != {"listing", "source", "decodedDetail", "nativeBase64"}:
+    if (not isinstance(generation, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", generation)
+            or not isinstance(item, dict) or set(item) != {"listing", "source", "decodedDetail", "nativeBase64"}):
         raise ValueError("partial detail record invalid")
     listing, source, raw = item["listing"], item["source"], item["decodedDetail"]
     if not isinstance(listing, dict) or not isinstance(source, dict) or not isinstance(raw, str):
@@ -140,6 +141,12 @@ def verify_detail_record(item, generation, attempt, started_at, finished_at):
     if observed_id is None and isinstance(summary, dict):
         observed_id = summary.get("ProjectId")
     source_id = source["mapProjectId"]
+    if (not isinstance(source_id, str) or re.search(r"[\x00-\x1f\x7f]", source_id)):
+        raise ValueError("partial source identity invalid")
+    try:
+        source_id.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("partial source identity invalid") from exc
     provenance = listing.get("freshnessProvenance")
     proof = listing.get("colliersPartialEvidence")
     mapped_detail = listing.get("colliersSalesTrackerDetail")
@@ -182,7 +189,7 @@ def stage_detail_record(item, generation, attempt, started_at, finished_at, arti
             or parsed.path.lower() not in {"/handler/landing.aspx", "/handler/modern.aspx"}):
         raise ValueError("partial source URL invalid")
     tokens = parse_qs(parsed.query, keep_blank_values=True).get("pv", [])
-    if (len(tokens) != 1 or not tokens[0]
+    if (len(tokens) != 1 or not tokens[0] or re.search(r"[\x00-\x1f\x7f]", tokens[0])
             or hashlib.sha256(tokens[0].encode("utf-8")).hexdigest() != item["source"]["detailTokenSha256"]):
         raise ValueError("partial source token differs")
     row = to_row(listing, {}, artifact_finished_at)
@@ -284,3 +291,263 @@ def merge_native_observation(prior_raw, item, generation, attempt, started_at, f
     if len(json.dumps(history, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_NATIVE_HISTORY_BYTES:
         raise PartialHistoryHold("native history exceeds bounded storage")
     return history
+
+def _validate_staged(staged):
+    if not isinstance(staged, list) or not staged:
+        raise ValueError("partial staging is empty")
+    expected = {"slug", "external_id", "source_url", "canonical_url", "transaction_type", "inventory_at", "detail_at"}
+    ids, urls = set(), set()
+    for row in staged:
+        if (not isinstance(row, dict) or set(row) != expected or row["slug"] != "colliers"
+                or row["transaction_type"] != "sale"
+                or not isinstance(row["external_id"], str) or not row["external_id"] or row["external_id"].startswith("main:")
+                or not isinstance(row["source_url"], str) or not row["source_url"]
+                or (row["canonical_url"] is not None and
+                    (not isinstance(row["canonical_url"], str) or not row["canonical_url"]))
+                or row["external_id"] in ids or row["source_url"] in urls):
+            raise ValueError("partial staging identity invalid")
+        if _time(row["detail_at"]) < _time(row["inventory_at"]):
+            raise ValueError("partial staging clock invalid")
+        ids.add(row["external_id"])
+        urls.add(row["source_url"])
+
+
+def identity_probe_sql(staged):
+    """Classify exact current-target conflicts; never infer missing source rows."""
+    from cre_ingest import sql_lit
+
+    _validate_staged(staged)
+    payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    return f"""
+WITH candidate AS (
+ SELECT * FROM jsonb_to_recordset({payload}::jsonb)
+ AS c(slug text, external_id text, source_url text, canonical_url text, transaction_type text,
+      inventory_at timestamptz, detail_at timestamptz)
+), scoped AS (
+ SELECT b.id AS brokerage_id, c.* FROM candidate c
+ JOIN credeals.cre_brokerages b ON b.slug=c.slug AND b.slug='colliers'
+), conflicts AS (
+ SELECT DISTINCT s.external_id FROM scoped s
+ LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
+ LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
+ WHERE (s.canonical_url IS NOT NULL AND EXISTS (SELECT 1 FROM scoped peer
+       WHERE peer.external_id<>s.external_id AND peer.canonical_url=s.canonical_url))
+    OR (own.id IS NOT NULL AND (own.source_url IS DISTINCT FROM s.source_url OR own.deleted_at IS NOT NULL
+        OR (own.status IS DISTINCT FROM 'active' AND NOT (
+          own.status IS NULL AND own.raw_data#>>'{{colliersNativeObservations,schema}}'='colliers-native-history/v1'
+          AND own.raw_data#>>'{{colliersNativeObservations,sourceKey}}'='colliers'
+          AND own.raw_data#>>'{{colliersNativeObservations,externalId}}'=s.external_id))
+        OR own.scraped_at > s.detail_at OR own.updated_at > s.detail_at
+        OR own.external_id LIKE 'main:%'
+        OR NOT EXISTS (SELECT 1 FROM unnest(ARRAY[
+          own.raw_data#>>'{{latestInventoryObservation,sourceKey}}', own.raw_data#>>'{{latestInventoryObservation,primary,sourceKey}}',
+          own.raw_data#>>'{{latestInventoryObservation,secondary_pass,sourceKey}}', own.raw_data->>'sourceKey',
+          own.raw_data#>>'{{primary,sourceKey}}', own.raw_data#>>'{{secondary_pass,sourceKey}}']) hint
+          WHERE btrim(hint)='colliers')
+        OR EXISTS (SELECT 1 FROM unnest(ARRAY[
+          own.raw_data#>>'{{latestInventoryObservation,sourceKey}}', own.raw_data#>>'{{latestInventoryObservation,primary,sourceKey}}',
+          own.raw_data#>>'{{latestInventoryObservation,secondary_pass,sourceKey}}', own.raw_data->>'sourceKey',
+          own.raw_data#>>'{{primary,sourceKey}}', own.raw_data#>>'{{secondary_pass,sourceKey}}']) hint
+          WHERE NULLIF(btrim(hint),'') IS NOT NULL AND btrim(hint)<>'colliers')))
+    OR (si.id IS NOT NULL AND (si.source_key IS DISTINCT FROM 'colliers' OR si.url IS DISTINCT FROM s.source_url OR si.soft_deleted IS TRUE
+        OR si.observation_present IS FALSE OR si.last_enumerated_at > s.inventory_at))
+    OR EXISTS (SELECT 1 FROM credeals.cre_listings other
+       WHERE other.brokerage_id=s.brokerage_id AND other.deleted_at IS NULL
+         AND (own.id IS NULL OR other.id<>own.id)
+         AND (other.source_url=s.source_url OR (s.canonical_url IS NOT NULL AND other.canonical_url=s.canonical_url)))
+)
+SELECT (SELECT count(*) FROM candidate) AS staged, (SELECT count(*) FROM scoped) AS joined,
+ COALESCE((SELECT json_agg(external_id ORDER BY external_id)::text FROM conflicts), '[]') AS held,
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.external_id,
+   'listing', CASE WHEN own.id IS NULL THEN NULL ELSE jsonb_build_object('id',own.id,'source_url',own.source_url,
+     'canonical_url',own.canonical_url,'status',own.status,'deleted_at',own.deleted_at,'scraped_at',own.scraped_at,'updated_at',own.updated_at,
+     'raw_data',own.raw_data) END,
+   'source_index', CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
+     'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END)
+   ORDER BY s.external_id) FROM scoped s
+   LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
+   LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id), '[]'::jsonb) AS preimage
+"""
+
+
+def transaction_guard_sql(staged, held, preimage, extra_held=()):
+    """Recheck the partition under the existing ingest transaction and lock."""
+    from cre_ingest import lifecycle_transaction_lock_sql, sql_lit
+
+    _validate_staged(staged)
+    ids = {row["external_id"] for row in staged}
+    if not isinstance(held, list) or held != sorted(set(held)) or not set(held) <= ids:
+        raise ValueError("partial held partition invalid")
+    extra_held = set(extra_held)
+    if not extra_held <= ids or extra_held & set(held):
+        raise ValueError("partial extra held partition invalid")
+    all_held = sorted(set(held) | extra_held)
+    if len(all_held) == len(staged):
+        raise ValueError("partial partition has no writable members")
+    if not isinstance(preimage, list) or len(preimage) != len(staged):
+        raise ValueError("partial preimage invalid")
+    payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    held_payload = sql_lit(json.dumps(held, separators=(",", ":")))
+    preimage_payload = sql_lit(json.dumps(preimage, sort_keys=True, separators=(",", ":")))
+    all_held_payload = sql_lit(json.dumps(all_held, separators=(",", ":")))
+    return f"""
+{lifecycle_transaction_lock_sql()}
+CREATE TEMP TABLE _colliers_partial_members ON COMMIT DROP AS
+ SELECT b.id AS brokerage_id, m.* FROM jsonb_to_recordset({payload}::jsonb)
+ AS m(slug text, external_id text, source_url text, canonical_url text, transaction_type text,
+      inventory_at timestamptz, detail_at timestamptz)
+ JOIN credeals.cre_brokerages b ON b.slug=m.slug AND b.slug='colliers';
+DO $$ BEGIN
+ PERFORM si.id FROM credeals.cre_source_index si JOIN _colliers_partial_members m
+  ON si.brokerage_id=m.brokerage_id AND si.external_id=m.external_id
+  ORDER BY si.id FOR UPDATE OF si;
+ PERFORM own.id FROM credeals.cre_listings own JOIN _colliers_partial_members m
+  ON own.brokerage_id=m.brokerage_id AND own.external_id=m.external_id
+  ORDER BY own.id FOR UPDATE OF own;
+END $$;
+CREATE TEMP TABLE _colliers_partial_probe ON COMMIT DROP AS {identity_probe_sql(staged)};
+DO $$ BEGIN
+ IF (SELECT count(*) FROM _colliers_partial_members) <> {len(staged)}
+ OR (SELECT count(*) FROM _src) <> {len(staged)}
+ OR (SELECT count(DISTINCT (brokerage_id, external_id)) FROM _src) <> {len(staged)}
+ OR (SELECT count(*) FROM _src s JOIN _colliers_partial_members m
+     ON s.brokerage_id=m.brokerage_id AND s.external_id=m.external_id
+     AND s.source_url=m.source_url AND s.canonical_url IS NOT DISTINCT FROM m.canonical_url
+     AND s.transaction_type=m.transaction_type WHERE s.raw_data->>'sourceKey'='colliers'
+     AND s.raw_data->>'id'=m.external_id
+     AND (s.raw_data->>'inventoryObservedAt')::timestamptz=m.inventory_at
+     AND (s.raw_data->>'detailObservedAt')::timestamptz=m.detail_at) <> {len(staged)}
+ OR (SELECT staged FROM _colliers_partial_probe) <> {len(staged)}
+ OR (SELECT joined FROM _colliers_partial_probe) <> {len(staged)}
+ OR (SELECT held::jsonb FROM _colliers_partial_probe) <> {held_payload}::jsonb
+ OR (SELECT preimage FROM _colliers_partial_probe) <> {preimage_payload}::jsonb
+ THEN RAISE EXCEPTION 'Colliers partial identity partition changed'; END IF;
+END $$;
+DELETE FROM _src s USING _colliers_partial_members m WHERE s.brokerage_id=m.brokerage_id
+ AND s.external_id=m.external_id AND m.external_id IN (SELECT jsonb_array_elements_text({all_held_payload}::jsonb));
+UPDATE credeals.cre_scrape_jobs j SET status='partial',
+ listings_saved=(SELECT count(*) FROM _src s WHERE s.brokerage_id=j.brokerage_id)
+ FROM _jobmeta jm WHERE jm.slug='colliers' AND j.id=jm.job_id;
+"""
+
+
+def build_partial_sql(items, staged, held, preimage, generation, attempt, started_at,
+                      finished_at, artifact_finished_at, job_id, *, activate_status=False):
+    """Build one guarded partial transaction; caller owns source, gates and target."""
+    import math
+    import uuid
+
+    from cre_ingest import _status_from_signal, sql_lit, to_row
+
+    _validate_staged(staged)
+    if type(activate_status) is not bool:
+        raise ValueError("invalid status activation")
+    job = str(uuid.UUID(job_id))
+    if not isinstance(items, list) or len(items) != len(staged):
+        raise ValueError("partial artifact partition differs")
+    expected = {row["external_id"]: row for row in staged}
+    if not isinstance(preimage, list) or len(preimage) != len(staged):
+        raise ValueError("partial preimage differs")
+    prior = {row["external_id"]: row for row in preimage if isinstance(row, dict) and "external_id" in row}
+    if set(prior) != set(expected):
+        raise ValueError("partial preimage differs")
+    rows, history_held, seen = [], {}, set()
+    for item in items:
+        member = stage_detail_record(item, generation, attempt, started_at, finished_at, artifact_finished_at)
+        external_id = member["external_id"]
+        if external_id in seen or expected.get(external_id) != member:
+            raise ValueError("partial staged membership differs")
+        seen.add(external_id)
+        row = to_row(item["listing"], {}, artifact_finished_at)
+        parent = prior[external_id].get("listing")
+        raw_before = {} if parent is None else parent.get("raw_data")
+        history = None
+        if external_id not in held:
+            try:
+                history = merge_native_observation(raw_before, item, generation, attempt, started_at, finished_at)
+            except PartialHistoryHold as exc:
+                history_held[external_id] = str(exc)
+        # Only the already-supported status gate may allow an explicit source signal.
+        explicit_status = _status_from_signal(item["listing"].get("status") or item["listing"].get("statusBadge"))
+        projection = {key: row.get(key) for key in
+                      ("slug", "external_id", "source_url", "canonical_url", "transaction_type", "title",
+                       "address", "city", "state", "zip", "description", "size_sf", "lot_size_sf", "units",
+                       "scraped_at")}
+        # PostgreSQL text/jsonb cannot represent NUL or invalid UTF-8. Keep
+        # source bytes in native history and omit only an unsafe scalar.
+        for key in ("title", "address", "city", "state", "zip", "description"):
+            value = projection[key]
+            if isinstance(value, str):
+                try:
+                    value.encode("utf-8")
+                except UnicodeEncodeError:
+                    projection[key] = None
+                if "\x00" in value:
+                    projection[key] = None
+        for key in ("size_sf", "lot_size_sf", "units"):
+            if isinstance(projection[key], float) and not math.isfinite(projection[key]):
+                projection[key] = None
+        projection["raw_data"] = {"sourceKey": "colliers", "id": external_id,
+                                  "inventoryObservedAt": item["source"]["inventoryObservedAt"],
+                                  "detailObservedAt": item["source"]["detailObservedAt"]}
+        rows.append(projection | {"partial_history": history,
+                                  "status": explicit_status if activate_status else None})
+    if seen != set(expected):
+        raise ValueError("partial staged membership differs")
+    payload = sql_lit(json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+    guard = transaction_guard_sql(staged, held, preimage, history_held)
+    # Existing source-index and child rows are untouched. Raw bytes live under a
+    # reserved base64 member so generic recursive extraction flags cannot scan
+    # their contents. Caller must ensure later full refresh preserves it.
+    sql = f"""
+BEGIN;
+CREATE TEMP TABLE _jobmeta (slug text, job_id uuid) ON COMMIT DROP;
+INSERT INTO _jobmeta VALUES ('colliers', {sql_lit(job)}::uuid);
+INSERT INTO credeals.cre_scrape_jobs (id,brokerage_id,status,started_at,completed_at,listings_discovered,listings_scraped,listings_saved,errors_count,notes)
+SELECT {sql_lit(job)}::uuid,b.id,'partial',{sql_lit(started_at)}::timestamptz,{sql_lit(artifact_finished_at)}::timestamptz,
+ {len(rows)},{len(rows)},{len(rows)},1,'Colliers source failure: bounded partial detail evidence'
+FROM credeals.cre_brokerages b WHERE b.slug='colliers';
+CREATE TEMP TABLE _src ON COMMIT DROP AS
+SELECT b.id AS brokerage_id, r.* FROM jsonb_to_recordset({payload}::jsonb)
+AS r(slug text,external_id text,source_url text,canonical_url text,transaction_type text,title text,
+ address text,city text,state text,zip text,description text,size_sf numeric,lot_size_sf numeric,units integer,
+ raw_data jsonb,scraped_at timestamptz,partial_history jsonb,status text)
+JOIN credeals.cre_brokerages b ON b.slug=r.slug AND b.slug='colliers';
+{guard}
+UPDATE credeals.cre_listings t SET
+ title=COALESCE(t.title,s.title),
+ address=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
+                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
+                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
+                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+              THEN COALESCE(t.address,s.address) ELSE t.address END,
+ city=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
+                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
+                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
+                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+              THEN COALESCE(t.city,s.city) ELSE t.city END,
+ state=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
+                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
+                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
+                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+              THEN COALESCE(t.state,s.state) ELSE t.state END,
+ zip=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
+                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
+                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
+                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+              THEN COALESCE(t.zip,s.zip) ELSE t.zip END,
+ description=COALESCE(t.description,s.description),size_sf=COALESCE(t.size_sf,s.size_sf),
+ lot_size_sf=COALESCE(t.lot_size_sf,s.lot_size_sf),units=COALESCE(t.units,s.units),
+ raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',s.partial_history)
+FROM _src s WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.external_id;
+INSERT INTO credeals.cre_listings
+ (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,title,address,city,state,zip,description,
+  size_sf,lot_size_sf,units,scraped_at,raw_data)
+SELECT s.brokerage_id,s.external_id,s.source_url,s.canonical_url,s.status,s.transaction_type,s.title,s.address,s.city,s.state,s.zip,
+ s.description,s.size_sf,s.lot_size_sf,s.units,s.scraped_at,
+ jsonb_build_object('sourceKey','colliers','id',s.external_id,'colliersNativeObservations',s.partial_history)
+FROM _src s WHERE NOT EXISTS (SELECT 1 FROM credeals.cre_listings t
+ WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.external_id);
+COMMIT;
+"""
+    return sql, history_held

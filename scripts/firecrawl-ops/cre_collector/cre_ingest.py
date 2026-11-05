@@ -5100,6 +5100,20 @@ FROM _src s
 LEFT JOIN credeals.cre_source_index si
   ON si.brokerage_id = s.brokerage_id AND si.external_id = s.external_id;
 
+-- Preserve source-native Colliers evidence across later full upserts. The
+-- source-specific bounded partial path reserves this member; any incoming
+-- collision is ambiguous and must roll back instead of overwriting either.
+CREATE TEMP TABLE _colliers_native_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'colliersNativeObservations' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='colliers' AND t.external_id NOT LIKE 'main:%'
+ AND jsonb_typeof(t.raw_data)='object' AND t.raw_data ? 'colliersNativeObservations';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='colliers' AND s.external_id NOT LIKE 'main:%'
+    AND s.raw_data ? 'colliersNativeObservations')
+ THEN RAISE EXCEPTION 'Colliers native evidence key collision'; END IF;
+END $$;
 {targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -5550,6 +5564,15 @@ WITH ins AS (
     RETURNING t.id, t.brokerage_id, t.external_id
 )
 SELECT * FROM ins;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _colliers_native_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'Colliers native evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',p.evidence)
+FROM _colliers_native_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
