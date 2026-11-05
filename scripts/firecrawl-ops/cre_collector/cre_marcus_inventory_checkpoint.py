@@ -173,3 +173,94 @@ def candidate_structure(data):
     if candidate_data(source) != data:
         raise ValueError("Marcus inventory candidate differs")
     return source
+
+
+class MarcusInventoryProbeRefusal(ValueError):
+    """A settled source-local target probe refused the offered partition."""
+
+
+def run_identity_probe(artifact_path, manifest, env_file):
+    """Probe one bound target read-only; write only a private local preimage."""
+    import re
+    import secrets
+    import subprocess
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_marcus_inventory_db import _validate_partition, identity_probe_sql
+    from cre_stop_guarded_tier import _safe_stat
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    producer, dirty = git_identity()
+    if dirty or producer != manifest.get("collector_git_sha"):
+        raise ValueError("Marcus probe code changed")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=dirty)
+    source, staged = verified["source"], verified["staged"]
+    target = source["target_sha256"]
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("Marcus probe target changed")
+
+    def recheck():
+        current_url, _ = load_db_url(env_file)
+        after = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
+        if (database_target_fingerprint_from_url(current_url).get("value") != target
+                or git_identity() != (producer, False) or after["source"] != source or after["staged"] != staged):
+            raise ValueError("Marcus probe input or target changed")
+
+    def source_refusal(cause):
+        recheck()
+        try:
+            health = _run_psql_script(find_psql(), db_url,
+                "BEGIN TRANSACTION READ ONLY;\nSELECT 1 AS healthy;\nROLLBACK;\n", timeout=10)
+            healthy = health.returncode == 0 and parse_tsv(health.stdout) == [{"healthy": "1"}]
+        except (OSError, RuntimeError, ValueError, TypeError, SystemExit, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Marcus probe target health is unknown") from exc
+        recheck()
+        if not healthy:
+            raise RuntimeError("Marcus probe target health is unknown") from cause
+        raise MarcusInventoryProbeRefusal("Marcus read-only identity query was refused") from cause
+
+    sql = ("\\set VERBOSITY verbose\nBEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+           + PIN_STRING_LITERALS + "\n" + identity_probe_sql(staged, source["generation"],
+               source["started_at"], source["finished_at"]) + ";\nROLLBACK;\n")
+    try:
+        result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        source_refusal(exc)
+    if result.returncode:
+        state = re.search(r"ERROR:\s+([0-9A-Z]{5}):", getattr(result, "stderr", "") or "")
+        if (result.returncode == 3 and state
+                and (state.group(1).startswith("22") or state.group(1) in {"42601", "57014"})):
+            source_refusal(RuntimeError("Marcus source query was refused"))
+        raise RuntimeError("Marcus identity probe target or query failed")
+    recheck()
+    parsed = parse_tsv(result.stdout)
+    if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
+            or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
+        raise RuntimeError("Marcus probe query scope differs")
+    try:
+        held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
+        _validate_partition(staged, held, preimage, source["generation"], source["started_at"], source["finished_at"])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise MarcusInventoryProbeRefusal("Marcus source identity partition was invalid") from exc
+    encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    name = f"marcus-millichap-preimage-{source['attempt']}-{secrets.token_hex(8)}.json"
+    directory = os.open(verified["run_dir"] / "rejected", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(directory, directory=True, private=True)
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            os.fsync(directory)
+    finally:
+        os.close(directory)
+    return {"artifact_sha256": verified["sha256"], "generation_id": source["generation"],
+            "producer_sha": producer, "database_target_sha256": target,
+            "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(), "held": held,
+            "preimage_path": f"rejected/{name}", "preimage_bytes": len(encoded),
+            "preimage_sha256": hashlib.sha256(encoded).hexdigest()}
