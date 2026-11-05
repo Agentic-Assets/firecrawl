@@ -371,6 +371,24 @@ def _event(listing_id, brokerage_id, source_key, event_type, **kw):
     return e
 
 
+def _is_franklin_site_identity(source_key, external_id):
+    return source_key == "franklin-street" and external_id.startswith("franklin-site:")
+
+
+def prior_source_counts(prior_index):
+    """Count only rows covered by the normal source enumeration."""
+    total = defaultdict(int)
+    live = defaultdict(int)
+    for (_, external_id), prior in prior_index.items():
+        source_key = prior["source_key"] or ""
+        if _is_franklin_site_identity(source_key, external_id):
+            continue
+        total[source_key] += 1
+        if prior.get("observation_present", not prior.get("soft_deleted", False)):
+            live[source_key] += 1
+    return total, live
+
+
 def derive_events(current_records, prior_index, prior_listings, soft_deleted_canon,
                   run_source_keys, baseline_source_keys, coverage_ok_by_source, run_uuid):
     """Pure diff producing the event ledger plus enqueue and observation-mark
@@ -507,6 +525,8 @@ def derive_events(current_records, prior_index, prior_listings, soft_deleted_can
         sk = prior["source_key"] or ""
         if sk not in run_source_keys or sk in baseline_source_keys:
             continue
+        if _is_franklin_site_identity(sk, eid):
+            continue  # Buildout enumeration does not cover Franklin site cards.
         prior_present = prior.get("observation_present", not prior.get("soft_deleted", False))
         if not prior_present:
             continue  # already recorded gone
@@ -1322,13 +1342,7 @@ def main():
 
         # Baseline-seed is decided per source_key: a source with zero prior index
         # rows is a first-ever enumeration and is seeded silently (no events).
-        prior_count_by_source = defaultdict(int)
-        prior_live_count_by_source = defaultdict(int)
-        for prior in prior_index.values():
-            sk = prior["source_key"] or ""
-            prior_count_by_source[sk] += 1
-            if prior.get("observation_present", not prior.get("soft_deleted", False)):
-                prior_live_count_by_source[sk] += 1
+        prior_count_by_source, prior_live_count_by_source = prior_source_counts(prior_index)
         baseline_source_keys = {
             sk for sk in run_source_keys if prior_count_by_source.get(sk, 0) == 0
         }

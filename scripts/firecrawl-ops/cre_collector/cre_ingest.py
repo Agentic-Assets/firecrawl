@@ -6462,6 +6462,8 @@ JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
 WHERE b.slug IN ({slug_list})
   AND l.deleted_at IS NULL
   AND l.external_id IS NOT NULL
+  -- Buildout absence does not establish disappearance of site-card identities.
+  AND NOT (b.slug = 'franklin-street' AND l.external_id LIKE 'franklin-site:%')
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
 -- The transaction-wide lifecycle advisory lock serializes retirement against
