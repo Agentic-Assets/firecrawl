@@ -57,7 +57,10 @@ test("recovery stops on an observed denial, changing total, or duplicate identit
       if (mode === "denial") return response({}, 403);
       if (mode === "rate") return response({}, 429);
       if (mode === "transient") return response({}, 503);
-      if (mode === "retry-after") return response({ success: false, error: "Failure retrieving listing HTML." }, 200, { "retry-after": "120" });
+      if (mode === "retry-after") {
+        const changed = page(start, size, 7);
+        return response(list ? changed.list : { ...changed.map, total: 7, totalAvail: 7 }, 200, { "retry-after": "120" });
+      }
       const result = page(mode === "duplicate" ? 1 : start, size, mode === "total" ? 7 : 6);
       if (mode === "available") result.list.totalAvail = 7;
       if (mode === "count") result.list.numProjects = size - 1;
@@ -72,7 +75,7 @@ test("recovery stops on an observed denial, changing total, or duplicate identit
     assert.equal(requests, 6, `${mode} must not issue a further pair`);
     if (mode === "capture") assert.equal(records.length, 0);
     else assert.deepEqual(records.map((row: any) => [row[1], row[2], row[3]]),
-      [[3, 2, "recovery_stopped"], [5, 2, "recovery_stopped"]]);
+      [[3, 2, ["total", "available"].includes(mode) ? "count_drift" : "recovery_stopped"], [5, 2, "recovery_stopped"]]);
   }
 });
 
@@ -182,7 +185,10 @@ test("a tail denial or total drift stops immediately and records the unexamined 
       (pageNo, start, size, reason) => holes.push({ pageNo, start, size, reason }), () => true),
       mode === "denial" ? /success=false; recovery stopped:.*403/ : /success=false; recovery stopped:.*total changed/);
     assert.ok(holes.some(x => x.start === 101 && x.size === 1 && x.reason === "provider_failure"));
-    assert.ok(holes.some(x => x.start === 201 && x.size === 103 && x.reason === "recovery_stopped"));
+    if (mode === "total") {
+      assert.ok(holes.some(x => x.start === 201 && x.size === 100 && x.reason === "count_drift"));
+      assert.ok(holes.some(x => x.start === 301 && x.size === 3 && x.reason === "recovery_stopped"));
+    } else assert.ok(holes.some(x => x.start === 201 && x.size === 103 && x.reason === "recovery_stopped"));
     assert.ok(!calls.some(x => x.startsWith("301:")), "no page follows a stop signal");
   }
 });
@@ -225,6 +231,9 @@ test("tail stops on rate limits, map drift, duplicates, capture loss, or a secon
     if (mode === "capture" || mode === "accounting") assert.equal(writable, false);
     else if (mode === "semantic") {
       assert.ok(holes.some(x => x.start === 201 && x.size === 100 && x.reason === "provider_failure"));
+      assert.ok(holes.some(x => x.start === 301 && x.size === 3 && x.reason === "recovery_stopped"));
+    } else if (mode === "map-total") {
+      assert.ok(holes.some(x => x.start === 201 && x.size === 100 && x.reason === "count_drift"));
       assert.ok(holes.some(x => x.start === 301 && x.size === 3 && x.reason === "recovery_stopped"));
     } else {
       assert.ok(holes.some(x => x.start === 201 && x.size === 103 && x.reason === "recovery_stopped"), mode);
