@@ -417,8 +417,6 @@ def transaction_guard_sql(staged, held, preimage, extra_held=()):
     if not extra_held <= ids or extra_held & set(held):
         raise ValueError("partial extra held partition invalid")
     all_held = sorted(set(held) | extra_held)
-    if len(all_held) == len(staged):
-        raise ValueError("partial partition has no writable members")
     if not isinstance(preimage, list) or len(preimage) != len(staged):
         raise ValueError("partial preimage invalid")
     payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
@@ -708,3 +706,201 @@ def cursor_after_database_holds(data, history_holds):
             source = listing["colliersPartialRecord"]["source"]
             return source["start"] + source["offset"]
     return data["proposedCursor"]
+
+
+def _read_private_file(path, maximum):
+    """Read one owner-only regular file through its held private directory."""
+    import os
+    from pathlib import Path
+
+    from cre_stop_guarded_tier import _read_at, _safe_stat
+
+    path = Path(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(directory, directory=True, private=True)
+        raw, _ = _read_at(directory, path.name, limit=maximum)
+        return raw
+    finally:
+        os.close(directory)
+
+
+def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty):
+    """Recheck the settled worker and both private artifacts, without DB access."""
+    from pathlib import Path
+
+    source = "colliers"
+    checkpoint = manifest["sources"][source]
+    worker = checkpoint.get("colliers_partial_worker")
+    if (not isinstance(worker, dict) or worker.get("state") != "settled" or worker.get("rc") != 0
+            or type(worker.get("attempt")) is not int or worker["attempt"] < 1):
+        raise ValueError("partial worker settlement invalid")
+    path = Path(artifact_path)
+    run_dir = path.parent.parent
+    attempt = worker["attempt"]
+    base = f"colliers-partial/window-{attempt}"
+    if (path != run_dir / f"{base}-artifact.json"
+            or checkpoint["artifact"].get("path") != f"{base}-artifact.json"
+            or worker.get("receipt_path") != f"{base}-receipt.json"
+            or worker.get("evidence_path") != f"{base}-evidence.jsonl"):
+        raise ValueError("partial worker paths differ")
+    source_receipt = revalidate_source_receipt(run_dir, manifest, attempt, current_code_sha, current_git_dirty)
+    receipt_raw = _read_private_file(run_dir / worker["receipt_path"], 16384)
+    if hashlib.sha256(receipt_raw).hexdigest() != worker.get("receipt_sha256"):
+        raise ValueError("partial worker receipt changed")
+    receipt = json.loads(receipt_raw)
+    receipt_keys = {"schema", "generation", "attempt", "producerSha", "targetSha256", "artifact", "evidence",
+                    "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted"}
+    if (not isinstance(receipt, dict) or set(receipt) != receipt_keys
+            or receipt["schema"] != "colliers-window-worker-receipt/v1"
+            or receipt["generation"] != manifest["run_id"] or receipt["attempt"] != attempt
+            or receipt["producerSha"] != current_code_sha
+            or receipt["targetSha256"] != source_receipt["database_target_sha256"]):
+        raise ValueError("partial worker receipt differs")
+    artifact_raw = _read_private_file(path, 128 * 1024 * 1024)
+    evidence_raw = _read_private_file(run_dir / worker["evidence_path"], 128 * 1024 * 1024)
+    info = checkpoint["artifact"]
+    if (receipt["artifact"] != {"bytes": len(artifact_raw), "sha256": hashlib.sha256(artifact_raw).hexdigest()}
+            or info.get("sha256") != receipt["artifact"]["sha256"] or info.get("bytes") != len(artifact_raw)
+            or not isinstance(receipt["evidence"], dict)
+            or receipt["evidence"].get("bytes") != len(evidence_raw)
+            or receipt["evidence"].get("sha256") != hashlib.sha256(evidence_raw).hexdigest()):
+        raise ValueError("partial worker bytes changed")
+    data = json.loads(artifact_raw)
+    staged = validate_window_artifact(data, source_receipt, receipt["evidence"])
+    if (not staged or receipt["admitted"] != len(staged) or receipt["held"] != data["held"]
+            or receipt["heldOther"] != data["heldOther"] or receipt["unattempted"] != data["unattempted"]
+            or receipt["proposedCursor"] != data["proposedCursor"] or receipt["detailFinishedAt"] != data["detailFinishedAt"]):
+        raise ValueError("partial worker result differs")
+    return {"checkpoint": checkpoint, "worker": worker, "path": path, "run_dir": run_dir,
+            "attempt": attempt, "source_receipt": source_receipt, "receipt": receipt,
+            "info": info, "data": data, "staged": staged}
+
+
+def admit_window(artifact_path, manifest, report, *, current_code_sha, current_git_dirty, phase):
+    """Qualify one source-specific window through the shared subset gate."""
+    import copy
+
+    from cre_current_inventory_admission import validate_report_scope
+    from cre_gate import count_artifacts
+
+    source = "colliers"
+    config = manifest["config"]
+    if (phase not in ("source", "aggregate") or config.get("additive") is not True
+            or config.get("mark_missing") is not False or config.get("status_activation") is not False
+            or config.get("transactions") != ["sale", "lease"] or config.get("max_items") != 0
+            or source not in config.get("sources", []) or current_git_dirty is not False
+            or manifest.get("collector_git_dirty") is not False
+            or manifest.get("collector_git_sha") != current_code_sha
+            or not isinstance(current_code_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", current_code_sha)):
+        raise ValueError("partial owner or configuration invalid")
+    verified = verify_worker_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                      current_git_dirty=current_git_dirty)
+    checkpoint, path = verified["checkpoint"], verified["path"]
+    attempt, source_receipt, receipt = verified["attempt"], verified["source_receipt"], verified["receipt"]
+    info, data, staged = verified["info"], verified["data"], verified["staged"]
+    probe = checkpoint.get("colliers_identity_probe")
+    staged_sha = hashlib.sha256(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    if (not isinstance(probe, dict) or probe.get("artifact_sha256") != info["sha256"]
+            or probe.get("generation_id") != manifest["run_id"] or probe.get("producer_sha") != current_code_sha
+            or probe.get("database_target_sha256") != source_receipt["database_target_sha256"]
+            or probe.get("staged_sha256") != staged_sha):
+        raise ValueError("partial identity probe differs")
+    held, preimage = probe.get("held"), probe.get("preimage")
+    records = unpack_window_records(data)
+    _, history_holds = prepare_partial_rows(records, staged, held, preimage, manifest["run_id"], attempt,
+                                            source_receipt["started_at"], source_receipt["finished_at"], data["detailFinishedAt"])
+    transaction_guard_sql(staged, held, preimage, history_holds)
+    if probe.get("history_holds") != history_holds:
+        raise ValueError("partial history partition differs")
+    current, errors, sources, _, rejects = count_artifacts([str(path)], True)
+    if sources != {source} or errors.get(source) != "original source pass failed" or rejects != 0 or current.get(source) != len(staged):
+        raise ValueError("partial gate evidence differs")
+    validate_report_scope(report, manifest, source, path)
+    summary, gate = report["summary"], report["per_source"][source]
+    if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
+            or summary.get("baseline_updated") is not False or summary.get("baseline_update_sources") != []
+            or gate.get("current_active") != len(staged) or gate.get("mark_missing_safe") is not False):
+        raise ValueError("partial gate scope invalid")
+    verdict = "ok_additive_verified_subset"
+    reasons = {("first_seen", "no baseline row; cannot gate (first sight); a source pass also errored this run"),
+               ("hold", "source pass error: original source pass failed")}
+    raw_pair = ((gate.get("raw_verdict"), gate.get("raw_reason")) if gate.get("verdict") == verdict
+                else (gate.get("verdict"), gate.get("reason")))
+    if raw_pair not in reasons:
+        raise ValueError("partial gate reason differs")
+    digest = hashlib.sha256(json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    binding = {"schema": "colliers-partial-window-v1", "scope": "colliers_partial_window_v1", "source_key": source,
+               "artifact_sha256": info["sha256"], "evidence_sha256": receipt["evidence"]["sha256"],
+               "source_sha256": source_receipt["sha256"], "source_main_sha256": source_receipt["main_sha256"],
+               "producer_sha": current_code_sha, "database_target_sha256": source_receipt["database_target_sha256"],
+               "generation_id": manifest["run_id"], "generation_started_at": manifest["started_at"],
+               "attempt": attempt, "staged_sha256": staged_sha, "preimage_sha256": digest,
+               "held": held, "history_holds": history_holds, "held_count": len(held) + len(history_holds),
+               "emitted_count": len(staged) - len(held) - len(history_holds),
+               "cursor": data["cursor"], "next_cursor": cursor_after_database_holds(data, history_holds),
+               "original_source_outcome": "source_error", "whole_source_coverage": False}
+    if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
+        raise ValueError("partial source gate changed")
+    gate.update(raw_verdict=raw_pair[0], raw_reason=raw_pair[1], verdict=verdict,
+                reason=("verified Colliers partial rows admitted additively" if binding["emitted_count"]
+                        else "verified Colliers partial partition held without listing writes"),
+                mark_missing_safe=False, admission_scope="colliers_partial_window_v1", current_inventory_proof=binding)
+    for key in ("hold_sources", "mark_missing_safe_sources", "mark_missing_safe_brokerages"):
+        if isinstance(summary.get(key), list):
+            summary[key] = [value for value in summary[key] if value != source]
+    if isinstance(report.get("per_brokerage"), dict) and isinstance(report["per_brokerage"].get(source), dict):
+        report["per_brokerage"][source]["mark_missing_safe"] = False
+    if isinstance(summary.get("verdict_counts"), dict):
+        counts = {}
+        for source_gate in report["per_source"].values():
+            value = source_gate.get("verdict")
+            counts[value] = counts.get(value, 0) + 1
+        summary["verdict_counts"] = counts
+    report["scope"] = {"kind": "colliers_partial_window_v1", "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
+    return copy.deepcopy(binding)
+
+
+def run_identity_probe(artifact_path, manifest, env_file):
+    """Read-only source/target-bound identity and bounded-history partition."""
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    producer, dirty = git_identity()
+    if dirty or producer != manifest.get("collector_git_sha"):
+        raise ValueError("partial probe code differs")
+    verified = verify_worker_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=dirty)
+    source, receipt, data, staged = verified["source_receipt"], verified["receipt"], verified["data"], verified["staged"]
+    target = source["database_target_sha256"]
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("partial probe target differs")
+    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+           + PIN_STRING_LITERALS + "\n" + identity_probe_sql(staged) + ";\nROLLBACK;\n")
+    result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
+    if result.returncode:
+        raise RuntimeError("partial identity probe failed")
+    parsed = parse_tsv(result.stdout)
+    if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
+            or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
+        raise ValueError("partial probe result differs")
+    held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
+    ids = {row["external_id"] for row in staged}
+    if (not isinstance(held, list) or held != sorted(set(held)) or not set(held) <= ids
+            or not isinstance(preimage, list) or len(preimage) != len(staged)
+            or {row.get("external_id") for row in preimage if isinstance(row, dict)} != ids):
+        raise ValueError("partial probe partition invalid")
+    _, history_holds = prepare_partial_rows(unpack_window_records(data), staged, held, preimage,
+        manifest["run_id"], source["attempt"], source["started_at"], source["finished_at"], data["detailFinishedAt"])
+    current_url, _ = load_db_url(env_file)
+    after = verify_worker_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
+    if (database_target_fingerprint_from_url(current_url).get("value") != target
+            or git_identity() != (producer, False) or after["source_receipt"] != source
+            or after["receipt"] != receipt or after["staged"] != staged):
+        raise ValueError("partial probe input or target changed")
+    staged_sha = hashlib.sha256(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    return {"artifact_sha256": verified["info"]["sha256"], "generation_id": manifest["run_id"],
+            "producer_sha": producer, "database_target_sha256": target, "staged_sha256": staged_sha,
+            "held": held, "preimage": preimage, "history_holds": history_holds}

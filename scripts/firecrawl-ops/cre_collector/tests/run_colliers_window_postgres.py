@@ -205,6 +205,17 @@ def main():
         assert list(peer_holds) == ["44"]
         sql(peer_sql)
         assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='44';") == held_before
+        # An all-held window records a partial zero-save job, leaving the row
+        # unchanged so its settled cursor can reach later source positions.
+        only_held_probe = sql(identity_probe_sql([peer_staged[0]])).split("|", 3)
+        zero_job = str(uuid.uuid4())
+        zero_sql, zero_holds = build_partial_sql([peers[0]], [peer_staged[0]], json.loads(only_held_probe[2]),
+            json.loads(only_held_probe[3]), "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
+            "2026-11-04T16:02:00Z", zero_job)
+        assert list(zero_holds) == ["44"]
+        sql(zero_sql)
+        assert sql("SELECT status||'|'||listings_saved FROM credeals.cre_scrape_jobs WHERE id='" + zero_job + "'::uuid;") == "partial|0"
+        assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='44';") == held_before
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='45' AND status IS NULL AND city IS NULL;") == "1"
         stored_native = sql("SELECT raw_data#>>'{colliersNativeObservations,entries,0,nativeBase64}' FROM credeals.cre_listings WHERE external_id='45';")
         assert stored_native == peers[1]["nativeBase64"]

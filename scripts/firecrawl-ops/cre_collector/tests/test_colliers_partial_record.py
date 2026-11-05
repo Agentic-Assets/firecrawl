@@ -172,6 +172,67 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
                                cwd=collector, capture_output=True, text=True, timeout=30, check=False)
     assert unguarded.returncode != 0
     assert "refusing Colliers partial artifact without guarded checkpoint admission" in unguarded.stderr
+
+    # The shared source and aggregate gate adapter binds the exact source,
+    # worker receipt, bytes, target and DB preimage. Files remain synthetic.
+    import cre_colliers_partial as partial
+
+    run = tmp_path / "gen"
+    private = run / "colliers-partial"
+    private.mkdir(parents=True, mode=0o700)
+    artifact_path = private / "window-1-artifact.json"
+    evidence_path = private / "window-1-evidence.jsonl"
+    artifact_bytes = (tmp_path / "artifact").read_bytes()
+    artifact_path.write_bytes(artifact_bytes)
+    artifact_path.chmod(0o600)
+    evidence_path.write_bytes((tmp_path / "evidence").read_bytes())
+    evidence_path.chmod(0o600)
+    artifact_sha = hashlib.sha256(artifact_bytes).hexdigest()
+    worker_receipt = {"schema": "colliers-window-worker-receipt/v1", "generation": "gen", "attempt": 1,
+                      "producerSha": "a" * 40, "targetSha256": "b" * 64,
+                      "artifact": {"bytes": len(artifact_bytes), "sha256": artifact_sha},
+                      "evidence": artifact["evidence"], "detailFinishedAt": artifact["detailFinishedAt"],
+                      "proposedCursor": artifact["proposedCursor"], "admitted": 1, "held": artifact["held"],
+                      "heldOther": artifact["heldOther"], "unattempted": artifact["unattempted"]}
+    worker_path = private / "window-1-receipt.json"
+    worker_path.write_text(json.dumps(worker_receipt))
+    worker_path.chmod(0o600)
+    receipt_sha = hashlib.sha256(worker_path.read_bytes()).hexdigest()
+    staged_sha = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    checkpoint = {"artifact": {"path": "colliers-partial/window-1-artifact.json", "bytes": len(artifact_bytes), "sha256": artifact_sha},
+                  "colliers_partial_worker": {"state": "settled", "rc": 0, "attempt": 1,
+                      "receipt_path": "colliers-partial/window-1-receipt.json", "receipt_sha256": receipt_sha,
+                      "evidence_path": "colliers-partial/window-1-evidence.jsonl"},
+                  "colliers_identity_probe": {"artifact_sha256": artifact_sha, "generation_id": "gen",
+                      "producer_sha": "a" * 40, "database_target_sha256": "b" * 64, "staged_sha256": staged_sha,
+                      "held": [], "preimage": [{"external_id": "native-e2e", "listing": None, "source_index": None}], "history_holds": {}}}
+    manifest = {"run_id": "gen", "started_at": "2026-11-04T14:00:00Z", "collector_git_sha": "a" * 40,
+                "collector_git_dirty": False, "config": {"additive": True, "mark_missing": False,
+                "status_activation": False, "transactions": ["sale", "lease"], "max_items": 0,
+                "sources": ["colliers"], "pipeline": False}, "scope": {}, "sources": {"colliers": checkpoint}}
+    report = {"generated_for_artifact": str(artifact_path), "summary": {"mode": "live", "torow_errors": 0,
+              "baseline_updated": False, "baseline_update_sources": [], "hold_sources": ["colliers"],
+              "mark_missing_safe_sources": [], "mark_missing_safe_brokerages": [], "verdict_counts": {}},
+              "per_source": {"colliers": {"verdict": "first_seen", "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
+                  "mark_missing_safe": False, "current_active": 1}}}
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(partial, "revalidate_source_receipt", lambda *_: receipt)
+        aggregate = copy.deepcopy(report)
+        proof = partial.admit_window(artifact_path, manifest, report, current_code_sha="a" * 40,
+                                     current_git_dirty=False, phase="source")
+        assert proof["emitted_count"] == 1 and proof["original_source_outcome"] == "source_error"
+        assert proof["whole_source_coverage"] is False and report["per_source"]["colliers"]["mark_missing_safe"] is False
+        checkpoint["gate"] = {"current_inventory_proof": proof}
+        assert partial.admit_window(artifact_path, manifest, aggregate, current_code_sha="a" * 40,
+                                    current_git_dirty=False, phase="aggregate") == proof
+        changed = copy.deepcopy(manifest)
+        changed["sources"]["colliers"]["colliers_partial_worker"]["state"] = "dispatching"
+        with pytest.raises(ValueError, match="settlement"):
+            partial.admit_window(artifact_path, changed, copy.deepcopy(aggregate), current_code_sha="a" * 40,
+                                 current_git_dirty=False, phase="source")
+    finally:
+        monkeypatch.undo()
     for key, value in [("targetSha256", "0" * 64), ("sourceOutcome", "success"), ("unattempted", 999)]:
         changed = copy.deepcopy(artifact)
         changed[key] = value
