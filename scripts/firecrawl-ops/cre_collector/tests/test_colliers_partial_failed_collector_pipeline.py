@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.parametrize("denied", [False, True])
-def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False, database=None):
+def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False, database=None, interruption=None):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -101,6 +101,11 @@ globalThis.fetch = async (input) => {
 
             def fake_database(_run, state, unit, _env, _previous):
                 checkpoint = state["sources"]["colliers"]
+                if interruption and len(state["pipeline"]["units"]) == 2:
+                    if interruption == "unknown_write":
+                        checkpoint["state"] = "ingesting"
+                        raise RuntimeError("synthetic unknown write")
+                    raise KeyboardInterrupt("synthetic interruption")
                 checkpoint["readback"] = {"ok": True}
                 if journal:
                     from cre_partial_cursor import advance_cursor
@@ -127,6 +132,27 @@ globalThis.fetch = async (input) => {
                 # The dispatch-only cases do not synthesize a DB cursor proof.
                 monkeypatch.setattr("cre_colliers_partial_checkpoint.archive_verified_pipeline_window",
                                     lambda *_: False)
+            if interruption:
+                probes = []
+                monkeypatch.setattr(pipeline, "reconcile_pipeline_ingests",
+                    lambda *args, **kwargs: probes.append(kwargs.get("probe_allowed")))
+                expected_error = RuntimeError if interruption == "unknown_write" else KeyboardInterrupt
+                with pytest.raises(expected_error):
+                    pipeline.run_bounded_pipeline(run_dir, manifest, ("colliers",), page_cap=3,
+                        concurrency=1, attempts_this_run=1, env_file=None, source_workers=1,
+                        owner_check=lock._require_authority)
+                checkpoint = manifest["sources"]["colliers"]
+                assert len(checkpoint["partial_windows"]) == 1
+                assert checkpoint["partial_windows"][0]["state"] == "verified"
+                assert manifest["pipeline"]["status"] == "reconciliation_required"
+                assert manifest["pipeline"]["commit_outcome_unknown"] is (interruption == "unknown_write")
+                if interruption == "unknown_write":
+                    assert checkpoint["state"] == "ingesting"
+                    assert "partial_window_terminal" not in checkpoint
+                else:
+                    assert probes == [False]
+                    assert checkpoint["partial_window_terminal"]
+                return
             failures = pipeline.run_bounded_pipeline(run_dir, manifest, ("colliers",), page_cap=3,
                 concurrency=1, attempts_this_run=1, env_file=str(database["env_file"]) if database else None, source_workers=1,
                 owner_check=lock._require_authority)
@@ -177,3 +203,9 @@ def test_real_pipeline_journals_a_full_rotation_without_refetch(tmp_path, monkey
 
 def test_real_pipeline_keeps_committed_window_on_settled_access_stop(tmp_path, monkeypatch):
     test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, False, journal=True, access_stop=True)
+
+
+@pytest.mark.parametrize("interruption", ["unknown_write", "interrupt"])
+def test_later_window_interruption_fences_recovery(tmp_path, monkeypatch, interruption):
+    test_evidence_only_collector_failure_reaches_partial_pipeline(
+        tmp_path, monkeypatch, False, journal=True, interruption=interruption)
