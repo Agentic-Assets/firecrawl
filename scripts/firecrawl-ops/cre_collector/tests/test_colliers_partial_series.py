@@ -152,7 +152,7 @@ def test_mixed_failure_reconciliation_preserves_verified_peers_without_replay(tm
     manifest["started_at"] = PARENT_START
     run = tmp_path / "runs" / RUN_ID
     child = mixed_child(run)
-    child.update(status="failed", scope={"kind": "collector_registry"},
+    child.update(status="failed", error="Savills source failure", scope={"kind": "collector_registry"},
                  config=series._expected_child_config("cbre,colliers,savills", settings))
     child["sources"]["savills"] = {"state": "collect_failed"}
     child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "provider failure"}
@@ -163,6 +163,8 @@ def test_mixed_failure_reconciliation_preserves_verified_peers_without_replay(tm
     monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
     series.reconcile_pipeline_series(tmp_path, manifest)
     assert [manifest["sources"][key]["state"] for key in settings["sources"]] == ["complete", "qualified_partial_subset", "failed_source"]
+    assert manifest["sources"]["cbre"]["error"] is None and manifest["sources"]["colliers"]["error"] is None
+    assert manifest["sources"]["savills"]["error"] == "Savills source failure"
     assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
     assert manifest["status"] == "failed"
     assert all(len(manifest["sources"][key]["attempts"]) == 1 for key in settings["sources"])

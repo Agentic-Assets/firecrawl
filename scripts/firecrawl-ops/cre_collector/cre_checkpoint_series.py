@@ -1984,6 +1984,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             error=child.get("error"),
         )
         if row["state"] in {"complete", "qualified_partial_subset"}:
+            row["error"] = None
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
