@@ -2,11 +2,17 @@ import copy
 import hashlib
 import json
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 
 from cre_nai_post_admission import admit, candidate, ingest_subset_context, run_identity_probe
 from tests.test_nai_post_partial import post
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
 
 
 def fixture(tmp_path):
@@ -16,7 +22,7 @@ def fixture(tmp_path):
     path = source / "nai-global.json"
     data = {"runMeta": {"transactions": ["sale", "lease"], "mode": "full",
                         "startedAt": "2026-11-05T09:59:00Z", "finishedAt": "2026-11-05T10:00:02Z",
-                        "freshness": {"generationId": "gen-1"}}, "listings": [post()],
+                        "freshness": {"generationId": "gen-1", "generationStartedAt": "2026-11-05T09:58:00Z"}}, "listings": [post()],
             "sources": [{"sourceKey": "nai-global", "transaction": "sale", "truncated": False}], "brokers": []}
     raw = json.dumps(data).encode()
     path.write_bytes(raw)
@@ -150,3 +156,13 @@ def test_unbound_source_refused(tmp_path, change):
     change(altered)
     with pytest.raises((ValueError, KeyError)):
         candidate(path, altered, code_sha=sha, dirty=False)
+
+
+def test_stale_or_future_claim_is_not_replayed(tmp_path, monkeypatch):
+    path, manifest, sha = fixture(tmp_path)
+    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 6, 12, tzinfo=timezone.utc))
+    with pytest.raises(ValueError, match="no qualified posts"):
+        candidate(path, manifest, code_sha=sha, dirty=False)
+    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc))
+    with pytest.raises(ValueError, match="freshness bound"):
+        candidate(path, manifest, code_sha=sha, dirty=False)

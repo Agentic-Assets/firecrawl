@@ -1,10 +1,12 @@
 """Authenticate an existing NAI source artifact for post-scoped partial work."""
 import hashlib
 import json
+import math
 import os
 import re
 import stat
 import subprocess
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +16,10 @@ from cre_nai_post_partial import SOURCE, _timestamp, partition_posts
 
 class NaiSourceProbeRefusal(ValueError):
     """A settled source-local read-only refusal; eligible peers can proceed."""
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
 
 
 def candidate(artifact_path, manifest, *, code_sha, dirty):
@@ -60,6 +66,8 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
             or not isinstance(data.get("listings"), list)):
         raise ValueError("NAI source generation differs")
     start = _timestamp(manifest["started_at"])
+    if _timestamp((meta.get("freshness") or {}).get("generationStartedAt")) != start:
+        raise ValueError("NAI source generation clock differs")
     attempt_start, attempt_finish = _timestamp(attempts[-1]["started_at"]), _timestamp(attempts[-1]["finished_at"])
     capture_start, capture_finish = _timestamp(meta["startedAt"]), _timestamp(meta["finishedAt"])
     if (not start <= attempt_start <= capture_start <= capture_finish <= attempt_finish
@@ -67,8 +75,14 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
             or _timestamp(info.get("finished_at")) != capture_finish
             or _timestamp(info.get("freshness_generation_started_at")) != start):
         raise ValueError("NAI source attempt clocks differ")
+    now = _utc_now()
+    max_age = info.get("max_observation_age_hours", 24)
+    if (type(max_age) not in {int, float} or not math.isfinite(max_age) or max_age <= 0
+            or capture_finish > now + timedelta(minutes=5)):
+        raise ValueError("NAI source freshness bound invalid")
     partition = partition_posts(data["listings"], manifest["run_id"],
-                                capture_start=capture_start, capture_finish=capture_finish)
+                                capture_start=max(capture_start, now - timedelta(hours=max_age)),
+                                capture_finish=capture_finish)
     if not partition["staged"]:
         raise NaiSourceProbeRefusal("NAI partial has no qualified posts")
     target = manifest["preflight"]["database_target"]

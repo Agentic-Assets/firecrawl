@@ -7,11 +7,13 @@ import tempfile
 import time
 import uuid
 from decimal import Decimal
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import cre_ingest as ingest  # noqa: E402
+import cre_nai_post_admission as nai_admission  # noqa: E402
 from cre_nai_post_admission import admit, candidate, ingest_subset_context  # noqa: E402
 from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
 from tests.test_nai_post_partial import post  # noqa: E402
@@ -22,6 +24,7 @@ def run(*args, text=None, check=True):
 
 
 def main():
+    nai_admission._utc_now = lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc)
     name = "nai-post-proof-" + uuid.uuid4().hex[:12]
     tmp = tempfile.TemporaryDirectory(prefix="nai-post-fixture-")
 
@@ -76,7 +79,7 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         artifact = root / "sources" / "nai-global.json"
         data = {"runMeta": {"transactions": ["sale", "lease"], "mode": "full",
                             "startedAt": "2026-11-05T09:59:00Z", "finishedAt": "2026-11-05T10:01:00Z",
-                            "freshness": {"generationId": "gen-1"}},
+                            "freshness": {"generationId": "gen-1", "generationStartedAt": "2026-11-05T09:58:00Z"}},
                 "sources": [{"sourceKey": "nai-global", "transaction": "sale", "truncated": False}],
                 "brokers": [], "listings": [post(1), post(2), incomplete]}
         import hashlib
