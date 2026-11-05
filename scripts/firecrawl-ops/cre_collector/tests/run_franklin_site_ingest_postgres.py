@@ -56,12 +56,13 @@ def main():
             (directory / "016_cre_listing_lifecycle.sql").read_text()]))
         identity = "12345678-1234-5123-8123-123456789abc"
         first = item(identity, "a", "2026-11-04T12:00:01Z", "Subject to Offer")
-        assert json.loads(sql(partial.build_sql([first])).splitlines()[-1])["held"] == []
+        assert json.loads(sql(partial.identity_probe_sql([first]))) == {"staged": 1, "joined": 1, "held": []}
+        assert json.loads(sql(partial.build_sql([first], [])).splitlines()[-1])["held"] == []
         sql("""UPDATE credeals.cre_listings SET status='sold', title='Prior title';
                INSERT INTO credeals.cre_listing_contacts (listing_id,name)
                SELECT id,'Prior contact' FROM credeals.cre_listings;""")
         second = item(identity, "a", "2026-11-04T12:00:02Z", "Visible new field")
-        assert json.loads(sql(partial.build_sql([second])).splitlines()[-1])["held"] == []
+        assert json.loads(sql(partial.build_sql([second], [])).splitlines()[-1])["held"] == []
         readback = json.loads(sql(partial.readback_sql([second], [])))
         assert readback == {"expected": 1, "invalid": []}
         assert json.loads(sql(partial.readback_sql([first], [])))["invalid"] == [first["id"]]
@@ -70,15 +71,15 @@ def main():
         assert [x["card"]["html"] for x in result["raw"]["franklinSiteObservations"]] == ["Subject to Offer", "Visible new field"]
         assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE name='Prior contact';") == "1"
         repeat = item(identity, "a", "2026-11-04T12:00:04Z", "Visible new field")
-        assert json.loads(sql(partial.build_sql([repeat])).splitlines()[-1])["held"] == []
+        assert json.loads(sql(partial.build_sql([repeat], [])).splitlines()[-1])["held"] == []
         intermediate = item(identity, "a", "2026-11-04T12:00:03Z", "stale new text")
-        assert json.loads(sql(partial.build_sql([intermediate])).splitlines()[-1])["held"] == [first["id"]]
-        held = json.loads(sql(partial.build_sql([first])).splitlines()[-1])["held"]
+        assert json.loads(sql(partial.build_sql([intermediate], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
+        held = json.loads(sql(partial.build_sql([first], [first["id"]])).splitlines()[-1])["held"]
         assert held == [first["id"]]
         changed_url = item(identity, "different", "2026-11-04T12:00:03Z", "new")
-        assert json.loads(sql(partial.build_sql([changed_url])).splitlines()[-1])["held"] == [first["id"]]
+        assert json.loads(sql(partial.build_sql([changed_url], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
         cycle = item(identity, "a", "2026-11-04T12:00:05Z", "Subject to Offer")
-        assert json.loads(sql(partial.build_sql([cycle])).splitlines()[-1])["held"] == []
+        assert json.loads(sql(partial.build_sql([cycle], [])).splitlines()[-1])["held"] == []
         assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings;") == "3"
         conflict_id = "87654321-4321-5432-8432-abcdefabcdef"
         clean_id = "aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee"
@@ -87,7 +88,15 @@ def main():
         sql("""INSERT INTO credeals.cre_listings (brokerage_id, external_id, source_url)
                SELECT id, 'legacy', 'https://franklinst.com/properties/for-sale/legacy'
                FROM credeals.cre_brokerages WHERE slug='franklin-street';""")
-        result = json.loads(sql(partial.build_sql([conflict, clean])).splitlines()[-1])
+        assert json.loads(sql(partial.identity_probe_sql([conflict, clean]))) == {"staged": 2, "joined": 2, "held": [conflict["id"]]}
+        try:
+            sql(partial.build_sql([conflict, clean], []))
+        except RuntimeError as error:
+            assert "Franklin identity partition changed" in str(error)
+        else:
+            raise AssertionError("stale identity partition was accepted")
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='franklin-site:sale:aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';") == "0"
+        result = json.loads(sql(partial.build_sql([conflict, clean], [conflict["id"]])).splitlines()[-1])
         assert result["held"] == [conflict["id"]]
         assert json.loads(sql(partial.readback_sql([conflict, clean], result["held"]))) == {"expected": 1, "invalid": []}
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='franklin-site:sale:aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';") == "1"
@@ -95,9 +104,9 @@ def main():
                  (SELECT jsonb_agg((raw_data->'franklinSiteObservations'->-1) || jsonb_build_object('fixtureIndex', n)) FROM generate_series(1,128) AS n))
                WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';""")
         over_limit = item(identity, "a", "2026-11-04T12:00:07Z", "new card past cap")
-        assert json.loads(sql(partial.build_sql([over_limit])).splitlines()[-1])["held"] == [first["id"]]
+        assert json.loads(sql(partial.build_sql([over_limit], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
         same_at_limit = item(identity, "a", "2026-11-04T12:00:07Z", "Subject to Offer")
-        assert json.loads(sql(partial.build_sql([same_at_limit])).splitlines()[-1])["held"] == []
+        assert json.loads(sql(partial.build_sql([same_at_limit], [])).splitlines()[-1])["held"] == []
         assert sql("SELECT count(*) FROM credeals.cre_source_index;") == "0"
         print("Disposable Franklin partial SQL proof passed")
     finally:

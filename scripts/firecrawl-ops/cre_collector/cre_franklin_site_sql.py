@@ -74,33 +74,22 @@ def stage(listings):
     return staged
 
 
-def build_sql(listings):
-    """Create an additive, source-local transaction; callers own its recovery."""
-    staged = stage(listings)
-    payload = sql_lit(json.dumps(staged, ensure_ascii=False, separators=(",", ":")))
-    return f"""
-BEGIN;
-SET LOCAL statement_timeout='600s';
-{lifecycle_transaction_lock_sql()}
-CREATE TEMP TABLE _franklin_site ON COMMIT DROP AS
-SELECT b.id AS brokerage_id, x.*
+def _partition(staged, held):
+    identities = {row["external_id"] for row in staged}
+    if not isinstance(held, list) or held != sorted(set(held)) or not set(held) <= identities:
+        raise ValueError("invalid Franklin held partition")
+
+
+def _site_query(payload):
+    return f"""SELECT b.id AS brokerage_id, x.*
 FROM jsonb_to_recordset({payload}::jsonb) AS x(
  external_id text, source_url text, canonical_url text, transaction_type text,
  title text, state text, lat double precision, lng double precision, observation jsonb)
-JOIN credeals.cre_brokerages b ON b.slug='franklin-street';
-DO $$ BEGIN
- IF (SELECT count(*) FROM _franklin_site) <> {len(staged)} THEN
-   RAISE EXCEPTION 'Franklin source brokerage missing';
- END IF;
-END $$;
--- Serialize against both same-ID and same-URL parents under the global lock.
-CREATE TEMP TABLE _franklin_site_locks ON COMMIT DROP AS
-SELECT l.id FROM credeals.cre_listings l
-JOIN _franklin_site s ON s.brokerage_id=l.brokerage_id
- AND (s.external_id=l.external_id OR s.source_url=l.source_url)
-ORDER BY l.id FOR UPDATE OF l;
-CREATE TEMP TABLE _franklin_site_held ON COMMIT DROP AS
-SELECT s.external_id FROM _franklin_site s
+JOIN credeals.cre_brokerages b ON b.slug='franklin-street'"""
+
+
+def _held_query():
+    return f"""SELECT s.external_id FROM _franklin_site s
 LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
 WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS DISTINCT FROM s.source_url
  OR own.raw_data->>'franklinSitePartialVersion' IS DISTINCT FROM '1'
@@ -118,7 +107,52 @@ WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS D
          ELSE false END))
  OR EXISTS (SELECT 1 FROM credeals.cre_listings other
             WHERE other.brokerage_id=s.brokerage_id AND other.source_url=s.source_url
-              AND other.deleted_at IS NULL AND (own.id IS NULL OR other.id<>own.id));
+              AND other.deleted_at IS NULL AND (own.id IS NULL OR other.id<>own.id))"""
+
+
+def identity_probe_sql(listings):
+    """Compute a source-local candidate partition without making writes."""
+    staged = stage(listings)
+    payload = sql_lit(json.dumps(staged, ensure_ascii=False, separators=(",", ":")))
+    return f"""
+WITH _franklin_site AS ({_site_query(payload)}),
+held AS ({_held_query()})
+SELECT json_build_object('staged', {len(staged)}, 'joined', (SELECT count(*) FROM _franklin_site),
+ 'held', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM held), '[]'::json));
+"""
+
+
+def build_sql(listings, held):
+    """Create a transaction rechecking its prebound identity partition."""
+    staged = stage(listings)
+    _partition(staged, held)
+    payload = sql_lit(json.dumps(staged, ensure_ascii=False, separators=(",", ":")))
+    expected_held = sql_lit(json.dumps(held, separators=(",", ":")))
+    return f"""
+BEGIN;
+SET LOCAL statement_timeout='600s';
+{lifecycle_transaction_lock_sql()}
+CREATE TEMP TABLE _franklin_site ON COMMIT DROP AS
+{_site_query(payload)};
+DO $$ BEGIN
+ IF (SELECT count(*) FROM _franklin_site) <> {len(staged)} THEN
+   RAISE EXCEPTION 'Franklin source brokerage missing';
+ END IF;
+END $$;
+-- Serialize against both same-ID and same-URL parents under the global lock.
+CREATE TEMP TABLE _franklin_site_locks ON COMMIT DROP AS
+SELECT l.id FROM credeals.cre_listings l
+JOIN _franklin_site s ON s.brokerage_id=l.brokerage_id
+ AND (s.external_id=l.external_id OR s.source_url=l.source_url)
+ORDER BY l.id FOR UPDATE OF l;
+CREATE TEMP TABLE _franklin_site_held ON COMMIT DROP AS
+{_held_query()};
+DO $$ BEGIN
+ IF COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id) FROM _franklin_site_held), '[]'::jsonb)
+      IS DISTINCT FROM {expected_held}::jsonb THEN
+   RAISE EXCEPTION 'Franklin identity partition changed';
+ END IF;
+END $$;
 INSERT INTO credeals.cre_listings AS target
  (brokerage_id, external_id, source_url, canonical_url, transaction_type, title, state, lat, lng, scraped_at, raw_data)
 SELECT s.brokerage_id, s.external_id, s.source_url, s.canonical_url, s.transaction_type,
@@ -150,10 +184,7 @@ COMMIT;
 def readback_sql(listings, held):
     """Build exact generation/card readback for the transaction's unheld partition."""
     staged = stage(listings)
-    identities = {row["external_id"] for row in staged}
-    if (not isinstance(held, list) or held != sorted(set(held))
-            or not set(held) <= identities):
-        raise ValueError("invalid Franklin held partition")
+    _partition(staged, held)
     accepted = [row for row in staged if row["external_id"] not in set(held)]
     payload = sql_lit(json.dumps(accepted, ensure_ascii=False, separators=(",", ":")))
     return f"""
