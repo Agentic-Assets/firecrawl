@@ -385,6 +385,23 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
                     and _within_clock_skew(child.get("finished_at"), computed_at))
         except (KeyError, TypeError, ValueError):
             return False
+    if source_key == "marcus-millichap" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
+        from reporting.partial_qualification import partial_member_report_matches, marcus_inventory_partial_child
+
+        try:
+            source = _source_checkpoint(child, source_key)
+            readback = _mapping(source.get("readback"))
+            bound = _mapping(readback.get("observation"))
+            start, finished = (_parse_timestamp(value) for value in
+                (child.get("started_at"), child.get("finished_at")))
+            return (marcus_inventory_partial_child(child) and child.get("status") in {"qualified_partial_subset", "failed"}
+                    and source.get("state") == "ingested" and readback.get("ok") is True
+                    and readback.get("kind") == "marcus_inventory_partial"
+                    and partial_member_report_matches({"marcus_inventory_readback": bound}, source, source_key, child["run_id"])
+                    and None not in (start, finished) and start <= finished
+                    and _within_clock_skew(child.get("finished_at"), computed_at))
+        except (KeyError, TypeError, ValueError):
+            return False
     if source_key == "lyon-stahl" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
         from reporting.partial_qualification import partial_member_report_matches, lyon_partial_child
 
@@ -663,7 +680,7 @@ def build_receipt(
                 source,
                 computed_at=current_computed,
             )
-            if child and not (source in {"colliers", "lyon-stahl"} and checkpoint.get("state") == "qualified_partial_subset")
+            if child and not (source in {"colliers", "lyon-stahl", "marcus-millichap"} and checkpoint.get("state") == "qualified_partial_subset")
             else None
         )
         success = _successful_values(

@@ -272,3 +272,37 @@ def test_partial_candidate_cannot_use_ordinary_ingest_cli(tmp_path):
                             text=True, capture_output=True, check=False)
     assert result.returncode != 0
     assert "without guarded checkpoint admission" in result.stderr
+
+
+def test_series_qualifies_only_exact_marcus_partial_owner_and_attempt():
+    from reporting.partial_qualification import marcus_inventory_partial_child
+
+    sha, target, producer = "a" * 64, "b" * 64, "c" * 40
+    binding = {"schema": "marcus-inventory-partial-v1", "scope": "marcus_inventory_partial_v1",
+               "source_key": "marcus-millichap", "original_source_outcome": "detail_freshness_rejected",
+               "whole_source_coverage": False, "detail_qualified": 0, "detail_errors": 1,
+               "artifact_sha256": sha, "source_sha256": sha, "database_target_sha256": target,
+               "staged_sha256": sha, "preimage_sha256": sha, "generation_id": GENERATION,
+               "generation_started_at": START, "producer_sha": producer, "attempt": 1,
+               "held": [], "held_count": 0, "emitted_count": 1}
+    checkpoint = {"artifact": {"marcus_inventory_partial": True, "sha256": sha, "staged_unique": 1,
+                               "path": "rejected/marcus-millichap-inventory-attempt-1.json"},
+                  "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                           "admission_scope": "marcus_inventory_partial_v1", "current_inventory_proof": binding},
+                  "marcus_inventory_worker": {"sha256": sha, "state": "settled", "attempt": 1},
+                  "marcus_inventory_probe": {"artifact_sha256": sha, "generation_id": GENERATION,
+                      "producer_sha": producer, "database_target_sha256": target, "staged_sha256": sha,
+                      "preimage_sha256": sha, "held": []},
+                  "attempts": [{"number": 1, "rc": 0, "finished_at": FINISH,
+                      "error": "marcus-millichap/sale freshness metric detailErrors must be zero",
+                      "rejected_artifact": "rejected/marcus-millichap-attempt-1.json", "rejected_artifact_sha256": sha}],
+                  "subset_ingest_attempt_id": "d" * 32}
+    child = {"config": {"pipeline": True}, "run_id": GENERATION, "started_at": START,
+             "collector_git_sha": producer, "preflight": {"database_target": {"value": target}},
+             "sources": {"marcus-millichap": checkpoint}}
+    assert marcus_inventory_partial_child(child)
+    checkpoint["attempts"][0]["rejected_artifact_sha256"] = "e" * 64
+    assert not marcus_inventory_partial_child(child)
+    checkpoint["attempts"][0]["rejected_artifact_sha256"] = sha
+    binding["detail_qualified"] = True
+    assert not marcus_inventory_partial_child(child)

@@ -387,6 +387,12 @@ function Test-CreSourceSubsetSummary {
             if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
                 $Summary.$field -lt 0 -or $Summary.$field -gt $limit) { return $false }
         }
+        if ($SourceKey -ceq 'marcus-millichap') {
+            if (-not ($Summary.detail_qualified -is [int] -or $Summary.detail_qualified -is [long]) -or
+                $Summary.detail_qualified -ne 0 -or
+                -not ($Summary.detail_errors -is [int] -or $Summary.detail_errors -is [long]) -or
+                $Summary.detail_errors -lt 1) { return $false }
+        }
         if ($SourceKey -ceq 'franklin-street') {
             foreach ($field in @('buildout_pending','held_observations')) {
                 if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
@@ -494,12 +500,12 @@ function Get-CreVerifiedSummary {
                 $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
                     ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted) -or
                     ($subsetMarked -and $entry.source_key -ceq 'jll-investor') -or
-                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key)
+                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street','marcus-millichap') -ccontains $entry.source_key)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
                     if ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
-                    } elseif (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
+                    } elseif (@('colliers','lyon-stahl','franklin-street','marcus-millichap') -ccontains $entry.source_key) {
                         if (-not (Test-CreSourceSubsetSummary $entry $entry.source_key)) { return $null }
                     } elseif (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
@@ -539,7 +545,7 @@ function Get-CreVerifiedSummary {
                 $unverifiableKeys = @($summary.unverifiable_source_keys)
                 if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
                 foreach ($key in $unverifiableKeys) {
-                    if (@('jll-investor','colliers','lyon-stahl','franklin-street') -cnotcontains $key -or
+                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','marcus-millichap') -cnotcontains $key -or
                         @($summary.failed_source_keys) -cnotcontains $key) { return $null }
                 }
             }
@@ -644,8 +650,12 @@ function Get-CreNotificationText {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held database identity conflicts held; source exclusions unknown. Whole brokerage incomplete."
                     continue
                 }
-                if (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
-                    $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
+                if (@('colliers','lyon-stahl','franklin-street','marcus-millichap') -ccontains $entry.source_key) {
+                    if ($entry.source_key -ceq 'marcus-millichap') {
+                        $lines += "$bullet *${broker}:* Inventory identities retained; $count emitted; $held held; details unverified and whole brokerage incomplete."
+                    } else {
+                        $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
+                    }
                     if ($entry.source_key -ceq 'franklin-street') {
                         $pendingBuildout = ([long]$entry.buildout_pending).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                         $heldObservations = ([long]$entry.held_observations).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)

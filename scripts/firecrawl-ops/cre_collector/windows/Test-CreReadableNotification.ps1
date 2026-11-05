@@ -565,5 +565,23 @@ Assert-Cre ($text.Contains('Partially completed') -and $text.Contains('deferred'
 $record.nativeExitCode=22
 $text=Get-CreNotificationText $record 'Terminal' 22 $null
 Assert-Cre ($text.Contains('Already processed') -and $text.Contains('no new writes')) 'Settled SVN replay must not claim a new completion.'
+$Pipeline = $true; $selectedSourceKeys = @('marcus-millichap','newmark','savills')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$marcusMixed = New-Summary
+$marcusMixed['selected_source_keys'] = $selectedSourceKeys
+$marcusMixed['per_source_summaries'] = @(
+    [ordered]@{source_key='marcus-millichap';verified_listings=3;emitted_count=3;held_count=1;detail_qualified=0;detail_errors=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='newmark';verified_listings=2;transaction_breakdown=[ordered]@{sale=2;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$marcusMixed['qualified_subset_source_keys'] = @('marcus-millichap')
+$marcusMixed['failed_source_keys'] = @('savills'); $marcusMixed['pending_source_keys'] = @(); $marcusMixed['complete'] = $false
+Save-Summary $marcusMixed
+$marcusRead = Get-CreVerifiedSummary (New-Record) 'marcus-partial'
+$marcusText = Get-CreNotificationText (New-Record) 'Terminal' 1 $marcusRead
+Assert-Cre ($null -ne $marcusRead -and $marcusText.Contains('Inventory identities retained; 3 emitted; 1 held; details unverified') -and
+    $marcusText.Contains('*For sale / lease / both:* unavailable') -and $marcusText.Contains('*Newmark:* 2 listings verified') -and
+    $marcusText.Contains('*Savills:* Failed')) 'Marcus partial preserves peer counts and does not invent detail or transaction counts.'
+$marcusMixed.per_source_summaries[0].detail_qualified = 1
+Save-Summary $marcusMixed
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'marcus-forged-detail')) 'Marcus verified-detail claims must be refused.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"
