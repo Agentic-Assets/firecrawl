@@ -139,3 +139,23 @@ def test_probe_refuses_derived_field_tampering_and_duplicate_alias():
     sql = identity_probe_sql([row], GENERATION, START, FINISH)
     assert "cre_source_index" in sql and "cre_listings" in sql
     assert "INSERT " not in sql and "UPDATE " not in sql and "DELETE " not in sql
+
+
+def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
+    from cre_marcus_inventory_db import build_partial_sql
+
+    row = stage(listing())
+    receipt = {"schema": "marcus-inventory-custody/v1", "source": "marcus-millichap", "coverage": "partial",
+               "generation": GENERATION, "attempt": 1, "source_sha256": "a" * 64,
+               "detail_qualified": 0, "detail_errors": 1, "started_at": START, "finished_at": FINISH,
+               "partition": {"staged": [row], "held": []}}
+    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None}]
+    sql = build_partial_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
+    assert "Marcus identity partition changed" in sql
+    assert "'detailQualified',false" in sql
+    assert "'partial'" in sql
+    assert "UPDATE credeals.cre_source_index" not in sql
+    assert "DELETE FROM" not in sql
+    receipt["detail_errors"] = "0); SELECT 1; --"
+    with pytest.raises(ValueError):
+        build_partial_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
