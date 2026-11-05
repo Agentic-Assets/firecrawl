@@ -68,15 +68,40 @@ def test_maximum_page_and_large_buildout_peer_remain_in_mixed_projection():
     page = value["sources"][0]["retainedObservations"][0]
     page["decodedHtml"] += "x" * (8 * 1024 * 1024 - len(page["decodedHtml"].encode()))
     page["decodedHtmlSha256"] = hashlib.sha256(page["decodedHtml"].encode()).hexdigest()
-    peer = {"sourceKey": "franklin-street", "transactionMode": "lease", "id": "123", "rawBuildout": "y" * (9 * 1024 * 1024)}
+    peer = {"sourceKey": "franklin-street", "transactionMode": "lease", "id": "123", "rawBuildout": "y" * (65 * 1024 * 1024)}
     value["sources"].append({"sourceKey": "franklin-street", "transaction": "lease", "supported": True,
                              "truncated": False, "listingsCollected": 1})
     value["listings"] = [peer]
     value["totalListings"] = 1
     raw = json.dumps(value).encode()
-    assert len(raw) > 16 * 1024 * 1024
+    assert len(raw) > 64 * 1024 * 1024
     output = project(raw, "run-1", {"PATH": os.environ["PATH"]})["projection"]
     assert output["buildout"]["listings"] == [peer]
     assert output["buildout"]["pendingListings"] == 1
     assert output["buildout"]["disposition"] == "private_pending_admission"
     assert len(output["listings"]) == 1
+
+
+
+def test_oversized_transaction_holds_its_cards_and_keeps_valid_peer(monkeypatch):
+    import cre_franklin_site_projection as projection
+
+    value = artifact()
+    page = value["sources"][0]["retainedObservations"][0]
+    other = json.loads(json.dumps(page))
+    other["transaction"] = "lease"
+    other["sourceUrl"] = "https://franklinst.com/properties/for-lease/"
+    other["decodedHtml"] = other["decodedHtml"].replace("FOR_SALE", "FOR_LEASE").replace("/for-sale/", "/for-lease/")
+    other["decodedHtmlSha256"] = hashlib.sha256(other["decodedHtml"].encode()).hexdigest()
+    other["cards"][0]["html"] = other["decodedHtml"]
+    other["cards"][0]["attributes"]["data-offer-type"] = "FOR_LEASE"
+    page["decodedHtml"] += "x" * 10000
+    page["decodedHtmlSha256"] = hashlib.sha256(page["decodedHtml"].encode()).hexdigest()
+    value["sources"].append({"sourceKey": "franklin-street", "transaction": "lease", "error": "failed",
+                             "retainedObservations": [other]})
+    monkeypatch.setattr(projection, "MAX_BRIDGE_BYTES", 5000)
+    result = project(json.dumps(value).encode(), "run-1", {"PATH": os.environ["PATH"]})["projection"]
+    assert [row["transactionMode"] for row in result["listings"]] == ["lease"]
+    assert result["held"][0]["transaction"] == "sale"
+    assert result["held"][0]["card"]["reason"] == "projection_input_bound"
+    assert result["held"][0]["card"]["card"] == page["cards"][0]

@@ -1,7 +1,7 @@
 /** Private stdin/stdout bridge. It never opens a network connection or a database. */
 import { projectFranklinFailureArtifact } from './franklin-site-failure-artifact.js';
 
-const MAX_INPUT = 64 * 1024 * 1024;
+const MAX_INPUT = 72 * 1024 * 1024;
 async function main() {
   const generationId = process.argv[2];
   if (!generationId || generationId.length > 128) throw new Error('invalid generation');
