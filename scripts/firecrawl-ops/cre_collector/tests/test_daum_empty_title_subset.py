@@ -30,6 +30,31 @@ def test_v2_configuration_is_explicit_and_leaves_v1_bytes_unchanged():
     )
 
 
+def test_invocation_default_and_resume_preserve_recorded_policy(tmp_path):
+    import json
+
+    assert admission.invocation_subset_policy(None, False) == "tenure-only-v1"
+    assert admission.invocation_subset_policy(None, True) == "tenure-and-empty-title-v2"
+    assert admission.invocation_subset_policy("tenure-only-v1", True) == "tenure-only-v1"
+    manifest = tmp_path / "manifest.json"
+    for policy in ("tenure-only-v1", "tenure-and-empty-title-v2"):
+        manifest.write_text(json.dumps({"config": {
+            "sources": ["daum-commercial"], "transactions": ["sale", "lease"],
+            "current_inventory_admission": admission.subset_configuration(policy),
+        }}))
+        assert admission.invocation_subset_policy(None, True, tmp_path) == policy
+        assert admission.invocation_subset_policy(None, True, manifest) == policy
+        manifest.write_text(json.dumps({"config": {
+            "pipeline": True, "sources": ["daum-commercial", "cbre"], "transactions": ["sale", "lease"],
+            "current_inventory_admissions": admission.configuration_map(
+                [], ["daum-commercial", "cbre"], daum_verified_subset=True, daum_subset_policy=policy),
+        }}))
+        assert admission.invocation_subset_policy(None, True, tmp_path) == policy
+    manifest.write_text('{"config": {}}')
+    with pytest.raises(ValueError):
+        admission.invocation_subset_policy(None, True, tmp_path)
+
+
 @pytest.fixture(scope="module")
 def actual_v2(tmp_path_factory):
     from test_daum_current_inventory import produce
@@ -165,16 +190,25 @@ def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
     artifact = prepared[2]
     for source in artifact["sources"]:
         rows = source["currentInventoryProof"]["titleFallbackObservations"]
-        if fault == "page_title": rows[0]["documentTitle"] = "Different – Daum Commercial"
-        elif fault == "missing_witness": rows.clear()
-        elif fault == "duplicate_witness": rows.append(copy.deepcopy(rows[0]))
-        elif fault == "foreign_post": rows[0]["postId"] = "59999"
+        if fault == "page_title":
+            rows[0]["documentTitle"] = "Different – Daum Commercial"
+        elif fault == "missing_witness":
+            rows.clear()
+        elif fault == "duplicate_witness":
+            rows.append(copy.deepcopy(rows[0]))
+        elif fault == "foreign_post":
+            rows[0]["postId"] = "59999"
     listing = next(item for item in artifact["listings"] if item["daumPostId"] == "50100")
-    if fault == "card_title": listing["daumSearchCard"]["title"] = "Different"
-    elif fault == "listing_title": listing["name"] = "Different"
-    elif fault == "unexpected_city": listing["city"] = "AL"
-    elif fault == "missing_detail": listing.pop("daumTitleFallbackDetail")
-    elif fault == "detail_post": listing["daumTitleFallbackDetail"]["postId"] = 59999
+    if fault == "card_title":
+        listing["daumSearchCard"]["title"] = "Different"
+    elif fault == "listing_title":
+        listing["name"] = "Different"
+    elif fault == "unexpected_city":
+        listing["city"] = "AL"
+    elif fault == "missing_detail":
+        listing.pop("daumTitleFallbackDetail")
+    elif fault == "detail_post":
+        listing["daumTitleFallbackDetail"]["postId"] = 59999
     helpers.refresh(prepared[1], artifact, prepared[3])
     with pytest.raises(ValueError):
         admit(prepared)
@@ -384,7 +418,7 @@ def test_v2_worker_argv_and_resume_configuration_are_policy_bound(tmp_path):
     old = refresh.build_cohort_collect_worker_argv(
         "daum-commercial", tmp_path / "artifact.json", **kwargs
     )
-    assert "--daum-subset-policy" not in old
+    assert old[old.index("--daum-subset-policy") + 1] == "tenure-only-v1"
     with pytest.raises(ValueError):
         admission.admission_configuration(
             {

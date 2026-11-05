@@ -2491,7 +2491,7 @@ def build_cohort_collect_worker_argv(
         "--transactions",
         "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
     ] + (["--admit-daum-verified-subset"] if daum_verified_subset else []) + (
-        ["--daum-subset-policy", daum_subset_policy] if daum_subset_policy != "tenure-only-v1" else [])
+        ["--daum-subset-policy", daum_subset_policy] if daum_verified_subset else [])
 
 
 def build_gate_argv(
@@ -8120,7 +8120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None, action="append", dest="admit_current_inventory_sources",
         help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
     )
-    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default="tenure-only-v1")
+    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default=None)
     parser.add_argument(
         "--admit-daum-verified-subset",
         action="store_true",
@@ -8204,6 +8204,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        args.daum_subset_policy = current_inventory.invocation_subset_policy(
+            args.daum_subset_policy, args.admit_daum_verified_subset, args.resume)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        parser.error(f"DAUM subset resume policy unavailable: {exc}")
     try:
         args.source_workers = resolve_source_workers(args.pipeline, args.source_workers)
     except ValueError as exc:

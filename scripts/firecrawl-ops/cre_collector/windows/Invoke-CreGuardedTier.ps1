@@ -16,7 +16,7 @@ param(
     [switch]$Pipeline,
     [switch]$AdmitBaselineHoldAdditively,
     [switch]$AdmitDaumVerifiedSubset,
-    [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy = 'tenure-only-v1',
+    [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
@@ -40,6 +40,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
+
+# Preserve an explicitly selected V1. New DAUM subset runs use the shared V2 default.
+if (-not $PSBoundParameters.ContainsKey('DaumSubsetPolicy')) {
+    $DaumSubsetPolicy = if ($AdmitDaumVerifiedSubset) { 'tenure-and-empty-title-v2' } else { 'tenure-only-v1' }
+}
 
 # Pure selection validation runs before readiness, telemetry or notification work.
 if ($PSBoundParameters.ContainsKey('AttemptsPerSource') -and ($Tier -ne 'series' -or $CheckOnly)) {
@@ -952,7 +957,7 @@ try {
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }
-            if ($DaumSubsetPolicy -cne 'tenure-only-v1') { $arguments += @('--daum-subset-policy', $DaumSubsetPolicy) }
+            if ($AdmitDaumVerifiedSubset) { $arguments += @('--daum-subset-policy', $DaumSubsetPolicy) }
             foreach ($key in $selectedAdmissionKeys) { $arguments += @('--admit-current-inventory-source', $key) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }

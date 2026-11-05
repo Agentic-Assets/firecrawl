@@ -14,16 +14,28 @@ $forwarders = @($ast.FindAll({
     $node.Parent -is [System.Management.Automation.Language.StatementBlockAst]
 }, $true) | Where-Object { $_.Extent.Text -notmatch 'selectedSourceArgument' })
 if ($forwarders.Count -ne 2) { throw 'Expected exactly two policy forwarding statements.' }
+$defaults = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Extent.Text -match "PSBoundParameters.ContainsKey\('DaumSubsetPolicy'\)" -and
+    $node.Extent.Text -match "tenure-and-empty-title-v2"
+}, $true))
+if ($defaults.Count -ne 1) { throw 'Expected exactly one DAUM default selector.' }
+foreach ($admitted in @($false, $true)) {
+    $AdmitDaumVerifiedSubset = $admitted
+    $DaumSubsetPolicy = ''
+    . ([ScriptBlock]::Create($defaults[0].Extent.Text))
+    $expected = if ($admitted) { 'tenure-and-empty-title-v2' } else { 'tenure-only-v1' }
+    if ($DaumSubsetPolicy -cne $expected) { throw 'DAUM default policy differs.' }
+}
 foreach ($policy in @('tenure-only-v1', 'tenure-and-empty-title-v2')) {
     $DaumSubsetPolicy = $policy
     $AdmitDaumVerifiedSubset = $true
     $arguments = @()
     foreach ($node in $forwarders) { . ([ScriptBlock]::Create($node.Extent.Text)) }
     if ($arguments[0] -cne '--admit-daum-verified-subset') { throw 'Missing existing opt-in.' }
-    if ($policy -ceq 'tenure-only-v1') {
-        if ($arguments.Count -ne 1) { throw 'V1 argv changed.' }
-    } elseif ($arguments.Count -ne 3 -or $arguments[1] -cne '--daum-subset-policy' -or $arguments[2] -cne $policy) {
-        throw 'V2 policy not forwarded exactly.'
+    if ($arguments.Count -ne 3 -or $arguments[1] -cne '--daum-subset-policy' -or $arguments[2] -cne $policy) {
+        throw 'Selected policy not forwarded exactly.'
     }
 }
 $refused = $false
@@ -33,4 +45,4 @@ catch {
     $refused = $true
 }
 if (-not $refused) { throw 'V2 without existing opt-in did not refuse.' }
-Write-Output 'DAUM native policy: PASS (V1 unchanged, V2 exact forwarding, invalid opt-in refuses before dispatch)'
+Write-Output 'DAUM native policy: PASS (V1/V2 exact forwarding, invalid opt-in refuses before dispatch)'

@@ -273,6 +273,80 @@ try:
         ]
     )
     if unknown_mode:
+        # Source producer -> authenticated read-only probe -> both gates ->
+        # production staging SQL -> real-schema DB -> freshness readback.
+        from unittest.mock import patch
+        sys.path.insert(0, str(ROOT / "tests"))
+        import cre_checkpoint_refresh as checkpoint
+        import cre_current_inventory_admission as admission
+        import cre_daum_current_inventory as daum
+        import test_essex_current_inventory as helpers
+        from test_daum_current_inventory import produce
+        from test_daum_verified_subset import envelope
+
+        db = "fallback_producer"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        source_seed = [row(index) for index in range(101)]
+        for seed_row in source_seed:
+            for collection in ("images", "contacts", "documents", "media", "links"):
+                seed_row[collection] = []
+        sql(generated(source_seed), db)
+        sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-100'; "
+            "DELETE FROM credeals.cre_listings WHERE external_id='property/Synthetic-100';", db)
+        producer_dir = out / "offline-producer"
+        producer_dir.mkdir(mode=0o700)
+        produced = produce(producer_dir, total=101, empty_title=True, corroborated_title=True,
+                           with_spaces=True, subset_policy="tenure-and-empty-title-v2")
+        helpers.SOURCE = "daum-commercial"
+        prepared = helpers.setup(producer_dir, produced)
+        manifest = prepared[3]
+        manifest["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+        fake_url = "postgresql://postgres@fixture.invalid/fallback_producer"
+        target = ingest.database_target_fingerprint_from_url(fake_url)
+        manifest["preflight"]["database_target"] = target
+
+        def probe_psql(_psql, _db_url, script, **_kwargs):
+            return cmd(["docker", "exec", "-i", container, "psql", "-X", "-q", "-A",
+                        "-F", "\t", "-P", "footer=off", "-U", "postgres", "-d", db,
+                        "-v", "ON_ERROR_STOP=1", "-f", "-"], input=script)
+
+        from cre_daum_fallback_partition import run_identity_probe
+        with (
+            patch.object(ingest, "load_db_url", return_value=(fake_url, None)),
+            patch.object(ingest, "find_psql", return_value="fixture-psql"),
+            patch.object(validate, "_run_psql_script", side_effect=probe_psql),
+            patch.object(checkpoint, "git_identity", return_value=(manifest["collector_git_sha"], False)),
+        ):
+            manifest["sources"]["daum-commercial"]["daum_fallback_probe"] = run_identity_probe(
+                prepared[1], manifest["sources"]["daum-commercial"]["artifact"]["sha256"],
+                manifest["run_id"], manifest["collector_git_sha"], target["value"], None)
+        source_envelope = envelope(prepared)
+        source_claims = daum.ingest_subset_context(
+            prepared[1], source_envelope, current_code_sha=manifest["collector_git_sha"],
+            current_git_dirty=False, expected_database_target_sha256=target["value"], attempt_id="e" * 32)
+        staged = {}
+        for listing in prepared[2]["listings"]:
+            mapped = ingest.to_row(listing, {}, prepared[2]["runMeta"]["finishedAt"])
+            key = mapped["external_id"]
+            staged[key] = ingest.merge_rows(staged[key], mapped) if key in staged else mapped
+        source_meta = [{"slug": "daum-commercial", "discovered": len(staged), "saved": len(staged),
+                        "errors": 0, "notes": "offline-producer exact proof"}]
+        source_sql = ingest.build_sql(list(staged.values()), source_meta, manifest["started_at"], set(),
+                                      finished_at=prepared[2]["runMeta"]["finishedAt"],
+                                      daum_verified_subset_claims=source_claims)
+        sql(source_sql, db)
+        fallback_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                     "WHERE external_id='property/Synthetic-100';", db).stdout)
+        import base64
+        source_saved = json.loads(base64.b64decode(fallback_raw["daumTitleFallbackHistory"][0]["rawBase64"]))
+        assert source_saved["daumTitleFallbackDetail"]["city"] == "Phoenix"
+        assert "$6,600 per month" in source_saved["daumAvailableSpaceObservations"][0]["text"]
+        generations = [line.split("|") for line in sql(validate.QUERIES["freshness_generations"], db).stdout.splitlines()]
+        generation_rows = [line for line in generations if line[0] == "daum-commercial" and line[3] == manifest["run_id"]]
+        assert len(generation_rows) == 1 and generation_rows[0][6] == "101", generation_rows
+        checks.append("fallback_offline_producer_to_real_db_readback")
+
         # Exercise the actual fallback ingest SQL against owned real-schema DBs.
         from cre_daum_current_inventory import _sha
         from cre_daum_fallback_partition import identity_probe_sql

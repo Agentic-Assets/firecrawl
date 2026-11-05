@@ -17,19 +17,13 @@ the two DAUM permissions or supply the subset environment variable manually to
 bypass the runner. The same collection, validation, staging and ingestion code
 runs on macOS and Windows/WSL; native launching is the host-specific boundary.
 
-The exact DAUM admission entry carries
-`admission_scope: "daum_verified_subset_v1"`. Collector proof uses schema
-`daum-verified-subset-v1` and kind `verified_subset_with_holds`. Complete and
-subset acquisitions cannot reuse each other's cached result, including failures.
-Selecting this scope always produces a partial result, even when the held set
-is empty. Changing a receipt label cannot turn it into complete-source proof.
-
-The existing flag defaults to `tenure-only-v1`, preserving that contract. The
-separate `--daum-subset-policy tenure-and-empty-title-v2` (Windows
-`-DaumSubsetPolicy tenure-and-empty-title-v2`) requires the subset flag too. It
-selects scope `daum_verified_subset_v2`, proof schema `daum-verified-subset-v2`
-and exact policy metadata through configuration, cache, both gates and the
-ingestion claims. Complete admission and V1 do not inherit this permission.
+New shared-runner and Windows-wrapper subset invocations default to `tenure-and-empty-title-v2`, with scope
+`daum_verified_subset_v2` and proof schema `daum-verified-subset-v2`.
+The explicit `tenure-only-v1` policy remains available, and a resumed run
+uses its recorded policy when none is supplied. V1 receipts retain their
+original contract. Complete and subset acquisitions cannot reuse each other's
+cached result, including failures. Either subset always reports partial,
+even with no holds; it cannot supply complete-source proof.
 
 ## What must be proved
 
@@ -53,15 +47,15 @@ The proof retains the existing `held` classification and parsed observations
 for audit, and separately lists emitted unknown IDs in `retainedUnknownTenure`.
 Historical proofs without the list retain their original hold-only behavior.
 
-V2 additionally permits `empty_required_property_title` only when a successful
-detail has exactly one empty cleaned visible `.main-section .title-property`,
-one matching owned observed canonical URL and one unambiguous native shortlink.
-Missing or multiple empty title containers still fail. The normal full parser
-for nonempty titles is unchanged. No head-title fallback or placeholder facts
-enter staging. Identity and recognized tenure conflicts still fail before
-partitioning. An empty-title hold preserves the resolved tenure, including a
-recognized Lease, but excludes that parent from both emitted transaction sets.
-This reason takes priority if tenure is also unknown, counting the hold once.
+For V2, when one visible detail title is empty, the search-card title may
+supply the title only if the unique owned document title exactly corroborates
+it, the canonical URL and native post ID match, and tenure is resolved. The
+parsed detail and inventory card remain in raw evidence. Detail locality is
+retained there rather than promoted when the fallback is used. If that title
+cannot be corroborated, the identified record remains an
+`empty_required_property_title` hold. Missing or multiple title containers
+still fail. Unknown-tenure fallback and records with no usable card title are
+not yet admitted by this path.
 
 The empty-only `titleObservations` tuples `[postId, 1, "empty"]` are unique and
 ordered by inventory URL. Their IDs must equal exactly the empty-title held
@@ -133,11 +127,14 @@ outside this contract and remain unchanged.
 
 ## Database preservation
 
-Inside the existing guarded transaction, before the unchanged upserts, refuse
-the entire apply if an emitted existing parent is deleted or not active, or an
-emitted existing source-index row is soft-deleted or not explicitly present.
-Unknown flags also refuse. An absent index row is not a prior absence claim;
-initial observation insertion is permitted after identity checks.
+The source-bound fallback partition holds conflicting, terminal, stale or
+otherwise unqualified targets locally; its locked transaction recheck refuses
+a changed partition. Existing exact targets retain their populated scalars,
+lifecycle, source index and children. Their full staged observation is appended
+as encoded raw evidence with a digest; new targets enter the normal additive
+path. Later ordinary upserts preserve that history. This stores parsed detail
+and unit HTML/text, not the complete original HTTP response body. Other
+ordinary subset identities retain their existing cohort-wide safety checks.
 
 Held parents, all five child sets and index rows stay unchanged. Existing
 emitted lifecycle flags, presence generation and presence-change time stay
