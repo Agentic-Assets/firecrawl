@@ -899,6 +899,7 @@ def _admit(
                     lease_count=len(expected["lease"] - target_held_ids),
                     whole_lease_coverage="unknown" if held or target_held_ids else "proved",
                 )
+                require(binding["emitted_count"] > 0)
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")

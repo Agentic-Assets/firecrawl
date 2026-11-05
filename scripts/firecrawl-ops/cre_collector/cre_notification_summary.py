@@ -153,7 +153,7 @@ def _subset_summary_fields(child, source, count):
     for key in ("inventory_count", "emitted_count", "held_count"):
         require(type(binding.get(key)) is int and binding[key] >= 0)
     require(binding["inventory_count"] == binding["emitted_count"] + binding["held_count"]
-            and binding["emitted_count"] == count and count >= (1 if pyramid else 100)
+            and binding["emitted_count"] == count and count >= (1 if pyramid or "target_held" in binding else 100)
             and (not pyramid or binding["inventory_count"] >= 100)
             and binding.get("staged_count") == count)
     if pyramid and scope == "pyramid_incomplete_v2":

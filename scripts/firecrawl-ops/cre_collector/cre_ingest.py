@@ -4098,7 +4098,9 @@ BEGIN
          'inventoryObservedAt', a.fallback_inventory_at,
          'detailObservedAt', a.fallback_detail_at,
          'rawBase64', encode(convert_to(a.raw_data::text, 'UTF8'), 'base64'),
-         'rawSha256', encode(sha256(convert_to(a.raw_data::text, 'UTF8')), 'hex'))) END,
+         'rawSha256', encode(sha256(convert_to(a.raw_data::text, 'UTF8')), 'hex'),
+         'priorLatestMetadata', t.raw_data->'latestDaumTitleFallbackObservation',
+         'priorFreshnessOwner', t.raw_data->'daumFreshnessOwner')) END,
      'latestDaumTitleFallbackObservation', jsonb_build_object(
        'sourceKey', 'daum-commercial',
        'inventoryObservedAt', a.fallback_inventory_at,

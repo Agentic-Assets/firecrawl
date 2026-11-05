@@ -356,6 +356,14 @@ def test_target_held_fallback_summary_is_bound_and_keeps_verified_peers(tmp_path
     result = summary.read(evidence)
     assert result["partial"] is True and result["emitted_count"] == 100 and result["held_count"] == 2
     assert result["transaction_breakdown"]["sale"] == 100
+    import copy
+    from cre_notification_summary import _artifact_expected_count, _subset_summary_fields
+    small = copy.deepcopy(child)
+    small_binding = small["sources"]["daum-commercial"]["gate"]["current_inventory_proof"]
+    small_binding.update(inventory_count=101, source_emitted_count=100, emitted_count=99,
+                         held_count=2, staged_count=99, sale_count=99)
+    assert _subset_summary_fields(small, "daum-commercial", 99)["emitted_count"] == 99
+    assert _artifact_expected_count(small, "daum-commercial", 99) == 100
     from cre_source_health import _qualified_subset_attempt
     assert _qualified_subset_attempt(parent["sources"]["daum-commercial"], child, child["finished_at"],
                                      computed_at=child["finished_at"], source_key="daum-commercial")

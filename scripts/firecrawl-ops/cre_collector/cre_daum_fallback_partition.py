@@ -113,15 +113,38 @@ WITH candidate AS (
       WHEN own.id IS NOT NULL AND (
         (own.raw_data ? 'daumTitleFallbackHistory'
          AND jsonb_typeof(own.raw_data->'daumTitleFallbackHistory') IS DISTINCT FROM 'array')
-        OR (own.raw_data ? 'latestDaumTitleFallbackObservation'
-            AND (jsonb_typeof(own.raw_data->'latestDaumTitleFallbackObservation') IS DISTINCT FROM 'object'
-                 OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,sourceKey}}' IS DISTINCT FROM 'daum-commercial'
-                 OR NOT COALESCE(pg_input_is_valid(
-                   own.raw_data#>>'{{latestDaumTitleFallbackObservation,inventoryObservedAt}}',
-                   'timestamp with time zone'), false)
-                 OR NOT COALESCE(pg_input_is_valid(
-                   own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}',
-                   'timestamp with time zone'), false)))
+        OR (own.raw_data ? 'daumFreshnessOwner' AND (
+              COALESCE(own.raw_data->>'daumFreshnessOwner' NOT IN ('title_fallback', 'unknown_tenure'), true)
+              OR (own.raw_data->>'daumFreshnessOwner' = 'title_fallback'
+                  AND NOT (own.raw_data ? 'latestDaumTitleFallbackObservation'))
+              OR (own.raw_data->>'daumFreshnessOwner' = 'unknown_tenure'
+                  AND (jsonb_typeof(own.raw_data->'latestDaumUnknownTenureObservation') IS DISTINCT FROM 'object'
+                       OR own.raw_data#>>'{{latestDaumUnknownTenureObservation,sourceKey}}' IS DISTINCT FROM 'daum-commercial'
+                       OR own.raw_data#>'{{latestDaumUnknownTenureObservation,daumUnknownTenure}}' IS DISTINCT FROM 'true'::jsonb))))
+        OR (own.raw_data ? 'latestDaumTitleFallbackObservation' AND CASE
+          WHEN jsonb_typeof(own.raw_data->'latestDaumTitleFallbackObservation') = 'object'
+           AND jsonb_typeof(own.raw_data#>'{{latestDaumTitleFallbackObservation,freshnessProvenance}}') = 'object'
+          THEN (
+            ((own.raw_data->'latestDaumTitleFallbackObservation')
+             - 'sourceKey' - 'inventoryObservedAt' - 'detailObservedAt' - 'freshnessProvenance') <> '{{}}'::jsonb
+            OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,sourceKey}}' IS DISTINCT FROM 'daum-commercial'
+            OR ((own.raw_data#>'{{latestDaumTitleFallbackObservation,freshnessProvenance}}')
+                - 'generationId' - 'detailScope' - 'cacheDisposition' - 'method' - 'identityMethod') <> '{{}}'::jsonb
+            OR NULLIF(btrim(own.raw_data#>>'{{latestDaumTitleFallbackObservation,freshnessProvenance,generationId}}'), '') IS NULL
+            OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,freshnessProvenance,detailScope}}' IS DISTINCT FROM 'detail_page'
+            OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,freshnessProvenance,cacheDisposition}}' IS DISTINCT FROM 'live'
+            OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,freshnessProvenance,method}}' IS DISTINCT FROM 'daum_direct_detail_html'
+            OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,freshnessProvenance,identityMethod}}' IS DISTINCT FROM 'wordpress_shortlink_post_id'
+            OR CASE WHEN jsonb_typeof(own.raw_data->'daumTitleFallbackHistory') = 'array'
+                    THEN jsonb_array_length(own.raw_data->'daumTitleFallbackHistory') = 0
+                    ELSE true END
+            OR NOT COALESCE(pg_input_is_valid(
+              own.raw_data#>>'{{latestDaumTitleFallbackObservation,inventoryObservedAt}}',
+              'timestamp with time zone'), false)
+            OR NOT COALESCE(pg_input_is_valid(
+              own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}',
+              'timestamp with time zone'), false)
+          ) ELSE true END)
       ) THEN 'existing_evidence_unqualified'
       WHEN si.id IS NOT NULL AND (
         si.soft_deleted IS DISTINCT FROM false OR si.observation_present IS DISTINCT FROM true
@@ -131,7 +154,7 @@ WITH candidate AS (
       WHEN own.scraped_at > c.detail_at OR si.last_enumerated_at > c.inventory_at
         OR CASE WHEN own.raw_data ? 'latestDaumTitleFallbackObservation'
           THEN (own.raw_data#>>'{{latestDaumTitleFallbackObservation,inventoryObservedAt}}')::timestamptz > c.inventory_at
-            OR (own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}')::timestamptz > c.detail_at
+            OR (own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}')::timestamptz >= c.detail_at
           ELSE false END
         THEN 'newer_target_observation'
       ELSE NULL

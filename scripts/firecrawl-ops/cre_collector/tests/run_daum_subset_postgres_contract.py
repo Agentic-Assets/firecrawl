@@ -307,9 +307,11 @@ try:
         manifest["preflight"]["database_target"] = target
 
         def probe_psql(_psql, _db_url, script, **_kwargs):
-            return cmd(["docker", "exec", "-i", container, "psql", "-X", "-q", "-A",
-                        "-F", "\t", "-P", "footer=off", "-U", "postgres", "-d", db,
-                        "-v", "ON_ERROR_STOP=1", "-f", "-"], input=script)
+            result = cmd(["docker", "exec", "-i", container, "psql", "-X", "-q", "-A",
+                          "-F", "\t", "-P", "footer=off", "-U", "postgres", "-d", db,
+                          "-v", "ON_ERROR_STOP=1", "-f", "-"], input=script)
+            assert result.returncode == 0, result.stderr
+            return result
 
         from cre_daum_fallback_partition import run_identity_probe
         with (
@@ -386,7 +388,9 @@ try:
                 "daumAvailableSpaceObservations": [{"text": "95,151 SF $1.15/SF/month", "html": "<li>95,151 SF</li>"}],
                 "preserveChildCollections": True, "detailObservedWithChildPreservation": True,
                 "inventoryObservedAt": "2026-10-17T00:00:00Z", "detailObservedAt": "2026-10-17T00:00:01Z",
-                "freshnessProvenance": {"generationId": "fallback-generation", "detailScope": "detail_page", "cacheDisposition": "live"},
+                "freshnessProvenance": {"generationId": "fallback-generation", "detailScope": "detail_page",
+                                        "cacheDisposition": "live", "method": "daum_direct_detail_html",
+                                        "identityMethod": "wordpress_shortlink_post_id"},
             })
             for child in candidate["images"] + candidate["contacts"]:
                 child.pop("isPrimary", None)
@@ -446,6 +450,18 @@ try:
                 later["raw_data"]["freshnessProvenance"]["generationId"] = "later-generation"
                 later_members = [{**fallback_members[0], "inventory_at": "2026-10-18T00:00:00Z",
                                   "detail_at": "2026-10-18T00:00:01Z"}]
+                for mutation in (
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation}','5'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,unknownField}','\"keep\"'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,freshnessProvenance,method}','null'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,detailObservedAt}','\"2026-01-99T00:00:00Z\"'::jsonb)",
+                    "jsonb_set(raw_data,'{daumFreshnessOwner}','\"unrecognized\"'::jsonb)",
+                    "raw_data - 'daumTitleFallbackHistory'",
+                ):
+                    invalid_probe = sql("BEGIN; UPDATE credeals.cre_listings SET raw_data=" + mutation
+                                        + " WHERE external_id='property/Synthetic-0';"
+                                        + identity_probe_sql(later_members) + "; ROLLBACK;", db).stdout.strip().split("|", 2)
+                    assert json.loads(invalid_probe[2])[0]["hold_reason"] == "existing_evidence_unqualified"
                 later_probe = sql(identity_probe_sql(later_members), db).stdout.strip().split("|", 2)
                 later_partition = json.loads(later_probe[2])
                 assert later_partition[0]["hold_reason"] is None
@@ -465,6 +481,7 @@ try:
                 assert fallback_children() == after_full_children
                 assert fallback_index() == after_full_index
                 replay_partition = json.loads(sql(identity_probe_sql(later_members), db).stdout.strip().split("|", 2)[2])
+                assert replay_partition[0]["hold_reason"] == "newer_target_observation"
                 replay_claims = copy.deepcopy(later_claims)
                 replay_claims["fallbackPartition"] = replay_partition
                 replay_claims["binding"]["fallback_partition_sha256"] = _sha(replay_partition)
