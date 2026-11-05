@@ -33,7 +33,7 @@ def _identity(url):
     raise ValueError("invalid source identity")
 
 
-def replay_search(raw, generation, attempt):
+def replay_search(raw, generation, attempt, *, summary=None):
     """Build records only from settled private spool bytes authenticated by caller.
 
     Malformed page bodies and nonidentifiable cards stay held in the original
@@ -99,6 +99,22 @@ def replay_search(raw, generation, attempt):
             held.append({"url": record["url"], "reason": "identity_conflict"})
         else:
             accepted.append(record)
+    if summary is not None:
+        failures = summary["failures"]
+        by_filter = {}
+        for failure in failures:
+            name = failure["filter"]
+            if name in by_filter:
+                raise ValueError("duplicate Lyon source failure")
+            by_filter[name] = failure["reason"]
+        invalid = {item["filter"] for item in held if item["reason"] == "invalid_response"}
+        acquired_failure = {name for name, reason in by_filter.items() if reason == "acquisition_failed"}
+        invalid_failure = {name for name, reason in by_filter.items() if reason == "invalid_response"}
+        if (invalid != invalid_failure or seen_filters & acquired_failure
+                or seen_filters | acquired_failure != set(_FILTERS)
+                or summary["candidates"] != len(records)
+                or summary["held"] != sum(item["reason"] == "invalid_identity" for item in held)):
+            raise ValueError("Lyon source summary and replay differ")
     return accepted, held
 
 

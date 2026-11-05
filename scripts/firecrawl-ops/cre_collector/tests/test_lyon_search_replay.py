@@ -37,6 +37,24 @@ class LyonReplayTests(unittest.TestCase):
         self.assertEqual([h["reason"] for h in held].count("identity_conflict"), 2)
         self.assertEqual([h["reason"] for h in held].count("invalid_identity"), 1)
 
+    def test_replay_requires_summary_and_all_filter_outcomes_to_agree(self):
+        raw = spool([("all", json.dumps([{"permalink": "https://lyonstahl.com/properties/a"}])),
+                     ("lease", "not-json")])
+        summary = {"schema": "lyon-search-summary-v1", "coverage": "partial_unknown", "stopped": False,
+                   "failures": [{"filter": "sale", "reason": "acquisition_failed"},
+                                {"filter": "lease", "reason": "invalid_response"}],
+                   "candidates": 1, "held": 0}
+        records, held = replay_search(raw, "g", 1, summary=summary)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(held[0]["reason"], "invalid_response")
+        summary["candidates"] = 2
+        with self.assertRaises(ValueError):
+            replay_search(raw, "g", 1, summary=summary)
+        summary["candidates"] = 1
+        summary["failures"].pop(0)
+        with self.assertRaises(ValueError):
+            replay_search(raw, "g", 1, summary=summary)
+
     def test_path_and_post_identity_namespace_collision_is_held(self):
         rows = [{"permalink": "https://lyonstahl.com/properties/wordpress:40201"},
                 {"permalink": "https://lyonstahl.com/?post_type=properties&p=40201"},
