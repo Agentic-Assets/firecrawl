@@ -7,7 +7,7 @@ type Identity = { mapProjectId: string; detailPv: string | null; detailUrl: stri
 export type Candidate = Identity & { start: number; page: number; pageSize: number; offset: number; observedAt: string };
 
 function supportedDetail(card: Identity): boolean {
-  if (!card.detailUrl || !card.detailPv || card.detailPv.length > 512) return false;
+  if (!card.detailUrl || !card.detailPv || card.detailPv.length > 512 || /[\x00-\x1f\x7f]/.test(card.detailPv)) return false;
   try {
     const url = new URL(card.detailUrl);
     return url.protocol === "https:" && url.hostname === "my.rcm1.com" && !url.port &&

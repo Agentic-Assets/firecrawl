@@ -146,3 +146,15 @@ test("replay refuses evidence after a source-wide stop", async t => {
       reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
         { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
 });
+
+test("unsupported control-character token does not block a supported peer", async () => {
+  const alteredList = { ...list, html: list.html.replace("pv=a", "pv=a%00") };
+  const alteredPair = { ...pair, documents: [{ list: JSON.stringify(alteredList), map: JSON.stringify(map) }] };
+  const alteredPage = { ...page, documents: [
+    { mapProjectId: "a", detailPv: "a\u0000", detailUrl: "https://my.rcm1.com/handler/modern.aspx?pv=a%00" },
+    page.documents[1],
+  ] };
+  const result = await selectColliersWindow(source([header,alteredPair,alteredPage,hole]), async () => {}, binding, 1, 2);
+  assert.deepEqual(result.eligible.map(item => item.mapProjectId), ["b"]);
+  assert.equal(result.heldOther, 1);
+});
