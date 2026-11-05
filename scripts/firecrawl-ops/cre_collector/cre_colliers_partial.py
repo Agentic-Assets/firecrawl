@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -95,6 +96,19 @@ def revalidate_source_receipt(run_dir, manifest, attempt_number, current_code_sh
     }
 
 
+def _native_project_id(value):
+    # Match JavaScript Number.isSafeInteger/String across the replay boundary.
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if abs(value) > 9007199254740991:
+        return None
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        return None
+    return str(int(value))
+
+
 def verify_detail_record(item, generation, attempt, started_at, finished_at):
     """Validate one private native detail against its exact partial listing."""
     if (not isinstance(generation, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", generation)
@@ -151,7 +165,7 @@ def verify_detail_record(item, generation, attempt, started_at, finished_at):
     proof = listing.get("colliersPartialEvidence")
     mapped_detail = listing.get("colliersSalesTrackerDetail")
     if (not isinstance(source_id, str) or not source_id or observed_id is None or isinstance(observed_id, bool)
-            or not isinstance(observed_id, (str, int, float)) or str(observed_id).strip() != source_id
+            or _native_project_id(observed_id) != source_id
             or listing.get("sourceKey") != "colliers" or listing.get("transactionMode") != "sale"
             or listing.get("id") != source_id or listing.get("brokerIds") != []
             or listing.get("preserveChildCollections") is not True
@@ -270,7 +284,7 @@ def merge_native_observation(prior_raw, item, generation, attempt, started_at, f
             if (base64.b64encode(native).decode("ascii") != encoded
                     or hashlib.sha256(native).hexdigest() != source["nativeSha256"]
                     or hashlib.sha256(decoded.encode("utf-8")).hexdigest() != source["decodedDetailSha256"]
-                    or observed is None or isinstance(observed, bool) or str(observed).strip() != external_id
+                    or _native_project_id(observed) != external_id
                     or _time(source["inventoryObservedAt"]) > _time(source["detailObservedAt"])
                     or _time(entry["lastObservedAt"]) < _time(source["detailObservedAt"])):
                 raise ValueError("invalid native binding")
@@ -330,8 +344,9 @@ WITH candidate AS (
  SELECT DISTINCT s.external_id FROM scoped s
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
  LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
- WHERE (s.canonical_url IS NOT NULL AND EXISTS (SELECT 1 FROM scoped peer
-       WHERE peer.external_id<>s.external_id AND peer.canonical_url=s.canonical_url))
+ WHERE EXISTS (SELECT 1 FROM scoped peer WHERE peer.external_id<>s.external_id AND (
+       (s.canonical_url IS NOT NULL AND (peer.canonical_url=s.canonical_url OR peer.source_url=s.canonical_url))
+       OR (peer.canonical_url IS NOT NULL AND peer.canonical_url=s.source_url)))
     OR (own.id IS NOT NULL AND (own.source_url IS DISTINCT FROM s.source_url OR own.deleted_at IS NOT NULL
         OR (own.status IS DISTINCT FROM 'active' AND NOT (
           own.status IS NULL AND own.raw_data#>>'{{colliersNativeObservations,schema}}'='colliers-native-history/v1'
@@ -354,7 +369,8 @@ WITH candidate AS (
     OR EXISTS (SELECT 1 FROM credeals.cre_listings other
        WHERE other.brokerage_id=s.brokerage_id AND other.deleted_at IS NULL
          AND (own.id IS NULL OR other.id<>own.id)
-         AND (other.source_url=s.source_url OR (s.canonical_url IS NOT NULL AND other.canonical_url=s.canonical_url)))
+         AND (other.source_url=s.source_url OR other.canonical_url=s.source_url
+              OR (s.canonical_url IS NOT NULL AND (other.canonical_url=s.canonical_url OR other.source_url=s.canonical_url))))
 )
 SELECT (SELECT count(*) FROM candidate) AS staged, (SELECT count(*) FROM scoped) AS joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id)::text FROM conflicts), '[]') AS held,
@@ -434,7 +450,6 @@ UPDATE credeals.cre_scrape_jobs j SET status='partial',
 def build_partial_sql(items, staged, held, preimage, generation, attempt, started_at,
                       finished_at, artifact_finished_at, job_id, *, activate_status=False):
     """Build one guarded partial transaction; caller owns source, gates and target."""
-    import math
     import uuid
 
     from cre_ingest import _status_from_signal, sql_lit, to_row
@@ -487,6 +502,12 @@ def build_partial_sql(items, staged, held, preimage, generation, attempt, starte
         for key in ("size_sf", "lot_size_sf", "units"):
             if isinstance(projection[key], float) and not math.isfinite(projection[key]):
                 projection[key] = None
+        units = projection["units"]
+        if units is not None:
+            if isinstance(units, bool) or not isinstance(units, (int, float)) or not float(units).is_integer() or not 0 < units <= 2147483647:
+                projection["units"] = None
+            else:
+                projection["units"] = int(units)
         projection["raw_data"] = {"sourceKey": "colliers", "id": external_id,
                                   "inventoryObservedAt": item["source"]["inventoryObservedAt"],
                                   "detailObservedAt": item["source"]["detailObservedAt"]}
@@ -514,32 +535,28 @@ AS r(slug text,external_id text,source_url text,canonical_url text,transaction_t
  raw_data jsonb,scraped_at timestamptz,partial_history jsonb,status text)
 JOIN credeals.cre_brokerages b ON b.slug=r.slug AND b.slug='colliers';
 {guard}
+CREATE TEMP TABLE _colliers_location ON COMMIT DROP AS
+SELECT t.id,t.brokerage_id,t.external_id,
+ ((t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
+  AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
+  AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
+  AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))) AS compatible
+FROM credeals.cre_listings t JOIN _src s ON t.brokerage_id=s.brokerage_id AND t.external_id=s.external_id;
 UPDATE credeals.cre_listings t SET
  title=COALESCE(t.title,s.title),
- address=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
-                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
-                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
-                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+ address=CASE WHEN loc.compatible
               THEN COALESCE(t.address,s.address) ELSE t.address END,
- city=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
-                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
-                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
-                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+ city=CASE WHEN loc.compatible
               THEN COALESCE(t.city,s.city) ELSE t.city END,
- state=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
-                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
-                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
-                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+ state=CASE WHEN loc.compatible
               THEN COALESCE(t.state,s.state) ELSE t.state END,
- zip=CASE WHEN (t.address IS NULL OR s.address IS NULL OR lower(btrim(t.address))=lower(btrim(s.address)))
-                    AND (t.city IS NULL OR s.city IS NULL OR lower(btrim(t.city))=lower(btrim(s.city)))
-                    AND (t.state IS NULL OR s.state IS NULL OR lower(btrim(t.state))=lower(btrim(s.state)))
-                    AND (t.zip IS NULL OR s.zip IS NULL OR lower(btrim(t.zip))=lower(btrim(s.zip)))
+ zip=CASE WHEN loc.compatible
               THEN COALESCE(t.zip,s.zip) ELSE t.zip END,
  description=COALESCE(t.description,s.description),size_sf=COALESCE(t.size_sf,s.size_sf),
  lot_size_sf=COALESCE(t.lot_size_sf,s.lot_size_sf),units=COALESCE(t.units,s.units),
  raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',s.partial_history)
-FROM _src s WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.external_id;
+FROM _src s JOIN _colliers_location loc ON loc.brokerage_id=s.brokerage_id AND loc.external_id=s.external_id
+WHERE t.id=loc.id;
 INSERT INTO credeals.cre_listings
  (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,title,address,city,state,zip,description,
   size_sf,lot_size_sf,units,scraped_at,raw_data)

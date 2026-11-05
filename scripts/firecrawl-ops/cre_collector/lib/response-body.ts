@@ -28,7 +28,7 @@ export async function readBoundedBytes(
   reader: ResponseBodyReader,
   { maxBytes, signal, deadlineAt, retainPrefix = false }: { maxBytes: number; signal: AbortSignal; deadlineAt: number; retainPrefix?: boolean }
 ): Promise<Uint8Array> {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isFinite(deadlineAt)) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || (retainPrefix && maxBytes === Number.MAX_SAFE_INTEGER) || !Number.isFinite(deadlineAt)) {
     throw new RangeError("Response body requires a positive safe byte limit and finite deadline");
   }
   signal.throwIfAborted();
@@ -56,9 +56,10 @@ export async function readBoundedBytes(
       const value = chunk.value;
       if (value.byteLength > maxBytes - total) {
         if (!retainPrefix) throw new ResponseBodyLimitError(maxBytes);
-        const prefix = new Uint8Array(maxBytes);
+        // Retain one byte beyond the bound as proof of an oversized body.
+        const prefix = new Uint8Array(maxBytes + 1);
         prefix.set(buffer.subarray(0, total));
-        prefix.set(value.subarray(0, maxBytes - total), total);
+        prefix.set(value.subarray(0, maxBytes - total + 1), total);
         throw new ResponseBodyLimitError(maxBytes, prefix);
       }
       const required = total + value.byteLength;

@@ -146,6 +146,7 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
                                  "2026-11-04T16:00:00Z", fixture["artifactFinishedAt"])
     assert staged["external_id"] == "native-e2e"
     assert fixture["rows"][0]["listing"]["city"] == "Native City"
+    assert fixture["rows"][0]["listing"]["units"] == 10
 
 def test_native_byte_change_is_rejected_even_when_decoded_text_matches():
     item = sample()
@@ -202,3 +203,12 @@ def test_native_history_holds_unknown_or_overflow_without_losing_prior(monkeypat
     with pytest.raises(partial.PartialHistoryHold, match="bounded"):
         partial.merge_native_observation({}, first, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
     assert len(history["entries"]) == 1
+
+def test_native_project_id_matches_javascript_safe_integer_semantics():
+    from cre_colliers_partial import _native_project_id
+
+    assert _native_project_id(1.0) == "1"
+    assert _native_project_id(True) is None
+    assert _native_project_id(1.5) is None
+    assert _native_project_id(9007199254740992) is None
+    assert _native_project_id(10 ** 1000) is None

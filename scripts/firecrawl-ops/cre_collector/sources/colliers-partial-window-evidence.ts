@@ -31,11 +31,11 @@ export class ColliersWindowEvidence {
     } catch (error) { closeSync(this.fd); this.fd = null; throw error; }
   }
 
-  private line(metadata: unknown, native?: Uint8Array) {
+  private line(metadata: unknown, native?: Uint8Array, maximum = MAX_NATIVE_BYTES) {
     if (this.fd === null || this.failed) throw new Error("partial evidence unavailable");
     try {
       const encoded = JSON.stringify(metadata);
-      if (Buffer.byteLength(encoded) > MAX_METADATA_BYTES || (native && native.length > MAX_NATIVE_BYTES))
+      if (Buffer.byteLength(encoded) > MAX_METADATA_BYTES || (native && native.length > maximum))
         throw new Error("partial evidence record exceeds bound");
       const suffix = native === undefined ? "" : ',"nativeBase64":"' + Buffer.from(native).toString("base64") + '"';
       const bytes = Buffer.from(encoded.slice(0, -1) + suffix + "}\n");
@@ -58,9 +58,11 @@ export class ColliersWindowEvidence {
     return this.bytes >= this.softBytes ? "stop" : "continue";
   }
 
-  hold(item: { candidate: unknown; reason: string; evidence?: Uint8Array; status?: number }) {
+  hold(item: { candidate: unknown; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number }) {
     this.line({ kind: "held", candidate: item.candidate, reason: item.reason,
-      ...(item.status === undefined ? {} : { status: item.status }) }, item.evidence);
+      ...(item.status === undefined ? {} : { status: item.status }),
+      ...(item.observedAt === undefined ? {} : { observedAt: item.observedAt }) }, item.evidence,
+      item.reason === "detail_oversized" ? MAX_NATIVE_BYTES + 1 : MAX_NATIVE_BYTES);
     this.records++;
     return this.bytes >= this.softBytes ? "stop" as const : "continue" as const;
   }

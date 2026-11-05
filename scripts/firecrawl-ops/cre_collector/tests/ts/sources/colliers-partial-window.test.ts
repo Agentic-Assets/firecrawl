@@ -9,6 +9,7 @@ import { withColliersPartialSpool } from "../../../sources/colliers-partial-cust
 import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
 import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
+import { assertPartialNativeIdentity } from "../../../sources/colliers-partial-native-id.js";
 import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
 import { ColliersAccessStop, ColliersIdentityError } from "../../../sources/colliers.js";
 import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
@@ -157,4 +158,45 @@ test("unsupported control-character token does not block a supported peer", asyn
   const result = await selectColliersWindow(source([header,alteredPair,alteredPage,hole]), async () => {}, binding, 1, 2);
   assert.deepEqual(result.eligible.map(item => item.mapProjectId), ["b"]);
   assert.equal(result.heldOther, 1);
+});
+
+test("replay proves held response classes and exact page identity", async () => {
+  const open = source([header,pair,page,hole]);
+  const selected = await selectColliersWindow(open, async () => {}, binding, 1, 1);
+  const candidate = selected.window[0].candidate;
+  const observedAt = new Date().toISOString();
+  const full = JSON.stringify({ ProjectSummary: { ProjectId: "a" } });
+  const native = (value: string | Uint8Array) => Buffer.from(value).toString("base64");
+  const check = async (reason: string, body?: string | Uint8Array) => {
+    const record = { kind: "held", candidate, reason, observedAt,
+      ...(body === undefined ? {} : { nativeBase64: native(body) }) };
+    const data = [ { schema: "colliers-window-evidence/v1", sourceKey: "colliers", generation: "gen", attempt: 1 }, record ];
+    return reverifyColliersWindow(open, async () => {}, source(data), async () => {},
+      { ...binding, detailFinishedAt: new Date(Date.now() + 1000).toISOString() },
+      1, 1, 2, async () => {}, 1);
+  };
+  await assert.rejects(check("detail_identity"), /metadata differs/);
+  await assert.rejects(check("detail_identity", full), /identity hold classification differs/);
+  await assert.rejects(check("detail_invalid_json", full), /held classification differs/);
+  await assert.rejects(check("detail_nonjson_html", full), /held classification differs/);
+  await assert.rejects(check("detail_provider_rejected", full), /held classification differs/);
+  const accepted = await check("detail_identity", JSON.stringify({ ProjectSummary: { ProjectId: "different" } }));
+  assert.equal(accepted.held, 1); assert.equal(accepted.emitted, 0);
+  for (const [reason, body] of [
+    ["detail_empty", ""], ["detail_invalid_json", "{"], ["detail_invalid_response", "[]"],
+    ["detail_invalid_utf8", new Uint8Array([255])], ["detail_nonjson_html", "<html>"],
+    ["detail_provider_rejected", JSON.stringify({ success: false })],
+  ] as const) assert.equal((await check(reason, body)).held, 1);
+  await assert.rejects(check("detail_invalid_utf8", full), /encoding differs/);
+  await assert.rejects(check("detail_invalid_response", full), /classification differs/);
+  await assert.rejects(check("detail_empty", "x"), /bytes differ/);
+  await assert.rejects(check("detail_oversized", new Uint8Array(16 * 1024 * 1024)), /bytes differ/);
+  assert.equal((await check("detail_oversized", new Uint8Array(16 * 1024 * 1024 + 1))).held, 1);
+});
+
+test("native ProjectId accepts exact safe integers but refuses booleans and unsafe numbers", () => {
+  assert.doesNotThrow(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: 1.0 } }, "1"));
+  assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: true } }, "true"), ColliersIdentityError);
+  assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: 1.5 } }, "1.5"), ColliersIdentityError);
+  assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: 9007199254740992 } }, "9007199254740992"), ColliersIdentityError);
 });

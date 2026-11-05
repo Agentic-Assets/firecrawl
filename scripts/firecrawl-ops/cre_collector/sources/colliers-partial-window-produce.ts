@@ -7,11 +7,12 @@ import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-err
 import { ColliersDetailHold, ColliersSettledSourceStop, fetchColliersPartialDetail } from "./colliers-partial-fetch.js";
 import { scanColliersPartial, type Candidate } from "./pure/colliers-partial-spool.js";
 import { selectColliersWindow } from "./pure/colliers-partial-window.js";
+import { assertPartialNativeIdentity } from "./colliers-partial-native-id.js";
 
 type Binding = { generation: string; attempt: number; startedAt: string; finishedAt: string };
 type Native = { detail: any; decodedText: string; nativeBytes: Uint8Array };
 type WindowMember = { candidate: Candidate; eligible: boolean };
-type Hold = { candidate: Candidate; reason: string; evidence?: Uint8Array; status?: number };
+type Hold = { candidate: Candidate; reason: string; observedAt?: string; evidence?: Uint8Array; status?: number };
 
 /**
  * Sink must persist the whole current item before returning stop. It owns byte
@@ -72,6 +73,7 @@ export async function produceColliersWindow(
               new TextDecoder("utf-8", { fatal: true }).decode(native.nativeBytes) !== native.decodedText)
             throw new Error("native bytes differ");
           const detail = JSON.parse(native.decodedText);
+          assertPartialNativeIdentity(detail, candidate.mapProjectId);
           const mapped = await enrichColliersCard(card, { fetchDetail: async () => detail,
             stopOnAccessFailure: true, skipBrokerRefs: true });
           if (!mapped || mapped.inventoryOnly || mapped.id !== candidate.mapProjectId ||
@@ -94,7 +96,8 @@ export async function produceColliersWindow(
             const reason = error instanceof ColliersIdentityError ? "detail_identity" : error.reason;
             const evidence = error instanceof ColliersIdentityError ? native?.nativeBytes : error.evidence;
             const status = error instanceof ColliersIdentityError ? undefined : error.status;
-            const decision = await hold({ candidate, reason, evidence, status });
+            const observedAt = observationNow();
+            const decision = await hold({ candidate, reason, evidence, status, observedAt });
             processed.add(p); unadmitted.add(p);
             if (decision === "stop" || error instanceof ColliersSettledSourceStop) stopped = true;
             await drainHeldPrefix();

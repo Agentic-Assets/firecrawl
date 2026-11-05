@@ -67,7 +67,7 @@ def main():
         sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T14:00:00Z'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
         before_index = sql("SELECT row_to_json(si)::text FROM credeals.cre_source_index si ORDER BY external_id;")
         before_image = sql("SELECT row_to_json(i)::text FROM credeals.cre_listing_images i ORDER BY id;")
-        first["listing"].update(name="New title", city="Source City", state="TX")
+        first["listing"].update(name="New title", city="Source City", state="TX", units=10)
         second = copy.deepcopy(first)
         second["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "43"}})
         second["nativeBase64"] = base64.b64encode(second["decodedDetail"].encode()).decode()
@@ -81,6 +81,14 @@ def main():
         items = [first, second]
         staged = [stage_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z",
                   "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z") for item in items]
+        cross = copy.deepcopy(staged)
+        cross[0]["canonical_url"] = cross[1]["source_url"]
+        cross_probe = sql(identity_probe_sql(cross)).split("|", 3)
+        assert json.loads(cross_probe[2]) == ["42", "43"], cross_probe
+        cross_persisted = [copy.deepcopy(staged[1])]
+        cross_persisted[0]["canonical_url"] = staged[0]["source_url"]
+        persisted_probe = sql(identity_probe_sql(cross_persisted)).split("|", 3)
+        assert json.loads(persisted_probe[2]) == ["43"], persisted_probe
         probe = sql(identity_probe_sql(staged)).split("|", 3)
         assert probe[:3] == ["2", "2", "[]"], probe
         output, holds = build_partial_sql(items, staged, json.loads(probe[2]), json.loads(probe[3]),
@@ -90,6 +98,7 @@ def main():
         sql(output)
         parent = json.loads(sql("SELECT json_build_array(title,city,state,status,raw_data)::text FROM credeals.cre_listings WHERE external_id='42';"))
         assert parent[:4] == ["Old title", "Source City", "TX", "active"]
+        assert sql("SELECT units FROM credeals.cre_listings WHERE external_id='42';") == "10"
         assert parent[4]["sourceKey"] == "colliers"
         assert parent[4]["colliersNativeObservations"]["entries"][0]["nativeBase64"] == first["nativeBase64"]
         assert sql("SELECT row_to_json(si)::text FROM credeals.cre_source_index si ORDER BY external_id;") == before_index
@@ -164,6 +173,21 @@ def main():
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='45' AND status IS NULL AND city IS NULL;") == "1"
         stored_native = sql("SELECT raw_data#>>'{colliersNativeObservations,entries,0,nativeBase64}' FROM credeals.cre_listings WHERE external_id='45';")
         assert stored_native == peers[1]["nativeBase64"]
+        # A conflicting prior location prevents mixing in any incoming component.
+        location_old = {**old, "id": "46", "url": url.replace("fixture", "location"), "state": "FL"}
+        sql(ingest.build_sql([ingest.to_row(location_old, {}, "2026-11-04T14:00:00Z")],
+                             jobs, "2026-11-04T14:00:00Z", set()))
+        sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T14:00:00Z' WHERE external_id='46'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
+        location_item = make_item("46", "location")
+        location_staged = [stage_detail_record(location_item, "gen", 1, "2026-11-04T15:00:00Z",
+                           "2026-11-04T16:00:00Z", "2026-11-04T16:02:00Z")]
+        location_probe = sql(identity_probe_sql(location_staged)).split("|", 3)
+        location_sql, location_holds = build_partial_sql([location_item], location_staged, json.loads(location_probe[2]),
+            json.loads(location_probe[3]), "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
+            "2026-11-04T16:02:00Z", str(uuid.uuid4()))
+        assert not location_holds
+        sql(location_sql)
+        assert json.loads(sql("SELECT json_build_array(city,state)::text FROM credeals.cre_listings WHERE external_id='46';")) == [None, "FL"]
         # A cooperating writer holding the normal lifecycle lock wins first;
         # the waiting partial transaction must reject its stale preimage.
         sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T14:00:00Z' WHERE external_id='45'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")

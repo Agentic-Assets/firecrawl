@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { enrichColliersCard, groupColliersMapLocations, parseColliersCards } from "./colliers.js";
 import { replayColliersPage } from "./pure/colliers-partial-replay.js";
+import { assertPartialNativeIdentity } from "./colliers-partial-native-id.js";
 
 type Binding = { generation: string; attempt: number; startedAt: string; finishedAt: string; detailFinishedAt: string };
 type Page = { start: number; page: number; pageSize: number; observedAt: string; list: string; map: string; cards: any[] };
@@ -34,6 +35,7 @@ export async function deriveColliersPartialDetail(page: Page, source: any, decod
     throw new Error("partial card mapping differs");
   const detail = JSON.parse(decodedDetail);
   if (!detail || typeof detail !== "object" || Array.isArray(detail) || detail.success === false) throw new Error("partial detail invalid");
+  assertPartialNativeIdentity(detail, identity.mapProjectId);
   const mapped = await enrichColliersCard(card, { fetchDetail: async () => detail, stopOnAccessFailure: true, skipBrokerRefs: true });
   const expected = { ...mapped, sourceKey: "colliers", sourceCompany: "Colliers", transactionMode: "sale", brokerIds: [],
     preserveChildCollections: true, inventoryObservedAt: source.inventoryObservedAt, detailObservedAt: source.detailObservedAt,

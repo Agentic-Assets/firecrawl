@@ -27,7 +27,8 @@ const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n"
 const source = join(dir, "source"), output = join(dir, "evidence");
 writeFileSync(source, bytes, { mode: 0o600 });
 const digest = createHash("sha256").update(bytes).digest("hex");
-const native = Buffer.concat([Buffer.from([0xef,0xbb,0xbf]), Buffer.from(JSON.stringify({ ProjectSummary: { ProjectId: "native-e2e", Address: { City: "Native City", State: "TX" } } }))]);
+const native = Buffer.concat([Buffer.from([0xef,0xbb,0xbf]), Buffer.from(JSON.stringify({ ProjectSummary: { ProjectId: "native-e2e", Address: { City: "Native City", State: "TX" } },
+  ProjectDetails: { ProjectFields: [{ Name: "Units", Value: "10" }] } }))]);
 const decodedText = new TextDecoder("utf-8", { fatal: true }).decode(native);
 const writer = new ColliersWindowEvidence(output, "gen", 1);
 const result = await withColliersPartialSpool(source, bytes.length, digest, (open, verify) =>
