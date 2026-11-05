@@ -309,11 +309,17 @@ export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTi
   }
   const title = clean($(".main-section .title-property").first().text());
   const tenureText = clean($(".main-section .title-about").first().text());
+  // Preserve each published space as source context, including conflicting
+  // values and markup; it is not by itself an offering-tenure or price claim.
+  const availableSpaceObservations = $(".units-info .right-side .unit-item")
+    .map((_, element) => ({ html: $.html(element), text: clean($(element).text()) ?? "" }))
+    .get();
+  const spaceObservation = availableSpaceObservations.length ? { availableSpaceObservations } : {};
   if (!title && allowEmptyTitle && $(".main-section .title-property").length === 1) {
     const canonical = canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href"));
     if ($('link[rel="canonical"]').length !== 1 || $('link[rel="shortlink"]').length !== 1
       || !canonical || canonical !== expectedUrl) throw new Error("DAUM empty-title observation has ambiguous identity");
-    return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true };
+    return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true, ...spaceObservation };
   }
   if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const locationParts = $(".main-section .state-city li")
@@ -407,6 +413,7 @@ export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTi
     sizeText,
     description,
     highlights,
+    ...spaceObservation,
     brochures,
     photos,
     contacts,
@@ -580,6 +587,7 @@ function mapDaumVerifiedUnknown(
     assetType: detail.facts["Property Type"] ?? inventory.assetType,
     propertySubtype: detail.facts["Primary Use"],
     description: detail.description, highlights: detail.highlights,
+    daumAvailableSpaceObservations: detail.availableSpaceObservations,
     city: detail.city ?? inventory.city, state: detail.state ?? inventory.state,
     postalCode: detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude, longitude: inventory.longitude,
@@ -657,6 +665,7 @@ export function mapDaumListing(
     propertySubtype: detail.facts["Primary Use"],
     description: detail.description,
     highlights: detail.highlights,
+    daumAvailableSpaceObservations: detail.availableSpaceObservations,
     street: detail.title ?? inventory.title,
     city: detail.city ?? inventory.city,
     state: detail.state ?? inventory.state,

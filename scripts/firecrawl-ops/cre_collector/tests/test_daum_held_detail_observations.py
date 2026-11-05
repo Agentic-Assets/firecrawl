@@ -117,6 +117,23 @@ def admit_both_phases(prepared):
     return binding
 
 
+def test_held_detail_keeps_available_spaces_and_rejects_malformed_shape(audited_subset):
+    for entry in audited_subset[2]["sources"]:
+        observations = entry["currentInventoryProof"]["heldDetailObservations"]
+        for observation in observations:
+            observation["detail"]["availableSpaceObservations"] = [
+                {"html": "<li>$0 PSF <p>$6,600 per month</p></li>",
+                 "text": "$0 PSF $6,600 per month"}
+            ]
+    helpers.refresh(audited_subset[1], audited_subset[2], audited_subset[3])
+    admit_both_phases(audited_subset)
+    for entry in audited_subset[2]["sources"]:
+        entry["currentInventoryProof"]["heldDetailObservations"][0]["detail"]["availableSpaceObservations"][0]["html"] = 3
+    helpers.refresh(audited_subset[1], audited_subset[2], audited_subset[3])
+    with pytest.raises(ValueError):
+        admit(audited_subset)
+
+
 def roundtrip_producer_artifact(tmp_path, produced):
     prepared = helpers.setup(tmp_path, produced)
     proof = prepared[2]["sources"][0]["currentInventoryProof"]

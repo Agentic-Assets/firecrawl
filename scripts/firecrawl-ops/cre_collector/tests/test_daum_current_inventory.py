@@ -29,6 +29,7 @@ def produce(
     reorder=False,
     empty_title=False,
     subset_policy=None,
+    with_spaces=False,
 ):
     preload = folder / "transport.mts"
     fixtures = ROOT / "tests/fixtures/daum-proof-pages.ts"
@@ -52,7 +53,11 @@ globalThis.fetch=async(input,init)=>{
   return new Response(html);
  }
  const match=url.match(/^https:\/\/daumcommercial[.]com\/property\/Synthetic-(\d+)\/$/);
- if(init?.method==='GET'&&match)return new Response(daumProofDetail(Number(match[1]),__ALL_SALE__).replace(__UNKNOWN_DETAIL__ ? /class="title-about">[^<]*</g : /UNMATCHABLE/, 'class="title-about"><').replace(__EMPTY_TITLE__ && Number(match[1])===100 ? /class="title-property">[^<]*</ : /UNMATCHABLE_TITLE/, 'class="title-property">   <'));
+ if(init?.method==='GET'&&match){
+  let html=daumProofDetail(Number(match[1]),__ALL_SALE__).replace(__UNKNOWN_DETAIL__ ? /class="title-about">[^<]*</g : /UNMATCHABLE/, 'class="title-about"><').replace(__EMPTY_TITLE__ && Number(match[1])===100 ? /class="title-property">[^<]*</ : /UNMATCHABLE_TITLE/, 'class="title-property">   <');
+  if(__WITH_SPACES__ && Number(match[1])===0)html=html.replace('</body>','<div class="units-info"><div class="right-side"><div class="unit-item"><li>Unit 7101-B: $0 PSF <p>$6,600 per month</p></li></div></div></div></body>');
+  return new Response(html);
+ }
  throw Error('UNEXPECTED_OFFLINE_URL_NO_FALLBACK');
 };
 process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
@@ -60,6 +65,7 @@ process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
         .replace("__ALL_SALE__", str(all_sale).lower())
         .replace("__UNKNOWN_DETAIL__", str(unknown_detail).lower())
         .replace("__EMPTY_TITLE__", str(empty_title).lower())
+        .replace("__WITH_SPACES__", str(with_spaces).lower())
         .replace("__UNKNOWN_INVENTORY__", str(unknown_inventory).lower())
         .replace("__REORDER__", str(reorder).lower())
     )
