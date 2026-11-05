@@ -58,7 +58,7 @@ function driftRows(id = "c") {
   const driftMap = { ...map, total: 4, totalAvail: 4, numProjects: 1, projectLocations: [{ ProjectId: id }] };
   const driftPair = { ...pair, page: 2, start: 3, pageSize: 1,
     documents: [{ list: JSON.stringify(driftList), map: JSON.stringify(driftMap) }] };
-  const driftHole = { ...hole, page: 2, start: 3, reason: "recovery_stopped" };
+  const driftHole = { ...hole, page: 2, start: 3, reason: "count_drift" };
   return [header, pair, page, driftPair, driftHole];
 }
 
@@ -78,6 +78,23 @@ test("holds count-drifted pages while retaining earlier identity-verified peers"
   assert.equal(conflicts.heldSelected, 2);
 });
 
+test("accepts only a verified short changed-count final response as held evidence", async () => {
+  const short = structuredClone(driftRows()) as any[];
+  for (const field of ["list", "map"]) {
+    const prior = JSON.parse(short[1].documents[0][field]); prior.total = 4; prior.totalAvail = 4;
+    short[1].documents[0][field] = JSON.stringify(prior);
+    const changed = JSON.parse(short[3].documents[0][field]); changed.total = 3;
+    short[3].documents[0][field] = JSON.stringify(changed);
+  }
+  short[3].pageSize = 100;
+  short[4].pageSize = 2;
+  const result = await selectColliersWindow(source(short), async () => {}, binding, 1, 2);
+  assert.deepEqual(result.eligible.map(row => row.mapProjectId), ["a", "b"]);
+  assert.equal(result.holes, 1);
+  short.pop();
+  await assert.rejects(selectColliersWindow(source(short), async () => {}, binding, 1, 2), /safely scoped/);
+});
+
 test("count drift cannot conceal malformed, unmatched or later source evidence", async () => {
   const rows = driftRows();
   const malformed = structuredClone(rows) as any[];
@@ -86,6 +103,8 @@ test("count drift cannot conceal malformed, unmatched or later source evidence",
   await assert.rejects(selectColliersWindow(source(malformed), async () => {}, binding, 1, 2), /safely scoped/);
   const unmatched = structuredClone(rows) as any[]; unmatched[4].start = 2;
   await assert.rejects(selectColliersWindow(source(unmatched), async () => {}, binding, 1, 2), /safely scoped/);
+  const ambiguous = structuredClone(rows) as any[]; ambiguous[4].reason = "recovery_stopped";
+  await assert.rejects(selectColliersWindow(source(ambiguous), async () => {}, binding, 1, 2), /safely scoped/);
   await assert.rejects(selectColliersWindow(source([...rows, pair, page]), async () => {}, binding, 1, 2), /safely scoped/);
   await assert.rejects(selectColliersWindow(source([header, pair, page, { ...hole, reason: "recovery_stopped" }]), async () => {}, binding, 1, 2), /safely scoped/);
   const missing = structuredClone(driftRows()) as any[];

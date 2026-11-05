@@ -19,7 +19,7 @@ export type PartialPageObservation = {
   start?: number;
   pageSize?: number;
   kind?: "unqualified_response_pair" | "recovery_hole" | "validated_detail" | "detail_outcomes" | "lyon_search_response";
-  reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "requested_limit" | "page_cap";
+  reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "count_drift" | "requested_limit" | "page_cap";
   pairAttempt?: number;
 };
 
