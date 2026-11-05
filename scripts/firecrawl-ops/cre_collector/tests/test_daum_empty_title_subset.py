@@ -98,6 +98,10 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
     assert "$6,600 per month" in listing["daumAvailableSpaceObservations"][0]["text"]
     binding = admit(prepared)
     assert binding["emitted_count"] == 101 and binding["held_count"] == 0
+    from cre_daum_fallback_partition import staged_fallback_members
+    assert staged_fallback_members(artifact) == [{"native_id": "50100", "external_id": listing["id"], "source_url": listing["url"]}]
+    from cre_daum_current_inventory import checkpoint_retained_unknown_ids
+    assert checkpoint_retained_unknown_ids(artifact) == frozenset()
 
 
 @pytest.mark.parametrize("fault", ["page_title", "card_title", "listing_title", "unexpected_city", "missing_witness", "duplicate_witness", "foreign_post"])

@@ -3032,6 +3032,7 @@ def _validate_source_artifact_local(
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
     daum_retained_unknown_ids = frozenset()
+    daum_fallback_ids = frozenset()
     if daum_verified_subset:
         if (
             expected_source != "daum-commercial"
@@ -3044,6 +3045,9 @@ def _validate_source_artifact_local(
 
         try:
             daum_retained_unknown_ids = checkpoint_retained_unknown_ids(data)
+            if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations") for entry in data["sources"]):
+                from cre_daum_fallback_partition import staged_fallback_members
+                daum_fallback_ids = frozenset(row["native_id"] for row in staged_fallback_members(data))
         except (KeyError, TypeError, ValueError) as exc:
             raise ArtifactValidationError(
                 "DAUM subset structural evidence refused"
@@ -3473,6 +3477,7 @@ def _validate_source_artifact_local(
                      and bool((listing.get("missingFieldEvidence") or {}).get("fields")))
                     or (daum_verified_subset and listing.get("transactionMode") == "sale"
                         and listing.get("daumPostId") in daum_retained_unknown_ids)
+                    or (daum_verified_subset and listing.get("daumPostId") in daum_fallback_ids)
                 ):
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"

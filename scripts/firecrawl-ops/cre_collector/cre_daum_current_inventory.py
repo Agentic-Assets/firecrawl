@@ -385,12 +385,15 @@ def checkpoint_retained_unknown_ids(data):
         for entry in scope["entries"]
     }
     sale, lease = proofs["sale"], proofs["lease"]
+    from cre_daum_fallback_partition import staged_fallback_members
+
+    fallback_ids = {row["native_id"] for row in staged_fallback_members(data)} if sale.get("titleFallbackObservations") else set()
     retained = sale.get("retainedUnknownTenure", [])
     require(isinstance(retained, list))
     if not retained:
         require(
             all(
-                not row.get("preserveChildCollections")
+                (not row.get("preserveChildCollections") or row.get("daumPostId") in fallback_ids)
                 and not row.get("daumUnknownTenure")
                 for row in scope["listings"]
             )
@@ -473,7 +476,7 @@ def checkpoint_retained_unknown_ids(data):
         post = row.get("daumPostId")
         if post not in retained:
             require(
-                not row.get("preserveChildCollections")
+                (not row.get("preserveChildCollections") or row.get("daumPostId") in fallback_ids)
                 and not row.get("daumUnknownTenure")
             )
             continue
