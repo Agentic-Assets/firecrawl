@@ -178,6 +178,9 @@ parsed archive rows, sitemap URLs, discrepancy sets, observation clocks and
 response-text hashes as private unqualified evidence. Each response retains the
 existing 32 MiB transport limit. Decoded text is not original response bytes;
 detail records are not collected and no listing or complete coverage is admitted.
+Without `--out`, the collector saves the full artifact privately and reports its
+path. It emits an evidence-only stdout projection when no other private source
+evidence prevents sanitization; otherwise it refuses stdout.
 With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;
 Essex's explicit source-bound current-inventory admission requires two matching
