@@ -264,3 +264,114 @@ def test_source_health_receipt_uses_real_partial_shape_without_whole_source_cloc
     child["finished_at"] = "2026-10-15T12:30:00Z"
     (run / "manifest.json").write_text(json.dumps(child))
     assert health.build_receipt(tmp_path, manifest)["sources"]["colliers"]["publicationStatus"] != "partial"
+
+
+@pytest.mark.parametrize("unknown_write", [False, True])
+def test_deadline_reconciliation_preserves_verified_units_without_replay(
+    tmp_path, monkeypatch, unknown_write
+):
+    from types import SimpleNamespace
+
+    settings = config(pipeline=True, sources=["cbre", "colliers", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest.update(started_at=PARENT_START, status="interrupted",
+                    error="series work deadline expired")
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child.update(status="interrupted", error="deadline",
+                 config=series._expected_child_config("cbre,colliers,savills", settings))
+    child["pipeline"].update(status="reconciliation_required", commit_outcome_unknown=unknown_write)
+    child["sources"]["savills"] = {"state": "ingest_recovery_required" if unknown_write else "collecting"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "global pipeline stop"}
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="interrupted", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    control = SimpleNamespace(work_started=True, cleanup_unknown=False, spawn_uncertain=False,
+                              group=None, child_unverified=False, checkpoint_run=run,
+                              child_invocation_id="bound", checkpoint_pid=123)
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert [manifest["sources"][key]["state"] for key in settings["sources"]] == [
+        "complete", "qualified_partial_subset", "interrupted"]
+    assert manifest["status"] == "interrupted"
+    assert manifest["error"] == "series work deadline expired"
+    assert child["pipeline"]["commit_outcome_unknown"] is unknown_write
+
+
+def test_deadline_reconciliation_requires_local_settlement_and_intact_unit(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    settings = config(pipeline=True, sources=["cbre", "colliers"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child.update(status="interrupted", config=series._expected_child_config("cbre,colliers", settings))
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="interrupted", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    control = SimpleNamespace(work_started=True, cleanup_unknown=True, spawn_uncertain=False,
+                              group=None, child_unverified=False, checkpoint_run=run,
+                              child_invocation_id="bound", checkpoint_pid=123)
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert all(row["state"] == "interrupted" for row in manifest["sources"].values())
+    control.cleanup_unknown = False
+    control.checkpoint_run = tmp_path / "runs" / "foreign"
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert all(row["state"] == "interrupted" for row in manifest["sources"].values())
+    control.checkpoint_run = run
+    report = run / child["pipeline"]["units"][0]["validation_path"]
+    report.write_bytes(report.read_bytes() + b" ")
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert all(row["state"] == "interrupted" for row in manifest["sources"].values())
+
+
+def test_controlled_deadline_publishes_qualified_units_and_interrupted_peer(tmp_path, monkeypatch):
+    import os
+    import signal
+    from types import SimpleNamespace
+
+    from cre_resource_recovery import SeriesOwnershipLock
+    from cre_series_control import read_receipt
+
+    settings = config(pipeline=True, sources=["cbre", "colliers", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child.update(status="interrupted", config=series._expected_child_config("cbre,colliers,savills", settings))
+    child["pipeline"].update(status="reconciliation_required", commit_outcome_unknown=False)
+    child["sources"]["savills"] = {"state": "collecting"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed"}
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    capability = object()
+    monkeypatch.setattr(series, "__name__", "__main__")
+    monkeypatch.setattr(series, "_CLI_CONTROL_CAPABILITY", capability)
+
+    def work(_path, current, **kwargs):
+        for source in settings["sources"]:
+            current["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+                attempts=[{"started_at": child["started_at"]}])
+        owner = kwargs["control"]
+        owner.work_started = True
+        owner.checkpoint_run = run
+        owner.child_invocation_id = "bound"
+        owner.checkpoint_pid = 123
+        os.kill(os.getpid(), signal.SIGALRM)
+
+    monkeypatch.setattr(series, "run_series", work)
+    args = SimpleNamespace(work_deadline_seconds=30, env_file=None, retry_failed=False, expected_sha=None)
+    with SeriesOwnershipLock(tmp_path / ".series.lock") as lock:
+        rc = series.run_controlled_series(tmp_path, manifest, lock, args, _cli_control_capability=capability)
+    assert rc == 124
+    assert manifest["status"] == "interrupted"
+    assert [manifest["sources"][key]["state"] for key in settings["sources"]] == [
+        "complete", "qualified_partial_subset", "interrupted"]
+    receipt = read_receipt(tmp_path, manifest["latest_invocation_control"]["invocation_id"])
+    assert receipt["status"] == "deadline_interrupted"
+    assert receipt["local_settlement"] == "confirmed"

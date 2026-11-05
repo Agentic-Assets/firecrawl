@@ -11,6 +11,7 @@ series immediately. Every live write remains inside the checkpoint runner.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -1869,7 +1870,7 @@ def admit_series_invocation(
     }
 
 
-def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
+def reconcile_pipeline_series(series_dir: Path, manifest: dict, *, publish: bool = True) -> None:
     """Recover observations from the same exact terminal owner, never replay."""
     sources = manifest["config"]["sources"]
     refs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
@@ -1951,7 +1952,29 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
         row["attempts"][-1]["finished_at"] = child["finished_at"]
-    save_manifest(series_dir, manifest)
+    if publish:
+        save_manifest(series_dir, manifest)
+
+
+def reconcile_settled_interruption(series_dir: Path, manifest: dict, control) -> None:
+    """Recover verified units after local settlement without authorizing replay."""
+    if (not (manifest.get("config") or {}).get("pipeline")
+            or not control.work_started or control.cleanup_unknown
+            or control.spawn_uncertain or control.group is not None
+            or control.child_unverified or control.checkpoint_run is None
+            or control.child_invocation_id is None or control.checkpoint_pid is None):
+        return
+    try:
+        refs = {row.get("checkpoint_run") for row in manifest["sources"].values()}
+        if (len(refs) != 1 or not isinstance(next(iter(refs)), str)
+                or series_dir / next(iter(refs)) != control.checkpoint_run):
+            return
+        candidate = copy.deepcopy(manifest)
+        reconcile_pipeline_series(series_dir, candidate, publish=False)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, SeriesError):
+        # Retain the interrupted report if exact custody cannot be established.
+        return
+    manifest["sources"] = candidate["sources"]
 
 
 def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
@@ -3093,6 +3116,8 @@ def run_controlled_series(
             signal.setitimer(signal.ITIMER_REAL, 0)
             with control.defer_stops():
                 control.settle_active()
+                if rc in {124, 130}:
+                    reconcile_settled_interruption(series_dir, manifest, control)
                 manifest["finished_at"] = utc_now()
                 save_manifest(series_dir, manifest)
                 status = "deadline_interrupted" if rc == 124 else manifest["status"]
