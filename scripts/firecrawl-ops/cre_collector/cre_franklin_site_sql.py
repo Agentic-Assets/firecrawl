@@ -204,6 +204,10 @@ JOIN _franklin_site s ON s.brokerage_id=l.brokerage_id
 ORDER BY l.id FOR UPDATE OF l;
 CREATE TEMP TABLE _franklin_site_held ON COMMIT DROP AS
 {_held_query()};
+CREATE TEMP TABLE _franklin_site_before ON COMMIT DROP AS
+SELECT s.external_id, to_jsonb(l) AS prior FROM _franklin_site s
+JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id);
 DO $$ BEGIN
  IF COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id) FROM _franklin_site_held), '[]'::jsonb)
       IS DISTINCT FROM {expected_held}::jsonb THEN
@@ -222,7 +226,8 @@ DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs j
   JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
   WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
-    AND j.status='partial' AND j.notes={sql_lit(job["notes"])}) THEN
+    AND j.status='partial' AND (j.notes={sql_lit(job["notes"])}
+        OR j.notes LIKE {sql_lit(job["notes"] + ":%")})) THEN
   RAISE EXCEPTION 'Franklin partial job binding differs';
  END IF;
 END $$;
@@ -251,6 +256,39 @@ ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL DO UPDATE 
    '{{franklinSiteLastGenerationId}}', EXCLUDED.raw_data->'franklinSiteLastGenerationId')
 WHERE target.deleted_at IS NULL AND target.source_url=EXCLUDED.source_url
   AND target.raw_data->>'franklinSitePartialVersion'='1';
+-- Check preservation against the transaction's locked preimage before sealing
+-- a receipt of the exact resulting rows, including every historical observation.
+DO $$ BEGIN
+ IF EXISTS (
+   SELECT 1 FROM _franklin_site_before b
+   JOIN _franklin_site s ON s.external_id=b.external_id
+   JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+   WHERE (to_jsonb(l) - ARRAY['title','address','status','state','lat','lng','raw_data','updated_at'])
+         IS DISTINCT FROM (b.prior - ARRAY['title','address','status','state','lat','lng','raw_data','updated_at'])
+      OR (l.raw_data->'franklinSiteObservations') IS DISTINCT FROM
+         CASE WHEN b.prior->'raw_data'->'franklinSiteObservations'->-1 = s.observation
+              THEN b.prior->'raw_data'->'franklinSiteObservations'
+              ELSE (b.prior->'raw_data'->'franklinSiteObservations') || jsonb_build_array(s.observation) END
+      OR (l.raw_data - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
+         IS DISTINCT FROM (b.prior->'raw_data' - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
+ ) THEN RAISE EXCEPTION 'Franklin preimage preservation differs'; END IF;
+END $$;
+UPDATE credeals.cre_scrape_jobs j
+SET notes={sql_lit(job["notes"])} || ':' || (
+ SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'))
+ FROM _franklin_site s
+ JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+ WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id))
+WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.notes={sql_lit(job["notes"])};
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs j
+   WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.notes={sql_lit(job["notes"])} || ':' || (
+    SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'))
+    FROM _franklin_site s
+    JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+    WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)))
+ THEN RAISE EXCEPTION 'Franklin postimage receipt differs'; END IF;
+END $$;
 SELECT json_build_object('held', COALESCE((SELECT json_agg(external_id ORDER BY external_id)
   FROM _franklin_site_held), '[]'::json), 'total', (SELECT count(*) FROM _franklin_site));
 COMMIT;
@@ -290,5 +328,9 @@ SELECT json_build_object('expected', (SELECT count(*) FROM expected),
  'matching_jobs', (SELECT count(*) FROM credeals.cre_scrape_jobs j
    JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
    WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
-    AND j.status='partial' AND j.notes={sql_lit(job["notes"])})) AS result;
+    AND j.status='partial' AND j.notes={sql_lit(job["notes"])} || ':' || (
+      SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY e.external_id)::text, '[]'))
+      FROM expected e
+      JOIN credeals.cre_brokerages b ON b.slug='franklin-street'
+      JOIN credeals.cre_listings l ON l.brokerage_id=b.id AND l.external_id=e.external_id))) AS result;
 """

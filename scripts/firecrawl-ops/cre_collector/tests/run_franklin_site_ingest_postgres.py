@@ -148,6 +148,14 @@ def main():
         assert json.loads(sql(write_sql([second], [])).splitlines()[-1])["held"] == []
         readback = json.loads(sql(readback_sql([second], [])))
         assert readback == {"expected": 1, "invalid": [], "matching_jobs": 1}
+        # Receipt is bound to the complete postimage, not merely the newest
+        # observation or the presence of non-null scalar values.
+        for mutation in ("title='Tampered title'", "status='withdrawn'",
+                         "raw_data=jsonb_set(raw_data, '{franklinSiteObservations,0,card,html}', to_jsonb('tampered history'::text))"):
+            changed = json.loads(sql("BEGIN; UPDATE credeals.cre_listings SET " + mutation +
+                " WHERE external_id=" + partial.sql_lit(first["id"]) + ";" +
+                readback_sql([second], []) + "ROLLBACK;").splitlines()[-1])
+            assert changed["matching_jobs"] == 0
         assert json.loads(sql(readback_sql([first], [])))["invalid"] == [first["id"]]
         result = json.loads(sql("SELECT json_build_object('status',status,'title',title,'address',address,'raw',raw_data,'scraped',scraped_at) FROM credeals.cre_listings WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';"))
         assert result["status"] == "sold" and result["title"] == "Prior title" and result["address"] == "Prior address" and result["scraped"] is None
