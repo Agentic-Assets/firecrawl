@@ -164,7 +164,7 @@ def main():
             try:
                 refresh.recover_interrupted_ingest(run, manifest, "franklin-street", str(env_file))
             except refresh.GlobalStageError as error:
-                assert "partial ingest outcome is not exact" in str(error)
+                assert "readback is invalid" in str(error)
             else:
                 raise AssertionError("mismatched card was accepted during recovery")
             assert checkpoint["state"] == "ingest_recovery_required"
