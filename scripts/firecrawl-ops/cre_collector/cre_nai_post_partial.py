@@ -117,7 +117,7 @@ def stage_post(listing, generation):
     fields = ("title", "city", "state", "description", "transaction_type",
               "property_type", "size_sf", "available_sf", "min_divisible_sf",
               "max_divisible_sf", "lot_size_sf", "year_built", "sale_price_usd",
-              "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights")
+              "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights", "building_class")
     projected = {key: row.get(key) for key in fields}
     if tx is None or not categories:
         projected["transaction_type"] = None
@@ -126,11 +126,11 @@ def stage_post(listing, generation):
     # source location explicitly says United States; the mapper defaults US.
     price_source = listing.get("publicPost") or listing["feedRow"]
     locations = price_source.get("locations")
-    explicit_us = (isinstance(locations, list) and any(
-        isinstance(location, dict) and isinstance(location.get("path") or location.get("name"), str)
-        and any(part.strip().lower() == "united states" for part in
-                (location.get("path") or location.get("name")).split(","))
-        for location in locations))
+    first_location = locations[0] if isinstance(locations, list) and locations else None
+    location_path = (first_location.get("path") or first_location.get("name")) if isinstance(first_location, dict) else None
+    explicit_us = (isinstance(location_path, str)
+                   and any(part.strip().lower() == "united states" for part in location_path.split(",")))
+    projected["country"] = "US" if explicit_us else None
     if str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us:
         projected["sale_price_usd"] = None
         projected["sale_price_per_sf"] = None
@@ -439,7 +439,7 @@ FROM _nai_partial_rows s WHERE l.brokerage_id=s.brokerage_id AND l.external_id=r
 INSERT INTO credeals.cre_listings
  (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,property_type,
   title,city,state,lat,lng,description,size_sf,available_sf,min_divisible_sf,max_divisible_sf,
-  lot_size_sf,year_built,sale_price_usd,sale_price_per_sf,lease_rate_min,lease_rate_max,lease_rate_type,highlights,
+  lot_size_sf,year_built,sale_price_usd,sale_price_per_sf,lease_rate_min,lease_rate_max,lease_rate_type,highlights,building_class,
   country,scraped_at,raw_data)
 SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transaction_type',r->>'property_type',
  r->>'title',r->>'city',r->>'state',(r->>'lat')::double precision,(r->>'lng')::double precision,
@@ -448,7 +448,8 @@ SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transactio
  (r->>'year_built')::integer,(r->>'sale_price_usd')::numeric,(r->>'sale_price_per_sf')::numeric,
  (r->>'lease_rate_min')::numeric,(r->>'lease_rate_max')::numeric,r->>'lease_rate_type',
  CASE WHEN jsonb_typeof(r->'highlights')='array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'highlights')) END,
- NULL,NULL,jsonb_build_object('sourceKey','nai-global','id',r->>'external_id',
+ r->>'building_class',
+ r->>'country',NULL,jsonb_build_object('sourceKey','nai-global','id',r->>'external_id',
  'identityScope','infabode_public_post','naiPublicPostHistory',
  jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
    'externalId',r->>'external_id','entries',
@@ -496,7 +497,7 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
     fields = ("transaction_type", "property_type", "title", "city", "state",
               "description", "size_sf", "available_sf", "min_divisible_sf", "max_divisible_sf",
               "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-              "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights")
+              "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights", "building_class")
     projected = " OR ".join(f"listing->'{key}' IS DISTINCT FROM r->'{key}'" for key in fields)
     projected += (" OR (listing->>'lat')::double precision IS DISTINCT FROM (r->>'lat')::double precision"
                   " OR (listing->>'lng')::double precision IS DISTINCT FROM (r->>'lng')::double precision")
@@ -523,7 +524,8 @@ WITH expected AS (
    OR listing->>'source_url' IS DISTINCT FROM r->>'source_url'
    OR (p->'listing'='null'::jsonb AND (
        listing->>'status' IS NOT NULL OR listing->>'canonical_url' IS NOT NULL
-       OR listing->>'country' IS NOT NULL OR listing->>'scraped_at' IS NOT NULL OR {projected}))
+       OR listing->>'country' IS DISTINCT FROM r->>'country'
+       OR listing->>'scraped_at' IS NOT NULL OR {projected}))
    OR (p->'listing'<>'null'::jsonb AND
       (listing - ARRAY['updated_at','raw_data']) IS DISTINCT FROM
       ((p->'listing') - ARRAY['updated_at','raw_data']))))
