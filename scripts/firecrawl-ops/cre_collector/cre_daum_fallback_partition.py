@@ -181,3 +181,48 @@ BEGIN
  THEN RAISE EXCEPTION 'DAUM fallback partition changed'; END IF;
 END $$;
 """
+
+def run_identity_probe(artifact_path, artifact_sha256, generation, producer, target_sha256, env_file):
+    """Capture a read-only partition bound to the source artifact and target."""
+    import hashlib
+    import json
+    import re
+
+    from cre_checkpoint_refresh import git_identity
+    from cre_code_handoff_git import read_file
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    if (not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256 or "")
+            or not re.fullmatch(r"[0-9a-f]{64}", target_sha256 or "")
+            or not re.fullmatch(r"[0-9a-f]{40}", producer or "") or not generation):
+        raise ValueError("DAUM fallback probe binding invalid")
+    raw = read_file(artifact_path)
+    if hashlib.sha256(raw).hexdigest() != artifact_sha256 or git_identity() != (producer, False):
+        raise ValueError("DAUM fallback probe input changed")
+    members = staged_fallback_members(json.loads(raw))
+    if not members:
+        raise ValueError("DAUM fallback probe has no candidates")
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target_sha256:
+        raise ValueError("DAUM fallback probe target differs")
+    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+           + PIN_STRING_LITERALS + "\n" + identity_probe_sql(members) + ";\nROLLBACK;\n")
+    result = _run_psql_script(find_psql(), db_url, sql, timeout=45)
+    if result.returncode:
+        raise RuntimeError("DAUM fallback identity probe failed")
+    rows = parse_tsv(result.stdout)
+    if (len(rows) != 1 or set(rows[0]) != {"staged", "joined", "partition"}
+            or rows[0]["staged"] != str(len(members)) or rows[0]["joined"] != str(len(members))):
+        raise ValueError("DAUM fallback probe result differs")
+    partition = json.loads(rows[0]["partition"])
+    transaction_guard_sql(members, partition)
+    current_url, _ = load_db_url(env_file)
+    if (database_target_fingerprint_from_url(current_url).get("value") != target_sha256
+            or read_file(artifact_path) != raw or git_identity() != (producer, False)):
+        raise ValueError("DAUM fallback probe input or target changed")
+    member_hash = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":"),
+                                              ensure_ascii=False).encode()).hexdigest()
+    return {"artifact_sha256": artifact_sha256, "generation_id": generation,
+            "producer_sha": producer, "database_target_sha256": target_sha256,
+            "members_sha256": member_hash, "partition": partition}

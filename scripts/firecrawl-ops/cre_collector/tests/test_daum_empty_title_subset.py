@@ -96,12 +96,30 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
     assert listing["name"] == "Synthetic 100" and listing["daumSearchCard"]["title"] == listing["name"]
     assert all(not listing.get(key) for key in ("city", "state", "postalCode"))
     assert "$6,600 per month" in listing["daumAvailableSpaceObservations"][0]["text"]
+    from cre_daum_current_inventory import _sha
+    from cre_daum_fallback_partition import staged_fallback_members
+    members = staged_fallback_members(artifact)
+    manifest = prepared[3]
+    manifest["sources"]["daum-commercial"]["daum_fallback_probe"] = {
+        "artifact_sha256": manifest["sources"]["daum-commercial"]["artifact"]["sha256"],
+        "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+        "database_target_sha256": manifest["preflight"]["database_target"]["value"],
+        "members_sha256": _sha(members),
+        "partition": [{**member, "hold_reason": None, "preimage": "f" * 64} for member in members],
+    }
     binding = admit(prepared)
     assert binding["emitted_count"] == 101 and binding["held_count"] == 0
     from cre_daum_fallback_partition import staged_fallback_members
     assert staged_fallback_members(artifact) == [{"native_id": "50100", "external_id": listing["id"], "source_url": listing["url"]}]
     from cre_daum_current_inventory import checkpoint_retained_unknown_ids
     assert checkpoint_retained_unknown_ids(artifact) == frozenset()
+    import cre_checkpoint_refresh as checkpoint
+    stats = checkpoint._validate_source_artifact_local(
+        prepared[1], "daum-commercial", generated[2], expected_generation_id=generated[3],
+        expected_generation_started_at=generated[2], expected_transactions=("sale", "lease"),
+        daum_verified_subset=True,
+    )
+    assert stats["staged_unique"] == 101
 
 
 @pytest.mark.parametrize("fault", ["page_title", "card_title", "listing_title", "unexpected_city", "missing_witness", "duplicate_witness", "foreign_post"])

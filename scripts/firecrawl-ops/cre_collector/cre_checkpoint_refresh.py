@@ -3305,7 +3305,11 @@ def _validate_source_artifact_local(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
             elif child_preservation_rows != (
-                len(daum_retained_unknown_ids) if daum_verified_subset and tx == "sale"
+                ((len(daum_retained_unknown_ids) if tx == "sale" else 0)
+                 + sum(1 for listing in data["listings"]
+                       if listing.get("transactionMode") == tx
+                       and listing.get("daumPostId") in daum_fallback_ids))
+                if daum_verified_subset
                 else len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial
                 else 0
             ):
@@ -5538,6 +5542,18 @@ def gate_source(
                         artifact, manifest, env_file=env_file, process_env=safe_process_env())
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("Franklin partial identity classification failed") from exc
+            if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+                from cre_daum_fallback_partition import run_identity_probe, staged_fallback_members
+                try:
+                    daum_data = _load_json(artifact)
+                    if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations")
+                           for entry in (daum_data.get("sources") or [])):
+                        if staged_fallback_members(daum_data):
+                            checkpoint["daum_fallback_probe"] = run_identity_probe(
+                                artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                                manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("DAUM fallback identity classification failed") from exc
             if source == "pyramid-brokerage":
                 from cre_pyramid_identity_probe import run_probe
                 try:

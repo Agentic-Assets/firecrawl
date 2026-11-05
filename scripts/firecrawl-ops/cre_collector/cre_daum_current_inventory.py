@@ -864,7 +864,21 @@ def _admit(
             binding.update(subset_policy=SUBSET_POLICY_V2,
                            title_observations_sha256=_sha(proof["titleObservations"]))
             if title_fallbacks:
+                from cre_daum_fallback_partition import staged_fallback_members, transaction_guard_sql
+
+                fallback_members = staged_fallback_members(artifact)
+                probe = manifest["sources"][SOURCE].get("daum_fallback_probe")
+                require(isinstance(probe, dict) and set(probe) == {
+                    "artifact_sha256", "generation_id", "producer_sha",
+                    "database_target_sha256", "members_sha256", "partition"})
+                require(probe["artifact_sha256"] == digest
+                        and probe["generation_id"] == manifest["run_id"]
+                        and probe["producer_sha"] == current_code_sha
+                        and probe["database_target_sha256"] == target["value"]
+                        and probe["members_sha256"] == _sha(fallback_members))
+                transaction_guard_sql(fallback_members, probe["partition"])
                 binding["title_fallback_observations_sha256"] = _sha(proof["titleFallbackObservations"])
+                binding["fallback_partition_sha256"] = _sha(probe["partition"])
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
