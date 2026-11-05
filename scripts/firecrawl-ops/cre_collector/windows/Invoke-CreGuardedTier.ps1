@@ -343,6 +343,7 @@ function Get-CreBrokerageName {
         'cbre'='CBRE'; 'cbre-dealflow'='CBRE Deal Flow'; 'jll'='JLL'; 'jll-investor'='JLL Investor Center'
         'cushman-wakefield'='Cushman & Wakefield'; 'nai-global'='NAI Global'; 'srs'='SRS'
         'svn'='SVN'; 'lee-associates'='Lee & Associates'; 'pinnacle-rea'='Pinnacle Real Estate Advisors'
+        'colliers'='Colliers'; 'lyon-stahl'='Lyon-Stahl'; 'franklin-street'='Franklin Street'
     }
     if ($Key -and $names.ContainsKey($Key)) { return $names[$Key] }
     if ($Key -match '^[a-z0-9][a-z0-9-]{0,79}$') {
@@ -366,6 +367,21 @@ function Test-CreJllSubsetSummary {
                 $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
         }
         return $Summary.emitted_count -gt 0 -and $Summary.emitted_count -eq $Summary.verified_listings
+    } catch { return $false }
+}
+
+function Test-CreSourceSubsetSummary {
+    param($Summary)
+    try {
+        if ($Summary.measurement -cne 'generation_exact_verified_subset' -or
+            $Summary.qualification -cne 'qualified_partial_subset' -or
+            $Summary.partial -isnot [bool] -or -not $Summary.partial -or
+            $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage) { return $false }
+        foreach ($field in @('emitted_count','held_count','verified_listings')) {
+            if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
+                $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
+        }
+        return $Summary.emitted_count -eq $Summary.verified_listings
     } catch { return $false }
 }
 
@@ -464,11 +480,14 @@ function Get-CreVerifiedSummary {
                     ($null -ne $entry.PSObject.Properties['measurement'] -and $entry.measurement -ceq 'generation_exact_verified_subset')
                 $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
                     ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted) -or
-                    ($subsetMarked -and $entry.source_key -ceq 'jll-investor')
+                    ($subsetMarked -and $entry.source_key -ceq 'jll-investor') -or
+                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
                     if ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
+                    } elseif (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
+                        if (-not (Test-CreSourceSubsetSummary $entry)) { return $null }
                     } elseif (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
                 }
@@ -507,7 +526,8 @@ function Get-CreVerifiedSummary {
                 $unverifiableKeys = @($summary.unverifiable_source_keys)
                 if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
                 foreach ($key in $unverifiableKeys) {
-                    if ($key -cne 'jll-investor' -or @($summary.failed_source_keys) -cnotcontains $key) { return $null }
+                    if (@('jll-investor','colliers','lyon-stahl','franklin-street') -cnotcontains $key -or
+                        @($summary.failed_source_keys) -cnotcontains $key) { return $null }
                 }
             }
             $partition = @($verifiedKeys) + @($summary.failed_source_keys) + @($summary.pending_source_keys)
@@ -606,14 +626,28 @@ function Get-CreNotificationText {
             $broker = (Get-CreBrokerageName $entry.source_key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
             $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
             if ($null -ne $entry.PSObject.Properties['partial'] -and $entry.partial -eq $true) {
-                $sale = ([long]$entry.transaction_breakdown.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-                $lease = ([long]$entry.transaction_breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-                $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 if ($entry.source_key -ceq 'jll-investor') {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held database identity conflicts held; source exclusions unknown. Whole brokerage incomplete."
                     continue
                 }
+                if (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
+                    $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
+                    $property = $entry.PSObject.Properties['transaction_breakdown']
+                    if ($null -ne $property -and $null -ne $property.Value) {
+                        $sale = ([long]$property.Value.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                        $lease = ([long]$property.Value.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                        $both = ([long]$property.Value.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                        $lines += "    *For sale:* $sale | *For lease:* $lease | *Both:* $both"
+                        $hasTransactionFigures = $true
+                    } else {
+                        $lines += '    *For sale / lease / both:* unavailable'
+                    }
+                    continue
+                }
+                $sale = ([long]$entry.transaction_breakdown.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $lease = ([long]$entry.transaction_breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $leaseScope = "whole lease coverage $($entry.whole_lease_coverage)"
                 $unknownLine = if ($null -ne $entry.PSObject.Properties['retained_unknown_tenure_count']) { " | *Unknown tenure:* $($entry.retained_unknown_tenure_count)" } else { '' }
                 $hasTransactionFigures = $true

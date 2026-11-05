@@ -13,7 +13,7 @@ $sourceText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuarded
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($sourceText,[ref]$tokens,[ref]$errors)
 Assert-Cre ($errors.Count -eq 0) 'Shipped launcher must parse.'
-foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Test-CreJllSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
+foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Test-CreJllSubsetSummary','Test-CreSourceSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
     $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true))
     Assert-Cre ($definition.Count -eq 1) "Exactly one shipped $name function is required."
     if ($name -eq 'Set-CreNotification') {
@@ -439,6 +439,57 @@ $unverifiableText = Get-CreNotificationText (New-Record) 'Terminal' 0 $unverifia
 Assert-Cre ($null -ne $unverifiableRead -and $unverifiableText.Contains('Readback could not be verified') -and $unverifiableText.Contains('100 listings verified by database readback') -and $unverifiableText.Contains('*Failed:* 0 | *Unverifiable:* 1')) 'Unverifiable JLL preserves peer counts without claiming failed execution.'
 $mixedJll['unverifiable_source_keys'] = @('newmark'); Save-Summary $mixedJll
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'jll-unverifiable-forged')) 'Unverifiable source must be the failed JLL source.'
+$Pipeline = $true; $selectedSourceKeys = @('colliers','lyon-stahl','franklin-street','newmark','savills')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$mixedSources = New-Summary
+$mixedSources['selected_source_keys'] = $selectedSourceKeys
+$mixedSources['per_source_summaries'] = @(
+    [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
+    [ordered]@{source_key='lyon-stahl';verified_listings=3;emitted_count=3;held_count=4;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='franklin-street';verified_listings=0;emitted_count=0;held_count=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedSources['qualified_subset_source_keys'] = @('colliers','lyon-stahl','franklin-street')
+$mixedSources['failed_source_keys'] = @('savills'); $mixedSources['pending_source_keys'] = @(); $mixedSources['complete'] = $false
+Save-Summary $mixedSources
+$sourceRead = Get-CreVerifiedSummary (New-Record) 'mixed-source-partials'
+Assert-Cre ($null -ne $sourceRead) 'Source-bound partials, complete peer and failed peer remain separately qualified.'
+$sourceText = Get-CreNotificationText (New-Record) 'Terminal' 1 $sourceRead
+Assert-Cre ($sourceText.Contains('*Colliers:* Verified subset refreshed; 7 emitted; 2 held') -and
+    $sourceText.Contains('*For sale:* 7 | *For lease:* 0 | *Both:* 0') -and
+    $sourceText.Contains('*Lyon-Stahl:* Verified subset refreshed; 3 emitted; 4 held') -and
+    $sourceText.Contains('*Franklin Street:* Verified subset refreshed; 0 emitted; 1 held') -and
+    $sourceText.Contains('*For sale / lease / both:* unavailable') -and
+    $sourceText.Contains('*Newmark:* 100 listings verified') -and $sourceText.Contains('*Savills:* Failed')) 'Partial counts and known zero remain distinct from unavailable transaction counts.'
+$invalidBreakdown = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$invalidBreakdown.per_source_summaries[0].transaction_breakdown.sale = 6
+Save-Summary $invalidBreakdown
+$invalidBreakdownRead = Get-CreVerifiedSummary (New-Record) 'mixed-source-invalid-breakdown'
+$invalidBreakdownText = Get-CreNotificationText (New-Record) 'Terminal' 1 $invalidBreakdownRead
+Assert-Cre ($null -ne $invalidBreakdownRead -and $null -eq $invalidBreakdownRead.per_source_summaries[0].transaction_breakdown -and $invalidBreakdownText.Contains('*Colliers:* Verified subset refreshed; 7 emitted') -and
+    -not $invalidBreakdownText.Contains('*For sale:* 6 | *For lease:* 0 | *Both:* 0')) 'An invalid transaction breakdown does not invent or discard the independently verified total.'
+foreach ($mutation in @('coverage','partial','emitted','fractional','held','qualification','foreign','declared','duplicate')) {
+    $value = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    switch ($mutation) {
+        'coverage' { $value.per_source_summaries[1].whole_source_coverage = $true }
+        'partial' { $value.per_source_summaries[1].partial = $false }
+        'emitted' { $value.per_source_summaries[1].emitted_count = 4 }
+        'fractional' { $value.per_source_summaries[1].emitted_count = 3.5 }
+        'held' { $value.per_source_summaries[1].held_count = -1 }
+        'qualification' { $value.per_source_summaries[1].qualification = 'complete' }
+        'foreign' { $value.per_source_summaries[1].source_key = 'savills' }
+        'declared' { $value.qualified_subset_source_keys = @('colliers','franklin-street') }
+        'duplicate' { $value.failed_source_keys = @('savills','savills') }
+    }
+    Save-Summary $value
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('mixed-source-bad-' + $mutation))) "Malformed partial $mutation must be refused."
+}
+$mixedSources['per_source_summaries'] = @($mixedSources.per_source_summaries[3])
+$mixedSources['qualified_subset_source_keys'] = @()
+$mixedSources['failed_source_keys'] = @('colliers','lyon-stahl','franklin-street','savills')
+$mixedSources['unverifiable_source_keys'] = @('colliers','lyon-stahl','franklin-street')
+Save-Summary $mixedSources
+$unverifiableSources = Get-CreVerifiedSummary (New-Record) 'mixed-source-unverifiable'
+Assert-Cre ($null -ne $unverifiableSources -and (Get-CreNotificationText (New-Record) 'Terminal' 1 $unverifiableSources).Contains('*Unverifiable:* 3')) 'Unverifiable source summaries retain a complete peer without promoting counts.'
 $Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true
 $selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
 
