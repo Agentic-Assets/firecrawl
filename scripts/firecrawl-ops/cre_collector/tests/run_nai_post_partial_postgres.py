@@ -61,7 +61,12 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
 INSERT INTO credeals.cre_listing_contacts(listing_id,name)
 SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1';
 """)
-        staged = [stage_post(post(i), "gen-1") for i in (1, 2, 3)]
+        incomplete = post(3)
+        incomplete.pop("publicPost")
+        incomplete.pop("detailObservedAt")
+        incomplete.pop("transactionMode")
+        incomplete["feedRow"].pop("contentType")
+        staged = [stage_post(value, "gen-1") for value in (post(1), post(2), incomplete)]
         result = sql(identity_probe_sql(staged)).split("|", 3)
         assert result[:2] == ["3", "3"]
         held, before = json.loads(result[2]), json.loads(result[3])
@@ -81,7 +86,7 @@ SELECT json_build_object(
     JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id='infabode:1'),
  'held_untouched',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:2'),
  'new_rows',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:3'
-    AND status IS NULL AND canonical_url IS NULL AND scraped_at IS NULL
+    AND status IS NULL AND transaction_type IS NULL AND canonical_url IS NULL AND scraped_at IS NULL
     AND raw_data->>'identityScope'='infabode_public_post'),
  'index_rows',(SELECT count(*) FROM credeals.cre_source_index si
     JOIN credeals.cre_brokerages b ON b.id=si.brokerage_id WHERE b.slug='nai-global'))::text;

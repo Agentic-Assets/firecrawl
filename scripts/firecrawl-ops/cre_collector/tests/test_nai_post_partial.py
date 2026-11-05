@@ -31,6 +31,19 @@ def test_source_post_retains_full_input_without_fabricating_status_or_location()
     assert json.loads(base64.b64decode(row["observation_base64"])) == source
 
 
+def test_identified_inventory_post_survives_missing_detail_and_category():
+    source = post()
+    source.pop("publicPost")
+    source.pop("detailObservedAt")
+    source.pop("canonicalUrl")
+    source.pop("transactionMode")
+    source["feedRow"].pop("contentType")
+    row = stage_post(source, "gen-1")
+    assert row["external_id"] == "infabode:1"
+    assert row["transaction_type"] is None and row["alias_key"] == "https://www.naiglobal.com/listings?propertyId=post-1"
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
 def test_alias_and_native_id_collisions_hold_only_affected_peers():
     alias = "https://www.naiglobal.com/listings/?propertyId=collision"
     records = [post(1, alias), post(2, alias), post(3), post(3), post(4)]
@@ -61,3 +74,13 @@ def test_invalid_peer_still_conflicts_with_valid_source_identity():
     assert [row["external_id"] for row in result["staged"]] == ["infabode:2"]
     assert [row["reason"] for row in result["held"]] == [
         "unqualified_source_post", "duplicate_post_id"]
+
+
+def test_incomplete_peer_still_witnesses_its_raw_source_alias():
+    alias = "https://example.test/shared"
+    incomplete = post(1, alias)
+    incomplete.pop("canonicalUrl")
+    result = partition_posts([incomplete, post(2, alias), post(3)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
+    assert [row["reason"] for row in result["held"]] == [
+        "conflicting_source_alias", "conflicting_source_alias"]

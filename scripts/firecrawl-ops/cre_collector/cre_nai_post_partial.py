@@ -66,27 +66,41 @@ def stage_post(listing, generation):
     if listing.get("url") != expected_url:
         raise ValueError("NAI source post URL differs")
     tx = listing.get("transactionMode")
-    if tx not in {"sale", "lease"}:
+    if tx not in {None, "sale", "lease"}:
         raise ValueError("NAI transaction category invalid")
-    expected_type = 4 if tx == "sale" else 10
+    categories = set()
     for key in ("feedRow", "publicPost"):
         raw = listing.get(key)
+        if raw is None and key == "publicPost":
+            continue
         if (not isinstance(raw, dict) or type(raw.get("id")) not in {int, str}
-                or str(raw["id"]) != post_id or raw.get("url") != post_url
-                or not isinstance(raw.get("contentType"), dict)
-                or raw["contentType"].get("id") != expected_type):
+                or str(raw["id"]) != post_id or raw.get("url") != post_url):
             raise ValueError("NAI source post evidence differs")
+        category = raw.get("contentType")
+        if isinstance(category, dict) and category.get("id") in (4, 10):
+            categories.add(category["id"])
+    if len(categories) > 1 or (tx is not None and categories and
+                               next(iter(categories)) != (4 if tx == "sale" else 10)):
+        raise ValueError("NAI source transaction category differs")
     provenance = listing.get("freshnessProvenance")
     if not isinstance(provenance, dict) or provenance.get("generationId") != generation:
         raise ValueError("NAI source generation differs")
     inventory = _timestamp(listing.get("inventoryObservedAt"))
-    detail = _timestamp(listing.get("detailObservedAt"))
+    detail = _timestamp(listing.get("detailObservedAt")) if listing.get("detailObservedAt") else inventory
     if detail < inventory:
         raise ValueError("NAI observation ordering differs")
     alias = listing.get("canonicalUrl")
-    public_alias = listing["publicPost"].get("urlOriginal") or listing["publicPost"].get("url")
-    if alias != public_alias:
+    witness = listing.get("publicPost") or listing["feedRow"]
+    public_alias = witness.get("urlOriginal") or witness.get("url")
+    source_aliases = {raw.get("urlOriginal") for raw in (listing["feedRow"], listing.get("publicPost"))
+                      if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str)
+                      and raw.get("urlOriginal")}
+    if len(source_aliases) > 1:
+        raise ValueError("NAI source aliases differ")
+    if alias is not None and alias != public_alias:
         raise ValueError("NAI source alias differs")
+    if alias is None and source_aliases:
+        alias = next(iter(source_aliases))
     alias_key = _canonical_alias(alias)
 
     # Reuse existing source mapper only after checking source identity. Values
@@ -101,6 +115,8 @@ def stage_post(listing, generation):
               "max_divisible_sf", "lot_size_sf", "year_built", "sale_price_usd",
               "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type")
     projected = {key: row.get(key) for key in fields}
+    if tx is None or not categories:
+        projected["transaction_type"] = None
     for key, value in projected.items():
         if isinstance(value, str) and ("\x00" in value or
                 any(0xD800 <= ord(character) <= 0xDFFF for character in value)):
@@ -143,12 +159,21 @@ def partition_posts(listings, generation):
             native = listing.get("id")
             if isinstance(native, str) and _POST_ID.fullmatch(native):
                 id_counts[native] = id_counts.get(native, 0) + 1
-            try:
-                alias = _canonical_alias(listing.get("canonicalUrl"))
-                if alias is not None:
-                    alias_counts[alias] = alias_counts.get(alias, 0) + 1
-            except ValueError:
-                pass
+            observed_aliases = [listing.get("canonicalUrl")]
+            for key in ("feedRow", "publicPost"):
+                raw = listing.get(key)
+                if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str):
+                    observed_aliases.append(raw["urlOriginal"])
+            normalized_aliases = set()
+            for alias in observed_aliases:
+                try:
+                    normalized = _canonical_alias(alias)
+                    if normalized is not None:
+                        normalized_aliases.add(normalized)
+                except ValueError:
+                    pass
+            for alias in normalized_aliases:
+                alias_counts[alias] = alias_counts.get(alias, 0) + 1
         try:
             staged.append((index, stage_post(listing, generation)))
         except (TypeError, ValueError, KeyError, RecursionError):
