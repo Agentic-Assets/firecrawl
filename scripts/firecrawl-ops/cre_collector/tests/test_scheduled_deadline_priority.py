@@ -165,3 +165,19 @@ def test_git_cleanup_unknown_is_not_hidden(tmp_path, monkeypatch):
     monkeypatch.setattr(series, "local_git_output", unknown)
     with pytest.raises(series.ProcessCleanupUnknown):
         series.scheduled_deadline_priority(tmp_path, current_dir, current)
+
+
+def test_future_series_does_not_override_latest_earlier_deadline(tmp_path, monkeypatch):
+    import shutil
+
+    prior_dir, current_dir, current, _prior, _child, _receipt = case(tmp_path, monkeypatch)
+    future_dir = tmp_path / "2099-10-16T120000Z"
+    shutil.copytree(prior_dir, future_dir)
+    manifest_path = future_dir / "manifest.json"
+    future = json.loads(manifest_path.read_text())
+    future["series_id"] = future_dir.name
+    manifest_path.write_text(json.dumps(future))
+
+    result = series.scheduled_deadline_priority(tmp_path, current_dir, current)
+    assert result["previous_series"] == prior_dir.name
+    assert result["order"] == ["savills", "colliers", "cbre"]

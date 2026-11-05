@@ -1988,9 +1988,11 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
     from scheduling.priority import after_deadline
 
     try:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", current_dir.name):
+            return None
         candidates = sorted(
             (path for path in out_root.iterdir()
-             if path != current_dir and not path.is_symlink()
+             if path != current_dir and path.name < current_dir.name and not path.is_symlink()
              and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", path.name)
              and path.is_dir()),
             key=lambda path: path.name, reverse=True,
