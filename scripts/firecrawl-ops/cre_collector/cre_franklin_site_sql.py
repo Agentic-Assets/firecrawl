@@ -270,7 +270,7 @@ DO $$ BEGIN
               THEN b.prior->'raw_data'->'franklinSiteObservations'
               ELSE (b.prior->'raw_data'->'franklinSiteObservations') || jsonb_build_array(s.observation) END
       OR (l.raw_data - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
-         IS DISTINCT FROM (b.prior->'raw_data' - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
+         IS DISTINCT FROM ((b.prior->'raw_data') - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
  ) THEN RAISE EXCEPTION 'Franklin preimage preservation differs'; END IF;
 END $$;
 UPDATE credeals.cre_scrape_jobs j
