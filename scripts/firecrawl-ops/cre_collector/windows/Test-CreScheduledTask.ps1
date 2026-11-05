@@ -318,6 +318,15 @@ Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq $callsBeforePreview) 'Mixed p
 # Optional series concurrency must not change omitted-parameter action bytes.
 $creDefaultSeriesAction = Get-CreXmlValue ([xml]$creSeriesPreview) '/t:Task/t:Actions/t:Exec/t:Arguments'
 Assert-Cre (-not $creDefaultSeriesAction.Contains('"-Concurrency"') -and -not $strictMixedAction.Contains('"-Concurrency"')) 'Omitted concurrency keeps old serial/plural action bytes and inherited C1.'
+$unlimitedArgs = $pipelineTaskArgs.Clone()
+$unlimitedArgs['PageCap'] = 0
+[xml]$unlimitedDoc = (& $creInstaller @unlimitedArgs) -join [Environment]::NewLine
+$unlimitedAction = Get-CreXmlValue $unlimitedDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($unlimitedAction.Replace(' "-PageCap" "0"','') -ceq $strictMixedAction) 'Unlimited preview must preserve the exact qualified task action.'
+$badPageArgs = $creBase.Clone(); $badPageArgs['PageCap'] = 0
+$rejected = $false
+try { $null = & $creInstaller @badPageArgs } catch { $rejected = $true }
+Assert-Cre $rejected 'PageCap is a series-only option.'
 $callsBeforeConcurrency = $global:Cre4265Fixture.Calls.Count
 foreach ($limit in @(1,2,6)) {
     $concurrencyArgs = $creSeries.Clone()

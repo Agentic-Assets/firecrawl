@@ -6901,3 +6901,21 @@ def test_serial_jll_owner_loss_fences_siblings_after_refusal(tmp_path, monkeypat
         refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=owner_check)
     assert calls == ["savills", "jll"]
     assert "serial_guard_holds" not in manifest
+
+
+def test_resume_preserves_unlimited_page_cap_and_rejects_drift(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir, git_sha="abc", git_dirty=False, sources=("svn",), page_cap=0, concurrency=3
+    )
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+    assert json.loads(path.read_text())["config"]["page_cap"] == 0
+    loaded = refresh.load_resume_manifest(
+        path, git_sha="abc", sources=("svn",), page_cap=0, concurrency=3
+    )
+    assert loaded["config"]["page_cap"] == 0
+    with pytest.raises(refresh.RefreshError, match="configuration"):
+        refresh.load_resume_manifest(
+            path, git_sha="abc", sources=("svn",), page_cap=400, concurrency=3
+        )
