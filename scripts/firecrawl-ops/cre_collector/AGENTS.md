@@ -293,9 +293,21 @@ row counts from a fresh validator or exact checkpoint readback. The matrices in
 `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md` are dated history.
 
 **`--page-cap`** bounds pagination on `jll`, `cbre-dealflow`, `colliers`
-(SalesTracker), `nai-global` (`PAGE_CAP × page size`), and Savills sale pages.
-It does not cap API-paginated or sitemap-driven sources (`cushman-wakefield`,
-`transwestern`, `marcus-millichap`, `colliers-main`, Buildout).
+(SalesTracker), and `nai-global` (page count times feed page size). A value of
+`0` removes this configured cap; each adapter must still stop on its
+source-defined exhaustion or report a failure/incomplete result on repeated
+pages, missing progress or malformed responses. Other source-specific limits
+and the pipeline work deadline still apply. A partial result is never evidence
+of whole-source coverage or permission to retire absent records.
+
+The Windows series installer and launcher accept `-PageCap 0`; the launcher
+default remains 400. Deploy the reviewed launcher before registering a task
+with this option, so both current and selected launcher metadata accept it.
+This option is code capability only: production uses unlimited mode only after
+the reviewed code and task/default configuration are deployed and read back.
+The cap does not govern API-paginated or sitemap-driven sources such as
+`cushman-wakefield`, `transwestern`, `marcus-millichap`, `colliers-main`
+and Buildout.
 
 **Scrape primitives** (`scrapeJson`, `brokerRef`, `pmap`, `prune`): `lib/AGENTS.md`.
 

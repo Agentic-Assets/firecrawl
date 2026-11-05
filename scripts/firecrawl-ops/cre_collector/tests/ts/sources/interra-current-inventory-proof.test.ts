@@ -92,7 +92,7 @@ test("ordinary Interra mode keeps its existing shape without claiming a strict r
 });
 
 const collector = fileURLToPath(new URL("../../../", import.meta.url));
-function invoke(mutation?: string, monitor = false) {
+function invoke(mutation?: string, monitor = false, pageCap?: string) {
   const dir = mkdtempSync(join(tmpdir(), "interra-proof-cli-"));
   const feed: any = payload();
   if (mutation === "duplicate") feed.posts[1] = row(2, "under_contract");
@@ -111,7 +111,7 @@ globalThis.fetch = async (url, options) => {
 };`);
   const start = new Date(Date.now() - 1000).toISOString();
   const env = { ...process.env, CRE_REQUIRE_FRESH_DETAILS: "1", CRE_REFRESH_GENERATION: generationId, CRE_REFRESH_STARTED_AT: start };
-  const child = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts", "--source", "interra-realty", "--transaction", "both", "--max-items", mutation === "cap" ? "1" : "0", "--concurrency", "1", "--out", out, ...(monitor || mutation === "monitor" ? ["--monitor"] : [])], { cwd: collector, env, encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024 });
+  const child = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts", "--source", "interra-realty", "--transaction", "both", "--max-items", mutation === "cap" ? "1" : "0", "--concurrency", "1", "--out", out, ...(pageCap === undefined ? [] : [`--page-cap=${pageCap}`]), ...(monitor || mutation === "monitor" ? ["--monitor"] : [])], { cwd: collector, env, encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024 });
   const result = { child, start, body, data: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [] };
   rmSync(dir, { recursive: true, force: true }); return result;
 }
@@ -167,4 +167,20 @@ test("errored monitor output retains a source error with no terminal proof and c
   assert.ok(result.data.sources[0].error);
   assert.equal(Object.hasOwn(result.data.sources[0], "currentInventoryProof"), false);
   assert.equal(result.data.listings.length, 0);
+});
+
+test("actual collector serializes unlimited page cap as integer zero", () => {
+  const result = invoke(undefined, false, "0");
+  assert.equal(result.child.status, 0, result.child.stderr);
+  assert.equal(result.data.runMeta.pageCap, 0);
+  assert.equal(result.data.sources[0].currentInventoryProof.kind, "terminal_feed");
+});
+
+test("actual collector rejects malformed page caps before source dispatch", () => {
+  for (const cap of ["-1", "1.5", "NaN", "", "9007199254740992"]) {
+    const result = invoke(undefined, false, cap);
+    assert.notEqual(result.child.status, 0);
+    assert.match(result.child.stderr, /page-cap must be a nonnegative safe integer/);
+    assert.equal(result.calls.length, 0);
+  }
 });
