@@ -155,6 +155,7 @@ def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
     assert "'detailQualified',false" in sql
     assert "'partial'" in sql
     assert "country,scraped_at,raw_data" in sql
+    assert sql.count(row["observation_base64"]) == 1
     assert "UPDATE credeals.cre_source_index" not in sql
     assert "DELETE FROM" not in sql
     receipt["detail_errors"] = "0); SELECT 1; --"

@@ -24,7 +24,7 @@ def validate_staged(staged, generation, started_at, finished_at):
         urls.add(row["source_url"].rstrip("/"))
 
 
-def identity_probe_sql(staged, generation, started_at, finished_at):
+def identity_probe_sql(staged, generation, started_at, finished_at, *, _transaction_input=False):
     """Build a read-only exact-ID/URL partition; caller binds target and owner.
 
     This is a preliminary probe, never an authorization to write. A writer must
@@ -34,9 +34,13 @@ def identity_probe_sql(staged, generation, started_at, finished_at):
     from cre_ingest import sql_lit
 
     validate_staged(staged, generation, started_at, finished_at)
-    payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False))
+    if _transaction_input:
+        candidate = "SELECT r FROM _marcus_input"
+    else:
+        payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False))
+        candidate = f"SELECT value AS r FROM jsonb_array_elements({payload}::jsonb)"
     return f"""
-WITH candidate AS (SELECT value AS r FROM jsonb_array_elements({payload}::jsonb)),
+WITH candidate AS ({candidate}),
 scoped AS (SELECT b.id brokerage_id,c.r FROM candidate c
            JOIN credeals.cre_brokerages b ON b.slug='marcus-millichap'),
 conflicts AS (
@@ -115,21 +119,23 @@ def build_partial_sql(staged, held, preimage, receipt, job_id):
 
     generation, start, finish, job = _validate_write(staged, held, preimage, receipt, job_id)
     payload, held_payload, prior = _payload(staged), _payload(held), _payload(preimage)
-    probe = identity_probe_sql(staged, generation, start, finish)
+    probe = identity_probe_sql(staged, generation, start, finish, _transaction_input=True)
     entry = "jsonb_build_object('schema','marcus-inventory-entry/v1','generation'," + sql_lit(generation) + \
             ",'attempt'," + str(receipt["attempt"]) + ",'sourceSha256'," + sql_lit(receipt["source_sha256"]) + \
             ",'detailQualified',false,'recordBase64',r->>'observation_base64')"
     return f"""
 BEGIN;
 {lifecycle_transaction_lock_sql()}
+CREATE TEMP TABLE _marcus_input ON COMMIT DROP AS
+ SELECT value AS r FROM jsonb_array_elements({payload}::jsonb);
 DO $$ BEGIN
  PERFORM si.id FROM credeals.cre_source_index si WHERE EXISTS
-  (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+  (SELECT 1 FROM _marcus_input c
    WHERE (si.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
           AND si.external_id=c.r->>'external_id') OR rtrim(si.url,'/')=rtrim(c.r->>'source_url','/'))
  ORDER BY si.id FOR UPDATE;
  PERFORM t.id FROM credeals.cre_listings t WHERE EXISTS
-  (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+  (SELECT 1 FROM _marcus_input c
    WHERE (t.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
           AND t.external_id=c.r->>'external_id') OR rtrim(t.source_url,'/')=rtrim(c.r->>'source_url','/')
           OR rtrim(t.canonical_url,'/')=rtrim(c.r->>'source_url','/'))
@@ -143,9 +149,9 @@ DO $$ BEGIN
  THEN RAISE EXCEPTION 'Marcus identity partition changed'; END IF;
 END $$;
 CREATE TEMP TABLE _marcus_rows ON COMMIT DROP AS
- SELECT b.id brokerage_id,value r FROM jsonb_array_elements({payload}::jsonb)
+ SELECT b.id brokerage_id,c.r FROM _marcus_input c
  JOIN credeals.cre_brokerages b ON b.slug='marcus-millichap'
- WHERE NOT (value->>'external_id' IN (SELECT jsonb_array_elements_text({held_payload}::jsonb)));
+ WHERE NOT (c.r->>'external_id' IN (SELECT jsonb_array_elements_text({held_payload}::jsonb)));
 INSERT INTO credeals.cre_scrape_jobs
  (id,brokerage_id,status,started_at,completed_at,listings_discovered,listings_scraped,listings_saved,errors_count,notes)
 SELECT {sql_lit(job)}::uuid,id,'partial',{sql_lit(start)}::timestamptz,{sql_lit(finish)}::timestamptz,
