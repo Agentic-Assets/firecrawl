@@ -259,6 +259,66 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
         sql_path = dry_dir / "ingest.sql"
         assert sql_path.stat().st_mode & 0o077 == 0
         assert "colliersNativeObservations" in sql_path.read_text()
+        # Real Colliers and Lyon gate adapters must preserve both per-source
+        # proofs and one honest aggregate scope in either admission order.
+        import cre_lyon_partial_checkpoint as lyon
+        from tests.test_lyon_partial_checkpoint import LyonCheckpointTests
+
+        lyon_manifest, _, _ = LyonCheckpointTests().case(run)
+        lyon_manifest["started_at"] = manifest["started_at"]
+        lyon_manifest["config"] = {**manifest["config"], "sources": ["lyon-stahl"]}
+        lyon_manifest["scope"] = {}
+        lyon_source = lyon.replay_settled_source(run, lyon_manifest, 1, "a" * 40, False)
+        lyon_data = lyon.candidate_data(lyon_source, lyon_manifest["started_at"])
+        lyon_path = run / "lyon-stahl-partial" / "candidate-1.json"
+        lyon_path.write_text(json.dumps(lyon_data))
+        lyon_path.chmod(0o600)
+        lyon_raw = lyon_path.read_bytes()
+        lyon_sha = hashlib.sha256(lyon_raw).hexdigest()
+        lyon_checkpoint = lyon_manifest["sources"]["lyon-stahl"]
+        lyon_checkpoint["artifact"] = {"path": str(lyon_path.relative_to(run)), "bytes": len(lyon_raw), "sha256": lyon_sha}
+        lyon_checkpoint["lyon_partial_worker"] = {"state": "settled", "attempt": 1, "sha256": lyon_sha}
+        lyon_staged = lyon_source["staged"]
+        lyon_preimage = [{"external_id": "example", "listing": None, "source_index": None,
+                          "children": {"contacts": [], "documents": [], "images": []}}]
+        lyon_preimage_path = run / "lyon-stahl-partial" / ("preimage-1-" + "e" * 16 + ".json")
+        lyon_preimage_path.write_text(json.dumps(lyon_preimage))
+        lyon_preimage_path.chmod(0o600)
+        lyon_preimage_raw = lyon_preimage_path.read_bytes()
+        lyon_staged_bytes = json.dumps(lyon_staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        lyon_checkpoint["lyon_identity_probe"] = {"artifact_sha256": lyon_sha, "generation_id": "gen",
+            "producer_sha": "a" * 40, "database_target_sha256": "b" * 64,
+            "staged_sha256": hashlib.sha256(lyon_staged_bytes).hexdigest(), "held": [],
+            "preimage_path": str(lyon_preimage_path.relative_to(run)), "preimage_bytes": len(lyon_preimage_raw),
+            "preimage_sha256": hashlib.sha256(lyon_preimage_raw).hexdigest()}
+        lyon_report = {"generated_for_artifact": str(lyon_path), "summary": copy.deepcopy(report["summary"]),
+            "per_source": {"lyon-stahl": {"verdict": "first_seen",
+                "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
+                "mark_missing_safe": False, "current_active": 1}}}
+        lyon_proof = lyon.admit_search(lyon_path, lyon_manifest, lyon_report, current_code_sha="a" * 40,
+                                      current_git_dirty=False, phase="source")
+        lyon_checkpoint["gate"] = {"current_inventory_proof": lyon_proof}
+        combined_manifest = copy.deepcopy(manifest)
+        combined_manifest["config"].update(pipeline=True, sources=["colliers", "lyon-stahl"])
+        combined_manifest["sources"]["lyon-stahl"] = lyon_checkpoint
+        base_report = {"generated_for_artifact": [str(artifact_path), str(lyon_path)],
+            "summary": copy.deepcopy(report["summary"]),
+            "per_source": {"colliers": copy.deepcopy(report["per_source"]["colliers"]),
+                           "lyon-stahl": copy.deepcopy(lyon_report["per_source"]["lyon-stahl"])}}
+        for order in (("colliers", "lyon-stahl"), ("lyon-stahl", "colliers")):
+            both = copy.deepcopy(base_report)
+            combined = copy.deepcopy(combined_manifest)
+            for member in order:
+                if member == "colliers":
+                    assert partial.admit_window(artifact_path, combined, both, current_code_sha="a" * 40,
+                                                current_git_dirty=False, phase="aggregate") == proof
+                else:
+                    assert lyon.admit_search(lyon_path, combined, both, current_code_sha="a" * 40,
+                                             current_git_dirty=False, phase="aggregate") == lyon_proof
+            assert both["scope"]["kind"] == "collector_registry_verified_subset"
+            assert both["scope"]["whole_source_coverage"] is False
+            assert both["per_source"]["colliers"]["current_inventory_proof"] == proof
+            assert both["per_source"]["lyon-stahl"]["current_inventory_proof"] == lyon_proof
         changed_claim = copy.deepcopy(envelope)
         changed_claim["aggregate_report"]["per_source"]["colliers"]["current_inventory_proof"]["artifact_sha256"] = "0" * 64
         with pytest.raises(ValueError, match="gate claim"):

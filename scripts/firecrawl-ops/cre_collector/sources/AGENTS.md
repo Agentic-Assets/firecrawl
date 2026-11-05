@@ -215,6 +215,19 @@ every other member still requires a valid owned detail URL, and empty or
 archive-only shards fail. Sitemap membership does not establish active status,
 historical identity compatibility or first-seen admission.
 
+The source-owned Lyon search observation helper captures the three advertised
+all/sale/lease AJAX filters with an invocation-owned 10-second physical-start
+gate also passed to any other Lyon requests in that invocation. It makes at
+most one attempt per filter, retains settled local failures and continues
+eligible filters, and stops on access denial, rate limiting or unsettled
+cleanup. It retains decoded JSON, clocks, hashes and card occurrence references,
+including typed query-form WordPress IDs. An unsettled terminal outcome keeps
+earlier private snapshots and cannot be admitted. The guarded cohort path
+replays source-bound observations and admits eligible records additively after
+identity and readback checks. Search observations are partial evidence only:
+filter membership does not prove current status, exclusive tenure, a complete
+inventory, a crosswalk or numeric price semantics, and never authorizes retirement.
+
 Lyon-Stahl may publish availability on a same-page `Product` Offer instead of
 the `RealEstateListing`. When listing offers are absent, require one listing and
 one Product bound to the exact requested canonical URL, Product `@id` equal to

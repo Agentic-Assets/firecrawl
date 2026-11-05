@@ -5216,6 +5216,18 @@ DO $$ BEGIN
     AND s.raw_data ? 'colliersNativeObservations')
  THEN RAISE EXCEPTION 'Colliers native evidence key collision'; END IF;
 END $$;
+-- Preserve private Lyon search history when an ordinary full source upsert
+-- refreshes raw_data. Existing evidence is opaque; incoming collisions refuse.
+CREATE TEMP TABLE _lyon_search_prior ON COMMIT DROP AS
+SELECT t.id, t.external_id, t.raw_data->'lyonSearchObservations' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='lyon-stahl' AND jsonb_typeof(t.raw_data)='object'
+ AND t.raw_data ? 'lyonSearchObservations';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='lyon-stahl' AND s.raw_data ? 'lyonSearchObservations')
+ THEN RAISE EXCEPTION 'Lyon search evidence key collision'; END IF;
+END $$;
 {targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -5690,6 +5702,15 @@ UPDATE credeals.cre_listings t
    'latestDaumTitleFallbackObservation', p.latest)
 FROM _daum_fallback_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 {daum_fallback_update}
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _lyon_search_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'Lyon search evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('lyonSearchObservations',p.evidence)
+FROM _lyon_search_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
@@ -7607,6 +7628,7 @@ def main():
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--lyon-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
@@ -7659,6 +7681,8 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.franklin_site_claims and args.lyon_partial_claims:
+        sys.exit("refusing mixed Franklin and Lyon partial claims")
     if args.franklin_site_claims:
         try:
             from cre_franklin_site_admission import run_ingest
@@ -7684,6 +7708,33 @@ def main():
     colliers_transition_inputs = []
     inventory_enrichment_ids = set()
     inventory_non_enrichment_ids = set()
+
+    lyon_partial_claims = None
+    if args.lyon_partial_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.colliers_partial_claims or args.matthews_targeted_claims
+                or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims or args.jll_partial_claims
+                or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha
+                or args.newmark_page_attempt or args.newmark_page_claims or _status_activation_enabled(args.activate_status)
+                or not args.require_strict_freshness or not args.expected_db_target_sha256 or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound Lyon partial ingest")
+        from pathlib import Path
+
+        from cre_checkpoint_refresh import git_identity
+        from cre_lyon_partial_checkpoint import ingest_subset_context
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+
+        claim_path = Path(args.lyon_partial_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        lyon_partial_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256, attempt_id=args.checkpoint_ingest_attempt)
 
     colliers_partial_claims = None
     if args.colliers_partial_claims:
@@ -7839,6 +7890,12 @@ def main():
             require_canonical_artifact(data)
         except ValueError as exc:
             sys.exit(str(exc))
+        is_lyon_partial = data.get("schema") == "lyon-search-partial/v1"
+        if is_lyon_partial != (lyon_partial_claims is not None):
+            sys.exit("refusing Lyon partial artifact without guarded checkpoint admission")
+        if (lyon_partial_claims is not None and
+                hashlib.sha256(image_transition_input).hexdigest() != lyon_partial_claims["binding"]["artifact_sha256"]):
+            sys.exit("Lyon partial artifact changed after gate revalidation")
         is_colliers_partial = data.get("schema") == "colliers-partial-window/v1"
         if is_colliers_partial != (colliers_partial_claims is not None):
             sys.exit("refusing Colliers partial artifact without guarded checkpoint admission")
@@ -7899,7 +7956,7 @@ def main():
                 ]}
             validate_strict_artifact_freshness(
                 freshness_data,
-                require_strict_freshness=args.require_strict_freshness,
+                require_strict_freshness=args.require_strict_freshness and lyon_partial_claims is None,
                 pyramid_incomplete_ids=frozenset(
                     m["native_id"] for m in (pyramid_subset_claims or {}).get("members", [])
                     if m.get("incomplete") is True
@@ -7938,7 +7995,7 @@ def main():
                     or listings[0].get("url") != newmark_page_claim.get("url")
                     or not args.expected_db_target_sha256 or args.mark_missing or _status_activation_enabled(args.activate_status)):
                 sys.exit("refusing unbound or mixed Newmark page ingest")
-        if not args.dry_run and mode not in {"full", "enrich"} and not (mode == "partial" and colliers_partial_claims):
+        if not args.dry_run and mode not in {"full", "enrich"} and not (mode == "partial" and (colliers_partial_claims or lyon_partial_claims)):
             sys.exit(
                 f"refusing live ingest for artifact mode {mode!r}: "
                 "expected runMeta.mode to be 'full' or 'enrich'"
@@ -8244,7 +8301,14 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Pyramid guard outcome: {exc}")
-    if colliers_partial_claims is not None:
+    if lyon_partial_claims is not None:
+        from cre_lyon_partial import build_partial_sql
+
+        context = lyon_partial_claims
+        source = context["source"]
+        sql = build_partial_sql(context["staged"], context["held"], context["preimage"], context["job_id"],
+                                source["started_at"], source["finished_at"])
+    elif colliers_partial_claims is not None:
         from cre_colliers_partial import build_partial_sql
 
         context = colliers_partial_claims
@@ -8296,7 +8360,7 @@ def main():
     out_dir = args.keep_artifacts or tempfile.mkdtemp(prefix="cre_ingest_")
     os.makedirs(out_dir, exist_ok=True)
     sql_path = os.path.join(out_dir, "ingest.sql")
-    if colliers_partial_claims is not None:
+    if colliers_partial_claims is not None or lyon_partial_claims is not None:
         descriptor = os.open(sql_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "w") as f:
             f.write(sql)

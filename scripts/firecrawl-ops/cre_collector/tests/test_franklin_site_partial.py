@@ -1,6 +1,8 @@
+import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -289,6 +291,70 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
     checkpoint["gate"] = {"current_inventory_proof": binding}
     second = report()
     assert admission.admit(path, manifest, second, code_sha="a" * 40, dirty=False, env=env, phase="aggregate") == binding
+    # Exercise the actual two source adapters in both aggregate orders. Each
+    # retains its own proof; the shared scope describes the combined subset.
+    import cre_lyon_partial_checkpoint as lyon
+    from tests.test_lyon_partial_checkpoint import LyonCheckpointTests
+
+    auxiliary = tmp_path / "aux" / "run-1"
+    auxiliary.mkdir(parents=True)
+    lyon_manifest, _, _ = LyonCheckpointTests().case(auxiliary)
+    shutil.copytree(auxiliary / "lyon-stahl-partial", run / "lyon-stahl-partial")
+    shutil.copy2(auxiliary / "rejected" / "lyon-stahl-attempt-1.json",
+                 run / "rejected" / "lyon-stahl-attempt-1.json")
+    lyon_manifest["started_at"] = generation
+    lyon_manifest["config"] = {**manifest["config"], "sources": ["lyon-stahl"]}
+    lyon_manifest["scope"] = {"source_keys": ["lyon-stahl"]}
+    lyon_source = lyon.replay_settled_source(run, lyon_manifest, 1, "a" * 40, False)
+    lyon_data = lyon.candidate_data(lyon_source, generation)
+    lyon_path = run / "lyon-stahl-partial" / "candidate-1.json"
+    lyon_path.write_text(json.dumps(lyon_data))
+    lyon_path.chmod(0o600)
+    lyon_raw = lyon_path.read_bytes()
+    lyon_sha = hashlib.sha256(lyon_raw).hexdigest()
+    lyon_checkpoint = lyon_manifest["sources"]["lyon-stahl"]
+    lyon_checkpoint["artifact"] = {"path": str(lyon_path.relative_to(run)), "bytes": len(lyon_raw), "sha256": lyon_sha}
+    lyon_checkpoint["lyon_partial_worker"] = {"state": "settled", "attempt": 1, "sha256": lyon_sha}
+    lyon_staged = lyon_source["staged"]
+    lyon_preimage = [{"external_id": "example", "listing": None, "source_index": None,
+                      "children": {"contacts": [], "documents": [], "images": []}}]
+    lyon_preimage_path = run / "lyon-stahl-partial" / ("preimage-1-" + "e" * 16 + ".json")
+    lyon_preimage_path.write_text(json.dumps(lyon_preimage))
+    lyon_preimage_path.chmod(0o600)
+    lyon_preimage_raw = lyon_preimage_path.read_bytes()
+    lyon_staged_bytes = json.dumps(lyon_staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    lyon_checkpoint["lyon_identity_probe"] = {"artifact_sha256": lyon_sha, "generation_id": "run-1",
+        "producer_sha": "a" * 40, "database_target_sha256": "b" * 64,
+        "staged_sha256": hashlib.sha256(lyon_staged_bytes).hexdigest(), "held": [],
+        "preimage_path": str(lyon_preimage_path.relative_to(run)), "preimage_bytes": len(lyon_preimage_raw),
+        "preimage_sha256": hashlib.sha256(lyon_preimage_raw).hexdigest()}
+    lyon_report = {"generated_for_artifact": str(lyon_path), "summary": copy.deepcopy(first["summary"]),
+        "per_source": {"lyon-stahl": {"verdict": "first_seen",
+            "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
+            "mark_missing_safe": False, "current_active": 1}}}
+    lyon_proof = lyon.admit_search(lyon_path, lyon_manifest, lyon_report, current_code_sha="a" * 40,
+                                  current_git_dirty=False, phase="source")
+    lyon_checkpoint["gate"] = {"current_inventory_proof": lyon_proof}
+    combined_manifest = copy.deepcopy(manifest)
+    combined_manifest["config"].update(pipeline=True, sources=["franklin-street", "lyon-stahl"])
+    combined_manifest["scope"]["source_keys"] = ["franklin-street", "lyon-stahl"]
+    combined_manifest["sources"]["lyon-stahl"] = lyon_checkpoint
+    combined_report = {"generated_for_artifact": [str(path), str(lyon_path)],
+        "summary": copy.deepcopy(first["summary"]),
+        "per_source": {"franklin-street": copy.deepcopy(first["per_source"]["franklin-street"]),
+                       "lyon-stahl": copy.deepcopy(lyon_report["per_source"]["lyon-stahl"])}}
+    for order in (("franklin-street", "lyon-stahl"), ("lyon-stahl", "franklin-street")):
+        owner, current = copy.deepcopy(combined_manifest), copy.deepcopy(combined_report)
+        for member in order:
+            if member == "franklin-street":
+                assert admission.admit(path, owner, current, code_sha="a" * 40, dirty=False, env=env, phase="aggregate") == binding
+            else:
+                assert lyon.admit_search(lyon_path, owner, current, current_code_sha="a" * 40,
+                                         current_git_dirty=False, phase="aggregate") == lyon_proof
+        assert current["scope"]["kind"] == "collector_registry_verified_subset"
+        assert current["scope"]["whole_source_coverage"] is False
+        assert current["per_source"]["franklin-street"]["current_inventory_proof"] == binding
+        assert current["per_source"]["lyon-stahl"]["current_inventory_proof"] == lyon_proof
     envelope = {"manifest": manifest, "source_report": first, "aggregate_report": second,
                 "binding": binding, "attempt_id": "c" * 32}
     context = admission.ingest_subset_context(path, envelope, code_sha="a" * 40, dirty=False,
@@ -300,6 +366,18 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
                         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"expected":1,"invalid":[],"matching_jobs":1}\n'))
     result = admission.run_readback(path, manifest, context, target_sha256="b" * 64, env_file=None, process_env=env)
     assert result["ok"] is True and result["expected"] == 1 and result["held"] == []
+    assert result["database_target_sha256"] == "b" * 64 and result["attempt_id"] == "c" * 32
+    import cre_checkpoint_series as series
+    actual_checkpoint = copy.deepcopy(checkpoint)
+    actual_checkpoint["subset_ingest_attempt_id"] = "c" * 32
+    actual_checkpoint["readback"] = {"ok": True, "kind": "franklin_site_partial",
+        "whole_source_coverage": False, "observation": result}
+    assert series._pipeline_member_report_matches(
+        {"franklin_partial_readback": result}, actual_checkpoint, "franklin-street", "run-1")
+    monkeypatch.setattr(validation, "_run_psql_script",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"expected":1,"invalid":[],"matching_jobs":true}\n'))
+    with pytest.raises(ValueError, match="readback partition invalid"):
+        admission.run_readback(path, manifest, context, target_sha256="b" * 64, env_file=None, process_env=env)
     claims_dir = run / "claims"
     claims_dir.mkdir(mode=0o700)
     claims = claims_dir / "claims.json"
@@ -318,6 +396,10 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
     with pytest.raises(ValueError, match="unbound Franklin"):
         admission.run_ingest(args)
     args.colliers_partial_claims = None
+    args.lyon_partial_claims = "other-claim"
+    with pytest.raises(ValueError, match="unbound Franklin"):
+        admission.run_ingest(args)
+    args.lyon_partial_claims = None
     args.mark_missing = True
     with pytest.raises(ValueError):
         admission.run_ingest(args)
@@ -331,10 +413,10 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
 
 def test_series_recognizes_only_exact_partial_binding():
     binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1",
-               "whole_source_coverage": False, "artifact_sha256": "1" * 64,
+               "source_key": "franklin-street", "whole_source_coverage": False, "artifact_sha256": "1" * 64,
                "source_artifact_sha256": "2" * 64, "generation_id": "run-1",
-               "collector_git_sha": "a" * 40, "database_target_sha256": "b" * 64,
-               "held_count": 0, "held": [], "emitted_count": 1, "buildout_pending": 1,
+               "collector_git_sha": "a" * 40, "producer_sha": "a" * 40, "database_target_sha256": "b" * 64,
+               "staged_sha256": "c" * 64, "held_count": 0, "held": [], "emitted_count": 1, "buildout_pending": 1,
                "held_observations": 0, "identity_uncertainty": {"siteToBuildout": "unresolved"}}
     child = {"run_id": "run-1", "collector_git_sha": "a" * 40,
              "preflight": {"database_target": {"value": "b" * 64}},
@@ -342,7 +424,7 @@ def test_series_recognizes_only_exact_partial_binding():
                                                             "staged_unique": 1},
                          "franklin_original": {"sha256": "2" * 64},
                          "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
-                                  "current_inventory_proof": binding}}}}
+                                  "admission_scope": "franklin_site_partial_v1", "current_inventory_proof": binding}}}}
     assert series.franklin_partial_child(child)
     binding["whole_source_coverage"] = True
     assert not series.franklin_partial_child(child)

@@ -143,7 +143,8 @@ def admit(artifact_path, manifest, report, *, code_sha, dirty, env, phase):
             verdict = source_gate.get("verdict")
             counts[verdict] = counts.get(verdict, 0) + 1
         summary["verdict_counts"] = counts
-    report["scope"] = {"kind": SCOPE, "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    report["scope"] = {"kind": (SCOPE if phase == "source" else "collector_registry_verified_subset"),
+                       "transactions": ["sale", "lease"], "whole_source_coverage": False}
     manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
     return binding
 
@@ -235,7 +236,7 @@ def run_ingest(args):
     if (len(args.inputs) != 1 or args.mark_missing or _status_activation_enabled(args.activate_status)
             or not args.require_strict_freshness or not args.expected_db_target_sha256
             or not args.checkpoint_ingest_attempt
-            or args.colliers_partial_claims or args.jll_partial_claims
+            or args.colliers_partial_claims or args.jll_partial_claims or getattr(args, "lyon_partial_claims", None)
             or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
             or args.matthews_targeted_claims or args.newmark_page_attempt or args.newmark_page_claims
             or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha):
@@ -319,7 +320,8 @@ def run_readback(artifact_path, manifest, claims, *, target_sha256, env_file, pr
     expected = len(claims["listings"]) - len(claims["held"])
     invalid = value.get("invalid")
     allowed = {row["id"] for row in claims["listings"]} - set(claims["held"])
-    if (value.get("expected") != expected or value.get("matching_jobs") != 1
+    if (type(value.get("expected")) is not int or value["expected"] != expected
+            or type(value.get("matching_jobs")) is not int or value["matching_jobs"] != 1
             or not isinstance(invalid, list) or invalid != sorted(set(invalid)) or not set(invalid) <= allowed):
         raise ValueError("Franklin readback partition invalid")
     current_url, _ = load_db_url(env_file)
@@ -331,4 +333,5 @@ def run_readback(artifact_path, manifest, claims, *, target_sha256, env_file, pr
     return {"ok": not invalid, "invalid": invalid, "expected": expected, "held": claims["held"],
             "artifact_sha256": claims["binding"]["artifact_sha256"],
             "generation_id": claims["binding"]["generation_id"],
+            "database_target_sha256": target_sha256, "attempt_id": claims["sql_binding"]["attempt_id"],
             "staged_sha256": claims["binding"]["staged_sha256"], "matching_jobs": 1}
