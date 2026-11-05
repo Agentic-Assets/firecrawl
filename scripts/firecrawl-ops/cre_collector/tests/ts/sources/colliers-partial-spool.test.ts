@@ -167,6 +167,13 @@ test("regular count drift marks unexamined suffix only after settled transport",
         assert.equal(worker.proposedCursor, 3);
         assert.equal(projection.sourceOutcome, "source_error");
         assert.equal(projection.coverage, "unverified");
+        const staged = spawnSync("python3", ["-B", "-c", `import sys; from pathlib import Path
+from cre_checkpoint_refresh import _validate_source_artifact_local
+result = _validate_source_artifact_local(Path(sys.argv[1]), "colliers", sys.argv[3],
+  require_strict_freshness=True, expected_generation_id=sys.argv[2], expected_generation_started_at=sys.argv[3])
+assert result["colliers_partial"] and result["staged_unique"] == 2 and result["rejected_by_ingest"] == 0`,
+          join(captureDir, "worker-artifact"), mode, binding.startedAt], { cwd: process.cwd(), encoding: "utf8" });
+        assert.equal(staged.status, 0, staged.stderr);
       } else {
         assert.match(failed.error, mode === "retry" ? /Retry-After/ : mode === "denial" ? /403/ : /429/);
         if (mode === "retry") {
