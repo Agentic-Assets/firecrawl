@@ -116,6 +116,14 @@ from the standalone `git clone --no-hardlinks` described in its
 [isolated verification recipe](SETUP.md#isolated-verification). Documentation-only
 work needs no environment setup or provider smoke.
 
+Normally run full CPU-heavy suites one carrier at a time while the live guarded
+pipeline is idle. An urgent single carrier may run during a healthy live
+pipeline with explicit one-CPU affinity, lowest practical priority, measured
+host CPU headroom, and immediate suspension of the owned QA process tree on
+sustained pressure. Affinity and low scheduling priority alone do not prevent
+an absolute host-wide CPU guard from stopping the pipeline. Preserve logs and
+treat an interrupted test as incomplete until verified or rerun.
+
 The supervised refresh path is `collect.ts` and the relevant `sources/` adapter
 → artifact validation → source coverage gate and ingest dry run → aggregate
 coverage gate → admitted `cre_ingest.py` write → generation-exact validation
