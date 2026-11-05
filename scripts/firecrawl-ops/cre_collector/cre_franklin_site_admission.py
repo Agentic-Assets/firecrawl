@@ -235,7 +235,8 @@ def run_ingest(args):
     if (len(args.inputs) != 1 or args.mark_missing or _status_activation_enabled(args.activate_status)
             or not args.require_strict_freshness or not args.expected_db_target_sha256
             or not args.checkpoint_ingest_attempt
-            or args.jll_partial_claims or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
+            or args.colliers_partial_claims or args.jll_partial_claims
+            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
             or args.matthews_targeted_claims or args.newmark_page_attempt or args.newmark_page_claims
             or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha):
         raise ValueError("unbound Franklin partial ingest")

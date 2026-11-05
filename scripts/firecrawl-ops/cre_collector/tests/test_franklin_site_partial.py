@@ -280,13 +280,17 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
     claims.chmod(0o600)
     args = SimpleNamespace(inputs=[str(path)], mark_missing=False, activate_status=False,
         require_strict_freshness=True, expected_db_target_sha256="b" * 64,
-        checkpoint_ingest_attempt="c" * 32, jll_partial_claims=None,
+        checkpoint_ingest_attempt="c" * 32, jll_partial_claims=None, colliers_partial_claims=None,
         daum_verified_subset_claims=None, pyramid_verified_subset_claims=None,
         matthews_targeted_claims=None, newmark_page_attempt=None, newmark_page_claims=None,
         checkpoint_collector_git_sha=None, checkpoint_pyramid_code_sha=None, checkpoint_jll_code_sha=None,
         franklin_site_claims=str(claims), keep_artifacts=str(run / "dry"), dry_run=True, env_file=None)
     admission.run_ingest(args)
     assert (run / "dry" / "ingest.sql").is_file()
+    args.colliers_partial_claims = "other-claim"
+    with pytest.raises(ValueError, match="unbound Franklin"):
+        admission.run_ingest(args)
+    args.colliers_partial_claims = None
     args.mark_missing = True
     with pytest.raises(ValueError):
         admission.run_ingest(args)
