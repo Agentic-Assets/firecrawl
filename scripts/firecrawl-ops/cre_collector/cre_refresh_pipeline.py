@@ -1217,6 +1217,12 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "franklin-site-partial-v1":
+                                state["source_results"][source].update(
+                                    buildout_pending=binding.get("buildout_pending"),
+                                    held_observations=binding.get("held_observations"),
+                                    identity_uncertainty=binding.get("identity_uncertainty"),
+                                )
                             if binding.get("schema") == "pyramid-incomplete-v2":
                                 state["source_results"][source].update(
                                     incomplete_count=binding.get("incomplete_count"),

@@ -5,12 +5,17 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_franklin_site_projection import artifact
 
 import cre_checkpoint_refresh as refresh
+import cre_checkpoint_series as series
+import cre_franklin_site_admission as admission
+import cre_ingest as ingest
 import cre_refresh_pipeline as pipeline
+import cre_validate as validation
 from cre_franklin_site_partial import derive, prepare_candidate, validate_derived
 
 
@@ -200,3 +205,113 @@ def test_pipeline_mixed_rejection_retains_original_before_partial_candidate(tmp_
     assert checkpoint["franklin_original"]["buildout_pending"] == 1
     assert (run / checkpoint["franklin_original"]["path"]).read_bytes() == raw
     assert len(calls) == 2
+
+
+def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_path, monkeypatch):
+    raw, _ = mixed()
+    data = json.loads(raw)
+    now = datetime.now(UTC)
+    generation = (now - timedelta(minutes=3)).isoformat()
+    attempt_start = (now - timedelta(minutes=2)).isoformat()
+    started = (now - timedelta(minutes=1)).isoformat()
+    observed = (now - timedelta(seconds=30)).isoformat()
+    finished = now.isoformat()
+    data["runMeta"].update(startedAt=started, finishedAt=finished,
+                           freshness={"generationId": "run-1", "generationStartedAt": generation,
+                                      "requireFreshDetails": True})
+    data["sources"][0]["retainedObservations"][0]["observedAt"] = observed
+    raw = json.dumps(data).encode()
+    run = tmp_path / "run-1"
+    original = run / "rejected" / "franklin-street-attempt-1.json"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(raw)
+    original.chmod(0o600)
+    attempt = {"number": 1, "rc": 80, "started_at": attempt_start, "finished_at": finished,
+               "rejected_artifact": "rejected/franklin-street-attempt-1.json",
+               "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
+    checkpoint = {"attempts": [attempt], "state": "collecting"}
+    manifest = {"run_id": "run-1", "started_at": generation,
+                "collector_git_sha": "a" * 40, "collector_git_dirty": False,
+                "config": {"sources": ["franklin-street"], "transactions": ["sale", "lease"],
+                           "max_items": 0, "additive": True, "mark_missing": False,
+                           "status_activation": False, "pipeline": False},
+                "scope": {"source_keys": ["franklin-street"]},
+                "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
+                "sources": {"franklin-street": checkpoint}}
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    assert refresh.prepare_franklin_partial_candidate(run, manifest, attempt, candidate_only=False)
+    path = run / checkpoint["artifact"]["path"]
+    env = {"PATH": os.environ["PATH"]}
+    monkeypatch.setattr(ingest, "load_db_url", lambda _: ("postgres://fixture", "fixture"))
+    monkeypatch.setattr(ingest, "database_target_fingerprint_from_url", lambda _: {"algorithm": "sha256", "value": "b" * 64})
+    monkeypatch.setattr(ingest, "find_psql", lambda: "psql")
+    monkeypatch.setattr(validation, "_run_psql_script",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"staged":1,"joined":1,"held":[]}\n'))
+    checkpoint["franklin_identity_probe"] = admission.run_identity_probe(path, manifest, env_file=None, process_env=env)
+    def report():
+        return {"generated_for_artifact": str(path),
+                "per_source": {"franklin-street": {"current_active": 1, "verdict": "hold",
+                               "reason": "source pass error: source_incomplete", "mark_missing_safe": False}},
+                "summary": {"mode": "live", "torow_errors": 0, "baseline_updated": False,
+                            "baseline_update_sources": [], "hold_sources": ["franklin-street"],
+                            "mark_missing_safe_sources": [], "mark_missing_safe_brokerages": []}}
+    first = report()
+    binding = admission.admit(path, manifest, first, code_sha="a" * 40, dirty=False, env=env, phase="source")
+    assert binding["buildout_pending"] == 1 and binding["whole_source_coverage"] is False
+    checkpoint["gate"] = {"current_inventory_proof": binding}
+    second = report()
+    assert admission.admit(path, manifest, second, code_sha="a" * 40, dirty=False, env=env, phase="aggregate") == binding
+    envelope = {"manifest": manifest, "source_report": first, "aggregate_report": second,
+                "binding": binding, "attempt_id": "c" * 32}
+    context = admission.ingest_subset_context(path, envelope, code_sha="a" * 40, dirty=False,
+                                               target_sha256="b" * 64, attempt_id="c" * 32, env=env)
+    assert context["sql_binding"]["artifact_sha256"] == checkpoint["artifact"]["sha256"]
+    assert context["sql_binding"]["generation_id"] == "run-1"
+    assert len(context["listings"]) == 1 and context["held"] == []
+    monkeypatch.setattr(validation, "_run_psql_script",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"expected":1,"invalid":[],"matching_jobs":1}\n'))
+    result = admission.run_readback(path, manifest, context, target_sha256="b" * 64, env_file=None, process_env=env)
+    assert result["ok"] is True and result["expected"] == 1 and result["held"] == []
+    claims_dir = run / "claims"
+    claims_dir.mkdir(mode=0o700)
+    claims = claims_dir / "claims.json"
+    claims.write_text(json.dumps(envelope))
+    claims.chmod(0o600)
+    args = SimpleNamespace(inputs=[str(path)], mark_missing=False, activate_status=False,
+        require_strict_freshness=True, expected_db_target_sha256="b" * 64,
+        checkpoint_ingest_attempt="c" * 32, jll_partial_claims=None,
+        daum_verified_subset_claims=None, pyramid_verified_subset_claims=None,
+        matthews_targeted_claims=None, newmark_page_attempt=None, newmark_page_claims=None,
+        checkpoint_collector_git_sha=None, checkpoint_pyramid_code_sha=None, checkpoint_jll_code_sha=None,
+        franklin_site_claims=str(claims), keep_artifacts=str(run / "dry"), dry_run=True, env_file=None)
+    admission.run_ingest(args)
+    assert (run / "dry" / "ingest.sql").is_file()
+    args.mark_missing = True
+    with pytest.raises(ValueError):
+        admission.run_ingest(args)
+    with pytest.raises(ValueError):
+        admission.ingest_subset_context(path, envelope, code_sha="a" * 40, dirty=False,
+                                        target_sha256="0" * 64, attempt_id="c" * 32, env=env)
+    original.write_bytes(raw + b" ")
+    with pytest.raises(ValueError):
+        admission.admit(path, manifest, report(), code_sha="a" * 40, dirty=False, env=env, phase="source")
+
+
+def test_series_recognizes_only_exact_partial_binding():
+    binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1",
+               "whole_source_coverage": False, "artifact_sha256": "1" * 64,
+               "source_artifact_sha256": "2" * 64, "generation_id": "run-1",
+               "collector_git_sha": "a" * 40, "database_target_sha256": "b" * 64,
+               "held_count": 0, "held": [], "emitted_count": 1, "buildout_pending": 1,
+               "held_observations": 0, "identity_uncertainty": {"siteToBuildout": "unresolved"}}
+    child = {"run_id": "run-1", "collector_git_sha": "a" * 40,
+             "preflight": {"database_target": {"value": "b" * 64}},
+             "sources": {"franklin-street": {"artifact": {"franklin_partial": True, "sha256": "1" * 64,
+                                                            "staged_unique": 1},
+                         "franklin_original": {"sha256": "2" * 64},
+                         "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                                  "current_inventory_proof": binding}}}}
+    assert series.franklin_partial_child(child)
+    binding["whole_source_coverage"] = True
+    assert not series.franklin_partial_child(child)

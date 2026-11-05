@@ -2858,14 +2858,22 @@ def jll_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("jll_partial") is True)
 
 
+def franklin_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "franklin-street"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("franklin_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
-            or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source))
+            or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
+            or franklin_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
     if jll_partial_candidate(manifest, source):
         return "jll_partial_claims"
+    if franklin_partial_candidate(manifest, source):
+        return "franklin_partial_claims"
     return "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
 
 
@@ -5347,6 +5355,10 @@ def _admit_current_inventory(
             from cre_jll_partial import admit as admit_jll_partial
             return admit_jll_partial(artifact, manifest, report, current_code_sha=git_sha,
                                      current_git_dirty=git_dirty, phase=phase)
+        if franklin_partial_candidate(manifest, source):
+            from cre_franklin_site_admission import admit as admit_franklin
+            return admit_franklin(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty,
+                                  env=safe_process_env(), phase=phase)
         return current_inventory.admit(
             artifact,
             manifest,
@@ -5394,7 +5406,8 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
-        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
+        if (current_inventory.admission_configuration(manifest["config"], source)
+                or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)):
             if jll_partial_candidate(manifest, source):
                 from cre_jll_partial import run_identity_probe
                 try:
@@ -5403,6 +5416,13 @@ def gate_source(
                         manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("JLL partial identity classification failed") from exc
+            if franklin_partial_candidate(manifest, source):
+                from cre_franklin_site_admission import run_identity_probe
+                try:
+                    checkpoint["franklin_identity_probe"] = run_identity_probe(
+                        artifact, manifest, env_file=env_file, process_env=safe_process_env())
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Franklin partial identity classification failed") from exc
             if source == "pyramid-brokerage":
                 from cre_pyramid_identity_probe import run_probe
                 try:
@@ -5524,6 +5544,7 @@ def subset_ingest_arguments(run_dir, manifest, source):
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
     flag = ("--jll-partial-claims" if jll_partial_candidate(manifest, source)
+            else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
     return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
@@ -5636,7 +5657,8 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
-        if source in {"transwestern", "pyramid-brokerage", "jll"} or poll_hook() is not None:
+        if (source in {"transwestern", "pyramid-brokerage", "jll"}
+                or franklin_partial_candidate(manifest, source) or poll_hook() is not None):
             checkpoint["state"] = "ingest_recovery_required"
             save_manifest(run_dir, manifest)
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
@@ -6023,7 +6045,8 @@ def run_aggregate_gate(
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
     for source, artifact in zip(selected, artifacts):
-        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
+        if (current_inventory.admission_configuration(manifest["config"], source)
+                or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6232,6 +6255,12 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if (franklin_partial_candidate(manifest, source)
+            and not (checkpoint.get("ingest") or {}).get("finished_at")):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "franklin_unsettled_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Franklin ingest requires settled-owner reconciliation")
     guard_reasons = {"pyramid-brokerage": "pyramid_historical_guard_refusal", "transwestern": "transwestern_image_guard_refusal"}
     if source in guard_reasons and (checkpoint.get("ingest_recovery") or {}).get("reason") != guard_reasons[source]:
         # After an interrupted parent, no persisted process-group identity proves
@@ -6302,6 +6331,10 @@ def recover_interrupted_ingest(
             validation["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
             atomic_write_json(output, validation)
             probe_manifest["sources"][source] = dict(checkpoint)
+        if franklin_partial_candidate(manifest, source):
+            validation["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)
+            atomic_write_json(output, validation)
+            probe_manifest["sources"][source] = dict(checkpoint)
         readback = verify_validation_readback(
             run_dir,
             probe_manifest,
@@ -6323,7 +6356,8 @@ def recover_interrupted_ingest(
     )
     recovery["artifact_run_job_match_ok"] = committed_job_exact
     recovery["readback_ok"] = readback["ok"] and committed_job_exact
-    if not recovery["readback_ok"] and jll_partial_candidate(manifest, source):
+    if not recovery["readback_ok"] and (jll_partial_candidate(manifest, source)
+                                            or franklin_partial_candidate(manifest, source)):
         # The ordinary generation report omits deleted parents. Its absence
         # cannot establish that this partial transaction rolled back.
         checkpoint["state"] = "ingest_recovery_required"
@@ -6463,6 +6497,26 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
     return values if len(values) == len(value) and values else None
 
 
+def franklin_partial_readback(run_dir, manifest, env_file):
+    """Revalidate sealed claims and read exact site-card identities and job."""
+    from cre_franklin_site_admission import ingest_subset_context, run_readback
+
+    source = "franklin-street"
+    checkpoint = manifest["sources"][source]
+    arguments = subset_ingest_arguments(run_dir, manifest, source)
+    if len(arguments) < 2:
+        raise GlobalStageError("Franklin partial readback claims are missing")
+    envelope = _load_json(Path(arguments[1]))
+    code_sha, dirty = git_identity()
+    target = manifest_database_target_sha256(manifest)
+    path = run_dir / checkpoint["artifact"]["path"]
+    claims = ingest_subset_context(path, envelope, code_sha=code_sha, dirty=dirty,
+                                   target_sha256=target, attempt_id=checkpoint["subset_ingest_attempt_id"],
+                                   env=safe_process_env())
+    return run_readback(path, envelope["manifest"], claims, target_sha256=target,
+                        env_file=env_file, process_env=safe_process_env())
+
+
 def jll_partial_readback(run_dir, manifest, env_file):
     """Revalidate sealed claims and read exact emitted IDs on the bound target."""
     from cre_jll_partial import ingest_subset_context, run_readback
@@ -6593,6 +6647,24 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if franklin_partial_candidate(manifest, source):
+            observed = validation.get("franklin_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and type(observed.get("expected")) is int
+                  and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "franklin_site_partial",
+                                      "generation_id": binding.get("generation_id"),
+                                      "expected_staged_unique": binding.get("emitted_count"),
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if jll_partial_candidate(manifest, source):
             observed = validation.get("jll_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7136,6 +7208,9 @@ def run_final_validation(
     absolute_quality = verify_absolute_validation_quality(result)
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "franklin-street" in sources) and franklin_partial_candidate(manifest, "franklin-street"):
+        result["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)

@@ -117,7 +117,7 @@ def _binding(staged, held, binding):
     claims = {**binding, "held": held, "staged_sha256": staged_digest}
     claims_digest = hashlib.sha256(json.dumps(claims, sort_keys=True, separators=(",", ":"),
                                              ensure_ascii=False).encode()).hexdigest()
-    key, _ = artifact_run_identity_from_digests([binding["artifact_sha256"]], lane="franklin-site-partial")
+    key, _ = artifact_run_identity_from_digests([binding["artifact_sha256"]])
     job_id = str(uuid.uuid5(_RUN_UUID_NAMESPACE, f"{key}:franklin-street"))
     return {"key": key, "job_id": job_id, "notes": "franklin-site-partial-v1:" + claims_digest}
 
@@ -160,7 +160,7 @@ def identity_probe_sql(listings):
 WITH _franklin_site AS ({_site_query(payload)}),
 held AS ({_held_query()})
 SELECT json_build_object('staged', {len(staged)}, 'joined', (SELECT count(*) FROM _franklin_site),
- 'held', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM held), '[]'::json));
+ 'held', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM held), '[]'::json)) AS result;
 """
 
 
@@ -266,5 +266,5 @@ SELECT json_build_object('expected', (SELECT count(*) FROM expected),
  'matching_jobs', (SELECT count(*) FROM credeals.cre_scrape_jobs j
    JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
    WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
-    AND j.status='partial' AND j.notes={sql_lit(job["notes"])}));
+    AND j.status='partial' AND j.notes={sql_lit(job["notes"])})) AS result;
 """

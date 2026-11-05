@@ -7464,6 +7464,7 @@ def main():
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
@@ -7516,6 +7517,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.franklin_site_claims:
+        try:
+            from cre_franklin_site_admission import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing Franklin site partial ingest: {exc}")
+        return
     if (args.checkpoint_collector_git_sha is not None or args.checkpoint_jll_code_sha is not None) and not args.checkpoint_ingest_attempt:
         ap.error("collector code binding requires a checkpoint ingest attempt")
 
