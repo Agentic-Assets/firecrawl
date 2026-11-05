@@ -239,9 +239,18 @@ DO $$
 BEGIN
  IF (SELECT count(*) FROM _daum_fallback_partition) <> {len(members)}
  OR EXISTS (
-   SELECT 1 FROM _src s WHERE jsonb_path_exists(s.raw_data, '$.**.daumTitleFallback')
+   WITH RECURSIVE daum_payloads AS (
+     SELECT s.brokerage_id, s.external_id, s.raw_data AS payload
+     FROM _src s WHERE s.slug='daum-commercial'
+     UNION ALL
+     SELECT p.brokerage_id, p.external_id, p.payload->k.key
+     FROM daum_payloads p CROSS JOIN (VALUES ('primary'), ('secondary_pass')) AS k(key)
+     WHERE jsonb_typeof(p.payload->k.key) = 'object'
+   )
+   SELECT 1 FROM daum_payloads p
+   WHERE jsonb_typeof(p.payload) = 'object' AND p.payload ? 'daumTitleFallback'
      AND NOT EXISTS (SELECT 1 FROM _daum_fallback_members m
-                     WHERE m.brokerage_id=s.brokerage_id AND m.external_id=s.external_id)
+                     WHERE m.brokerage_id=p.brokerage_id AND m.external_id=p.external_id)
  )
  OR EXISTS (
    SELECT 1 FROM _daum_fallback_members m

@@ -410,6 +410,9 @@ try:
             fallback_claims["binding"]["title_fallback_observations_sha256"] = _sha(fallback_claims["titleFallbackObservations"])
             fallback_claims["binding"]["fallback_partition_sha256"] = _sha(partition)
             incoming = [candidate] + [row(index) for index in range(1, 100)]
+            # Provider data may use the same word under a non-authoritative
+            # nested key; it is not a DAUM fallback marker.
+            incoming[1]["raw_data"]["providerNotes"] = {"daumTitleFallback": "ordinary source value"}
             result = sql(generated(incoming, fallback_claims), db, check=False)
             assert result.returncode == 0, result.stderr
             job = sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
@@ -604,16 +607,29 @@ try:
                 held_guard = transaction_guard_sql(members_probe, held_partition, filter_src=True)
                 stage = """
 CREATE TEMP TABLE _src ON COMMIT DROP AS
-SELECT brokerage_id, external_id, source_url, raw_data FROM credeals.cre_listings
+SELECT brokerage_id, external_id, source_url, raw_data, 'daum-commercial'::text AS slug FROM credeals.cre_listings
  WHERE external_id='property/Synthetic-0'
 UNION ALL SELECT id, 'property/Synthetic-new',
   'https://daumcommercial.com/property/Synthetic-new/',
-  jsonb_build_object('sourceKey','daum-commercial','daumPostId','59999')
- FROM credeals.cre_brokerages WHERE slug='daum-commercial';
+  jsonb_build_object('sourceKey','daum-commercial','daumPostId','59999'), 'daum-commercial'
+ FROM credeals.cre_brokerages WHERE slug='daum-commercial'
+UNION ALL SELECT id, 'foreign', 'https://example.invalid/foreign',
+  jsonb_build_object('sourceKey','savills','daumTitleFallback','unrelated'), 'savills'
+ FROM credeals.cre_brokerages WHERE slug='savills';
 """
                 held_result = sql("BEGIN;" + stage + held_guard
                                   + "SELECT external_id FROM _src ORDER BY external_id; ROLLBACK;", db)
-                assert held_result.stdout.strip() == "property/Synthetic-new"
+                assert held_result.stdout.strip().splitlines() == ["foreign", "property/Synthetic-new"]
+                rogue = """
+INSERT INTO _src
+SELECT id, 'property/rogue', 'https://daumcommercial.com/property/rogue/',
+ jsonb_build_object('sourceKey','daum-commercial','primary',
+   jsonb_build_object('secondary_pass',jsonb_build_object('daumTitleFallback','unbound'))),
+ 'daum-commercial'
+FROM credeals.cre_brokerages WHERE slug='daum-commercial';
+"""
+                refused = sql("BEGIN;" + stage + rogue + held_guard + "ROLLBACK;", db, check=False)
+                assert refused.returncode and "DAUM fallback staging differs" in refused.stderr
                 sql("UPDATE credeals.cre_listings SET status='active' WHERE external_id='property/Synthetic-0';", db)
                 checks.append("fallback_held_filtered_valid_peer_retained")
                 conflict = probe("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}'," + "'\"50000\"') WHERE external_id='property/Synthetic-1';")
