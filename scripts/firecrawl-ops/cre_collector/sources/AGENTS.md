@@ -173,6 +173,24 @@ This rule does not admit first-seen writes or
 authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With
+an archive/sitemap mismatch, a current/closed overlap, or drift between complete
+passes, the source fails and carries every completed pass's decoded response text,
+parsed archive rows, sitemap URLs, discrepancy sets, observation clocks and
+response-text hashes as private unqualified evidence.
+If a pass fails normally before completion, each successfully fetched decoded
+response and its endpoint, observation clock and text hash are retained. A prior
+completed pass is retained too; the failed response itself is not captured.
+Terminal or unsettled evidence errors keep their original classification.
+Each response retains the
+existing 32 MiB transport limit; two passes can contain six such responses and
+JSON output can exceed 192 MiB after decoding and serialization. Decoded text is not original response bytes;
+the separate source-evidence publication path has its own 16 MiB limit, so a
+private collector artifact is not proof of publication through that path.
+detail records are not collected and no listing or complete coverage is admitted.
+Without `--out`, the collector saves the full artifact privately and reports its
+path. It emits an evidence-only stdout projection when no other private source
+evidence prevents sanitization; otherwise it refuses stdout.
+With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;
 Essex's explicit source-bound current-inventory admission requires two matching
 complete current/closed/sitemap reconciliations and every fresh current detail.

@@ -503,6 +503,30 @@ async function main() {
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
+  } else if (!OUT_PATH && sources.some(source => source.sourceKey === "essex-realty" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
+        value?.schema === "essex-inventory-mismatch-v1"))) {
+    const path = writeTerminalCollectorArtifact(undefined, json);
+    console.error(`Essex private evidence artifact: ${path}`);
+    const safeProjection = !partialCaptureAttached &&
+      !sources.some(source => source.sourceKey !== "essex-realty" &&
+        Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+      !listings.some(listing => listing.srsRawRetention || listing.buildoutRawRetention ||
+        listing.kidderRawRetention || listing.newmarkNimRawRetention);
+    if (safeProjection) {
+      const projection = { ...out,
+        runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "essex_private_sidecar_projection" },
+        sources: sources.map(source => {
+          if (source.sourceKey !== "essex-realty") return source;
+          const { retainedObservations, ...entry } = source;
+          return entry;
+        }),
+      };
+      writeCollectorArtifact(undefined, JSON.stringify(projection), false);
+    } else {
+      console.error("Other private evidence prevents a stdout projection; use the private artifact.");
+      process.exitCode = 1;
+    }
   } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
   else {
     try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
