@@ -55,6 +55,9 @@ INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical
 SELECT id,'101','https://www.marcusmillichap.com/properties/101/source-name',
  'https://www.marcusmillichap.com/properties/101/source-name','active','Existing title',
  '{"sourceKey":"marcus-millichap"}'::jsonb FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
+INSERT INTO credeals.cre_source_index (brokerage_id,external_id,source_key,url)
+SELECT id,'101',NULL,'https://www.marcusmillichap.com/properties/101/older-slug'
+FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
 INSERT INTO credeals.cre_listing_images (listing_id,url)
 SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE external_id='101';
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
@@ -79,6 +82,7 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='102' AND status IS NULL AND scraped_at IS NULL AND country IS NULL") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='101' AND title='Existing title' AND status='active'") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listing_images") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='101' AND source_key IS NULL") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='103'") == "0"
         assert sql(write, check=False).returncode != 0
         assert sql("BEGIN; UPDATE credeals.cre_listings SET status='active' WHERE external_id='102'; " + readback + "; ROLLBACK;") == "1|3|1"

@@ -67,7 +67,7 @@ conflicts AS (
        AND own.raw_data#>>'{{marcusInventoryObservations,sourceKey}}'='marcus-millichap'
        AND own.raw_data#>>'{{marcusInventoryObservations,externalId}}'=s.r->>'external_id'
        AND jsonb_typeof(own.raw_data#>'{{marcusInventoryObservations,entries}}')='array',false))))
- OR (si.id IS NOT NULL AND (si.source_key IS DISTINCT FROM 'marcus-millichap'
+ OR (si.id IS NOT NULL AND ((NULLIF(btrim(si.source_key),'') IS NOT NULL AND btrim(si.source_key) <> 'marcus-millichap')
        OR (si.url IS NOT NULL AND {_url_deal_id('si.url')} IS DISTINCT FROM s.r->>'external_id')))
  OR EXISTS (SELECT 1 FROM listing_url_keys other
    WHERE (own.id IS NULL OR other.id<>own.id) AND other.deal_id=s.r->>'external_id')
