@@ -152,3 +152,53 @@ def test_native_byte_change_is_rejected_even_when_decoded_text_matches():
     item["nativeBase64"] = base64.b64encode(b"\xef\xbb\xbf" + item["decodedDetail"].encode()).decode()
     with pytest.raises(ValueError, match="native binding"):
         verify_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+
+
+def test_native_history_preserves_distinct_bytes_and_deduplicates_repeats():
+    from cre_colliers_partial import NATIVE_HISTORY_KEY, merge_native_observation
+
+    first = sample()
+    original = {"sourceKey": "colliers", "untouched": {"other": "prior"}}
+    history = merge_native_observation(original, first, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    assert original == {"sourceKey": "colliers", "untouched": {"other": "prior"}}
+    later = copy.deepcopy(first)
+    later["source"]["detailObservedAt"] = "2026-11-04T16:02:00Z"
+    later["listing"]["detailObservedAt"] = later["source"]["detailObservedAt"]
+    later["listing"]["colliersPartialEvidence"] = {"schema": "colliers-partial-detail-v1", **later["source"]}
+    repeated = merge_native_observation({**original, NATIVE_HISTORY_KEY: history}, later, "gen", 1,
+                                        "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    assert len(repeated["entries"]) == 1
+    assert repeated["entries"][0]["lastObservedAt"] == "2026-11-04T16:02:00Z"
+    changed = copy.deepcopy(later)
+    changed["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "42", "Extra": "new"}})
+    changed["nativeBase64"] = base64.b64encode(changed["decodedDetail"].encode()).decode()
+    changed["source"]["nativeSha256"] = hashlib.sha256(changed["decodedDetail"].encode()).hexdigest()
+    changed["source"]["decodedDetailSha256"] = changed["source"]["nativeSha256"]
+    changed["listing"]["colliersPartialEvidence"] = {"schema": "colliers-partial-detail-v1", **changed["source"]}
+    with pytest.raises(ValueError, match="ambiguous ordering"):
+        merge_native_observation({**original, NATIVE_HISTORY_KEY: repeated}, changed, "gen", 1,
+                                 "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    changed["source"]["detailObservedAt"] = "2026-11-04T16:03:00Z"
+    changed["listing"]["detailObservedAt"] = changed["source"]["detailObservedAt"]
+    changed["listing"]["colliersPartialEvidence"] = {"schema": "colliers-partial-detail-v1", **changed["source"]}
+    combined = merge_native_observation({**original, NATIVE_HISTORY_KEY: repeated}, changed, "gen", 1,
+                                        "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    assert len(combined["entries"]) == 2
+    assert combined["entries"][0]["nativeBase64"] == first["nativeBase64"]
+    assert combined["entries"][1]["nativeBase64"] == changed["nativeBase64"]
+
+
+def test_native_history_holds_unknown_or_overflow_without_losing_prior(monkeypatch):
+    import cre_colliers_partial as partial
+
+    first = sample()
+    history = partial.merge_native_observation({}, first, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    unknown = copy.deepcopy(history)
+    del unknown["entries"][0]["source"]["mapSha256"]
+    with pytest.raises(partial.PartialHistoryHold, match="unknown"):
+        partial.merge_native_observation({partial.NATIVE_HISTORY_KEY: unknown}, first, "gen", 1,
+                                         "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    monkeypatch.setattr(partial, "MAX_NATIVE_HISTORY_BYTES", 100)
+    with pytest.raises(partial.PartialHistoryHold, match="bounded"):
+        partial.merge_native_observation({}, first, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")
+    assert len(history["entries"]) == 1

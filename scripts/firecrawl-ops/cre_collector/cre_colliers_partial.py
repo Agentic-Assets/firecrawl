@@ -193,3 +193,94 @@ def stage_detail_record(item, generation, attempt, started_at, finished_at, arti
         raise ValueError("partial staged identity differs")
     return {**{key: row.get(key) for key in ("slug", "external_id", "source_url", "canonical_url", "transaction_type")},
             "inventory_at": item["source"]["inventoryObservedAt"], "detail_at": item["source"]["detailObservedAt"]}
+
+
+# Bound the additional per-listing member, not pre-existing parent raw_data.
+# Overflow is a held record; the sealed private evidence remains available.
+MAX_NATIVE_HISTORY_BYTES = 4 * 1024 * 1024
+NATIVE_HISTORY_KEY = "colliersNativeObservations"
+
+
+class PartialHistoryHold(ValueError):
+    """A prior or incoming source observation cannot be preserved safely."""
+
+
+def merge_native_observation(prior_raw, item, generation, attempt, started_at, finished_at):
+    """Return a bounded member preserving each distinct source-native body.
+
+    The caller must authenticate source/page bytes, bind the exact DB preimage,
+    and preserve this reserved member across a later full ingest.
+    """
+    verified = verify_detail_record(item, generation, attempt, started_at, finished_at)
+    external_id = verified["external_id"]
+    if not isinstance(prior_raw, dict):
+        raise PartialHistoryHold("prior raw_data is not an object")
+    previous = prior_raw.get(NATIVE_HISTORY_KEY)
+    if previous is None and NATIVE_HISTORY_KEY in prior_raw:
+        raise PartialHistoryHold("reserved native history is unknown")
+    if previous is None:
+        previous = {"schema": "colliers-native-history/v1", "sourceKey": "colliers",
+                    "externalId": external_id, "entries": []}
+    if (not isinstance(previous, dict) or set(previous) != {"schema", "sourceKey", "externalId", "entries"}
+            or previous["schema"] != "colliers-native-history/v1" or previous["sourceKey"] != "colliers"
+            or previous["externalId"] != external_id or not isinstance(previous["entries"], list)):
+        raise PartialHistoryHold("reserved native history is unknown")
+    # Copy by value: never mutate the caller's DB snapshot.
+    serialized_previous = json.dumps(previous, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized_previous.encode("utf-8")) > MAX_NATIVE_HISTORY_BYTES:
+        raise PartialHistoryHold("native history exceeds bounded storage")
+    history = json.loads(serialized_previous)
+    entries, seen = history["entries"], set()
+    for entry in entries:
+        if (not isinstance(entry, dict) or set(entry) != {"source", "nativeBase64", "lastObservedAt"}
+                or not isinstance(entry["source"], dict)):
+            raise PartialHistoryHold("prior native observation is unknown")
+        source = entry["source"]
+        expected_source = {"generation", "attempt", "start", "page", "pageSize", "offset",
+                           "inventoryObservedAt", "detailObservedAt", "mapProjectId", "listSha256",
+                           "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256"}
+        hashes = ("listSha256", "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256")
+        positions = ("start", "page", "pageSize", "offset")
+        if (set(source) != expected_source or source["mapProjectId"] != external_id
+                or any(not isinstance(source[key], str) or not _HASH.fullmatch(source[key]) for key in hashes)
+                or source["nativeSha256"] in seen or not isinstance(source["generation"], str)
+                or not source["generation"] or type(source["attempt"]) is not int or source["attempt"] < 1
+                or any(type(source[key]) is not int or source[key] < (0 if key == "offset" else 1) for key in positions)
+                or source["offset"] >= source["pageSize"]):
+            raise PartialHistoryHold("prior native observation is unknown")
+        try:
+            encoded = entry["nativeBase64"]
+            if not isinstance(encoded, str) or len(encoded) > ((MAX_NATIVE_HISTORY_BYTES + 2) // 3) * 4:
+                raise ValueError("invalid native encoding")
+            native = base64.b64decode(encoded, validate=True)
+            decoded = native.decode("utf-8-sig")
+            document = json.loads(decoded)
+            summary = document.get("ProjectSummary") if isinstance(document, dict) else None
+            visibility = summary.get("AttributeVisibility") if isinstance(summary, dict) else None
+            observed = visibility.get("ProjectId") if isinstance(visibility, dict) else None
+            if observed is None and isinstance(summary, dict):
+                observed = summary.get("ProjectId")
+            if (base64.b64encode(native).decode("ascii") != encoded
+                    or hashlib.sha256(native).hexdigest() != source["nativeSha256"]
+                    or hashlib.sha256(decoded.encode("utf-8")).hexdigest() != source["decodedDetailSha256"]
+                    or observed is None or isinstance(observed, bool) or str(observed).strip() != external_id
+                    or _time(source["inventoryObservedAt"]) > _time(source["detailObservedAt"])
+                    or _time(entry["lastObservedAt"]) < _time(source["detailObservedAt"])):
+                raise ValueError("invalid native binding")
+        except (TypeError, ValueError, UnicodeDecodeError, binascii.Error, RecursionError) as exc:
+            raise PartialHistoryHold("prior native observation is unknown") from exc
+        seen.add(source["nativeSha256"])
+    incoming_at = _time(item["source"]["detailObservedAt"])
+    if any(incoming_at < _time(entry["lastObservedAt"]) for entry in entries):
+        raise PartialHistoryHold("incoming native observation is stale")
+    existing = next((entry for entry in entries if entry["source"]["nativeSha256"] == item["source"]["nativeSha256"]), None)
+    if existing is None and any(incoming_at <= _time(entry["lastObservedAt"]) for entry in entries):
+        raise PartialHistoryHold("incoming native observation has ambiguous ordering")
+    if existing is None:
+        entries.append({"source": item["source"], "nativeBase64": item["nativeBase64"],
+                        "lastObservedAt": item["source"]["detailObservedAt"]})
+    elif incoming_at > _time(existing["lastObservedAt"]):
+        existing["lastObservedAt"] = item["source"]["detailObservedAt"]
+    if len(json.dumps(history, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_NATIVE_HISTORY_BYTES:
+        raise PartialHistoryHold("native history exceeds bounded storage")
+    return history
