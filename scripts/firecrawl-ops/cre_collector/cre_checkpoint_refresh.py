@@ -2863,6 +2863,11 @@ def jll_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("jll_partial") is True)
 
 
+def franklin_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "franklin-street"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("franklin_partial") is True)
+
+
 def colliers_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (source == "colliers"
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("colliers_partial") is True)
@@ -2876,7 +2881,8 @@ def lyon_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
-            or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source))
+            or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
+            or lyon_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
@@ -2886,6 +2892,8 @@ def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
         return "colliers_partial_claims"
     if jll_partial_candidate(manifest, source):
         return "jll_partial_claims"
+    if franklin_partial_candidate(manifest, source):
+        return "franklin_partial_claims"
     return "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
 
 
@@ -2991,6 +2999,29 @@ def _validate_source_artifact_local(
                 "strict_freshness": False, "property_detail_freshness": False, "lyon_partial": True,
                 "freshness_generation_id": source["generation"], "freshness_generation_started_at": generation_start.isoformat(),
                 "sha256": artifact_sha256, "bytes": artifact_bytes}
+    meta = data.get("runMeta") if isinstance(data, dict) else None
+    if isinstance(meta, dict) and meta.get("franklinSitePartial") is not None:
+        if (expected_source != "franklin-street" or not require_strict_freshness
+                or tuple(expected_transactions) != TRANSACTIONS
+                or not expected_generation_id or expected_generation_started_at is None):
+            raise ArtifactValidationError("Franklin partial source scope invalid")
+        try:
+            from cre_franklin_site_partial import validate_derived
+            members = validate_derived(data, expected_generation_id, expected_generation_started_at,
+                                       attempt_started_at, now=now, max_age_hours=max_observation_age_hours)
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["staged_unique"] != len(members):
+                raise ValueError("Franklin partial staged identity differs")
+            artifact_sha256 = sha256_file(path)
+            artifact_bytes = path.stat().st_size
+            return {**stats, "started_at": meta["startedAt"], "finished_at": meta["finishedAt"],
+                    "max_observation_age_hours": max_observation_age_hours,
+                    "strict_freshness": False, "property_detail_freshness": False,
+                    "franklin_partial": True, "freshness_generation_id": expected_generation_id,
+                    "freshness_generation_started_at": expected_generation_started_at,
+                    "sha256": artifact_sha256, "bytes": artifact_bytes}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError("Franklin partial structural validation refused") from exc
     if isinstance(data, dict) and data.get("schema") == "colliers-partial-window/v1":
         # This validates structure and freshness only. The shared subset gate
         # separately authenticates the original source, worker, target and DB
@@ -4176,6 +4207,9 @@ def _finalize_cohort_collection(
         )
         seal_source_evidence(run_dir, manifest, item.source, item.attempt,
                              run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
+        if (item.source == "franklin-street" and rc == COHORT_SETTLED_FAILURE_EXIT
+                and prepare_franklin_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only)):
+            return True
         checkpoint["state"] = "collect_failed"
         terminal = None
         if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
@@ -4262,6 +4296,9 @@ def _finalize_cohort_collection(
         ) = archive_rejected_with_evidence(
             item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
+        if item.source == "franklin-street" and prepare_franklin_partial_candidate(
+                run_dir, manifest, item.attempt, candidate_only=candidate_only):
+            return True
         checkpoint["state"] = "artifact_rejected"
         save_manifest(run_dir, manifest)
         return False
@@ -4783,6 +4820,50 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         raise
 
 
+def prepare_franklin_partial_candidate(run_dir, manifest, attempt, *, candidate_only):
+    """Publish preliminary Franklin cards; later gates still require exact claims."""
+    relative = attempt.get("rejected_artifact")
+    digest = attempt.get("rejected_artifact_sha256")
+    if not relative or not digest:
+        return None
+    from cre_franklin_site_partial import prepare_candidate
+
+    try:
+        info = prepare_candidate(run_dir, manifest, attempt, relative, digest,
+                                 safe_process_env(), git_identity=git_identity)
+        path = run_dir / info["path"]
+        stats = validate_source_artifact(
+            path, "franklin-street", attempt["started_at"], require_strict_freshness=True,
+            expected_generation_id=manifest["run_id"], expected_generation_started_at=manifest["started_at"],
+            expected_transactions=tuple(manifest["config"]["transactions"]),
+        )
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+        if _cleanup_unknown_in_chain(exc):
+            raise GlobalStageError("Franklin candidate worker settlement unknown") from exc
+        return None
+    checkpoint = manifest["sources"]["franklin-street"]
+    checkpoint["franklin_original"] = {
+        "path": relative, "sha256": digest, "attempt_number": attempt["number"],
+        "buildout_pending": info["buildout_pending"], "held_observations": info["held_observations"],
+    }
+    if candidate_only:
+        identity = path.stat()
+        checkpoint["candidate"] = {
+            "path": info["path"], "attempt_started_at": attempt["started_at"],
+            "attempt_number": attempt["number"],
+            "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                              identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size,
+        }
+        checkpoint["state"] = "candidate"
+    else:
+        checkpoint["artifact"] = {**stats, "path": info["path"],
+                                   "attempt_started_at": attempt["started_at"]}
+        checkpoint["state"] = "validated"
+    save_manifest(run_dir, manifest)
+    return path, stats
+
+
 def save_foreground_evidence(run_dir: Path, manifest: dict) -> None:
     """Persist work, then honor a sticky watchdog trip before more foreground I/O.
 
@@ -5223,6 +5304,10 @@ def collect_source(
             seal_source_evidence(run_dir, manifest, source, attempt,
                                  run_dir / attempt["rejected_artifact"] if attempt["rejected_artifact"] else tmp_artifact)
             pump_source_evidence(run_dir, manifest)
+            if source == "franklin-street" and rc == 1:
+                partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             checkpoint["state"] = "collect_failed"
             terminal = None
             if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
@@ -5283,6 +5368,10 @@ def collect_source(
             ) = archive_rejected_with_evidence(
                 tmp_artifact, run_dir, manifest, source, attempt
             )
+            if source == "franklin-street":
+                partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             checkpoint["state"] = "artifact_rejected"
             save_manifest(run_dir, manifest)
             # The completed artifact is rejected, not a retryable process exit.
@@ -5375,6 +5464,7 @@ def _admit_current_inventory(
             artifact,
             source,
             info.get("attempt_started_at") or info["started_at"],
+            require_strict_freshness=franklin_partial_candidate(manifest, source),
             expected_generation_id=manifest["run_id"],
             expected_generation_started_at=manifest["started_at"],
             expected_transactions=TRANSACTIONS,
@@ -5396,6 +5486,10 @@ def _admit_current_inventory(
             from cre_jll_partial import admit as admit_jll_partial
             return admit_jll_partial(artifact, manifest, report, current_code_sha=git_sha,
                                      current_git_dirty=git_dirty, phase=phase)
+        if franklin_partial_candidate(manifest, source):
+            from cre_franklin_site_admission import admit as admit_franklin
+            return admit_franklin(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty,
+                                  env=safe_process_env(), phase=phase)
         return current_inventory.admit(
             artifact,
             manifest,
@@ -5444,8 +5538,8 @@ def gate_source(
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
         if (current_inventory.admission_configuration(manifest["config"], source)
-                or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-                or lyon_partial_candidate(manifest, source)):
+                or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
             if lyon_partial_candidate(manifest, source):
                 from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
                 try:
@@ -5468,6 +5562,13 @@ def gate_source(
                         manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("JLL partial identity classification failed") from exc
+            if franklin_partial_candidate(manifest, source):
+                from cre_franklin_site_admission import run_identity_probe
+                try:
+                    checkpoint["franklin_identity_probe"] = run_identity_probe(
+                        artifact, manifest, env_file=env_file, process_env=safe_process_env())
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Franklin partial identity classification failed") from exc
             if source == "pyramid-brokerage":
                 from cre_pyramid_identity_probe import run_probe
                 try:
@@ -5591,6 +5692,7 @@ def subset_ingest_arguments(run_dir, manifest, source):
     flag = ("--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
             else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
+            else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
     return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
@@ -5703,7 +5805,8 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
-        if source in {"transwestern", "pyramid-brokerage", "jll"} or poll_hook() is not None:
+        if (source in {"transwestern", "pyramid-brokerage", "jll"}
+                or franklin_partial_candidate(manifest, source) or poll_hook() is not None):
             checkpoint["state"] = "ingest_recovery_required"
             save_manifest(run_dir, manifest)
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
@@ -6091,8 +6194,8 @@ def run_aggregate_gate(
     result = _load_json(output)
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
-                or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-                or lyon_partial_candidate(manifest, source)):
+                or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6306,6 +6409,12 @@ def recover_interrupted_ingest(
         checkpoint["ingest_recovery"] = {"reason": "interrupted_lyon_partial_ingest", "readback_ok": False}
         save_manifest(run_dir, manifest)
         raise GlobalStageError("interrupted Lyon partial ingest requires exact readback")
+    if (franklin_partial_candidate(manifest, source)
+            and not (checkpoint.get("ingest") or {}).get("finished_at")):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "franklin_unsettled_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Franklin ingest requires settled-owner reconciliation")
     if colliers_partial_candidate(manifest, source):
         # A generic validation report does not prove the native partial history
         # or cursor outcome. Never replay a potentially committed write.
@@ -6383,6 +6492,10 @@ def recover_interrupted_ingest(
             validation["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
             atomic_write_json(output, validation)
             probe_manifest["sources"][source] = dict(checkpoint)
+        if franklin_partial_candidate(manifest, source):
+            validation["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)
+            atomic_write_json(output, validation)
+            probe_manifest["sources"][source] = dict(checkpoint)
         readback = verify_validation_readback(
             run_dir,
             probe_manifest,
@@ -6404,13 +6517,14 @@ def recover_interrupted_ingest(
     )
     recovery["artifact_run_job_match_ok"] = committed_job_exact
     recovery["readback_ok"] = readback["ok"] and committed_job_exact
-    if not recovery["readback_ok"] and jll_partial_candidate(manifest, source):
+    if not recovery["readback_ok"] and (jll_partial_candidate(manifest, source)
+                                            or franklin_partial_candidate(manifest, source)):
         # The ordinary generation report omits deleted parents. Its absence
         # cannot establish that this partial transaction rolled back.
         checkpoint["state"] = "ingest_recovery_required"
         save_manifest(run_dir, manifest)
         raise GlobalStageError(
-            "JLL partial ingest outcome is not exact; manual reconciliation is required before replay"
+            f"{source} partial ingest outcome is not exact; manual reconciliation is required before replay"
         )
     if not recovery["readback_ok"]:
         generation_id, _generation_started = _generation_expectation(
@@ -6542,6 +6656,26 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
         return None
     values = {item for item in value if isinstance(item, str) and item}
     return values if len(values) == len(value) and values else None
+
+
+def franklin_partial_readback(run_dir, manifest, env_file):
+    """Revalidate sealed claims and read exact site-card identities and job."""
+    from cre_franklin_site_admission import ingest_subset_context, run_readback
+
+    source = "franklin-street"
+    checkpoint = manifest["sources"][source]
+    arguments = subset_ingest_arguments(run_dir, manifest, source)
+    if len(arguments) < 2:
+        raise GlobalStageError("Franklin partial readback claims are missing")
+    envelope = _load_json(Path(arguments[1]))
+    code_sha, dirty = git_identity()
+    target = manifest_database_target_sha256(manifest)
+    path = run_dir / checkpoint["artifact"]["path"]
+    claims = ingest_subset_context(path, envelope, code_sha=code_sha, dirty=dirty,
+                                   target_sha256=target, attempt_id=checkpoint["subset_ingest_attempt_id"],
+                                   env=safe_process_env())
+    return run_readback(path, envelope["manifest"], claims, target_sha256=target,
+                        env_file=env_file, process_env=safe_process_env())
 
 
 def jll_partial_readback(run_dir, manifest, env_file):
@@ -6722,6 +6856,24 @@ def verify_validation_readback(
                   and observed.get("held") == binding.get("held")
                   and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count"))
             checkpoint["readback"] = {"ok": ok, "kind": "lyon_partial_search",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
+        if franklin_partial_candidate(manifest, source):
+            observed = validation.get("franklin_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and type(observed.get("expected")) is int
+                  and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "franklin_site_partial",
+                                      "generation_id": binding.get("generation_id"),
+                                      "expected_staged_unique": binding.get("emitted_count"),
                                       "whole_source_coverage": False, "observation": observed}
             if not ok:
                 failures.append(source)
@@ -7290,6 +7442,9 @@ def run_final_validation(
         atomic_write_json(output, result)
     if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "franklin-street" in sources) and franklin_partial_candidate(manifest, "franklin-street"):
+        result["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     if (sources is None or "colliers" in sources) and colliers_partial_candidate(manifest, "colliers"):
         result["colliers_partial_readback"] = colliers_partial_readback(run_dir, manifest, env_file)

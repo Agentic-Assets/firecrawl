@@ -308,6 +308,34 @@ def jll_partial_child(child: Mapping[str, Any]) -> bool:
         return False
 
 
+def franklin_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only a target-bound Franklin partial with unresolved coverage."""
+    try:
+        source = child["sources"]["franklin-street"]
+        artifact, gate = source["artifact"], source["gate"]
+        binding = gate["current_inventory_proof"]
+        return (artifact.get("franklin_partial") is True
+                and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False
+                and binding.get("schema") == "franklin-site-partial-v1"
+                and binding.get("scope") == "franklin_site_partial_v1"
+                and binding.get("whole_source_coverage") is False
+                and binding.get("artifact_sha256") == artifact.get("sha256")
+                and binding.get("source_artifact_sha256") == source["franklin_original"]["sha256"]
+                and binding.get("generation_id") == child.get("run_id")
+                and binding.get("collector_git_sha") == child.get("collector_git_sha")
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
+                and type(binding.get("held_count")) is int and binding["held_count"] >= 0
+                and isinstance(binding.get("held"), list) and len(binding["held"]) == binding["held_count"]
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 0
+                and type(binding.get("buildout_pending")) is int and binding["buildout_pending"] >= 0
+                and type(binding.get("held_observations")) is int and binding["held_observations"] >= 0
+                and binding.get("identity_uncertainty", {}).get("siteToBuildout") == "unresolved"
+                and artifact.get("staged_unique") == binding["emitted_count"] + binding["held_count"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def colliers_partial_child(child: Mapping[str, Any]) -> bool:
     """Recognize a source-bound partial window with settled cursor custody."""
     try:
@@ -1250,6 +1278,12 @@ def _child_succeeded(
             and aggregate.get("baseline_advisory_holds") == ["savills"]
             and aggregate.get("mark_missing_safe_brokerages") == []
         )
+    if franklin_partial_child(child_manifest):
+        scope = child_manifest.get("scope")
+        return (child_manifest.get("status") == "qualified_partial_subset"
+                and isinstance(scope, Mapping) and scope.get("kind") == "collector_registry_verified_subset"
+                and scope.get("whole_source_coverage") is False
+                and _exact_json_equal(child_manifest.get("config"), _expected_child_config("franklin-street", config)))
     if jll_partial_child(child_manifest):
         scope = child_manifest.get("scope")
         return (child_manifest.get("status") == "qualified_partial_subset"
@@ -1309,7 +1343,7 @@ def _reconciled_state(
         return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) else "complete"
+        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -2005,7 +2039,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -2351,11 +2385,14 @@ def pipeline_source_qualified(
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
             pyramid_partial = key == "pyramid-brokerage" and pyramid_partial_child(child)
             jll_partial = key == "jll-investor" and jll_partial_child(child)
+            franklin_partial = key == "franklin-street" and franklin_partial_child(child)
             colliers_partial = key == "colliers" and colliers_partial_child(child)
             lyon_partial = key == "lyon-stahl" and lyon_partial_child(child)
             if ((checkpoint.get("artifact") or {}).get("lyon_partial") is True
                     or binding.get("schema") == "lyon-search-partial-v1"
                     or binding.get("scope") == "lyon_partial_search_v1") and not lyon_partial:
+                return False
+            if key == "franklin-street" and (checkpoint.get("artifact") or {}).get("franklin_partial") is True and not franklin_partial:
                 return False
             if ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
                     or binding.get("schema") == "colliers-partial-window-v1"
@@ -2368,14 +2405,17 @@ def pipeline_source_qualified(
                          or binding.get("scope") == "pyramid_incomplete_v2")
                     and not pyramid_partial):
                 return False
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or colliers_partial or lyon_partial:
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial or lyon_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
                     or (key == "daum-commercial" and child.get("scope", {}).get("kind") != "collector_registry_verified_subset")):
                     return False
-                if (jll_partial or colliers_partial or lyon_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
+                if (jll_partial or franklin_partial or colliers_partial or lyon_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
+                    return False
+                if franklin_partial and any(not _exact_json_equal(proof.get(name), binding.get(name))
+                                            for name in ("buildout_pending", "held_observations", "identity_uncertainty")):
                     return False
                 if key == "pyramid-brokerage":
                     binding = checkpoint["gate"]["current_inventory_proof"]
@@ -2612,7 +2652,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -2968,9 +3008,16 @@ def run_series(
                 save_manifest(series_dir, manifest)
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) else "complete"
+                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) else "complete"
                 if pyramid_partial_child(child_manifest):
                     checkpoint["subset_counts"] = pyramid_subset_counts(child_manifest)
+                if franklin_partial_child(child_manifest):
+                    binding = child_manifest["sources"]["franklin-street"]["gate"]["current_inventory_proof"]
+                    checkpoint["partial_counts"] = {key: binding[key] for key in
+                        ("emitted_count", "held_count", "buildout_pending", "held_observations", "identity_uncertainty")}
+                    checkpoint["partial_counts"]["visibility_limitation"] = (
+                        "site-card rows without explicit ACTIVE status are excluded from active views"
+                    )
                 save_manifest(series_dir, manifest)
                 break
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:
