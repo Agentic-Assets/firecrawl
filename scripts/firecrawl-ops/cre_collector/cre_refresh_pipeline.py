@@ -769,9 +769,8 @@ def run_database_unit(
                 f"sealed artifact changed or expired: {source}"
             )
         # Repeat exact source/aggregate proof immediately before each write.
-        if refresh.current_inventory.admission_configuration(
-            manifest["config"], source
-        ):
+        if (refresh.current_inventory.admission_configuration(manifest["config"], source)
+                or refresh.colliers_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -795,6 +794,8 @@ def run_database_unit(
         evidence_dir=evidence,
         before_path=before,
     )
+    if "colliers" in sources and refresh.colliers_partial_candidate(manifest, "colliers"):
+        settle_colliers_partial_cursor(run_dir, manifest)
     unit["validation"] = dict(validation)
     unit["validation_path"] = validation["path"]
     unit["validation_sha256"] = refresh.sha256_file(run_dir / validation["path"])
@@ -805,6 +806,46 @@ def run_database_unit(
         "target": refresh.manifest_database_target_sha256(manifest),
         "run_id": manifest["run_id"],
     }
+
+
+def settle_colliers_partial_cursor(run_dir: Path, manifest: dict) -> None:
+    """Publish an already verified partial position under the current owner."""
+    import cre_checkpoint_refresh as refresh
+    from cre_partial_cursor import advance_cursor
+
+    checkpoint = manifest["sources"]["colliers"]
+    binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+    readback = checkpoint.get("readback") or {}
+    proof = readback.get("observation")
+    if (readback.get("ok") is not True or not isinstance(proof, dict)
+            or checkpoint.get("partial_cursor_settlement") is not None):
+        raise refresh.GlobalStageError("Colliers partial cursor lacks exact settlement")
+    lock_path = (manifest.get("preflight") or {}).get("shared_lock")
+    if not isinstance(lock_path, str):
+        raise refresh.GlobalStageError("Colliers partial cursor lacks owner path")
+
+    def check_owner():
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+
+    check_owner()
+    state = checkpoint["partial_cursor_settlement"] = {
+        "state": "publishing", "attempt_id": proof.get("attempt_id"),
+        "cursor": binding.get("cursor"), "next_cursor": binding.get("next_cursor"),
+        "artifact_sha256": binding.get("artifact_sha256"),
+    }
+    refresh.save_manifest(run_dir, manifest)
+    try:
+        advance_cursor(Path(lock_path), "colliers", binding.get("database_target_sha256"),
+            binding.get("cursor"), binding.get("next_cursor"), generation=binding.get("generation_id"),
+            artifact_sha256=binding.get("artifact_sha256"), attempt_id=proof.get("attempt_id"),
+            outcome="exact_commit", proof=proof, owner_check=check_owner)
+        check_owner()
+    except BaseException:
+        state["state"] = "recovery_required"
+        refresh.save_manifest(run_dir, manifest)
+        raise
+    state["state"] = "settled"
+    refresh.save_manifest(run_dir, manifest)
 
 
 def reconcile_pipeline_ingests(
@@ -892,6 +933,7 @@ def run_bounded_pipeline(
     }
     active = []
     ready = []
+    partial_ready = []
     pending = list(selected)
     terminal_source_holds: set[str] = set()
     sealed = ()
@@ -910,7 +952,7 @@ def run_bounded_pipeline(
         source_results = state["source_results"]
         new = {
             "fetching": len(active),
-            "pending": len(ready),
+            "pending": len(ready) + len(partial_ready),
             "validating": sum(
                 manifest["sources"][source].get("pipeline_stage") == "validating"
                 for source in (*sealed, *preparing)
@@ -963,9 +1005,20 @@ def run_bounded_pipeline(
                 state["source_timings"][item.source]["collection_finished_at"] = (
                     getattr(item, "attempt", None) or {}
                 ).get("finished_at") or refresh.utc_now()
+            elif (item.source == "colliers" and item.attempt.get("rc") == refresh.COHORT_SETTLED_FAILURE_EXIT
+                  and (item.attempt.get("colliers_partial") or {}).get("state") == "sealed_local"
+                  and item.attempt["colliers_partial"].get("outcome") == "source_error"
+                  and not manifest["sources"][item.source].get("terminal_collection_failure")):
+                # Process only on the foreground lane. Finalization proved the
+                # child group settled and sealed the original failed artifact.
+                partial_ready.append(item.source)
             else:
                 retry_or_fail(item.source)
         counts()
+        if partial_ready:
+            # Do not start an exclusive source before the foreground partial
+            # lane has had a chance to claim its settled work.
+            return
         oversized = any(
             (manifest["sources"][source].get("candidate") or {}).get("bytes", 0)
             >= budget.soft_bytes
@@ -1031,11 +1084,33 @@ def run_bounded_pipeline(
 
     try:
         with command_poll_hook(tick) as poll:
-            while pending or active or ready:
+            while pending or active or ready or partial_ready:
                 poll()
                 # Sealing may occur inside tick's poll callback. Database writes
                 # run only here, on the foreground coordinator's serial lane.
                 refresh.pump_source_evidence(run_dir, manifest)
+                if partial_ready:
+                    from cre_colliers_partial_checkpoint import run_window_worker
+                    source = partial_ready.pop(0)
+                    preparing = (source,)
+                    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                    owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                    candidate_path = run_window_worker(
+                        run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
+                    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                    preparing = ()
+                    if candidate_path is not None:
+                        ready.append(source)
+                    else:
+                        checkpoint = manifest["sources"][source]
+                        terminal_source_holds.add(source)
+                        checkpoint["pipeline_stage"] = "failed"
+                        state["source_results"][source] = {"state": "failed", "partial": True,
+                            "reason": "partial source window did not admit listing writes"}
+                        refresh.save_manifest(run_dir, manifest)
+                        counts()
+                        continue
+                    counts()
                 if ready:
                     oversized_index = next(
                         (
@@ -1107,6 +1182,26 @@ def run_bounded_pipeline(
                                 source,
                                 checkpoint["attempts"][-1],
                             )
+                            partial = checkpoint["attempts"][-1].get("colliers_partial") or {}
+                            if (source == "colliers" and partial.get("state") == "sealed_local"
+                                    and partial.get("outcome") == "source_error"):
+                                from cre_colliers_partial_checkpoint import run_window_worker
+                                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                                candidate_path = run_window_worker(
+                                    run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
+                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                                if candidate_path is not None:
+                                    if not prepare_candidate(run_dir, manifest, source):
+                                        raise refresh.GlobalStageError("partial candidate validation failed")
+                                    prepared.append(source)
+                                    continue
+                                if checkpoint.get("state") == "partial_held_no_write":
+                                    terminal_source_holds.add(source)
+                                    checkpoint["pipeline_stage"] = "failed"
+                                    state["source_results"][source] = {"state": "failed", "partial": True,
+                                        "reason": "partial window held; no listing writes"}
+                                    continue
                             retry_or_fail(source, "artifact validation failed")
                             continue
                         prepared.append(source)

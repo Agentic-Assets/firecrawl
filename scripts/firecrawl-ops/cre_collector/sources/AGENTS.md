@@ -1349,10 +1349,14 @@ be captured sequentially in the same private spool, subject to the existing page
 cap and request pacing; this tail bound is separate from the 20-pair subdivision
 budget. Requested-limit and page-cap ranges remain explicitly unexamined.
 Denial, drift, invalid pairs or capture failure stop that
-continuation and leave the remaining range unexamined. The original source
-failure remains terminal; no detail calls, new listing admission or
-complete-inventory claim follow. Abrupt interruptions still leave the existing
-sidecar unverified; the spool syncs at finish.
+continuation and leave the remaining range unexamined. The bounded checkpoint
+pipeline may separately verify a settled source-error spool and process a
+rotating, owner-bound subset with exact map/detail identity and guarded additive
+admission. The original source failure remains partial: no absence-based
+retirement or complete-inventory claim follows. Denial or unscoped evidence
+stops detail requests. The serial checkpoint route does not perform this
+partial admission and leaves the failed source held. Abrupt interruptions leave
+the existing sidecar unverified; the spool syncs at finish.
 
 Public RCM contact details retain supplied fields independently of `Show*`
 display flags. The source flags are preserved as typed state records in the

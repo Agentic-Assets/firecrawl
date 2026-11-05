@@ -2858,12 +2858,20 @@ def jll_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("jll_partial") is True)
 
 
+def colliers_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "colliers"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("colliers_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
-            or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source))
+            or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
+            or colliers_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if colliers_partial_candidate(manifest, source):
+        return "colliers_partial_claims"
     if jll_partial_candidate(manifest, source):
         return "jll_partial_claims"
     return "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
@@ -2929,6 +2937,60 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "colliers-partial-window/v1":
+        # This validates structure and freshness only. The shared subset gate
+        # separately authenticates the original source, worker, target and DB
+        # identity partition before any write can be admitted.
+        from cre_colliers_partial_checkpoint import validate_window_artifact
+        from cre_ingest import validate_strict_artifact_freshness
+
+        if expected_source != "colliers" or tuple(expected_transactions) != TRANSACTIONS:
+            raise ArtifactValidationError("Colliers partial source scope differs")
+        try:
+            binding = data["binding"]
+            source = data["source"]
+            receipt = {"generation": binding["generation"],
+                       "generation_started_at": data["runMeta"]["freshness"]["generationStartedAt"],
+                       "attempt": binding["attempt"], "started_at": binding["startedAt"],
+                       "finished_at": binding["finishedAt"], "bytes": source["bytes"], "sha256": source["sha256"],
+                       "main_sha256": source["mainSha256"], "producer_sha": data["producerSha"],
+                       "database_target_sha256": data["targetSha256"]}
+            staged = validate_window_artifact(data, receipt, data["evidence"])
+            if not staged or binding["generation"] != expected_generation_id:
+                raise ValueError("partial generation or rows differ")
+            started = parse_iso8601(binding["startedAt"], field="partial.startedAt")
+            expected_attempt = (attempt_started_at if isinstance(attempt_started_at, datetime)
+                                else parse_iso8601(attempt_started_at, field="attempt_started_at"))
+            generation_start = parse_iso8601(receipt["generation_started_at"], field="partial.generationStartedAt")
+            expected_generation = (expected_generation_started_at if isinstance(expected_generation_started_at, datetime)
+                                   else parse_iso8601(expected_generation_started_at, field="expected_generation_started_at"))
+            if started != expected_attempt or generation_start != expected_generation:
+                raise ValueError("partial time binding differs")
+            clean = {**data, "listings": [
+                {key: value for key, value in listing.items() if key != "preserveChildCollections"}
+                for listing in data["listings"]
+            ]}
+            validate_strict_artifact_freshness(clean, require_strict_freshness=True, now=now)
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            cutoff = current - timedelta(hours=max_observation_age_hours)
+            for item in data["listings"]:
+                if (parse_iso8601(item["inventoryObservedAt"], field="partial.inventoryObservedAt") < cutoff
+                        or parse_iso8601(item["detailObservedAt"], field="partial.detailObservedAt") < cutoff):
+                    raise ValueError("partial observation exceeds freshness SLO")
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["detail_errors"] or stats["staged_unique"] != len(staged):
+                raise ValueError("partial staging count differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("Colliers partial artifact invalid") from exc
+        artifact_sha256, artifact_bytes = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes, "generation_id": binding["generation"]}
+        return {**stats, "started_at": started.isoformat(), "finished_at": parse_iso8601(data["detailFinishedAt"], field="partial.detailFinishedAt").isoformat(),
+                "max_observation_age_hours": max_observation_age_hours, "observation_cutoff_at": cutoff.isoformat(),
+                "strict_freshness": True, "property_detail_freshness": False, "colliers_partial": True,
+                "freshness_generation_id": binding["generation"], "freshness_generation_started_at": generation_start.isoformat(),
+                "sha256": artifact_sha256, "bytes": artifact_bytes}
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
     daum_retained_unknown_ids = frozenset()
@@ -5262,6 +5324,10 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if colliers_partial_candidate(manifest, source):
+            from cre_colliers_partial_checkpoint import admit_window
+            return admit_window(artifact, manifest, report, current_code_sha=git_sha,
+                                current_git_dirty=git_dirty, phase=phase)
         if jll_partial_candidate(manifest, source):
             from cre_jll_partial import admit as admit_jll_partial
             return admit_jll_partial(artifact, manifest, report, current_code_sha=git_sha,
@@ -5313,7 +5379,14 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
-        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
+        if (current_inventory.admission_configuration(manifest["config"], source)
+                or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)):
+            if colliers_partial_candidate(manifest, source):
+                from cre_colliers_partial_checkpoint import run_identity_probe
+                try:
+                    checkpoint["colliers_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Colliers partial identity classification failed") from exc
             if jll_partial_candidate(manifest, source):
                 from cre_jll_partial import run_identity_probe
                 try:
@@ -5442,7 +5515,8 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    flag = ("--jll-partial-claims" if jll_partial_candidate(manifest, source)
+    flag = ("--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
+            else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
     return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
@@ -5942,7 +6016,8 @@ def run_aggregate_gate(
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
     for source, artifact in zip(selected, artifacts):
-        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
+        if (current_inventory.admission_configuration(manifest["config"], source)
+                or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6151,6 +6226,13 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if colliers_partial_candidate(manifest, source):
+        # A generic validation report does not prove the native partial history
+        # or cursor outcome. Never replay a potentially committed write.
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_colliers_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Colliers partial ingest requires exact readback")
     guard_reasons = {"pyramid-brokerage": "pyramid_historical_guard_refusal", "transwestern": "transwestern_image_guard_refusal"}
     if source in guard_reasons and (checkpoint.get("ingest_recovery") or {}).get("reason") != guard_reasons[source]:
         # After an interrupted parent, no persisted process-group identity proves
@@ -6402,6 +6484,24 @@ def jll_partial_readback(run_dir, manifest, env_file):
                         expected_database_target_sha256=target, env_file=env_file)
 
 
+def colliers_partial_readback(run_dir, manifest, env_file):
+    from cre_colliers_partial_checkpoint import run_partial_readback
+
+    checkpoint = manifest["sources"]["colliers"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "colliers")
+    if len(arguments) < 2:
+        raise GlobalStageError("Colliers partial readback claims are missing")
+    code_sha, dirty = git_identity()
+    if dirty:
+        raise GlobalStageError("Colliers partial readback code is dirty")
+    result = run_partial_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+        code_sha=code_sha, target=manifest_database_target_sha256(manifest),
+        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    # Recheck the claim file after the query as well as the source artifact.
+    subset_ingest_arguments(run_dir, manifest, "colliers")
+    return result
+
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6512,6 +6612,24 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if colliers_partial_candidate(manifest, source):
+            observed = validation.get("colliers_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("outcome") == "exact_commit"
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and observed.get("history_holds") == binding.get("history_holds")
+                  and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "colliers_partial_window",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if jll_partial_candidate(manifest, source):
             observed = validation.get("jll_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7055,6 +7173,9 @@ def run_final_validation(
     absolute_quality = verify_absolute_validation_quality(result)
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "colliers" in sources) and colliers_partial_candidate(manifest, "colliers"):
+        result["colliers_partial_readback"] = colliers_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)
