@@ -193,6 +193,17 @@ foreach ($change in @(@{Source='newmark'}, @{TaskName='Other'}, @{AdmitDaumVerif
     try { & $creInstaller @badDaum | Out-Null } catch { $rejected=$true }
     Assert-Cre ($rejected -and $global:Cre4265Fixture.Calls.Count -eq $before) 'Invalid DAUM scope must refuse before scheduler access.'
 }
+$colliersArgs = @{ TaskName='Colliers Partial Refresh'; Tier='series'; Source='colliers'; Pipeline=$true; SourceWorkers=1; ExpectedSha=('a'*40); WorkDeadlineSeconds=4200; AcknowledgeDatabaseWrites=$true; DailyAt='01:00,04:00,13:00,16:00' }
+[xml]$colliersDoc = (& $creInstaller @colliersArgs) -join [Environment]::NewLine
+$colliersAction = Get-CreXmlValue $colliersDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($colliersAction.Contains('"-Source" "colliers"') -and $colliersAction.Contains('"-Pipeline" "-SourceWorkers" "1"') -and $colliersAction.Contains('"-WorkDeadlineSeconds" "4200"')) 'Colliers preview binds its singleton pipeline and work budget.'
+Assert-Cre (@($colliersDoc.Task.Triggers.CalendarTrigger).Count -eq 4) 'Colliers preview retains all four requested daily triggers.'
+foreach ($change in @(@{Source='newmark'}, @{Pipeline=$false}, @{Sources='colliers,newmark'}, @{AdmitDaumVerifiedSubset=$true}, @{Tier='enrich'})) {
+    $badColliers=$colliersArgs.Clone(); foreach ($key in $change.Keys) {$badColliers[$key]=$change[$key]}
+    $before=$global:Cre4265Fixture.Calls.Count; $rejected=$false
+    try { & $creInstaller @badColliers | Out-Null } catch { $rejected=$true }
+    Assert-Cre ($rejected -and $global:Cre4265Fixture.Calls.Count -eq $before) 'Invalid Colliers scope must refuse before scheduler access.'
+}
 $creEnrich = @{ TaskName='Enrichment - newmark'; Tier='enrich'; Source='newmark'; ExpectedSha=('a'*40); Apply=$true; Batch=12; DeadlineSeconds=300 }
 $creEnrichPreview = (& $creInstaller @creEnrich) -join [Environment]::NewLine
 Assert-Cre ($creEnrichPreview -match 'Enrichment - newmark|Guarded CRE enrich' -and $creEnrichPreview -match 'Apply' -and $creEnrichPreview -match 'Batch') 'Enrichment preview must retain source-bound name and bounded applied action.'
