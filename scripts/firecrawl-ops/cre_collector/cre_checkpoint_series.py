@@ -3165,7 +3165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Savills-only serial additive refresh retaining its historical coverage hold")
     parser.add_argument("--pipeline", action="store_true")
     parser.add_argument("--source-workers", type=int, default=None)
-    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(

@@ -19,7 +19,7 @@ param(
     [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
-    [ValidateRange(0, 2147483647)][int]$PageCap = 400,
+    [ValidateRange(0, 2147483647)][int]$PageCap = 0,
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,

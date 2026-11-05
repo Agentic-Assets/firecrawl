@@ -2421,7 +2421,7 @@ def build_collect_argv(
     source: str,
     output: Path,
     *,
-    page_cap: int = 400,
+    page_cap: int = 0,
     concurrency: int = 3,
     transactions: Sequence[str] = TRANSACTIONS,
 ) -> list[str]:
@@ -8274,7 +8274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Explicit DAUM verified subset with held rows; always partial, never complete-source credit",
     )
     parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
-    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
         "--source-workers",
