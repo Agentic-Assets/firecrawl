@@ -405,3 +405,62 @@ test("finite CBRE Deal Flow requested limit remains incomplete when total is lar
   assert.equal(result.listings.length, 2);
   assert.equal(result.truncated, true);
 });
+
+test("finite Colliers overcount remains incomplete", async (t) => {
+  const { srcColliers } = await import("../../../sources/colliers.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two", "three"] : [];
+    if (url.pathname.endsWith("GetListingsHtml")) return Response.json({
+      success: true, total: 2, totalAvail: 2, numProjects: ids.length,
+      html: `<ul>${ids.map(id => `<li class="item"><a class="headline">${id}</a></li>`).join("")}</ul>`,
+    });
+    return Response.json({ success: true, projectLocations: ids.map(ProjectId => ({ ProjectId, Latitude: 30, Longitude: -90 })) });
+  });
+  const result = await srcColliers("sale", 10, false);
+  assert.equal(result.listings.length, 3);
+  assert.equal(result.truncated, true);
+});
+
+
+
+test("finite CBRE Deal Flow overcount remains incomplete", async (t) => {
+  const { srcCbreDealflow } = await import("../../../sources/cbre-dealflow.js");
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (!init?.method || init.method === "GET") return new Response("<html></html>");
+    if (url.pathname.endsWith("GetFilters")) return Response.json({});
+    const start = Number(new URLSearchParams(String(init.body)).get("Start"));
+    assert.ok(start <= 3);
+    const ids = start === 1 ? ["one", "two", "three"] : [];
+    return Response.json({ success: true, total: 2, totalAvail: 2, numProjects: ids.length,
+      html: `<ul class="gridview">${ids.map(id => `<li class="item"><div class="headline">${id}</div><div class="location"><div class="city">Dallas, TX</div></div><div class="details">Investment Sale</div></li>`).join("")}</ul>`,
+    });
+  });
+  const result = await srcCbreDealflow("sale", 10, false);
+  assert.equal(result.listings.length, 3);
+  assert.equal(result.truncated, true);
+});
+
+for (const mapValue of [1, "invalid", 2] as const) {
+  test(`Colliers map/list counts ${mapValue === 2 ? "matching" : "differing"} preserve cards honestly`, async (t) => {
+    const { srcColliers } = await import("../../../sources/colliers.js");
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+      const ids = ["one", "two"];
+      if (url.pathname.endsWith("GetListingsHtml")) return Response.json({
+        success: true, total: 2, totalAvail: 2, numProjects: 2,
+        html: `<ul>${ids.map(id => `<li class="item"><a class="headline">${id}</a></li>`).join("")}</ul>`,
+      });
+      return Response.json({ success: true, total: mapValue, totalAvail: 2,
+        projectLocations: ids.map(ProjectId => ({ ProjectId, Latitude: 30, Longitude: -90 })) });
+    });
+    const result = await srcColliers("sale", Number.POSITIVE_INFINITY, false);
+    assert.equal(result.listings.length, 2);
+    assert.equal(result.truncated, mapValue !== 2);
+  });
+}

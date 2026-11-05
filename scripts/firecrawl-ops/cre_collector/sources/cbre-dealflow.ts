@@ -1069,8 +1069,8 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
   const providerTotalMismatch =
     total !== null &&
     (providerRowsScanned < Math.min(total, want) ||
-      (Number.isFinite(max) && total > want) ||
-      (!Number.isFinite(max) && providerRowsScanned !== total));
+      providerRowsScanned > total ||
+      (Number.isFinite(max) && total > want));
   const truncated =
     parseOmissions > 0 ||
     duplicateIdentities > 0 ||
