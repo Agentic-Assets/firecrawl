@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { parseFranklinPage } from '../../../sources/franklin-street-evidence.js';
 import { projectFranklinFailureArtifact } from '../../../sources/franklin-site-failure-artifact.js';
 
@@ -30,4 +31,15 @@ test('rejects mutated cards, hash, clock, transaction, generation and mixed scop
     const input = fixture(); mutate(input);
     assert.throws(() => projectFranklinFailureArtifact(input, 'run-1'));
   }
+});
+
+test('private bridge reads bounded input and never prints refused artifact content', () => {
+  const argv = ['--import', 'tsx', 'sources/franklin-site-bridge.ts', 'run-1'];
+  const okay = spawnSync(process.execPath, argv, { input: JSON.stringify(fixture()), encoding: 'utf8' });
+  assert.equal(okay.status, 0);
+  assert.equal(JSON.parse(okay.stdout).listings.length, 1);
+  const bad = spawnSync(process.execPath, argv, { input: '{"private":"DO_NOT_PRINT"', encoding: 'utf8' });
+  assert.notEqual(bad.status, 0);
+  assert.equal(bad.stdout, '');
+  assert.doesNotMatch(bad.stderr, /DO_NOT_PRINT/);
 });
