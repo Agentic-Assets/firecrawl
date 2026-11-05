@@ -1090,3 +1090,125 @@ raise SystemExit(rc)
     receipt = control.read_receipt(tmp_path, handshake["invocation_id"])
     assert receipt["status"] == ("deadline_interrupted" if expected == 124 else "interrupted")
     assert receipt["local_settlement"] == "not_started"
+
+
+def test_recovery_sync_contention_publishes_only_no_work_settlement(
+    tmp_path, checkpoint_main
+):
+    import fcntl
+
+    refresh = checkpoint_main
+    lock = tmp_path / ".cre.lock"
+    sync = refresh.quarantine_recovery_sync_path(lock)
+    with sync.open("w") as held:
+        os.chmod(sync, 0o600)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(refresh.LockFlockBusyError):
+            refresh.main([
+                "--sources", "svn", "--out-root", str(tmp_path / "runs"),
+                "--series-control-invocation-id", "a" * 32,
+                "--series-control-child-id", "b" * 32,
+            ])
+    run = next((tmp_path / "runs").iterdir())
+    assert not (run / "manifest.json").exists()
+    payload = json.loads((run / ".series-control" / (("b" * 32) + ".json")).read_text())
+    assert payload["pre_acquisition_refusal"] is True
+    assert payload["terminal_evidence_saved"] is False
+    assert payload["nested_cleanup_confirmed"] is True
+    assert payload["guards_stopped"] is True
+
+
+@pytest.mark.parametrize("guards,nested", [(False, True), (True, False)])
+def test_no_work_marker_does_not_bypass_cleanup_proof(tmp_path, guards, nested):
+    child = tmp_path / "run"
+    child.mkdir()
+    with SeriesOwnershipLock(tmp_path / ".series.lock") as lock:
+        owner = control.SeriesControl(tmp_path, lock, 600)
+        owner.prepare_checkpoint(child, "a" * 40)
+        owner.checkpoint_pid = os.getpid()
+        owner.child_unverified = True
+        control.publish_checkpoint_settlement(
+            child, owner.invocation_id, {"collector_git_sha": "a" * 40},
+            child_invocation_id=owner.child_invocation_id,
+            guards_stopped=guards, nested_cleanup_confirmed=nested,
+            terminal_evidence_saved=False, pre_acquisition_refusal=True,
+        )
+        with pytest.raises(control.SeriesControlError):
+            owner.verify_checkpoint()
+        assert owner.child_unverified
+
+
+def test_bound_no_work_receipt_allows_local_settlement(tmp_path):
+    child = tmp_path / "run"
+    child.mkdir()
+    with SeriesOwnershipLock(tmp_path / ".series.lock") as lock:
+        owner = control.SeriesControl(tmp_path, lock, 600)
+        owner.prepare_checkpoint(child, "a" * 40)
+        owner.checkpoint_pid = os.getpid()
+        owner.child_unverified = True
+        control.publish_checkpoint_settlement(
+            child, owner.invocation_id, {"collector_git_sha": "a" * 40},
+            child_invocation_id=owner.child_invocation_id,
+            guards_stopped=True, nested_cleanup_confirmed=True,
+            terminal_evidence_saved=False, pre_acquisition_refusal=True,
+        )
+        owner.verify_checkpoint()
+        assert owner.pre_acquisition_refusal
+        assert not owner.child_unverified
+
+
+def test_later_authority_contention_never_claims_no_work(
+    tmp_path, monkeypatch, checkpoint_main
+):
+    refresh = checkpoint_main
+
+    def refuse(_lock):
+        raise refresh.LockFlockBusyError("authority")
+
+    monkeypatch.setattr(refresh.SharedLock, "acquire", refuse)
+    with pytest.raises(refresh.LockFlockBusyError):
+        refresh.main([
+            "--sources", "svn", "--out-root", str(tmp_path / "runs"),
+            "--series-control-invocation-id", "a" * 32,
+            "--series-control-child-id", "b" * 32,
+        ])
+    run = next((tmp_path / "runs").iterdir())
+    payload = json.loads((run / ".series-control" / (("b" * 32) + ".json")).read_text())
+    assert payload["pre_acquisition_refusal"] is False
+    assert payload["terminal_evidence_saved"] is False
+
+
+@pytest.mark.parametrize("pipeline", [False, True])
+def test_series_reports_settled_pre_acquisition_refusal(tmp_path, monkeypatch, cli_role, pipeline):
+    manifest = manifest_at(tmp_path)
+    manifest["config"]["pipeline"] = pipeline
+    script = tmp_path / "no-work-child.py"
+    script.write_text("""import argparse, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from cre_series_control import publish_checkpoint_settlement
+p=argparse.ArgumentParser()
+p.add_argument('--run-dir');p.add_argument('--series-control-invocation-id');p.add_argument('--series-control-child-id')
+a=p.parse_args(sys.argv[2:]);root=Path(a.run_dir);root.mkdir(parents=True)
+publish_checkpoint_settlement(root,a.series_control_invocation_id,{'collector_git_sha':'a'*40},child_invocation_id=a.series_control_child_id,guards_stopped=True,nested_cleanup_confirmed=True,terminal_evidence_saved=False,pre_acquisition_refusal=True)
+raise SystemExit(1)
+""")
+
+    def argv(source, **kwargs):
+        run = kwargs["child_out_root"] / kwargs["fresh_run_id"]
+        return [sys.executable, str(script), str(Path(series.__file__).parent),
+                "--run-dir", str(run)]
+
+    monkeypatch.setattr(series, "build_checkpoint_argv", argv)
+    with SeriesOwnershipLock(tmp_path / ".series.lock") as lock:
+        rc = series.run_controlled_series(
+            tmp_path, manifest, lock, args(), _cli_control_capability=cli_role
+        )
+    receipt = control.read_receipt(
+        tmp_path, manifest["latest_invocation_control"]["invocation_id"]
+    )
+    assert rc == 1
+    assert receipt["local_settlement"] == "confirmed"
+    assert receipt["status"] != "cleanup_unknown"
+    assert manifest["sources"]["cbre"]["state"] == "failed_source"
+    assert manifest["sources"]["jll"]["state"] == ("failed_source" if pipeline else "pending")

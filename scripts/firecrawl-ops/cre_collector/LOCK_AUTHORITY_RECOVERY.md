@@ -71,6 +71,17 @@ with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
 
+## Contention classification
+
+`LockFlockBusyError` is a `LockHeldError` raised only when the recovery
+synchronizer or authority nonblocking advisory flock reports contention. Its
+`lock_object` identifies which flock refused. This does not identify the
+holder or even prove that it is another process. It cannot identify a writer:
+an operator recovery can hold the same synchronizer. It does not establish
+that the authority or any previous write is settled, and it grants no retry or
+recovery permission. A recovery-required, malformed, unsafe or changed
+authority remains a separate `LockHeldError`.
+
 ## Ordinary checkpoint crash fence
 
 The ordinary `cre_checkpoint_refresh.py execute` owner arms the existing
