@@ -54,6 +54,9 @@ def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis(
     sale["publicPost"]["locations"] = [{"path": "Toronto, ON, Canada"}]
     assert stage_post(sale, "gen-1")["sale_price_usd"] is None
     assert stage_post(sale, "gen-1")["country"] is None
+    sale["publicPost"]["locations"] = [{"path": "Seattle, WA, United States"}]
+    sale["feedRow"]["contentType"]["id"] = 999
+    assert stage_post(sale, "gen-1")["sale_price_usd"] is None
     lease = post(2, tx="lease")
     lease["leaseRateMin"] = 12
     lease["publicPost"].update(currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])

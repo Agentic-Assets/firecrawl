@@ -133,7 +133,8 @@ def stage_post(listing, generation):
     explicit_us = (isinstance(location_path, str)
                    and any(part.strip().lower() == "united states" for part in location_path.split(",")))
     projected["country"] = "US" if explicit_us else None
-    if str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us:
+    if (tx != "sale" or categories != {4}
+            or str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us):
         projected["sale_price_usd"] = None
         projected["sale_price_per_sf"] = None
     projected["lease_rate_min"] = None
@@ -306,8 +307,14 @@ conflicts AS (
    OR own.source_url IS DISTINCT FROM s.r->>'source_url'
    OR (own.scraped_at IS NOT NULL AND own.scraped_at > (s.r->>'observed_at')::timestamptz)
    OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
-   OR own.raw_data->>'sourceKey' IS DISTINCT FROM 'nai-global'
-   OR own.raw_data->>'id' IS DISTINCT FROM s.r->>'external_id'
+   OR NOT COALESCE((own.raw_data->>'sourceKey'='nai-global'
+                    AND own.raw_data->>'id'=s.r->>'external_id')
+       OR (jsonb_typeof(own.raw_data->'primary')='object'
+           AND jsonb_typeof(own.raw_data->'secondary_pass')='object'
+           AND own.raw_data#>>'{{primary,sourceKey}}'='nai-global'
+           AND own.raw_data#>>'{{secondary_pass,sourceKey}}'='nai-global'
+           AND own.raw_data#>>'{{primary,id}}'=s.r->>'external_id'
+           AND own.raw_data#>>'{{secondary_pass,id}}'=s.r->>'external_id'), false)
    OR (own.raw_data ? 'naiPublicPostHistory' AND NOT COALESCE(
       jsonb_typeof(own.raw_data->'naiPublicPostHistory')='object'
       AND own.raw_data#>>'{{naiPublicPostHistory,schema}}'='nai-public-post-history/v1'

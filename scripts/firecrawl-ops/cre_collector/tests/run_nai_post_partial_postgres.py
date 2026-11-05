@@ -219,6 +219,35 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:8' "
                    "AND status='withdrawn' AND title='Terminal original';") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:9' AND status IS NULL;") == "1"
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
+SELECT id,'infabode:10','https://infabode.com/services/listings/10','active','Wrapped original',
+       '{"primary":{"sourceKey":"nai-global","id":"infabode:10"},
+         "secondary_pass":{"sourceKey":"nai-global","id":"infabode:10"}}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        wrapped = [stage_post(post(10), "gen-1")]
+        wrapped_probe = sql(identity_probe_sql(wrapped)).split("|", 3)
+        wrapped_held = json.loads(wrapped_probe[2])
+        wrapped_before = json.loads(wrapped_probe[3], parse_float=Decimal)
+        assert wrapped_held == []
+        wrapped_job = str(uuid.uuid4())
+        sql(build_partial_sql(wrapped, wrapped_held, wrapped_before, wrapped_job,
+                              "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z"))
+        assert sql(partial_readback_sql(wrapped, wrapped_held, wrapped_before, wrapped_job,
+                                        "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z")) == "1|1|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:10' "
+                   "AND title='Wrapped original' AND raw_data#>>'{primary,sourceKey}'='nai-global' "
+                   "AND raw_data#>>'{secondary_pass,sourceKey}'='nai-global';") == "1"
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
+SELECT id,'infabode:11','https://infabode.com/services/listings/11','active',
+       '{"primary":{"sourceKey":"nai-global","id":"infabode:11"},
+         "secondary_pass":{"sourceKey":"foreign","id":"infabode:11"}}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        foreign = sql(identity_probe_sql([stage_post(post(11), "gen-1"), stage_post(post(12), "gen-1")])).split("|", 3)
+        assert json.loads(foreign[2]) == ["infabode:11"]
         print("NAI post partial real-schema proof passed")
     finally:
         run("docker", "rm", "-f", name, check=False)
