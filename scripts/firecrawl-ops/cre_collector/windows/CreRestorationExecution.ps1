@@ -14,7 +14,7 @@ function Save-CreRestorationWatermark([string]$Output) {
 }
 
 function Get-CreRestorationRegisteredTask($Service,$Baseline) {
-    $names=@{interra='Interra Refresh';newmark='Newmark Refresh';qualified='Qualified Brokerage Pipeline'}
+    $names=@{interra='Interra Refresh';newmark='Newmark Refresh';qualified='Qualified Brokerage Pipeline';'colliers-partial'='Colliers Partial Refresh'}
     $expected=if($Baseline.key -ceq 'daum-subset') {'DAUM Verified Subset'}
     elseif($Baseline.key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {'Enrichment - '+$Matches[1]}
     elseif($names.Keys -ccontains $Baseline.key) {$names[$Baseline.key]}
