@@ -731,11 +731,12 @@ export async function enrichColliersCard(card: ColliersCard, options: {
 }
 
 const COLLIERS_RECOVERY_MAX_PAIRS = 20;
+class ColliersCountDriftError extends Error {}
 
 export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   onPage?: (page: number, start: number, cards: any[], pageSize?: number) => void,
   onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }, pageSize?: number) => void,
-  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "requested_limit" | "page_cap") => void,
+  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "count_drift" | "requested_limit" | "page_cap") => void,
   captureWritable?: () => boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
@@ -776,10 +777,11 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   let providerRowsScanned = 0;
   let mapRowsScanned = 0;
   let parseOmissions = 0;
+  let mapTotalsDisagree = false;
   let exhausted = false;
   const providerProjectIds = new Set<string>();
   let start = 1;
-  for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
+  for (let page = 1; (PAGE_CAP === 0 || page <= PAGE_CAP) && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
     let listData: any, mapData: any;
     try {
@@ -797,8 +799,8 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       const isCaptureWritable = captureWritable;
       const retainValidatedPair = (pageNo: number, offset: number, size: number, list: any, map: any, tail: boolean): void => {
         const stage = tail ? "tail" : "recovery";
-        if (Number(list.total) !== total || (tail && map.total != null && Number(map.total) !== total)) throw new Error(`Colliers ${stage} total changed`);
-        if (totalAvail !== null && (Number(list.totalAvail) !== totalAvail || (tail && map.totalAvail != null && Number(map.totalAvail) !== totalAvail))) throw new Error(`Colliers ${stage} totalAvail changed`);
+        if (Number(list.total) !== total || (tail && map.total != null && Number(map.total) !== total)) throw new ColliersCountDriftError(`Colliers ${stage} total changed`);
+        if (totalAvail !== null && (Number(list.totalAvail) !== totalAvail || (tail && map.totalAvail != null && Number(map.totalAvail) !== totalAvail))) throw new ColliersCountDriftError(`Colliers ${stage} totalAvail changed`);
         const html = String(list.html ?? "");
         const count = cheerio.load(html)("li.item").length;
         const groups = groupColliersMapLocations(Array.isArray(map?.projectLocations) ? map.projectLocations : []);
@@ -848,7 +850,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
             } catch (error) {
               if (!(error instanceof ColliersPageFailure)) {
                 if (captureWritable()) {
-                  onHole(page, part.start, part.size, "recovery_stopped");
+                  onHole(page, part.start, part.size, error instanceof ColliersCountDriftError ? "count_drift" : "recovery_stopped");
                   for (const remaining of pending) {
                     if (!captureWritable()) break;
                     onHole(page, remaining.start, remaining.size, "recovery_stopped");
@@ -871,7 +873,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
           const last = Math.min(total, want);
           let tailStart = start + rangeSize;
           let tailPage = page + 1;
-          while (tailStart <= last && tailPage <= PAGE_CAP) {
+          while (tailStart <= last && (PAGE_CAP === 0 || tailPage <= PAGE_CAP)) {
             const tailSize = Math.min(COLLIERS_PAGE_SIZE, last - tailStart + 1);
             try {
               await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
@@ -881,6 +883,11 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
               retainValidatedPair(tailPage, tailStart, tailSize, list, map, true);
             } catch (error) {
               if (captureWritable()) {
+                if (error instanceof ColliersCountDriftError) {
+                  onHole(tailPage, tailStart, tailSize, "count_drift");
+                  if (!captureWritable()) throw new Error("Colliers tail capture failed");
+                  tailStart += tailSize;
+                }
                 if (error instanceof ColliersPageFailure) {
                   onHole(tailPage, tailStart, tailSize, "provider_failure");
                   tailStart += tailSize;
@@ -924,11 +931,38 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       ? Number(listData.total)
       : null;
     if (total !== null && reportedTotal !== null && reportedTotal !== total) {
+      // This marker is emitted only after the paired transport has settled
+      // without access or Retry-After refusal. Preserve the changed pair as
+      // evidence and mark the remaining original range unexamined.
+      if (onPage && onResponses && onHole && captureWritable?.() &&
+          Number.isSafeInteger(total) && total >= start) {
+        const firstSize = Math.min(pageSize, total - start + 1);
+        onHole(page, start, firstSize, "count_drift");
+        if (!captureWritable()) throw new Error("Colliers count-drift capture failed");
+        const remaining = total - start + 1 - firstSize;
+        if (remaining > 0) {
+          onHole(page + 1, start + firstSize, remaining, "recovery_stopped");
+          if (!captureWritable()) throw new Error("Colliers count-drift capture failed");
+        }
+      }
       throw new Error(
         `Colliers total changed during pagination: ${total} -> ${reportedTotal}`
       );
     }
     total = total ?? reportedTotal;
+    for (const field of ["total", "totalAvail"] as const) {
+      if (mapData?.[field] != null) {
+        const listValue = Number(listData?.[field]);
+        const mapValue = Number(mapData[field]);
+        const validCount = (raw: unknown, value: number) =>
+          (typeof raw === "number" || (typeof raw === "string" && /^\d+$/.test(raw))) &&
+          Number.isSafeInteger(value) && value >= 0;
+        if (!validCount(listData?.[field], listValue) ||
+            !validCount(mapData[field], mapValue) || mapValue !== listValue) {
+          mapTotalsDisagree = true;
+        }
+      }
+    }
     totalAvail =
       totalAvail ?? (Number.isFinite(Number(listData.totalAvail)) ? Number(listData.totalAvail) : null);
     const pageHtml = String(listData.html ?? "");
@@ -978,11 +1012,13 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   const stoppedAtRequestedLimit =
     selected.length >= want && Number.isFinite(max);
   const providerTotalMismatch =
-    !Number.isFinite(max) &&
     total !== null &&
-    providerRowsScanned !== total;
+    (providerRowsScanned < Math.min(total, want) ||
+      providerRowsScanned > total ||
+      (Number.isFinite(max) && total > want));
   let truncated =
     parseOmissions > 0 ||
+    mapTotalsDisagree ||
     providerTotalMismatch ||
     (!exhausted && !stoppedAtRequestedLimit);
   let done = 0;

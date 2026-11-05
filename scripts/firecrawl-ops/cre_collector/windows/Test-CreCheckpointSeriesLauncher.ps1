@@ -115,6 +115,9 @@ $pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedS
     '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
 $cases += @{Name='pipeline-concurrency'; Args=$pipelineBase + @('-SourceWorkers','2','-Concurrency','6'); Exit=0; Dispatch=$true; Workers=2; Concurrency=6}
 $cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
+$cases += @{Name='pipeline-unlimited'; Args=$pipelineBase + @('-PageCap','0'); Exit=0; Dispatch=$true; Workers=2; PageCap=0}
+$cases += @{Name='pipeline-negative-cap'; Args=$pipelineBase + @('-PageCap','-1'); Exit=1; Dispatch=$false}
+$cases += @{Name='monitor-page-cap'; Args=@('-Tier','monitor','-Source','hanley','-ExpectedSha',$sha,'-PageCap','0'); Exit=1; Dispatch=$false}
 $strictMixed = 'essex-realty,pyramid-brokerage,interra-realty'
 $cases += @{Name='strict-mixed-admissions'; Args=@('-Tier','series','-Pipeline','-Sources',$strictMixed,'-AdmitCurrentInventorySources',$strictMixed,'-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Workers=2; Selected=$strictMixed; Admissions=$strictMixed.Split(',')}
 $cases += @{Name='strict-mixed-unselected'; Args=$pipelineBase + @('-AdmitCurrentInventorySources','essex-realty'); Exit=1; Dispatch=$false}
@@ -219,7 +222,8 @@ foreach ($case in $cases) {
             Assert-True ($forwarded -contains $expected) ('Missing conservative profile argv: ' + $expected)
         }
         $resolvedAttempts = if ($case.ContainsKey('Attempts')) { [int]$case.Attempts } else { 3 }
-        Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|400|--attempts-per-source|' + $resolvedAttempts + '|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
+        $resolvedPageCap = if ($case.ContainsKey('PageCap')) { [int]$case.PageCap } else { 400 }
+        Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|' + $resolvedPageCap + '|--attempts-per-source|' + $resolvedAttempts + '|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
         $selectedSource = if ($case.ContainsKey('Selected')) { $case.Selected } elseif ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'daum-current') { 'daum-commercial' } elseif ($case.Name -eq 'essex-current') { 'essex-realty' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
         $budget = if ($case.Name -eq 'savills-hold') { '30' } elseif ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
