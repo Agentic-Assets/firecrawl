@@ -385,12 +385,15 @@ def checkpoint_retained_unknown_ids(data):
         for entry in scope["entries"]
     }
     sale, lease = proofs["sale"], proofs["lease"]
+    from cre_daum_fallback_partition import staged_fallback_members
+
+    fallback_ids = {row["native_id"] for row in staged_fallback_members(data)} if sale.get("titleFallbackObservations") else set()
     retained = sale.get("retainedUnknownTenure", [])
     require(isinstance(retained, list))
     if not retained:
         require(
             all(
-                not row.get("preserveChildCollections")
+                (not row.get("preserveChildCollections") or row.get("daumPostId") in fallback_ids)
                 and not row.get("daumUnknownTenure")
                 for row in scope["listings"]
             )
@@ -473,7 +476,7 @@ def checkpoint_retained_unknown_ids(data):
         post = row.get("daumPostId")
         if post not in retained:
             require(
-                not row.get("preserveChildCollections")
+                (not row.get("preserveChildCollections") or row.get("daumPostId") in fallback_ids)
                 and not row.get("daumUnknownTenure")
             )
             continue
@@ -653,7 +656,7 @@ def _admit(
         require(observed <= _time(clock) <= end)
         _digest(body_hash)
         details[post] = (canonical, clock, body_hash)
-    empty_titles, title_urls = set(), []
+    empty_titles, title_urls, title_fallbacks = set(), [], {}
     if v2:
         observations = proof.get("titleObservations")
         require(isinstance(observations, list))
@@ -665,6 +668,18 @@ def _admit(
             empty_titles.add(post)
             title_urls.append(native[post][0])
         require(title_urls == sorted(title_urls))
+        fallback_urls = []
+        fallbacks = proof.get("titleFallbackObservations", [])
+        require(isinstance(fallbacks, list))
+        for item in fallbacks:
+            require(isinstance(item, dict) and set(item) == {"postId", "cardTitle", "documentTitle"})
+            post, card, document = item["postId"], item["cardTitle"], item["documentTitle"]
+            require(isinstance(post, str) and post in details and post not in title_fallbacks and post not in empty_titles)
+            require(isinstance(card, str) and bool(card.strip()) and card == card.strip())
+            require(document == f"{card} – Daum Commercial")
+            title_fallbacks[post] = {"cardTitle": card, "documentTitle": document}
+            fallback_urls.append(native[post][0])
+        require(fallback_urls == sorted(fallback_urls))
     held = [[post, "empty_required_property_title" if post in empty_titles
              else "unknown_inventory_and_detail_tenure"]
             for post, row in native.items() if post in empty_titles or row[-1] == "unknown"]
@@ -721,10 +736,20 @@ def _admit(
             and listing.get("detailObservedAt") == clock
             and listing.get("daumDetailResponseSha256") == body_hash
         )
+        if post in title_fallbacks:
+            title = title_fallbacks[post]["cardTitle"]
+            card = listing.get("daumSearchCard")
+            require(isinstance(card, dict) and card.get("url") == url and card.get("title") == title)
+            require(listing.get("daumTitleFallback") == title_fallbacks[post])
+            require(listing.get("name") == title and listing.get("street") is None)
+            require(all(listing.get(key) is None for key in ("city", "state", "postalCode")))
+        else:
+            require(listing.get("daumTitleFallback") is None)
         require(
-            listing.get("preserveChildCollections", False) is (post in retained_ids)
+            listing.get("preserveChildCollections", False) is (post in retained_ids or post in title_fallbacks)
             and (post in retained_ids or not listing.get("daumUnknownTenure"))
             and (post not in retained_ids or (listing.get("daumUnknownTenure") is True and listing.get("detailObservedWithChildPreservation") is True))
+            and (post not in title_fallbacks or listing.get("detailObservedWithChildPreservation") is True)
             and not listing.get("detailError")
             and listing.get("inventoryOnly") is None
         )
@@ -838,6 +863,43 @@ def _admit(
         if v2:
             binding.update(subset_policy=SUBSET_POLICY_V2,
                            title_observations_sha256=_sha(proof["titleObservations"]))
+            if title_fallbacks:
+                from cre_daum_fallback_partition import staged_fallback_members, transaction_guard_sql
+
+                fallback_members = staged_fallback_members(artifact)
+                probe = manifest["sources"][SOURCE].get("daum_fallback_probe")
+                require(isinstance(probe, dict) and set(probe) == {
+                    "artifact_sha256", "generation_id", "producer_sha",
+                    "database_target_sha256", "members_sha256", "partition"})
+                require(probe["artifact_sha256"] == digest
+                        and probe["generation_id"] == manifest["run_id"]
+                        and probe["producer_sha"] == current_code_sha
+                        and probe["database_target_sha256"] == target["value"]
+                        and probe["members_sha256"] == _sha(fallback_members))
+                transaction_guard_sql(fallback_members, probe["partition"])
+                binding["title_fallback_observations_sha256"] = _sha(proof["titleFallbackObservations"])
+                binding["fallback_partition_sha256"] = _sha(probe["partition"])
+                target_held = [
+                    {"native_id": row["native_id"], "external_id": row["external_id"], "reason": row["hold_reason"]}
+                    for row in probe["partition"] if row["hold_reason"] is not None
+                ]
+                target_held_ids = {row["native_id"] for row in target_held}
+                target_held_keys = {row["external_id"] for row in target_held}
+                binding.update(
+                    source_emitted_count=emitted_total,
+                    source_held_count=len(held_ids),
+                    source_staged_identities_sha256=binding["staged_identities_sha256"],
+                    target_held=target_held,
+                    emitted_count=emitted_total - len(target_held_ids),
+                    flat_emitted_count=sum(1 for row in listings if row["daumPostId"] not in target_held_ids),
+                    staged_count=len(staged) - len(target_held_keys),
+                    staged_identities_sha256=_sha([row for row in staged_identities if row[0] not in target_held_keys]),
+                    held_count=len(held_ids) + len(target_held_ids),
+                    sale_count=len((expected["sale"] - retained_ids) - target_held_ids),
+                    lease_count=len(expected["lease"] - target_held_ids),
+                    whole_lease_coverage="unknown" if held or target_held_ids else "proved",
+                )
+                require(binding["emitted_count"] > 0)
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -934,4 +996,11 @@ def ingest_subset_context(
     }
     if proof["schema"] == SUBSET_SCHEMA_V2:
         result.update(subset_policy=SUBSET_POLICY_V2, titleObservations=proof["titleObservations"])
+        if proof.get("titleFallbackObservations"):
+            from cre_daum_fallback_partition import staged_fallback_members
+
+            result["titleFallbackObservations"] = proof["titleFallbackObservations"]
+            result["fallbackMembers"] = staged_fallback_members(json.loads(raw))
+            result["fallbackPartition"] = manifest["sources"][SOURCE]["daum_fallback_probe"]["partition"]
+            require(_sha(result["fallbackPartition"]) == binding["fallback_partition_sha256"])
     return result

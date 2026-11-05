@@ -38,12 +38,16 @@ export function daumProof(
     const titleObservations: DaumEmptyTitleSubsetProof["titleObservations"] = rows
       .filter(row => "emptyRequiredTitle" in row.detail).map(row => [String(row.detail.postId), 1, "empty"]);
     const empty = new Set(titleObservations.map(row => row[0]));
+    const titleFallbackObservations = rows.flatMap(row =>
+      !("emptyRequiredTitle" in row.detail) && row.detail.titleFallback
+        ? [{ postId: String(row.detail.postId), ...row.detail.titleFallback }] : []);
     const held: DaumEmptyTitleSubsetProof["held"] = members
       .filter(row => empty.has(row[0]) || row[7] === "unknown")
       .map(row => [row[0], empty.has(row[0]) ? "empty_required_property_title" : "unknown_inventory_and_detail_tenure"]);
     return {
       schema: "daum-verified-subset-v2", ...identity, kind: "verified_subset_with_holds", ...base,
       subsetPolicy: "tenure-and-empty-title-v2", cohort: members, details, titleObservations,
+      ...(titleFallbackObservations.length ? { titleFallbackObservations } : {}),
       retainedUnknownTenure: held.filter(row => row[1] === "unknown_inventory_and_detail_tenure").map(row => row[0]),
       held, ...heldObservations(held),
     };

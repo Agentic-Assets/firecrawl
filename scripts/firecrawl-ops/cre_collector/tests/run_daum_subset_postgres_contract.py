@@ -273,6 +273,237 @@ try:
         ]
     )
     if unknown_mode:
+        # Source producer -> authenticated read-only probe -> both gates ->
+        # production staging SQL -> real-schema DB -> freshness readback.
+        from unittest.mock import patch
+        sys.path.insert(0, str(ROOT / "tests"))
+        import cre_checkpoint_refresh as checkpoint
+        import cre_current_inventory_admission as admission
+        import cre_daum_current_inventory as daum
+        import test_essex_current_inventory as helpers
+        from test_daum_current_inventory import produce
+        from test_daum_verified_subset import envelope
+
+        db = "fallback_producer"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        source_seed = [row(index) for index in range(101)]
+        for seed_row in source_seed:
+            for collection in ("images", "contacts", "documents", "media", "links"):
+                seed_row[collection] = []
+        sql(generated(source_seed), db)
+        sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-100'; "
+            "DELETE FROM credeals.cre_listings WHERE external_id='property/Synthetic-100';", db)
+        producer_dir = out / "offline-producer"
+        producer_dir.mkdir(mode=0o700)
+        produced = produce(producer_dir, total=101, empty_title=True, corroborated_title=True,
+                           with_spaces=True, subset_policy="tenure-and-empty-title-v2")
+        helpers.SOURCE = "daum-commercial"
+        prepared = helpers.setup(producer_dir, produced)
+        manifest = prepared[3]
+        manifest["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+        fake_url = "postgresql://postgres@fixture.invalid/fallback_producer"
+        target = ingest.database_target_fingerprint_from_url(fake_url)
+        manifest["preflight"]["database_target"] = target
+
+        def probe_psql(_psql, _db_url, script, **_kwargs):
+            result = cmd(["docker", "exec", "-i", container, "psql", "-X", "-q", "-A",
+                          "-F", "\t", "-P", "footer=off", "-U", "postgres", "-d", db,
+                          "-v", "ON_ERROR_STOP=1", "-f", "-"], input=script)
+            assert result.returncode == 0, result.stderr
+            return result
+
+        from cre_daum_fallback_partition import run_identity_probe
+        with (
+            patch.object(ingest, "load_db_url", return_value=(fake_url, None)),
+            patch.object(ingest, "find_psql", return_value="fixture-psql"),
+            patch.object(validate, "_run_psql_script", side_effect=probe_psql),
+            patch.object(checkpoint, "git_identity", return_value=(manifest["collector_git_sha"], False)),
+        ):
+            manifest["sources"]["daum-commercial"]["daum_fallback_probe"] = run_identity_probe(
+                prepared[1], manifest["sources"]["daum-commercial"]["artifact"]["sha256"],
+                manifest["run_id"], manifest["collector_git_sha"], target["value"], None)
+        source_envelope = envelope(prepared)
+        source_claims = daum.ingest_subset_context(
+            prepared[1], source_envelope, current_code_sha=manifest["collector_git_sha"],
+            current_git_dirty=False, expected_database_target_sha256=target["value"], attempt_id="e" * 32)
+        staged = {}
+        for listing in prepared[2]["listings"]:
+            mapped = ingest.to_row(listing, {}, prepared[2]["runMeta"]["finishedAt"])
+            key = mapped["external_id"]
+            staged[key] = ingest.merge_rows(staged[key], mapped) if key in staged else mapped
+        source_meta = [{"slug": "daum-commercial", "discovered": len(staged), "saved": len(staged),
+                        "errors": 0, "notes": "offline-producer exact proof"}]
+        source_sql = ingest.build_sql(list(staged.values()), source_meta, manifest["started_at"], set(),
+                                      finished_at=prepared[2]["runMeta"]["finishedAt"],
+                                      daum_verified_subset_claims=source_claims)
+        sql(source_sql, db)
+        fallback_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                     "WHERE external_id='property/Synthetic-100';", db).stdout)
+        import base64
+        source_saved = json.loads(base64.b64decode(fallback_raw["daumTitleFallbackHistory"][0]["rawBase64"]))
+        assert sql("SELECT address IS NULL FROM credeals.cre_listings "
+                   "WHERE external_id='property/Synthetic-100';", db).stdout.strip() == "t"
+        assert source_saved["daumTitleFallbackDetail"]["city"] == "Phoenix"
+        assert "$6,600 per month" in source_saved["daumAvailableSpaceObservations"][0]["text"]
+        generations = [line.split("|") for line in sql(validate.QUERIES["freshness_generations"], db).stdout.splitlines()]
+        generation_rows = [line for line in generations if line[0] == "daum-commercial" and line[3] == manifest["run_id"]]
+        assert len(generation_rows) == 1 and generation_rows[0][6] == "101", generation_rows
+        checks.append("fallback_offline_producer_to_real_db_readback")
+
+        # Exercise the actual fallback ingest SQL against owned real-schema DBs.
+        from cre_daum_current_inventory import _sha
+        from cre_daum_fallback_partition import identity_probe_sql
+        for fallback_case in ("existing", "new", "terminal", "conflict"):
+            db = "fallback_" + fallback_case
+            sql("CREATE DATABASE " + db + ";")
+            sql(schema, db)
+            sql(generated([row(index) for index in range(103)]), db)
+            key = "property/Synthetic-0"
+            url = "https://daumcommercial.com/property/Synthetic-0/"
+            if fallback_case == "new":
+                sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-0'; "
+                    "DELETE FROM credeals.cre_listings WHERE external_id='property/Synthetic-0';", db)
+            if fallback_case == "terminal":
+                sql("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';", db)
+            if fallback_case == "conflict":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}',"
+                    "'\"50000\"') WHERE external_id='property/Synthetic-102';", db)
+            prior_parent = sql("SELECT coalesce((to_jsonb(l)-'raw_data'-'updated_at')::text,'null') "
+                               "FROM credeals.cre_listings l WHERE external_id='property/Synthetic-0';", db).stdout.strip()
+            child_tables = ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents",
+                            "cre_listing_media", "cre_listing_links")
+            def fallback_children():
+                return {table: sql("SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id)::text,'[]') "
+                                   "FROM credeals." + table + " c JOIN credeals.cre_listings l ON l.id=c.listing_id "
+                                   "WHERE l.external_id='property/Synthetic-0';", db).stdout.strip()
+                        for table in child_tables}
+            def fallback_index():
+                return sql("SELECT coalesce(to_jsonb(si)::text,'null') FROM credeals.cre_source_index si "
+                           "WHERE external_id='property/Synthetic-0';", db).stdout.strip()
+            prior_children = fallback_children()
+            prior_index = fallback_index()
+            candidate = row(0, fresh=True, transaction="Lease", name="Observed fallback")
+            candidate["raw_data"].update({
+                "daumTitleFallback": {"cardTitle": "Observed fallback", "documentTitle": "Observed fallback – Daum Commercial"},
+                "daumSearchCard": {"title": "Observed fallback", "url": url},
+                "daumAvailableSpaceObservations": [{"text": "95,151 SF $1.15/SF/month", "html": "<li>95,151 SF</li>"}],
+                "preserveChildCollections": True, "detailObservedWithChildPreservation": True,
+                "inventoryObservedAt": "2026-10-17T00:00:00Z", "detailObservedAt": "2026-10-17T00:00:01Z",
+                "freshnessProvenance": {"generationId": "fallback-generation", "detailScope": "detail_page",
+                                        "cacheDisposition": "live", "method": "daum_direct_detail_html",
+                                        "identityMethod": "wordpress_shortlink_post_id"},
+            })
+            for child in candidate["images"] + candidate["contacts"]:
+                child.pop("isPrimary", None)
+            fallback_members = [{"native_id": "50000", "external_id": key, "source_url": url,
+                                 "inventory_at": "2026-10-17T00:00:00Z", "detail_at": "2026-10-17T00:00:01Z"}]
+            probe = sql(identity_probe_sql(fallback_members), db).stdout.strip().split("|", 2)
+            assert probe[:2] == ["1", "1"]
+            partition = json.loads(probe[2])
+            assert partition[0]["hold_reason"] == {"terminal": "existing_parent_unqualified", "conflict": "identity_conflict"}.get(fallback_case)
+            fallback_claims = copy.deepcopy(claims_v2)
+            fallback_claims["titleFallbackObservations"] = [
+                {"postId": "50000", "cardTitle": "Observed fallback", "documentTitle": "Observed fallback – Daum Commercial"}]
+            fallback_claims["fallbackMembers"] = fallback_members
+            fallback_claims["fallbackPartition"] = partition
+            fallback_claims["binding"]["title_fallback_observations_sha256"] = _sha(fallback_claims["titleFallbackObservations"])
+            fallback_claims["binding"]["fallback_partition_sha256"] = _sha(partition)
+            incoming = [candidate] + [row(index) for index in range(1, 100)]
+            # Provider data may use the same word under a non-authoritative
+            # nested key; it is not a DAUM fallback marker.
+            incoming[1]["raw_data"]["providerNotes"] = {"daumTitleFallback": "ordinary source value"}
+            result = sql(generated(incoming, fallback_claims), db, check=False)
+            assert result.returncode == 0, result.stderr
+            job = sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
+                      "WHERE status='partial';", db).stdout.strip()
+            assert job == ("partial|99" if fallback_case in {"terminal", "conflict"} else "partial|100"), job
+            current_parent = sql("SELECT (to_jsonb(l)-'raw_data'-'updated_at')::text "
+                                 "FROM credeals.cre_listings l WHERE external_id='property/Synthetic-0';", db).stdout.strip()
+            current_children = fallback_children()
+            if fallback_case in ("existing", "terminal", "conflict"):
+                assert current_parent == prior_parent, (fallback_case, current_parent, prior_parent)
+                assert current_children == prior_children
+                assert fallback_index() == prior_index
+            raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                 "WHERE external_id='property/Synthetic-0';", db).stdout)
+            if fallback_case not in {"terminal", "conflict"}:
+                import base64
+                history = raw["daumTitleFallbackHistory"]
+                assert len(history) == 1
+                assert json.loads(base64.b64decode(history[0]["rawBase64"])) == candidate["raw_data"]
+                assert validate.persisted_freshness_provenance(raw, source_key="daum-commercial")["generation_id"] == "fallback-generation"
+                freshness = sql(validate.QUERIES["freshness_generations"], db).stdout
+                assert "daum-commercial|strict_detail|current_strict_detail|fallback-generation|" in freshness
+                # A later ordinary upsert must retain the original fallback bytes.
+                sql(generated([row(index) for index in range(100)]), db)
+                raw_after = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                           "WHERE external_id='property/Synthetic-0';", db).stdout)
+                assert raw_after["daumTitleFallbackHistory"] == history
+                after_full_parent = sql("SELECT (to_jsonb(l)-'raw_data'-'updated_at')::text "
+                                        "FROM credeals.cre_listings l WHERE external_id='property/Synthetic-0';", db).stdout.strip()
+                after_full_children = fallback_children()
+                after_full_index = fallback_index()
+                stale_members = [{**fallback_members[0], "inventory_at": "2026-10-15T00:00:00Z",
+                                  "detail_at": "2026-10-15T00:00:01Z"}]
+                stale_partition = json.loads(sql(identity_probe_sql(stale_members), db).stdout.strip().split("|", 2)[2])
+                assert stale_partition[0]["hold_reason"] == "newer_target_observation"
+                later = copy.deepcopy(candidate)
+                later["raw_data"]["daumAvailableSpaceObservations"][0]["text"] = "Later source observation"
+                later["raw_data"]["inventoryObservedAt"] = "2026-10-18T00:00:00Z"
+                later["raw_data"]["detailObservedAt"] = "2026-10-18T00:00:01Z"
+                later["raw_data"]["freshnessProvenance"]["generationId"] = "later-generation"
+                later_members = [{**fallback_members[0], "inventory_at": "2026-10-18T00:00:00Z",
+                                  "detail_at": "2026-10-18T00:00:01Z"}]
+                for mutation in (
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation}','5'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,unknownField}','\"keep\"'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,freshnessProvenance,method}','null'::jsonb)",
+                    "jsonb_set(raw_data,'{latestDaumTitleFallbackObservation,detailObservedAt}','\"2026-01-99T00:00:00Z\"'::jsonb)",
+                    "jsonb_set(raw_data,'{daumFreshnessOwner}','\"unrecognized\"'::jsonb)",
+                    "raw_data - 'daumTitleFallbackHistory'",
+                ):
+                    invalid_probe = sql("BEGIN; UPDATE credeals.cre_listings SET raw_data=" + mutation
+                                        + " WHERE external_id='property/Synthetic-0';"
+                                        + identity_probe_sql(later_members) + "; ROLLBACK;", db).stdout.strip().split("|", 2)
+                    assert json.loads(invalid_probe[2])[0]["hold_reason"] == "existing_evidence_unqualified"
+                later_probe = sql(identity_probe_sql(later_members), db).stdout.strip().split("|", 2)
+                later_partition = json.loads(later_probe[2])
+                assert later_partition[0]["hold_reason"] is None
+                later_claims = copy.deepcopy(fallback_claims)
+                later_claims["fallbackMembers"] = later_members
+                later_claims["fallbackPartition"] = later_partition
+                later_claims["binding"]["fallback_partition_sha256"] = _sha(later_partition)
+                sql(generated([later] + [row(index) for index in range(1, 100)], later_claims), db)
+                later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                           "WHERE external_id='property/Synthetic-0';", db).stdout)
+                assert len(later_raw["daumTitleFallbackHistory"]) == 2
+                assert later_raw["daumTitleFallbackHistory"][0] == history[0]
+                assert json.loads(base64.b64decode(later_raw["daumTitleFallbackHistory"][1]["rawBase64"])) == later["raw_data"]
+                assert validate.persisted_freshness_provenance(later_raw, source_key="daum-commercial")["generation_id"] == "later-generation"
+                assert sql("SELECT (to_jsonb(l)-'raw_data'-'updated_at')::text FROM credeals.cre_listings l "
+                           "WHERE external_id='property/Synthetic-0';", db).stdout.strip() == after_full_parent
+                assert fallback_children() == after_full_children
+                assert fallback_index() == after_full_index
+                replay_partition = json.loads(sql(identity_probe_sql(later_members), db).stdout.strip().split("|", 2)[2])
+                assert replay_partition[0]["hold_reason"] == "newer_target_observation"
+                replay_claims = copy.deepcopy(later_claims)
+                replay_claims["fallbackPartition"] = replay_partition
+                replay_claims["binding"]["fallback_partition_sha256"] = _sha(replay_partition)
+                replay = sql(generated([later] + [row(index) for index in range(1, 100)], replay_claims), db, check=False)
+                assert replay.returncode and "DAUM fallback artifact already committed" in replay.stderr
+                assert sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
+                           "WHERE status='partial' ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial|100"
+                replay_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                            "WHERE external_id='property/Synthetic-0';", db).stdout)
+                assert replay_raw["daumTitleFallbackHistory"] == later_raw["daumTitleFallbackHistory"]
+            else:
+                assert "daumTitleFallbackHistory" not in raw
+                replay = sql(generated(incoming, fallback_claims), db, check=False)
+                assert replay.returncode and "DAUM fallback artifact already committed" in replay.stderr
+                assert sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
+                           "WHERE status='partial';", db).stdout.strip() == "partial|99"
+            checks.append("fallback_actual_ingest_" + fallback_case)
         unknown_claims = copy.deepcopy(claims_v2)
         for member in unknown_claims["members"]:
             if member["native_id"] == "50101":
@@ -283,6 +514,128 @@ try:
             sql("CREATE DATABASE " + db + ";")
             sql(schema, db)
             sql(generated([row(index) for index in range(102)]), db)
+            if case == "unknown_existing":
+                from cre_daum_fallback_partition import identity_probe_sql
+                members_probe = [
+                    {"native_id": "50000", "external_id": "property/Synthetic-0",
+                     "source_url": "https://daumcommercial.com/property/Synthetic-0/"},
+                    {"native_id": "59999", "external_id": "property/Synthetic-new",
+                     "source_url": "https://daumcommercial.com/property/Synthetic-new/"},
+                ]
+                for member in members_probe:
+                    member.update(inventory_at="2026-10-17T00:00:00Z", detail_at="2026-10-17T00:00:01Z")
+                probe_query = identity_probe_sql(members_probe)
+                def probe(prefix=""):
+                    result = sql("BEGIN;" + prefix + probe_query + "; ROLLBACK;", db).stdout.strip().split("|", 2)
+                    assert result[:2] == ["2", "2"]
+                    return {item["native_id"]: item for item in json.loads(result[2])}
+                normal = probe()
+                assert normal["50000"]["hold_reason"] is None, normal
+                missing_canonical = probe("UPDATE credeals.cre_listings SET canonical_url=NULL WHERE external_id='property/Synthetic-0';")
+                assert missing_canonical["50000"]["hold_reason"] is None
+                assert normal["59999"]["hold_reason"] is None, normal
+                from cre_daum_fallback_partition import transaction_guard_sql
+                partition = [normal[key] for key in sorted(normal, key=lambda key: normal[key]["external_id"])]
+                guard = transaction_guard_sql(members_probe, partition)
+                sql("BEGIN;" + guard + "ROLLBACK;", db)
+                stale = sql("BEGIN; UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';" + guard + "ROLLBACK;", db, check=False)
+                assert stale.returncode and "DAUM fallback partition changed" in stale.stderr
+                # A cooperating lifecycle writer commits after the initial probe.
+                # The admission transaction waits on the shared advisory lock,
+                # then must refuse its stale parent preimage.
+                writer = subprocess.Popen(
+                    ["docker", "exec", "-i", container, "psql", "-X", "-qAt",
+                     "-U", "postgres", "-d", db, "-v", "ON_ERROR_STOP=1"],
+                    env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                )
+                writer.stdin.write(
+                    "BEGIN;\n" + ingest.lifecycle_transaction_lock_sql()
+                    + "\nUPDATE credeals.cre_listings SET status='withdrawn' "
+                    "WHERE external_id='property/Synthetic-0';\n\\echo WRITER_READY\n"
+                    "SELECT pg_sleep(4);\nCOMMIT;\n"
+                )
+                writer.stdin.flush()
+                for line in writer.stdout:
+                    if line.strip() == "WRITER_READY":
+                        break
+                else:
+                    raise AssertionError("cooperating writer did not acquire lock")
+                reader = subprocess.Popen(
+                    ["docker", "exec", "-i", container, "psql", "-X", "-qAt",
+                     "-U", "postgres", "-d", db, "-v", "ON_ERROR_STOP=1"],
+                    env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                )
+                reader.stdin.write(
+                    "BEGIN; SET LOCAL lock_timeout='6s'; SELECT pg_backend_pid();\n"
+                    + ingest.lifecycle_transaction_lock_sql() + guard + "ROLLBACK;\n"
+                )
+                reader.stdin.flush()
+                reader_pid = int(reader.stdout.readline().strip())
+                deadline = time.monotonic() + 3
+                observed_waiter = False
+                while time.monotonic() < deadline:
+                    observed_waiter = sql(
+                        "SELECT count(*) FROM pg_stat_activity WHERE pid="
+                        + str(reader_pid) + " AND wait_event_type='Lock' AND wait_event='advisory';", db
+                    ).stdout.strip() == "1"
+                    if observed_waiter:
+                        break
+                    time.sleep(0.05)
+                assert observed_waiter, "reader never observed waiting on lifecycle lock"
+                writer.stdin.close()
+                assert writer.wait(timeout=10) == 0, writer.stderr.read()
+                reader.stdin.close()
+                assert reader.wait(timeout=10) != 0
+                assert "DAUM fallback partition changed" in reader.stderr.read()
+                sql("UPDATE credeals.cre_listings SET status='active' WHERE external_id='property/Synthetic-0';", db)
+                checks.append("fallback_two_session_stale_preimage")
+                terminal = probe("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';")
+                assert terminal["50000"]["hold_reason"] == "existing_parent_unqualified"
+                assert terminal["59999"]["hold_reason"] is None
+                assert terminal["50000"]["preimage"] != normal["50000"]["preimage"]
+                newer_parent = probe("UPDATE credeals.cre_listings SET scraped_at='2026-10-18T00:00:00Z' WHERE external_id='property/Synthetic-0';")
+                assert newer_parent["50000"]["hold_reason"] == "newer_target_observation"
+                assert newer_parent["59999"]["hold_reason"] is None
+                newer_inventory = probe("UPDATE credeals.cre_source_index SET last_enumerated_at='2026-10-18T00:00:00Z' WHERE external_id='property/Synthetic-0';")
+                assert newer_inventory["50000"]["hold_reason"] == "newer_target_observation"
+                assert newer_inventory["59999"]["hold_reason"] is None
+                sql("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';", db)
+                held_now = probe()
+                held_partition = [held_now[key] for key in sorted(held_now, key=lambda key: held_now[key]["external_id"])]
+                held_guard = transaction_guard_sql(members_probe, held_partition, filter_src=True)
+                stage = """
+CREATE TEMP TABLE _src ON COMMIT DROP AS
+SELECT brokerage_id, external_id, source_url, raw_data, 'daum-commercial'::text AS slug FROM credeals.cre_listings
+ WHERE external_id='property/Synthetic-0'
+UNION ALL SELECT id, 'property/Synthetic-new',
+  'https://daumcommercial.com/property/Synthetic-new/',
+  jsonb_build_object('sourceKey','daum-commercial','daumPostId','59999'), 'daum-commercial'
+ FROM credeals.cre_brokerages WHERE slug='daum-commercial'
+UNION ALL SELECT id, 'foreign', 'https://example.invalid/foreign',
+  jsonb_build_object('sourceKey','savills','daumTitleFallback','unrelated'), 'savills'
+ FROM credeals.cre_brokerages WHERE slug='savills';
+"""
+                held_result = sql("BEGIN;" + stage + held_guard
+                                  + "SELECT external_id FROM _src ORDER BY external_id; ROLLBACK;", db)
+                assert held_result.stdout.strip().splitlines() == ["foreign", "property/Synthetic-new"]
+                rogue = """
+INSERT INTO _src
+SELECT id, 'property/rogue', 'https://daumcommercial.com/property/rogue/',
+ jsonb_build_object('sourceKey','daum-commercial','primary',
+   jsonb_build_object('secondary_pass',jsonb_build_object('daumTitleFallback','unbound'))),
+ 'daum-commercial'
+FROM credeals.cre_brokerages WHERE slug='daum-commercial';
+"""
+                refused = sql("BEGIN;" + stage + rogue + held_guard + "ROLLBACK;", db, check=False)
+                assert refused.returncode and "DAUM fallback staging differs" in refused.stderr
+                sql("UPDATE credeals.cre_listings SET status='active' WHERE external_id='property/Synthetic-0';", db)
+                checks.append("fallback_held_filtered_valid_peer_retained")
+                conflict = probe("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}'," + "'\"50000\"') WHERE external_id='property/Synthetic-1';")
+                assert conflict["50000"]["hold_reason"] == "identity_conflict"
+                assert conflict["59999"]["hold_reason"] is None
+                checks.append("fallback_probe_existing_new_terminal_conflict")
             sql("UPDATE credeals.cre_listings SET transaction_type='lease', "
                 "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\","
                 "\"inventoryObservedAt\":\"2026-10-15T00:00:00Z\","

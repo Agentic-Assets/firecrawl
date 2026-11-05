@@ -72,6 +72,26 @@ def subset_policy(config: dict, source="daum-commercial") -> str:
     return entry.get("subset_policy", "tenure-only-v1") if entry else "tenure-only-v1"
 
 
+def invocation_subset_policy(requested, admitted, resume=None):
+    """Choose V2 for a new subset, preserving an existing resume's policy."""
+    if requested is not None:
+        require(requested in DAUM_SUBSET_POLICIES)
+        return requested
+    if not admitted:
+        return "tenure-only-v1"
+    if resume:
+        import json
+        from pathlib import Path
+
+        supplied = Path(resume).expanduser().resolve()
+        path = supplied if supplied.name == "manifest.json" else supplied / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        require(isinstance(manifest, dict) and isinstance(manifest.get("config"), dict))
+        require(is_verified_subset(manifest["config"]))
+        return subset_policy(manifest["config"])
+    return "tenure-and-empty-title-v2"
+
+
 def validate_option(
     source: str | None, sources, transactions, *, additive_hold=False, allow_dirty=False
 ) -> None:

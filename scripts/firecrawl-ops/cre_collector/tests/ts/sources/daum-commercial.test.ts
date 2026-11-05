@@ -279,6 +279,20 @@ test("DAUM detail parser extracts stable shortlink ID and deterministic detail f
   assert.equal(detail.brochures[0].url, "https://daumcommercial.com/wp-content/uploads/brochure.pdf");
 });
 
+test("DAUM empty visible title resolves only from agreeing card and owned document title", () => {
+  const empty = detailHtml.replace('<div class="title-property">100 Main Street</div>', '<div class="title-property"></div>')
+    .replace('<head>', '<head><title>100 Main Street – Daum Commercial</title>');
+  const url = "https://daumcommercial.com/property/main-street/";
+  const detail = parseDaumDetail(empty, url, true, "100 Main Street");
+  assert.ok(!("emptyRequiredTitle" in detail));
+  assert.equal(detail.title, "100 Main Street");
+  assert.deepEqual(detail.titleFallback, {cardTitle: "100 Main Street", documentTitle: "100 Main Street – Daum Commercial"});
+  assert.equal(detail.facts.Zoning, "M-1");
+  assert.ok("emptyRequiredTitle" in parseDaumDetail(empty, url, true, "Different address"));
+  assert.ok("emptyRequiredTitle" in parseDaumDetail(empty.replace("100 Main Street – Daum Commercial", "Other – Daum Commercial"), url, true, "100 Main Street"));
+  assert.ok("emptyRequiredTitle" in parseDaumDetail(empty.replace("<title>", "<title>first</title><title>"), url, true, "100 Main Street"));
+});
+
 test("DAUM retains each available-space observation and conflicting source rents", () => {
   const spaces = `<div class="units-info"><div class="right-side">
     <div class="unit-item"><ul><li>Unit #: 7101-B</li><li>Mo. Rent PSF: $0.00</li>
