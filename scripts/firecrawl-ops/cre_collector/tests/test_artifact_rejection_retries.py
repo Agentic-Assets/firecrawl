@@ -655,3 +655,21 @@ def test_global_compute_fault_does_not_retry_collection(tmp_path, monkeypatch, f
             source_workers=2,
         )
     assert starts[sources[0]] == 1 and not database
+
+
+def test_franklin_failed_derivation_preserves_original_and_candidate(tmp_path):
+    original = tmp_path / "rejected" / "franklin-street-attempt-1.json"
+    original.parent.mkdir()
+    original.write_bytes(b"original source evidence")
+    candidate = tmp_path / "derived.json"
+    candidate.write_bytes(b"derived rejected candidate")
+    attempt = {"number": 1, "rejected_artifact": str(original.relative_to(tmp_path)),
+               "rejected_artifact_sha256": "original-hash"}
+    manifest = {"sources": {"franklin-street": {
+        "candidate": {"path": "derived.json"}, "attempts": [attempt]}}}
+
+    pipeline.archive_failed_candidate(tmp_path, manifest, "franklin-street")
+
+    assert original.read_bytes() == b"original source evidence"
+    assert candidate.read_bytes() == b"derived rejected candidate"
+    assert attempt["rejected_artifact_sha256"] == "original-hash"

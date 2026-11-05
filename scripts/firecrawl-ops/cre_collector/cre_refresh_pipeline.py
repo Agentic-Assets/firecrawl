@@ -309,6 +309,22 @@ def pending_disk_bytes(run_dir: Path, excluded: set[Path]) -> int:
     return total
 
 
+def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None:
+    import cre_checkpoint_refresh as refresh
+
+    checkpoint = manifest["sources"][source]
+    attempt = checkpoint["attempts"][-1]
+    # Franklin may already have archived the original before derivation failed.
+    # Keep both that evidence and any derived candidate in their private paths.
+    if source == "franklin-street" and attempt.get("rejected_artifact"):
+        return
+    attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
+        refresh.archive_rejected_with_evidence(
+            run_dir / checkpoint["candidate"]["path"], run_dir, manifest, source, attempt
+        )
+    )
+
+
 def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
     import cre_checkpoint_refresh as refresh
 
@@ -1119,18 +1135,7 @@ def run_bounded_pipeline(
                             candidate = checkpoint["candidate"]
                             checkpoint["state"] = "artifact_rejected"
                             checkpoint["attempts"][-1]["error"] = str(exc)
-                            (
-                                checkpoint["attempts"][-1]["rejected_artifact"],
-                                checkpoint["attempts"][-1][
-                                    "rejected_artifact_sha256"
-                                ],
-                            ) = refresh.archive_rejected_with_evidence(
-                                run_dir / candidate["path"],
-                                run_dir,
-                                manifest,
-                                source,
-                                checkpoint["attempts"][-1],
-                            )
+                            archive_failed_candidate(run_dir, manifest, source)
                             retry_or_fail(source, "artifact validation failed")
                             continue
                         prepared.append(source)
