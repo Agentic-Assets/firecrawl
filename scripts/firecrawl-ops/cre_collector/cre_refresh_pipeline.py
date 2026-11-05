@@ -516,6 +516,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         )
     try:
         refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.NaiPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "nai-global" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("NAI held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     except refresh.DaumPartialProbeHold:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "daum-commercial" or refresh.git_identity() != (binding["collector_git_sha"], False)
@@ -833,7 +843,8 @@ def run_database_unit(
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
                 or refresh.colliers_partial_candidate(manifest, source)
                 or refresh.franklin_partial_candidate(manifest, source)
-                or refresh.lyon_partial_candidate(manifest, source)):
+                or refresh.lyon_partial_candidate(manifest, source)
+                or refresh.nai_post_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -1369,6 +1380,9 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "nai-public-post-partial-v1":
+                                state["source_results"][source]["visibility_limitation"] = (
+                                    "new post rows with unknown status are excluded from active listing views")
                             if binding.get("schema") == "franklin-site-partial-v1":
                                 state["source_results"][source].update(
                                     buildout_pending=binding.get("buildout_pending"),

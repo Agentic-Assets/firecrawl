@@ -127,6 +127,9 @@ def stage_post(listing, generation):
             projected[key] = None
         elif isinstance(value, float) and not math.isfinite(value):
             projected[key] = None
+    state = projected["state"]
+    if state is not None and (not isinstance(state, str) or not re.fullmatch(r"[A-Z]{2}", state)):
+        projected["state"] = None
     year = projected["year_built"]
     if type(year) not in {int, float} or not math.isfinite(year) or int(year) != year or not -(2**31) <= year < 2**31:
         projected["year_built"] = None

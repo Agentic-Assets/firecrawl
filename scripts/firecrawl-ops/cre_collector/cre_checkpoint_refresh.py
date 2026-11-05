@@ -263,6 +263,10 @@ class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
 
 
+class NaiPartialProbeHold(SourceGuardRefusal):
+    """Settled NAI source identity output cannot be qualified."""
+
+
 class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
 
@@ -2890,14 +2894,21 @@ def lyon_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("lyon_partial") is True)
 
 
+def nai_post_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "nai-global"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("nai_post_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
             or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-            or lyon_partial_candidate(manifest, source))
+            or lyon_partial_candidate(manifest, source) or nai_post_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if nai_post_partial_candidate(manifest, source):
+        return "nai_post_claims"
     if lyon_partial_candidate(manifest, source):
         return "lyon_partial_claims"
     if colliers_partial_candidate(manifest, source):
@@ -5524,6 +5535,9 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if nai_post_partial_candidate(manifest, source):
+            from cre_nai_post_admission import admit as admit_nai_post
+            return admit_nai_post(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty, phase=phase)
         if lyon_partial_candidate(manifest, source):
             from cre_lyon_partial_checkpoint import admit_search
             return admit_search(artifact, manifest, report, current_code_sha=git_sha,
@@ -5587,9 +5601,26 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
+        if (source == "nai-global" and full_transaction_scope
+                and manifest["config"].get("additive") is True
+                and manifest["config"].get("mark_missing") is False
+                and manifest["config"].get("status_activation") is False
+                and manifest["config"].get("max_items") == 0
+                and per_source.get("verdict") == "hold"
+                and subset_gate_can_admit(per_source)):
+            checkpoint["artifact"]["nai_post_partial"] = True
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or nai_post_partial_candidate(manifest, source)):
+            if nai_post_partial_candidate(manifest, source):
+                from cre_nai_post_admission import NaiSourceProbeRefusal, run_identity_probe
+                try:
+                    checkpoint["nai_post_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except NaiSourceProbeRefusal as exc:
+                    raise NaiPartialProbeHold("NAI source identity could not be qualified") from exc
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("NAI partial identity classification failed") from exc
             if lyon_partial_candidate(manifest, source):
                 from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
                 try:
@@ -5752,7 +5783,8 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    flag = ("--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
+    flag = ("--nai-post-claims" if nai_post_partial_candidate(manifest, source)
+            else "--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
             else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
@@ -6258,7 +6290,8 @@ def run_aggregate_gate(
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or nai_post_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6467,6 +6500,11 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if nai_post_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_nai_post_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted NAI post partial ingest requires exact readback")
     if lyon_partial_candidate(manifest, source):
         checkpoint["state"] = "ingest_recovery_required"
         checkpoint["ingest_recovery"] = {"reason": "interrupted_lyon_partial_ingest", "readback_ok": False}
@@ -6721,6 +6759,21 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
     return values if len(values) == len(value) and values else None
 
 
+def nai_post_partial_readback(run_dir, manifest, env_file):
+    """Revalidate sealed claims and read the exact post-scoped outcome."""
+    from cre_nai_post_admission import run_readback
+
+    checkpoint = manifest["sources"]["nai-global"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "nai-global")
+    if len(arguments) < 2:
+        raise GlobalStageError("NAI partial readback claims are missing")
+    result = run_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+                          target_sha256=manifest_database_target_sha256(manifest),
+                          attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    subset_ingest_arguments(run_dir, manifest, "nai-global")
+    return result
+
+
 def franklin_partial_readback(run_dir, manifest, env_file):
     """Revalidate sealed claims and read exact site-card identities and job."""
     from cre_franklin_site_admission import ingest_subset_context, run_readback
@@ -6906,6 +6959,33 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if nai_post_partial_candidate(manifest, source):
+            observed = validation.get("nai_post_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("whole_source_coverage") is False
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("partition_sha256") == binding.get("partition_sha256")
+                  and observed.get("preimage_sha256") == binding.get("preimage_sha256")
+                  and observed.get("children_verified") is True
+                  and type(observed.get("staged_count")) is int
+                  and observed.get("staged_count") == binding.get("staged_count")
+                  and type(observed.get("emitted_count")) is int
+                  and observed.get("emitted_count") == binding.get("emitted_count")
+                  and type(observed.get("held_count")) is int
+                  and observed.get("held_count") == binding.get("held_count")
+                  and type(observed.get("new_missing_canonical_count")) is int
+                  and 0 <= observed["new_missing_canonical_count"] <= observed["emitted_count"])
+            checkpoint["readback"] = {"ok": ok, "kind": "nai_public_post_partial",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if lyon_partial_candidate(manifest, source):
             observed = validation.get("lyon_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7513,6 +7593,9 @@ def run_final_validation(
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
+    if (sources is None or "nai-global" in sources) and nai_post_partial_candidate(manifest, "nai-global"):
+        result["nai_post_partial_readback"] = nai_post_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
     if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
@@ -7535,10 +7618,14 @@ def run_final_validation(
     lyon_allowance = 0
     if readback["ok"] and (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         lyon_allowance = result["lyon_partial_readback"].get("new_missing_canonical_count", 0)
+    nai_allowance = 0
+    if readback["ok"] and (sources is None or "nai-global" in sources) and nai_post_partial_candidate(manifest, "nai-global"):
+        nai_allowance = result["nai_post_partial_readback"]["new_missing_canonical_count"]
     quality = compare_validation_quality(
         before, result, image_transition=transition,
         transwestern_image_transition=tw_transition if tw_required else None,
         lyon_new_missing_canonical=lyon_allowance,
+        nai_new_missing_canonical=nai_allowance,
     )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
@@ -7548,6 +7635,7 @@ def run_final_validation(
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
         **({"lyon_new_missing_canonical_count": lyon_allowance} if lyon_allowance else {}),
+        **({"nai_new_missing_canonical_count": nai_allowance} if nai_allowance else {}),
         "image_transition": quality.get("image_transition"),
         **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
            if tw_required else {}),
@@ -7590,11 +7678,13 @@ def _rows_by(
 
 def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
-    transwestern_image_transition=None, lyon_new_missing_canonical=0,
+    transwestern_image_transition=None, lyon_new_missing_canonical=0, nai_new_missing_canonical=0,
 ) -> dict[str, Any]:
     """Reject hard regressions, accounting only for verified new Lyon partial parents."""
     if type(lyon_new_missing_canonical) is not int or lyon_new_missing_canonical < 0:
         raise ValueError("invalid Lyon new-parent quality allowance")
+    if type(nai_new_missing_canonical) is not int or nai_new_missing_canonical < 0:
+        raise ValueError("invalid NAI new-parent quality allowance")
     try:
         if "validation_profile" in before or "audit_scope" in before:
             require_checkpoint_preflight_report(before)
@@ -7663,6 +7753,9 @@ def compare_validation_quality(
                 allowance = (
                     lyon_new_missing_canonical
                     if query == "quality_by_source" and identity == ("lyon-stahl",)
+                    and metric_field == "missing_canonical_url" else
+                    nai_new_missing_canonical
+                    if query == "quality_by_source" and identity == ("nai-global",)
                     and metric_field == "missing_canonical_url" else 0
                 )
                 if new_value > old_value + allowance:

@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from decimal import Decimal
@@ -11,7 +12,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import cre_ingest as ingest  # noqa: E402
-from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
+from cre_nai_post_admission import admit, candidate, ingest_subset_context  # noqa: E402
+from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql  # noqa: E402
 from tests.test_nai_post_partial import post  # noqa: E402
 
 
@@ -21,6 +23,7 @@ def run(*args, text=None, check=True):
 
 def main():
     name = "nai-post-proof-" + uuid.uuid4().hex[:12]
+    tmp = tempfile.TemporaryDirectory(prefix="nai-post-fixture-")
 
     def sql(query):
         result = run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
@@ -67,13 +70,53 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         incomplete.pop("detailObservedAt")
         incomplete.pop("transactionMode")
         incomplete["feedRow"].pop("contentType")
-        staged = [stage_post(value, "gen-1") for value in (post(1), post(2), incomplete)]
+        root = Path(tmp.name) / "gen-1"
+        (root / "sources").mkdir(parents=True)
+        artifact = root / "sources" / "nai-global.json"
+        data = {"runMeta": {"transactions": ["sale", "lease"], "mode": "full",
+                            "startedAt": "2026-11-05T09:59:00Z", "finishedAt": "2026-11-05T10:01:00Z",
+                            "freshness": {"generationId": "gen-1"}},
+                "sources": [{"sourceKey": "nai-global", "transaction": "sale", "truncated": False}],
+                "brokers": [], "listings": [post(1), post(2), incomplete]}
+        import hashlib
+        raw = json.dumps(data).encode()
+        artifact.write_bytes(raw)
+        artifact.chmod(0o600)
+        manifest = {"run_id": "gen-1", "started_at": "2026-11-05T09:58:00Z", "collector_git_sha": "a" * 40,
+                    "collector_git_dirty": False, "scope": {}, "config": {"sources": ["nai-global"],
+                    "additive": True, "mark_missing": False, "status_activation": False,
+                    "transactions": ["sale", "lease"], "max_items": 0},
+                    "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
+                    "sources": {"nai-global": {"artifact": {"path": "sources/nai-global.json", "nai_post_partial": True,
+                    "attempt_started_at": "2026-11-05T09:58:30Z", "sha256": hashlib.sha256(raw).hexdigest(),
+                    "bytes": len(raw), "freshness_generation_id": "gen-1", "freshness_generation_started_at": "2026-11-05T09:58:00Z",
+                    "started_at": "2026-11-05T09:59:00Z", "finished_at": "2026-11-05T10:01:00Z"},
+                    "attempts": [{"rc": 0, "error": None, "started_at": "2026-11-05T09:58:30Z",
+                                  "finished_at": "2026-11-05T10:02:00Z"}]}}}
+        binding, partition = candidate(artifact, manifest, code_sha="a" * 40, dirty=False)
+        staged = partition["staged"]
         result = sql(identity_probe_sql(staged)).split("|", 3)
         assert result[:2] == ["3", "3"]
         held, before = json.loads(result[2]), json.loads(result[3], parse_float=Decimal)
         assert held == ["infabode:2"], held
-        job_id = str(uuid.uuid4())
-        sql(build_partial_sql(staged, held, before, job_id,
+        manifest["sources"]["nai-global"]["nai_post_identity_probe"] = {
+            **binding, "held": held, "preimage": result[3], "preimage_sha256": hashlib.sha256(result[3].encode()).hexdigest()}
+        report = {"summary": {"mode": "live", "torow_errors": 0, "baseline_updated": False,
+                  "baseline_update_sources": [], "hold_sources": ["nai-global"]},
+                  "generated_for_artifact": str(artifact), "per_source": {"nai-global": {
+                  "current_active": 3, "verdict": "hold", "mark_missing_safe": False,
+                  "reason": "current_active 3 below floor 100"}}}
+        import copy
+        proof = admit(artifact, manifest, report, code_sha="a" * 40, dirty=False, phase="source")
+        manifest["sources"]["nai-global"]["gate"] = {"current_inventory_proof": proof}
+        aggregate = copy.deepcopy(report)
+        assert admit(artifact, manifest, aggregate, code_sha="a" * 40, dirty=False, phase="aggregate") == proof
+        envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
+                    "binding": proof, "attempt_id": "d" * 32}
+        context = ingest_subset_context(artifact, envelope, code_sha="a" * 40, dirty=False,
+                                        target_sha256="b" * 64, attempt_id="d" * 32)
+        job_id = context["job_id"]
+        sql(build_partial_sql(context["staged"], context["held"], context["preimage"], job_id,
                               "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z"))
         readback = partial_readback_sql(staged, held, before, job_id,
                                         "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z")
@@ -114,6 +157,7 @@ SELECT json_build_object(
         print("NAI post partial real-schema proof passed")
     finally:
         run("docker", "rm", "-f", name, check=False)
+        tmp.cleanup()
 
 
 if __name__ == "__main__":

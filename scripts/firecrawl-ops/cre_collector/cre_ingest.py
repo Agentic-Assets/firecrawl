@@ -7669,6 +7669,7 @@ def main():
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--nai-post-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--lyon-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
@@ -7723,6 +7724,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.nai_post_claims:
+        try:
+            from cre_nai_post_admission import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing NAI post partial ingest: {exc}")
+        return
     if args.franklin_site_claims and args.lyon_partial_claims:
         sys.exit("refusing mixed Franklin and Lyon partial claims")
     if args.franklin_site_claims:

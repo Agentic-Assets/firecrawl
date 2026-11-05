@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cre_nai_post_admission import admit, candidate, run_identity_probe
+from cre_nai_post_admission import admit, candidate, ingest_subset_context, run_identity_probe
 from tests.test_nai_post_partial import post
 
 
@@ -16,7 +16,8 @@ def fixture(tmp_path):
     path = source / "nai-global.json"
     data = {"runMeta": {"transactions": ["sale", "lease"], "mode": "full",
                         "startedAt": "2026-11-05T09:59:00Z", "finishedAt": "2026-11-05T10:00:02Z",
-                        "freshness": {"generationId": "gen-1"}}, "listings": [post()]}
+                        "freshness": {"generationId": "gen-1"}}, "listings": [post()],
+            "sources": [{"sourceKey": "nai-global", "transaction": "sale", "truncated": False}], "brokers": []}
     raw = json.dumps(data).encode()
     path.write_bytes(raw)
     path.chmod(0o600)
@@ -25,9 +26,11 @@ def fixture(tmp_path):
                 "collector_git_dirty": False, "config": {"sources": ["nai-global"], "additive": True,
                 "mark_missing": False, "status_activation": False, "transactions": ["sale", "lease"],
                 "max_items": 0}, "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
-                "sources": {"nai-global": {"artifact": {"path": "sources/nai-global.json",
+                "sources": {"nai-global": {"artifact": {"path": "sources/nai-global.json", "nai_post_partial": True,
                 "attempt_started_at": "2026-11-05T09:58:30Z", "sha256": hashlib.sha256(raw).hexdigest(),
-                "bytes": len(raw), "freshness_generation_id": "gen-1"}, "attempts": [{"rc": 0,
+                "bytes": len(raw), "freshness_generation_id": "gen-1",
+                "freshness_generation_started_at": "2026-11-05T09:58:00Z",
+                "started_at": "2026-11-05T09:59:00Z", "finished_at": "2026-11-05T10:00:02Z"}, "attempts": [{"rc": 0,
                 "error": None, "started_at": "2026-11-05T09:58:30Z", "finished_at": "2026-11-05T10:00:03Z"}]}}}
     return path, manifest, sha
 
@@ -74,22 +77,21 @@ def test_probe_keeps_numeric_preimage_as_exact_json_text(tmp_path, monkeypatch):
     assert json.loads(json.dumps(result))["preimage"] == before
 
 
-def test_only_count_hold_is_source_partial_and_preserves_failed_peer(tmp_path, monkeypatch):
-    import cre_gate
+def test_only_count_hold_is_source_partial_and_preserves_failed_peer(tmp_path):
     path, manifest, sha = fixture(tmp_path)
     manifest["scope"] = {}
+    manifest["config"].update(pipeline=True, sources=["nai-global", "peer"])
+    manifest["sources"]["peer"] = {"artifact": {"path": "sources/peer.json"}}
     binding, _ = candidate(path, manifest, code_sha=sha, dirty=False)
     preimage = ('[{"external_id":"infabode:1","listing":null,"source_index":null,'
                 '"children":{}}]')
     manifest["sources"]["nai-global"]["nai_post_identity_probe"] = {
         **binding, "held": [], "preimage": preimage,
         "preimage_sha256": hashlib.sha256(preimage.encode()).hexdigest()}
-    monkeypatch.setattr(cre_gate, "count_artifacts", lambda *a, **k: ({"nai-global": 1}, {}, {"nai-global"}, None, 0))
-    # Exercise aggregate member handling without manufacturing a second artifact.
-    monkeypatch.setattr("cre_current_inventory_admission.validate_report_scope", lambda *a: None)
     report = {"summary": {"mode": "live", "torow_errors": 0, "baseline_updated": False,
               "baseline_update_sources": [], "hold_sources": ["nai-global", "peer"],
-              "mark_missing_safe_sources": []}, "per_source": {
+              "mark_missing_safe_sources": []},
+              "generated_for_artifact": [str(path), str(path.parent / "peer.json")], "per_source": {
               "nai-global": {"current_active": 1, "verdict": "hold", "mark_missing_safe": False,
                              "reason": "current_active 1 below floor 100"},
               "peer": {"verdict": "hold", "reason": "provider error"}}}
@@ -97,6 +99,18 @@ def test_only_count_hold_is_source_partial_and_preserves_failed_peer(tmp_path, m
     assert proof["emitted_count"] == 1 and proof["whole_source_coverage"] is False
     assert report["summary"]["hold_sources"] == ["peer"]
     assert report["per_source"]["peer"]["reason"] == "provider error"
+    manifest["sources"]["nai-global"]["gate"] = {"current_inventory_proof": proof}
+    aggregate = copy.deepcopy(report)
+    assert admit(path, manifest, aggregate, code_sha=sha, dirty=False, phase="aggregate") == proof
+    attempt = "d" * 32
+    envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
+                "binding": proof, "attempt_id": attempt}
+    context = ingest_subset_context(path, envelope, code_sha=sha, dirty=False,
+                                    target_sha256="b" * 64, attempt_id=attempt)
+    assert context["held"] == [] and context["attempt_id"] == attempt
+    with pytest.raises(ValueError):
+        ingest_subset_context(path, envelope, code_sha=sha, dirty=False,
+                              target_sha256="c" * 64, attempt_id=attempt)
     bad = copy.deepcopy(report)
     bad["per_source"]["nai-global"].update(verdict="hold", reason="source pass error: access denied")
     with pytest.raises(ValueError, match="coverage-only"):
