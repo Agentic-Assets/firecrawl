@@ -3,6 +3,8 @@
 This module does not authorize writes: caller must bind the original page spool,
 settled owner, artifact, code, target and both checkpoint gates.
 """
+import hashlib
+import json
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -91,3 +93,90 @@ def revalidate_source_receipt(run_dir, manifest, attempt_number, current_code_sh
     }
 
 
+def verify_detail_record(item, generation, attempt, started_at, finished_at):
+    """Validate one private native detail against its exact partial listing."""
+    if not isinstance(item, dict) or set(item) != {"listing", "source", "decodedDetail"}:
+        raise ValueError("partial detail record invalid")
+    listing, source, raw = item["listing"], item["source"], item["decodedDetail"]
+    if not isinstance(listing, dict) or not isinstance(source, dict) or not isinstance(raw, str):
+        raise TypeError("partial detail content invalid")
+    expected_fields = {"generation", "attempt", "start", "page", "pageSize", "offset", "inventoryObservedAt",
+                       "detailObservedAt", "mapProjectId", "listSha256", "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256"}
+    if set(source) != expected_fields or source["generation"] != generation or type(attempt) is not int or type(source["attempt"]) is not int or source["attempt"] != attempt:
+        raise ValueError("partial generation or attempt differs")
+    if any(type(source[key]) is not int or source[key] < (0 if key == "offset" else 1) for key in ("start", "page", "pageSize", "offset")) or source["offset"] >= source["pageSize"]:
+        raise ValueError("partial source position invalid")
+    if any(not isinstance(source[key], str) or not _HASH.fullmatch(source[key]) for key in ("listSha256", "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256")):
+        raise ValueError("partial source digest invalid")
+    if len(raw.encode("utf-8")) > 16 * 1024 * 1024:
+        raise ValueError("partial detail exceeds bound")
+    if hashlib.sha256(raw.encode("utf-8")).hexdigest() != source["decodedDetailSha256"]:
+        raise ValueError("partial detail digest differs")
+    if not (_time(started_at) <= _time(source["inventoryObservedAt"]) <= _time(finished_at)
+            <= _time(source["detailObservedAt"])):
+        raise ValueError("partial observation clock differs")
+    try:
+        detail = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("partial detail JSON invalid") from exc
+    if not isinstance(detail, dict) or detail.get("success") is False:
+        raise ValueError("partial detail source response invalid")
+    summary = detail.get("ProjectSummary")
+    visibility = summary.get("AttributeVisibility") if isinstance(summary, dict) else None
+    observed_id = visibility.get("ProjectId") if isinstance(visibility, dict) else None
+    if observed_id is None and isinstance(summary, dict):
+        observed_id = summary.get("ProjectId")
+    source_id = source["mapProjectId"]
+    provenance = listing.get("freshnessProvenance")
+    proof = listing.get("colliersPartialEvidence")
+    mapped_detail = listing.get("colliersSalesTrackerDetail")
+    if (not isinstance(source_id, str) or not source_id or observed_id is None or isinstance(observed_id, bool)
+            or not isinstance(observed_id, (str, int, float)) or str(observed_id).strip() != source_id
+            or listing.get("sourceKey") != "colliers" or listing.get("transactionMode") != "sale"
+            or listing.get("id") != source_id or listing.get("brokerIds") != []
+            or listing.get("preserveChildCollections") is not True
+            or listing.get("inventoryObservedAt") != source["inventoryObservedAt"]
+            or listing.get("detailObservedAt") != source["detailObservedAt"]
+            or not isinstance(provenance, dict) or provenance.get("generationId") != generation
+            or provenance.get("method") != "colliers_salestracker_slp_detail"
+            or not isinstance(proof, dict) or proof != {"schema": "colliers-partial-detail-v1", **source}
+            or not isinstance(mapped_detail, dict) or mapped_detail.get("projectId") != source_id):
+        raise ValueError("partial detail identity differs")
+    return {"external_id": source_id, "position": source["start"] + source["offset"],
+            "list_sha256": source["listSha256"], "map_sha256": source["mapSha256"],
+            "detail_sha256": source["decodedDetailSha256"]}
+
+
+def stage_detail_record(item, generation, attempt, started_at, finished_at, artifact_finished_at):
+    """Bind verified native identity to the actual canonical staging mapper."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from cre_ingest import to_row
+
+    verified = verify_detail_record(item, generation, attempt, started_at, finished_at)
+    artifact_finish = _time(artifact_finished_at)
+    if _time(item["source"]["detailObservedAt"]) > artifact_finish:
+        raise ValueError("partial detail after artifact finished")
+    if artifact_finish > datetime.now(UTC) + timedelta(minutes=5):
+        raise ValueError("partial artifact finish exceeds clock-skew allowance")
+    listing = item["listing"]
+    url = listing.get("url")
+    if not isinstance(url, str):
+        raise TypeError("partial source URL missing")
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname != "my.rcm1.com" or parsed.username is not None
+            or parsed.password is not None or parsed.port is not None or parsed.fragment
+            or parsed.path.lower() not in {"/handler/landing.aspx", "/handler/modern.aspx"}):
+        raise ValueError("partial source URL invalid")
+    tokens = parse_qs(parsed.query, keep_blank_values=True).get("pv", [])
+    if (len(tokens) != 1 or not tokens[0]
+            or hashlib.sha256(tokens[0].encode("utf-8")).hexdigest() != item["source"]["detailTokenSha256"]):
+        raise ValueError("partial source token differs")
+    row = to_row(listing, {}, artifact_finished_at)
+    if (not isinstance(row, dict) or row.get("slug") != "colliers"
+            or row.get("external_id") != verified["external_id"]
+            or row["external_id"].startswith("main:")
+            or row.get("source_url") != url or row.get("transaction_type") != "sale"):
+        raise ValueError("partial staged identity differs")
+    return {**{key: row.get(key) for key in ("slug", "external_id", "source_url", "canonical_url", "transaction_type")},
+            "inventory_at": item["source"]["inventoryObservedAt"], "detail_at": item["source"]["detailObservedAt"]}
