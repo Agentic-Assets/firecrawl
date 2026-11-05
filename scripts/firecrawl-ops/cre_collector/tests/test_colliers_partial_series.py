@@ -65,6 +65,40 @@ def test_mixed_partial_and_complete_sources_qualify_as_distinct_scopes(tmp_path)
     assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
 
 
+def test_partial_source_survives_unrelated_failure_without_global_scope_claim(tmp_path):
+    run = tmp_path / RUN_ID
+    child = mixed_child(run)
+    child["status"] = "failed"
+    child["scope"] = {"kind": "collector_registry", "source_keys": ["cbre", "colliers", "savills"]}
+    child["sources"]["savills"] = {"state": "collect_failed"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "source failure"}
+    assert series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+    assert not series.pipeline_source_qualified(child, "savills", **qualification_context(run))
+
+
+def test_real_admission_producer_binding_does_not_depend_on_later_global_scope(tmp_path):
+    from tests.test_colliers_partial_record import (
+        test_source_bytes_through_node_replay_into_python_staging,
+    )
+
+    test_source_bytes_through_node_replay_into_python_staging(tmp_path)
+    claims = json.loads((tmp_path / "gen" / "colliers-partial" / "claims.json").read_text())
+    child, binding = claims["manifest"], claims["binding"]
+    checkpoint = child["sources"]["colliers"]
+    checkpoint["artifact"].update(colliers_partial=True, staged_unique=1)
+    checkpoint["gate"] = claims["source_report"]["per_source"]["colliers"]
+    checkpoint["subset_ingest_attempt_id"] = claims["attempt_id"]
+    checkpoint["partial_cursor_settlement"] = {"state": "settled", "attempt_id": claims["attempt_id"],
+        "cursor": binding["cursor"], "next_cursor": binding["next_cursor"], "artifact_sha256": binding["artifact_sha256"]}
+    child["config"]["pipeline"] = True
+    assert child["scope"]["kind"] == "collector_registry_verified_subset"
+    assert series.colliers_partial_child(child)
+    child["scope"] = {"kind": "collector_registry", "source_keys": ["colliers", "savills"]}
+    child["status"] = "failed"
+    assert series.colliers_partial_child(child)
+
+
 @pytest.mark.parametrize("field", ["wrong_source", "wrong_target", "wrong_code", "wrong_outcome",
     "count_mismatch", "overlap", "missing_settlement", "wrong_attempt", "wrong_readback", "false_complete"])
 def test_partial_claim_drift_refuses_entire_mixed_unit(tmp_path, field):
@@ -111,6 +145,29 @@ def test_mixed_reconciliation_and_rerun_preserve_partial_without_replay(tmp_path
         series.run_pipeline_series(tmp_path, manifest, env_file=None)
 
 
+def test_mixed_failure_reconciliation_preserves_verified_peers_without_replay(tmp_path, monkeypatch):
+    settings = config(pipeline=True, sources=["cbre", "colliers", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child.update(status="failed", scope={"kind": "collector_registry"},
+                 config=series._expected_child_config("cbre,colliers,savills", settings))
+    child["sources"]["savills"] = {"state": "collect_failed"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "provider failure"}
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert [manifest["sources"][key]["state"] for key in settings["sources"]] == ["complete", "qualified_partial_subset", "failed_source"]
+    assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
+    assert manifest["status"] == "failed"
+    assert all(len(manifest["sources"][key]["attempts"]) == 1 for key in settings["sources"])
+
+
 def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
     import cre_source_health as health
 
@@ -119,6 +176,10 @@ def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
     observed = "2026-10-15T12:00:30Z"
     assert health._qualified_subset_attempt(checkpoint, child, observed,
         computed_at="2026-10-15T12:02:01Z", source_key="colliers")
+    assert health._publication_status(checkpoint, child, observed,
+        computed_at="2026-10-15T12:02:01Z", source_key="colliers") == "partial"
+    child["status"] = "failed"
+    child["scope"] = {"kind": "collector_registry"}
     assert health._publication_status(checkpoint, child, observed,
         computed_at="2026-10-15T12:02:01Z", source_key="colliers") == "partial"
     child["sources"]["colliers"]["readback"]["observation"]["generation_id"] = "other"

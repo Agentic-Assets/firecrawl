@@ -317,8 +317,6 @@ def colliers_partial_child(child: Mapping[str, Any]) -> bool:
         held, history = binding["held"], binding["history_holds"]
         attempt = checkpoint["subset_ingest_attempt_id"]
         return (child["config"].get("pipeline") is True
-                and (child.get("scope") or {}).get("kind") == "collector_registry_verified_subset"
-                and (child.get("scope") or {}).get("whole_source_coverage") is False
                 and isinstance(child.get("run_id"), str) and bool(child["run_id"])
                 and isinstance(child.get("started_at"), str) and bool(child["started_at"])
                 and isinstance(child.get("collector_git_sha"), str)
@@ -1977,7 +1975,11 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
                 unit_cache=unit_cache,
                 parent_attempts=row["attempts"],
             )
-            else "interrupted",
+            else ("failed_source" if (child.get("sources", {}).get(key, {}).get("state") in {
+                "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
+                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed")
+                else "interrupted"),
             checkpoint_status=child["status"],
             error=child.get("error"),
         )
@@ -2312,9 +2314,6 @@ def pipeline_source_qualified(
                 if (jll_partial or colliers_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
                     return False
-                if colliers_partial and (child.get("scope", {}).get("kind") != "collector_registry_verified_subset"
-                                         or child.get("scope", {}).get("whole_source_coverage") is not False):
-                    return False
                 if key == "pyramid-brokerage":
                     binding = checkpoint["gate"]["current_inventory_proof"]
                     if any(not _exact_json_equal(proof.get(key), binding.get(key))
@@ -2381,12 +2380,14 @@ def run_pipeline_series(
     root.mkdir(parents=True, exist_ok=True)
     logs = series_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources) and all(
-        manifest["sources"][key].get("state") in {"complete", "qualified_partial_subset"}
-        for key in sources
-    ):
+    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources):
         # A handled partial is not another collection/apply opportunity.
         # Reuse the same independent bound report qualification as reconciliation.
+        if any(manifest["sources"][key].get("state") not in {"complete", "qualified_partial_subset", "failed_source"}
+               for key in sources):
+            raise SeriesError("handled subset has unresolved source state")
+        failed = [key for key in sources if manifest["sources"][key].get("state") == "failed_source"]
+        verified = [key for key in sources if key not in failed]
         refs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
         if len(refs) != 1 or not isinstance(next(iter(refs)), str):
             raise SeriesError("handled subset has no exact shared owner")
@@ -2397,17 +2398,18 @@ def run_pipeline_series(
             git_sha=manifest["collector_git_sha"], expected_path=series_dir/relative/"manifest.json",
             expected_config=_expected_child_config(",".join(sources), config))
         cache = {}
-        if (child.get("status") != "qualified_partial_subset"
+        if (child.get("status") != ("failed" if failed else "qualified_partial_subset")
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
                 parent_started_at=manifest["started_at"],parent_finished_at=utc_now(),
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
-            for key in sources
+            for key in verified
         )):
             raise SeriesError("handled subset evidence no longer qualifies")
-        manifest.update(status="qualified_partial_subset", finished_at=utc_now(), error=None)
+        manifest.update(status="failed" if failed else "qualified_partial_subset", finished_at=utc_now(),
+                        error=(manifest.get("error") or "pipeline source failures remain") if failed else None)
         save_manifest(series_dir, manifest)
-        return 0
+        return 1 if failed else 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
     resume = None
     if prior_runs != {None}:

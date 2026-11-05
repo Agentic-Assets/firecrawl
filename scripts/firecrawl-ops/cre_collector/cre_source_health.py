@@ -377,8 +377,7 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
             bound = _mapping(readback.get("observation"))
             start, observed, finished = (_parse_timestamp(value) for value in
                 (child.get("started_at"), observation, child.get("finished_at")))
-            return (colliers_partial_child(child) and child.get("status") == "qualified_partial_subset"
-                    and _mapping(child.get("scope")).get("whole_source_coverage") is False
+            return (colliers_partial_child(child) and child.get("status") in {"qualified_partial_subset", "failed"}
                     and source.get("state") == "ingested" and readback.get("ok") is True
                     and readback.get("kind") == "colliers_partial_window"
                     and bound.get("ok") is True and bound.get("outcome") == "exact_commit"
