@@ -4,9 +4,11 @@ export type ResponseBodyReader = ReadableStreamDefaultReader<
 >;
 
 export class ResponseBodyLimitError extends Error {
-  constructor(maxBytes: number) {
+  declare readonly prefix?: Uint8Array;
+  constructor(maxBytes: number, prefix?: Uint8Array) {
     super(`Response body exceeds ${maxBytes} bytes`);
     this.name = "ResponseBodyLimitError";
+    if (prefix !== undefined) Object.defineProperty(this, "prefix", { value: prefix, enumerable: false, configurable: false, writable: false });
   }
 }
 
@@ -22,10 +24,10 @@ export class ResponseBodyDeadlineError extends Error {
  * bounds retained input bytes, not the process heap or fetch-owned chunks.
  * The caller owns cancellation, acknowledgement, lock release and retry policy.
  */
-export async function readBoundedUtf8(
+export async function readBoundedBytes(
   reader: ResponseBodyReader,
-  { maxBytes, signal, deadlineAt }: { maxBytes: number; signal: AbortSignal; deadlineAt: number }
-): Promise<string> {
+  { maxBytes, signal, deadlineAt, retainPrefix = false }: { maxBytes: number; signal: AbortSignal; deadlineAt: number; retainPrefix?: boolean }
+): Promise<Uint8Array> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isFinite(deadlineAt)) {
     throw new RangeError("Response body requires a positive safe byte limit and finite deadline");
   }
@@ -41,7 +43,7 @@ export async function readBoundedUtf8(
     signal.addEventListener("abort", onAbort, { once: true });
     timeout = setTimeout(() => { stopped = true; reject(deadlineError); }, Math.ceil(Math.max(0, deadlineAt - performance.now())));
   });
-  const consume = async (): Promise<string> => {
+  const consume = async (): Promise<Uint8Array> => {
     let buffer = new Uint8Array(0);
     let total = 0;
     while (true) {
@@ -50,9 +52,15 @@ export async function readBoundedUtf8(
       try { chunk = await reader.read(); }
       catch (error) { readFailure = { error }; throw error; }
       if (stopped || performance.now() >= deadlineAt) throw deadlineError;
-      if (chunk.done) return new TextDecoder().decode(buffer.subarray(0, total));
+      if (chunk.done) return buffer.subarray(0, total);
       const value = chunk.value;
-      if (value.byteLength > maxBytes - total) throw new ResponseBodyLimitError(maxBytes);
+      if (value.byteLength > maxBytes - total) {
+        if (!retainPrefix) throw new ResponseBodyLimitError(maxBytes);
+        const prefix = new Uint8Array(maxBytes);
+        prefix.set(buffer.subarray(0, total));
+        prefix.set(value.subarray(0, maxBytes - total), total);
+        throw new ResponseBodyLimitError(maxBytes, prefix);
+      }
       const required = total + value.byteLength;
       if (required > buffer.byteLength) {
         const capacity = Math.min(maxBytes, Math.max(required, buffer.byteLength * 2, 64 * 1024));
@@ -76,6 +84,14 @@ export async function readBoundedUtf8(
     if (timeout) clearTimeout(timeout);
     signal.removeEventListener("abort", onAbort);
   }
+}
+
+/** Decode using the historical replacement-character behavior. */
+export async function readBoundedUtf8(
+  reader: ResponseBodyReader,
+  options: { maxBytes: number; signal: AbortSignal; deadlineAt: number }
+): Promise<string> {
+  return new TextDecoder().decode(await readBoundedBytes(reader, options));
 }
 
 /** Discarded HTTP/redirect bodies require actual cancellation acknowledgement. */

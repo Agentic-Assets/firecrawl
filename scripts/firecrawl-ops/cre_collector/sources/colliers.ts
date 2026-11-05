@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { rcmSourceControls, rcmPublicContactUrl, RCM_CONTACT_FLAGS } from "./pure/rcm-source-controls.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
@@ -68,6 +69,7 @@ export type ColliersMapGroup = {
 };
 
 export class ColliersIdentityError extends Error {}
+export class ColliersAccessStop extends Error {}
 
 export function colliersHeaders(accept = "application/json, text/javascript, */*; q=0.01"): Record<string, string> {
   return pureColliersHeaders(accept);
@@ -301,7 +303,8 @@ export function colliersContactsFromCard($: cheerio.CheerioAPI, card: cheerio.Ch
 export function parseColliersCards(
   html: string,
   mapGroups: ColliersMapGroup[],
-  start: number
+  start: number,
+  registerBrokers = true
 ): ColliersCard[] {
   const $ = cheerio.load(html);
   const cards: ColliersCard[] = [];
@@ -327,7 +330,7 @@ export function parseColliersCards(
     const sizeText = clean(card.find(".sq-ft").first().text());
     const id = `salestracker:card:${mapGroup.projectId}`;
     const contactsDetailed = colliersContactsFromCard($, card);
-    const brokerIds = contactsDetailed
+    const brokerIds = !registerBrokers ? [] : contactsDetailed
       .map((c) => {
         const company = clean(c.company);
         return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone), company }) : null;
@@ -591,17 +594,24 @@ export function colliersInventoryOnlyCard(
   });
 }
 
-export async function enrichColliersCard(card: ColliersCard): Promise<any> {
+export async function enrichColliersCard(card: ColliersCard, options: {
+  fetchDetail?: typeof colliersGetJson;
+  stopOnAccessFailure?: boolean;
+  skipBrokerRefs?: boolean;
+} = {}): Promise<any> {
   if (!card.detailPv) {
     return colliersInventoryOnlyCard(card, "card_not_linked");
   }
   try {
-    const detail = await colliersGetJson(colliersSlpInitUrl(card.detailPv));
+    let retryAfter: string | null = null;
+    const detail = await (options.fetchDetail ?? colliersGetJson)(colliersSlpInitUrl(card.detailPv), undefined, undefined,
+      value => { retryAfter = value; });
+    if (options.stopOnAccessFailure && retryAfter !== null) throw new ColliersAccessStop("Colliers detail requested Retry-After");
     const summary = detail?.ProjectSummary ?? {};
     const address = summary?.Address ?? {};
     const details = detail?.ProjectDetails ?? {};
     const contactsDetailed = colliersDetailContacts(detail);
-    const brokerIds = contactsDetailed
+    const brokerIds = options.skipBrokerRefs ? [] : contactsDetailed
       .map((c) => {
         const company = clean(c.company);
         return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone),
@@ -706,9 +716,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       },
     });
   } catch (err) {
-    if (err instanceof ColliersIdentityError) {
-      throw err;
+    if (err instanceof ColliersIdentityError || err instanceof ColliersAccessStop ||
+        (options.stopOnAccessFailure && err instanceof NativeEvidenceTerminalError)) throw err;
+    if (options.stopOnAccessFailure && err instanceof ColliersHttpError &&
+        ([401, 403, 429].includes(err.status) || err.retryAfter !== null)) {
+      throw new ColliersAccessStop("Colliers detail access refused or delayed");
     }
+    if (options.stopOnAccessFailure) throw err;
     console.error(
       `  colliers/sale: detail unavailable for ${card.detailUrl ?? card.id}: ${err}`
     );
