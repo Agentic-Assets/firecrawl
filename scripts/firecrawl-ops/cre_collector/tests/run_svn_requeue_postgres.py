@@ -108,6 +108,26 @@ def main():
         prior[(lee_bid,"lee-control")]=_idx(lee_old,observed_status="active")
         listings[(lee_bid,"lee-control")]={"id":sql("SELECT id FROM credeals.cre_listings WHERE external_id='lee-control';"),
                                           "status":"active","deleted":False}
+        # A healthy unchanged non-SVN monitor needs no queue privileges.
+        # Execute the real generated transaction under a restricted role, not
+        # merely a string assertion against the emitted SQL.
+        sql("CREATE ROLE monitor_without_queue BYPASSRLS; GRANT USAGE ON SCHEMA credeals TO monitor_without_queue; "
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA credeals TO monitor_without_queue; "
+            "REVOKE ALL ON credeals.cre_enrichment_queue FROM monitor_without_queue;")
+        assert sql("SELECT has_table_privilege('monitor_without_queue', "
+                   "'credeals.cre_enrichment_queue', 'SELECT');") == "f"
+        lee_key=(lee_bid,"lee-control")
+        lee_snapshot={lee_key:lee_old}
+        lee_prior={lee_key:prior[lee_key]}
+        lee_listings={lee_key:listings[lee_key]}
+        lee_events,lee_new,lee_changed,lee_marks,_=_derive(lee_snapshot,lee_prior,lee_listings)
+        assert not lee_events and not lee_new and not lee_changed and not lee_marks
+        lee_sql=monitor.build_write_sql([lee_old],lee_events,lee_new,lee_changed,lee_marks,
+                                        str(uuid.uuid4()),"2026-11-04T00:59:00Z","fixture",
+                                        ["lee-associates"],prior_index=lee_prior,prior_listings=lee_listings,
+                                        brokerage_by_slug={"lee-associates":lee_bid})
+        sql("SET ROLE monitor_without_queue;\n"+lee_sql)
+        assert sql("SELECT fingerprint FROM credeals.cre_source_index WHERE external_id='lee-control';")==lee_old["fingerprint"]
         events,new,changed,marks,_=_derive(current,prior,listings)
         assert (broker,"svn","reappear") not in changed
         assert (broker,"svn","unchanged") not in changed
@@ -117,7 +137,7 @@ def main():
         monitor_output=sql(statement)
         marker="CRE_MONITOR_SVN_SUPPRESSED_V1 "
         records=[line[len(marker):] for line in monitor_output.splitlines() if line.startswith(marker)]
-        assert len(records)==1 and json.loads(records[0])==[[broker,"claimed"],[broker,"foreign-index"]], records
+        assert len(records)==1 and json.loads(records[0])==[[broker,"claimed"],[broker,"foreign"],[broker,"foreign-index"]], records
         assert sql("SELECT status FROM credeals.cre_scrape_jobs WHERE id="+ingest.sql_lit(run_id)+"::uuid;")=="partial"
         result=sql("SELECT external_id || '|' || attempts || '|' || (claimed_at IS NOT NULL)::text || '|' || url || '|' || COALESCE(last_error,'<null>') FROM credeals.cre_enrichment_queue ORDER BY external_id;").splitlines()
         values={line.split("|")[0]:line.split("|")[1:] for line in result}
@@ -282,6 +302,139 @@ def main():
         assert "CRE_MONITOR_SVN_SUPPRESSED_V1 []" in output
         assert sql("SELECT source_key FROM credeals.cre_source_index WHERE external_id='first-seen-no-index';")=="svn"
         assert sql("SELECT reason || '|' || attempts FROM credeals.cre_enrichment_queue WHERE external_id='first-seen-no-index';")=="new|0"
+
+        # First-seen observations must not lose a newer generation to an old
+        # in-flight or exhausted "new" queue row.
+        for mode in ("claimed", "exhausted", "changed-exhausted"):
+            first_eid="first-existing-"+mode
+            peer_eid="first-peer-"+mode
+            groups={}
+            rows={}
+            for eid in (first_eid, peer_eid):
+                url="https://example.test/"+eid
+                initial=ingest.to_row({"sourceKey":"svn","id":eid,"url":url,"transactionMode":"sale"},
+                                      {}, "2026-11-04T00:00:00Z")
+                sql(ingest.build_sql([initial], [{"slug":"svn","discovered":1,"saved":1,"errors":0,"notes":"test"}],
+                                     "2026-11-04T00:00:00Z", set()))
+                sql("DELETE FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(eid)+";")
+                groups[(broker,eid)]=_gfin(eid,source_key="svn",status="active",url=url+"-fresh")
+                rows[(broker,eid)]={"id":sql("SELECT id FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(eid)+";"),
+                                    "status":"active","deleted":False}
+            sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason,attempts,claimed_at,last_error) VALUES ("+
+                ingest.sql_lit(broker)+"::uuid,'svn',"+ingest.sql_lit(first_eid)+",'https://example.test/old',"+
+                ingest.sql_lit("changed" if mode=="changed-exhausted" else "new")+","+
+                ("1,now()" if mode=="claimed" else "5,NULL")+",'earlier error');")
+            ev,en,ec,dm,_=_derive(groups,{},rows,baseline=set())
+            statement=monitor.build_write_sql(list(groups.values()),ev,en,ec,dm,str(uuid.uuid4()),
+                                              "2026-11-04T03:40:00Z","fixture",["svn"],
+                                              prior_index={},prior_listings=rows,brokerage_by_slug={"svn":broker})
+            result=sql(statement)
+            assert sql("SELECT reason || '|' || attempts || '|' || url FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(peer_eid)+";") == "new|0|https://example.test/"+peer_eid+"-fresh"
+            if mode=="claimed":
+                assert json.loads([line.split(" ",1)[1] for line in result.splitlines() if line.startswith("CRE_MONITOR_SVN_SUPPRESSED_V1 ")][0]) == [[broker,first_eid]]
+                assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(first_eid)+";")=="0"
+                assert sql("SELECT count(*) FROM credeals.cre_listing_events WHERE listing_id="+ingest.sql_lit(rows[(broker,first_eid)]["id"])+"::uuid;")=="0"
+                sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(first_eid)+";")
+                key=(broker,first_eid)
+                ev,en,ec,dm,_=_derive({key:groups[key]},{},{key:rows[key]},baseline=set())
+                follow=monitor.build_write_sql([groups[key]],ev,en,ec,dm,str(uuid.uuid4()),
+                                               "2026-11-04T03:41:00Z","fixture",["svn"],
+                                               prior_index={},prior_listings={key:rows[key]},brokerage_by_slug={"svn":broker})
+                sql(follow)
+            else:
+                assert "CRE_MONITOR_SVN_SUPPRESSED_V1 []" in result
+                assert sql("SELECT last_error FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(first_eid)+";")=="earlier error"
+            assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(first_eid)+";")=="1"
+            assert sql("SELECT reason || '|' || attempts || '|' || url FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(first_eid)+";") == ("changed" if mode=="changed-exhausted" else "new")+"|0|https://example.test/"+first_eid+"-fresh"
+
+        # A uniqueness collision with a completed or foreign row is not work
+        # this monitor can own. Preserve it and defer only the affected source.
+        for indexed in (False, True):
+            for owner in ("done", "foreign"):
+                eid="collision-"+("indexed" if indexed else "first")+"-"+owner
+                peer="collision-peer-"+("indexed" if indexed else "first")+"-"+owner
+                groups={}
+                rows={}
+                previous={}
+                for name in (eid, peer):
+                    url="https://example.test/"+name
+                    initial=ingest.to_row({"sourceKey":"svn","id":name,"url":url,"transactionMode":"sale"},
+                                          {}, "2026-11-04T00:00:00Z")
+                    sql(ingest.build_sql([initial], [{"slug":"svn","discovered":1,"saved":1,"errors":0,"notes":"test"}],
+                                         "2026-11-04T00:00:00Z", set()))
+                    old_group=_gfin(name,source_key="svn",status="active",sale_price_usd=100,url=url)
+                    new_group=_gfin(name,source_key="svn",status="active",sale_price_usd=200,url=url+"-fresh")
+                    if name==eid and indexed:
+                        sql("UPDATE credeals.cre_source_index SET source_key='svn',observed_status='active',observation_present=true,fingerprint="+
+                            ingest.sql_lit(old_group["fingerprint"])+" WHERE external_id="+ingest.sql_lit(name)+";")
+                        previous[(broker,name)]=_idx(old_group,observed_status="active")
+                        previous[(broker,name)].update(observation_present=True,presence_generation=0)
+                    else:
+                        sql("DELETE FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(name)+";")
+                    groups[(broker,name)]=new_group
+                    rows[(broker,name)]={"id":sql("SELECT id FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(name)+";"),
+                                         "status":"active","deleted":False}
+                reason="changed" if indexed else "new"
+                sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason,attempts,done_at,last_error) VALUES ("+
+                    ingest.sql_lit(broker)+"::uuid,"+ingest.sql_lit("svn" if owner=="done" else "lee-associates")+","+
+                    ingest.sql_lit(eid)+",'https://example.test/occupied',"+ingest.sql_lit(reason)+",5,"+
+                    ("now()" if owner=="done" else "NULL")+",'preserve collision');")
+                ev,en,ec,dm,_=_derive(groups,previous,rows,baseline=set())
+                statement=monitor.build_write_sql(list(groups.values()),ev,en,ec,dm,str(uuid.uuid4()),
+                                                  "2026-11-04T03:45:00Z","fixture",["svn"],
+                                                  prior_index=previous,prior_listings=rows,brokerage_by_slug={"svn":broker})
+                result=sql(statement)
+                suppressed=json.loads([line.split(" ",1)[1] for line in result.splitlines() if line.startswith("CRE_MONITOR_SVN_SUPPRESSED_V1 ")][0])
+                assert suppressed==[[broker,eid]], (indexed,owner,suppressed)
+                assert sql("SELECT source_key || '|' || reason || '|' || url || '|' || last_error FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(eid)+";")==("svn" if owner=="done" else "lee-associates")+"|"+reason+"|https://example.test/occupied|preserve collision"
+                assert sql("SELECT count(*) FROM credeals.cre_listing_events WHERE listing_id="+ingest.sql_lit(rows[(broker,eid)]["id"])+"::uuid;")=="0"
+                prior_count="1" if indexed else "0"
+                assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(eid)+";")==prior_count
+                if indexed:
+                    assert sql("SELECT fingerprint FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(eid)+";")==previous[(broker,eid)]["fingerprint"]
+                assert sql("SELECT reason FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(peer)+";")=="new"
+                assert "CRE_MONITOR_SVN_REPLAY_V1" in sql(statement)
+                assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(eid)+";")=="1"
+                # External owner clears its blocker; a later fresh monitor scan
+                # can now queue the preserved source observation.
+                sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(eid)+";")
+                key=(broker,eid)
+                prior_one={key:previous[key]} if indexed else {}
+                ev,en,ec,dm,_=_derive({key:groups[key]},prior_one,{key:rows[key]},baseline=set())
+                follow=monitor.build_write_sql([groups[key]],ev,en,ec,dm,str(uuid.uuid4()),
+                                               "2026-11-04T03:46:00Z","fixture",["svn"],
+                                               prior_index=prior_one,prior_listings={key:rows[key]},brokerage_by_slug={"svn":broker})
+                sql(follow)
+                assert sql("SELECT reason || '|' || attempts || '|' || url FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(eid)+";")==reason+"|0|https://example.test/"+eid+"-fresh"
+
+        # A separate usable SVN item can carry the new observation even if
+        # another source occupies the "changed" reason.
+        eid="collision-own-usable"
+        url="https://example.test/"+eid
+        initial=ingest.to_row({"sourceKey":"svn","id":eid,"url":url,"transactionMode":"sale"},
+                              {}, "2026-11-04T00:00:00Z")
+        sql(ingest.build_sql([initial], [{"slug":"svn","discovered":1,"saved":1,"errors":0,"notes":"test"}],
+                             "2026-11-04T00:00:00Z", set()))
+        old_group=_gfin(eid,source_key="svn",status="active",sale_price_usd=100,url=url)
+        new_group=_gfin(eid,source_key="svn",status="active",sale_price_usd=200,url=url+"-fresh")
+        sql("UPDATE credeals.cre_source_index SET source_key='svn',observed_status='active',observation_present=true,fingerprint="+
+            ingest.sql_lit(old_group["fingerprint"])+" WHERE external_id="+ingest.sql_lit(eid)+";")
+        for source,reason in (("lee-associates","changed"),("svn","new")):
+            sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason,attempts,last_error) VALUES ("+
+                ingest.sql_lit(broker)+"::uuid,"+ingest.sql_lit(source)+","+ingest.sql_lit(eid)+",'https://example.test/occupied',"+
+                ingest.sql_lit(reason)+",1,'preserve');")
+        key=(broker,eid)
+        p0=_idx(old_group,observed_status="active")
+        p0.update(observation_present=True,presence_generation=0)
+        l0={"id":sql("SELECT id FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(eid)+";"),"status":"active","deleted":False}
+        ev,en,ec,dm,_=_derive({key:new_group},{key:p0},{key:l0},baseline=set())
+        usable=monitor.build_write_sql([new_group],ev,en,ec,dm,str(uuid.uuid4()),
+                                       "2026-11-04T03:47:00Z","fixture",["svn"],
+                                       prior_index={key:p0},prior_listings={key:l0},brokerage_by_slug={"svn":broker})
+        assert "CRE_MONITOR_SVN_SUPPRESSED_V1 []" in sql(usable)
+        assert sql("SELECT source_key || '|' || url FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(eid)+" ORDER BY source_key;").splitlines()==[
+            "lee-associates|https://example.test/occupied","svn|"+url+"-fresh"]
+        assert sql("SELECT fingerprint FROM credeals.cre_source_index WHERE external_id="+ingest.sql_lit(eid)+";")==new_group["fingerprint"]
 
         # Drive actual monitor.main against PostgreSQL while losing post-COMMIT
         # stdout or failing the local report write. Exact artifact replay sees

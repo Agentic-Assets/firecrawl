@@ -741,19 +741,36 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("    OR si.presence_generation IS DISTINCT FROM p.presence_generation)));")
     w("CREATE TEMP TABLE _svn_fresh_changes ON COMMIT DROP AS")
     w("SELECT e.brokerage_id, e.external_id FROM _enum_b e")
-    w("JOIN _svn_expected p USING (brokerage_id, external_id)")
+    w("LEFT JOIN _svn_expected p USING (brokerage_id, external_id)")
     w("WHERE e.source_key='svn' AND NOT EXISTS (SELECT 1 FROM _svn_stale x")
     w("  WHERE x.brokerage_id=e.brokerage_id AND x.external_id=e.external_id)")
-    w("  AND (NOT p.observation_present OR p.fingerprint IS DISTINCT FROM e.fingerprint")
-    w("       OR p.url IS DISTINCT FROM e.url);")
-    w("CREATE TEMP TABLE _svn_deferred ON COMMIT DROP AS")
-    w("SELECT DISTINCT f.brokerage_id, f.external_id FROM _svn_fresh_changes f")
-    w("JOIN credeals.cre_enrichment_queue q USING (brokerage_id, external_id)")
-    w("WHERE q.source_key='svn' AND q.done_at IS NULL AND q.claimed_at IS NOT NULL;")
+    w("  AND (p.brokerage_id IS NULL OR NOT p.observation_present")
+    w("       OR p.fingerprint IS DISTINCT FROM e.fingerprint OR p.url IS DISTINCT FROM e.url);")
+    if svn_changed:
+        w("CREATE TEMP TABLE _svn_deferred ON COMMIT DROP AS")
+        w("SELECT DISTINCT f.brokerage_id, f.external_id FROM _svn_fresh_changes f")
+        w("JOIN credeals.cre_enrichment_queue q USING (brokerage_id, external_id)")
+        w("WHERE q.source_key='svn' AND q.done_at IS NULL AND q.claimed_at IS NOT NULL")
+        # A completed or foreign row can occupy the unique reason even though
+        # it is not work that SVN may update. Keep the source snapshot pending
+        # until that owner clears it, unless another usable SVN row exists.
+        w("UNION SELECT f.brokerage_id, f.external_id FROM _svn_fresh_changes f")
+        w("LEFT JOIN _svn_expected p USING (brokerage_id, external_id)")
+        w("JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
+        w("JOIN credeals.cre_enrichment_queue blocked USING (brokerage_id, external_id)")
+        w("WHERE blocked.reason=CASE WHEN p.brokerage_id IS NULL THEN 'new' ELSE 'changed' END")
+        w("  AND (blocked.source_key IS DISTINCT FROM 'svn' OR blocked.done_at IS NOT NULL)")
+        w("  AND (p.brokerage_id IS NULL OR (l.status='active' AND l.deleted_at IS NULL))")
+        w("  AND NOT EXISTS (SELECT 1 FROM credeals.cre_enrichment_queue own")
+        w("    WHERE own.brokerage_id=f.brokerage_id AND own.external_id=f.external_id")
+        w("      AND own.source_key='svn' AND own.done_at IS NULL")
+        w("      AND (own.claimed_at IS NOT NULL OR own.attempts<5 OR own.reason IN ('new','changed')));")
+    else:
+        w("CREATE TEMP TABLE _svn_deferred (brokerage_id uuid, external_id text) ON COMMIT DROP;")
     w("CREATE TEMP TABLE _svn_suppressed ON COMMIT DROP AS")
     w("SELECT * FROM _svn_stale UNION SELECT * FROM _svn_deferred;")
     w("DO $$ DECLARE n bigint; BEGIN SELECT count(*) INTO n FROM _svn_suppressed;")
-    w("IF n > 0 THEN RAISE NOTICE 'SVN source rows deferred due to changed snapshot or active claim: %', n; END IF; END $$;")
+    w("IF n > 0 THEN RAISE NOTICE 'SVN source rows deferred due to changed snapshot or occupied queue: %', n; END IF; END $$;")
 
     w("DO $$ BEGIN")
     w("  IF EXISTS (")
@@ -952,6 +969,7 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w("INSERT INTO credeals.cre_enrichment_queue (brokerage_id, source_key, external_id, url, reason)")
         w("SELECT e.brokerage_id, 'svn', e.external_id, e.url, 'changed'")
         w("FROM _enum_b e JOIN _svn_fresh_changes f USING (brokerage_id, external_id)")
+        w("JOIN _svn_expected p USING (brokerage_id, external_id)")
         w("JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
         w("WHERE e.source_key='svn' AND l.status='active' AND l.deleted_at IS NULL")
         w("  AND NOT EXISTS (SELECT 1 FROM _svn_deferred d WHERE d.brokerage_id=e.brokerage_id AND d.external_id=e.external_id)")
@@ -980,6 +998,10 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w(") AS v(brokerage_id, source_key, external_id, url, reason)")
         w("WHERE NOT EXISTS (SELECT 1 FROM _svn_suppressed x")
         w("  WHERE x.brokerage_id=v.brokerage_id AND x.external_id=v.external_id)")
+        if svn_changed:
+            w("  AND (v.source_key <> 'svn' OR NOT EXISTS (SELECT 1")
+            w("    FROM credeals.cre_enrichment_queue q WHERE q.brokerage_id=v.brokerage_id")
+            w("      AND q.external_id=v.external_id AND q.source_key='svn' AND q.done_at IS NULL))")
         w("ON CONFLICT (brokerage_id, external_id, reason) DO NOTHING;")
 
     if svn_changed:
