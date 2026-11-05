@@ -273,6 +273,26 @@ DO $$ BEGIN
          IS DISTINCT FROM ((b.prior->'raw_data') - ARRAY['franklinSiteObservations','franklinSiteLastObservedAt','franklinSiteLastGenerationId'])
  ) THEN RAISE EXCEPTION 'Franklin preimage preservation differs'; END IF;
 END $$;
+-- Compute expected scalar results from the locked preimage, including
+-- incompatible-location preservation, and refuse any different postimage.
+DO $$ BEGIN
+ IF EXISTS (
+   SELECT 1 FROM _franklin_site s
+   LEFT JOIN _franklin_site_before b ON b.external_id=s.external_id
+   LEFT JOIN LATERAL jsonb_populate_record(NULL::credeals.cre_listings, b.prior) p ON true
+   LEFT JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+   WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)
+   AND (l.id IS NULL
+     OR l.source_url IS DISTINCT FROM s.source_url OR l.canonical_url IS DISTINCT FROM s.canonical_url
+     OR l.title IS DISTINCT FROM COALESCE(p.title, s.title)
+     OR l.status IS DISTINCT FROM COALESCE(p.status, s.status)
+     OR l.address IS DISTINCT FROM CASE WHEN {_location_compatible("p", "s")} THEN COALESCE(p.address, s.address) ELSE p.address END
+     OR l.state IS DISTINCT FROM CASE WHEN {_location_compatible("p", "s")} THEN COALESCE(p.state, s.state) ELSE p.state END
+     OR l.lat IS DISTINCT FROM CASE WHEN {_location_compatible("p", "s")} AND p.lat IS NULL AND p.lng IS NULL THEN s.lat ELSE p.lat END
+     OR l.lng IS DISTINCT FROM CASE WHEN {_location_compatible("p", "s")} AND p.lat IS NULL AND p.lng IS NULL THEN s.lng ELSE p.lng END
+     OR l.raw_data->'franklinSiteObservations'->-1 IS DISTINCT FROM s.observation)
+ ) THEN RAISE EXCEPTION 'Franklin expected scalar postimage differs'; END IF;
+END $$;
 UPDATE credeals.cre_scrape_jobs j
 SET notes={sql_lit(job["notes"])} || ':' || (
  SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'))
