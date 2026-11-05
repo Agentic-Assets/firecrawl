@@ -580,6 +580,19 @@ $marcusText = Get-CreNotificationText (New-Record) 'Terminal' 1 $marcusRead
 Assert-Cre ($null -ne $marcusRead -and $marcusText.Contains('Inventory identities retained; 3 emitted; 1 held; details unverified') -and
     $marcusText.Contains('*For sale / lease / both:* unavailable') -and $marcusText.Contains('*Newmark:* 2 listings verified') -and
     $marcusText.Contains('*Savills:* Failed')) 'Marcus partial preserves peer counts and does not invent detail or transaction counts.'
+# Check source-specific failure boundaries without sending a notification.
+$marcusRow = $marcusMixed.per_source_summaries[0]
+foreach ($bad in @(0, -1, $true, 1.5)) {
+    $marcusRow.detail_errors = $bad
+    Assert-Cre (-not (Test-CreSourceSubsetSummary $marcusRow 'marcus-millichap')) 'Marcus partial requires a positive integer detail-error count.'
+}
+$marcusRow.detail_errors = 1
+$marcusRow.whole_source_coverage = $true
+Assert-Cre (-not (Test-CreSourceSubsetSummary $marcusRow 'marcus-millichap')) 'Marcus partial cannot claim complete source coverage.'
+$marcusRow.whole_source_coverage = $false
+$marcusRow.emitted_count = 2
+Assert-Cre (-not (Test-CreSourceSubsetSummary $marcusRow 'marcus-millichap')) 'Marcus emitted and verified counts must agree.'
+$marcusRow.emitted_count = 3
 $marcusMixed.per_source_summaries[0].detail_qualified = 1
 Save-Summary $marcusMixed
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'marcus-forged-detail')) 'Marcus verified-detail claims must be refused.'

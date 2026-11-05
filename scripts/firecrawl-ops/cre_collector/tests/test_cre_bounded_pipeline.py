@@ -57,6 +57,7 @@ def run_schedule(
     colliers_partial=None,
     colliers_failure_nonzero=False,
     lyon_partial=None,
+    marcus_partial=None,
     clock_deferrals=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
@@ -69,7 +70,7 @@ def run_schedule(
         page_cap=400,
         concurrency=1,
         source_workers=workers,
-        pipeline=pyramid_partial or pyramid_admitted,
+        pipeline=pyramid_partial or pyramid_admitted or bool(marcus_partial),
         admit_current_inventory_sources=("pyramid-brokerage",) if pyramid_partial or pyramid_admitted else (),
     )
     for relative in retained_paths:
@@ -155,6 +156,8 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"], item.attempt_number))
+        if marcus_partial and item.source == "marcus-millichap":
+            checkpoint["attempts"][-1].update(rc=0, finished_at=refresh.utc_now())
         if lyon_partial and item.source == "lyon-stahl":
             checkpoint["state"] = "collect_failed"
             item.attempt = checkpoint["attempts"][-1]
@@ -188,6 +191,10 @@ def run_schedule(
         pipeline.wait_with_poll_hook(
             SimpleNamespace(poll=lambda: 0 if clock["now"] >= until else None)
         )
+        if marcus_partial and source == "marcus-millichap" and not owner["sources"][source].get("partial_attempted"):
+            error = ("marcus-millichap/sale freshness metric detailErrors must be zero"
+                     if marcus_partial != "other_error" else "unrelated invalid source evidence")
+            raise refresh.ArtifactValidationError(error)
         if source == artifact_failure and not (colliers_partial and owner["sources"][source].get("partial_attempted")):
             raise refresh.ArtifactValidationError("ordinary invalid artifact")
         checkpoint = owner["sources"][source]
@@ -197,6 +204,9 @@ def run_schedule(
         if colliers_partial and source == "colliers":
             checkpoint["artifact"]["colliers_partial"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 1}}
+        if marcus_partial and source == "marcus-millichap":
+            checkpoint["artifact"]["marcus_inventory_partial"] = True
+            checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 0}}
         if lyon_partial and source == "lyon-stahl":
             checkpoint["artifact"]["lyon_partial"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 0}}
@@ -256,6 +266,22 @@ def run_schedule(
 
         monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive)
         monkeypatch.setattr(partial, "run_window_worker", worker)
+    if marcus_partial:
+        import cre_marcus_inventory_checkpoint as marcus
+
+        def archive_marcus(_path, _root, _manifest, _source, _attempt):
+            return "rejected/marcus.json", "d" * 64
+
+        def marcus_worker(root, owner, _lock, _save):
+            checkpoint = owner["sources"]["marcus-millichap"]
+            checkpoint["partial_attempted"] = True
+            if marcus_partial == "held":
+                checkpoint["state"] = "partial_held_no_write"
+                return None
+            return root / checkpoint["candidate"]["path"]
+
+        monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive_marcus)
+        monkeypatch.setattr(marcus, "run_replay_worker", marcus_worker)
     if lyon_partial:
         import cre_lyon_partial_checkpoint as partial
 
@@ -362,6 +388,29 @@ def test_clock_deferral_timeout_fails_only_source(tmp_path, monkeypatch, phase):
     assert manifest["sources"]["savills"]["state"] == "collect_infrastructure_failed"
     assert not any(event[:2] == ("db_start", ("savills",)) for event in events)
 
+
+@pytest.mark.parametrize("outcome", ["accepted", "held", "other_error"])
+def test_marcus_partial_dispatch_preserves_complete_and_failed_peers(tmp_path, monkeypatch, outcome):
+    # Synthetic scheduler fixture: source worker, gate and DB effects are
+    # mocked. Real Marcus producer and disposable-PG paths are separate tests.
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("marcus-millichap", "savills", "matthews"), failure="matthews", marcus_partial=outcome)
+    results = manifest["pipeline"]["source_results"]
+    assert results["savills"]["state"] == "verified"
+    assert results["matthews"]["state"] == "failed"
+    assert "matthews" in failures
+    assert not any(event[0] == "db_start" and "matthews" in event[1] for event in events)
+    if outcome == "accepted":
+        assert "marcus-millichap" not in failures
+        assert results["marcus-millichap"]["state"] == "verified"
+        assert results["marcus-millichap"]["partial"] is True
+        assert results["marcus-millichap"]["whole_source_coverage"] is False
+        assert any(event[0] == "db_start" and "marcus-millichap" in event[1] for event in events)
+    else:
+        assert "marcus-millichap" in failures
+        assert not any(event[0] == "db_start" and "marcus-millichap" in event[1] for event in events)
+        if outcome == "other_error":
+            assert not manifest["sources"]["marcus-millichap"].get("partial_attempted")
 
 @pytest.mark.parametrize("outcome", ["accepted", "held"])
 def test_pipeline_colliers_partial_preserves_other_sources(tmp_path, monkeypatch, outcome):
