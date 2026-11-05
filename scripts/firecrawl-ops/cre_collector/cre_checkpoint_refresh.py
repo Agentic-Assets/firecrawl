@@ -240,7 +240,15 @@ class ArtifactValidationError(RefreshError):
 
 
 class LockHeldError(RefreshError):
-    """Another CRE tier owns the shared lock."""
+    """Shared lock acquisition or authority verification refused."""
+
+
+class LockFlockBusyError(LockHeldError):
+    """A nonblocking advisory flock reported contention; retry safety is unknown."""
+
+    def __init__(self, lock_object: str) -> None:
+        super().__init__("CRE lock authority is held by another process")
+        self.lock_object = lock_object
 
 
 class GlobalStageError(RefreshError):
@@ -1103,9 +1111,7 @@ def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise LockHeldError(
-                "CRE lock authority is held by another process"
-            ) from exc
+            raise LockFlockBusyError("recovery_synchronizer") from exc
         named = sync_path.lstat()
         if (
             not stat.S_ISREG(named.st_mode)
@@ -1827,9 +1833,7 @@ class SharedLock:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise LockHeldError(
-                    "CRE lock authority is held by another process"
-                ) from exc
+                raise LockFlockBusyError("authority") from exc
             observed = os.fstat(descriptor)
             self.authority_fd = descriptor
             self.authority_identity = (observed.st_dev, observed.st_ino)
