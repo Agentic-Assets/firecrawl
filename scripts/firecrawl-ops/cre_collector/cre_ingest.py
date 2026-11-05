@@ -7653,6 +7653,11 @@ def main():
         with open(path, "rb") as f:
             image_transition_input = f.read()
         data = json.loads(image_transition_input)
+        # Franklin card subsets require a future, exact guarded claims lane.
+        # Never let the regular full/enrichment CLI turn them into lifecycle authority.
+        artifact_meta = data.get("runMeta") if isinstance(data, dict) else None
+        if isinstance(artifact_meta, dict) and artifact_meta.get("franklinSitePartial") is not None:
+            sys.exit("refusing Franklin site partial without guarded checkpoint admission")
         try:
             require_canonical_artifact(data)
         except ValueError as exc:

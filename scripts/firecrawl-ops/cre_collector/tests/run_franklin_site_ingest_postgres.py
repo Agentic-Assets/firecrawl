@@ -1,6 +1,7 @@
 """Network-none disposable PG contract for Franklin partial SQL."""
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,8 +12,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 from run_franklin_site_lifecycle_postgres import run
+from test_franklin_site_partial import mixed
 
 import cre_franklin_site_sql as partial
+from cre_franklin_site_partial import derive
 
 
 def item(identity, slug, stamp, text):
@@ -134,6 +137,29 @@ def main():
         same_at_limit = item(identity, "a", "2026-11-04T12:00:07Z", "Subject to Offer")
         assert json.loads(sql(write_sql([same_at_limit], [])).splitlines()[-1])["held"] == []
         assert sql("SELECT count(*) FROM credeals.cre_source_index;") == "0"
+
+        raw, original_binding = mixed()
+        original = json.loads(raw)
+        page = original["sources"][0]["retainedObservations"][0]
+        before = "12345678-1234-5123-8123-123456789abc"
+        after = "bbbbbbbb-cccc-5ddd-8eee-ffffffffffff"
+        page["decodedHtml"] = page["decodedHtml"].replace(before, after).replace("/for-sale/a", "/for-sale/mixed-page")
+        page["decodedHtmlSha256"] = hashlib.sha256(page["decodedHtml"].encode()).hexdigest()
+        page["cards"][0]["html"] = page["cards"][0]["html"].replace(before, after).replace("/for-sale/a", "/for-sale/mixed-page")
+        page["cards"][0]["attributes"]["data-listing-id"] = after
+        raw = json.dumps(original).encode()
+        original_binding["artifact_sha256"] = hashlib.sha256(raw).hexdigest()
+        bound = {**original_binding, "attempt_id": "d" * 32, "producer_sha": "e" * 40,
+                 "database_target_sha256": "f" * 64}
+        derived = derive(raw, bound, {"PATH": os.environ["PATH"]})
+        assert derived["runMeta"]["franklinSitePartial"]["buildoutPending"] == 1
+        assert json.loads(raw)["listings"][0]["name"] == "private Buildout peer"
+        probe = json.loads(sql(partial.identity_probe_sql(derived["listings"])))
+        assert probe["held"] == []
+        sql(partial.build_sql(derived["listings"], probe["held"], bound))
+        assert json.loads(sql(partial.readback_sql(derived["listings"], probe["held"], bound))) == {
+            "expected": 1, "invalid": [], "matching_jobs": 1}
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='buildout-1';") == "0"
         print("Disposable Franklin partial SQL proof passed")
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
