@@ -1,6 +1,14 @@
 import { cancelResponseBody } from "../lib/response-body.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 
+/** Access denial or backpressure must stop this source's later filters. */
+export class LyonSearchAccessError extends Error {
+  constructor(message: string, readonly status?: number) { super(message); }
+}
+export class LyonSearchHttpError extends Error {
+  constructor(readonly status: number) { super(`Lyon Stahl search HTTP ${status}`); }
+}
+
 /** A timed-out search must settle its owned header request before a peer can run. */
 export async function lyonSearchHeaders(fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>, url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
   signal.throwIfAborted();

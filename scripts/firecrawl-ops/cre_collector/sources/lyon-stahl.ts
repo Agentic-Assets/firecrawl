@@ -8,7 +8,7 @@ import {
 import { observationNow } from "../lib/observation-clock.js";
 import { RetainedSourceError } from "../lib/source-observations.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
-import { lyonSearchHeaders } from "./lyon-search-headers.js";
+import { LyonSearchAccessError, LyonSearchHttpError, lyonSearchHeaders } from "./lyon-search-headers.js";
 import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -659,10 +659,14 @@ async function lyonStahlCancelBody(
 }
 
 /** One invocation's physical request starts, including redirects and retries. */
+const lyonPacedTransports = new WeakSet<FetchLike>();
+export function isLyonStahlPacedFetch(fetchImpl: FetchLike): boolean {
+  return lyonPacedTransports.has(fetchImpl);
+}
 export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
   let lastStartedAt: number | null = null;
   let queue: Promise<void> = Promise.resolve();
-  return (input, init) => {
+  const paced: FetchLike = (input, init) => {
     const start = queue.then(async () => {
       const signal = init?.signal;
       signal?.throwIfAborted();
@@ -689,6 +693,8 @@ export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
     queue = start.then(() => undefined, () => undefined);
     return start.then(({ response }) => response);
   };
+  lyonPacedTransports.add(paced);
+  return paced;
 }
 
 async function lyonStahlBoundedResponseText(
@@ -785,7 +791,7 @@ export async function lyonStahlFetchText(
         if (response.status >= 300 && response.status < 400) {
           if (kind === "search") {
             if (!await lyonStahlCancelBody(response.body, timeoutMs)) throw new NativeEvidenceTerminalError("Lyon Stahl search redirect body did not settle");
-            throw new Error("Lyon Stahl search redirect refused");
+            throw new LyonSearchAccessError("Lyon Stahl search redirect refused", response.status);
           }
           const location = response.headers.get("location");
           if (!location) {
@@ -814,6 +820,8 @@ export async function lyonStahlFetchText(
           const hasRetryAfter = response.headers.has("retry-after");
           const cancelled = await lyonStahlCancelBody(response.body, timeoutMs);
           if (kind === "search" && !cancelled) throw new NativeEvidenceTerminalError(`Lyon Stahl HTTP ${status} response body did not settle`);
+          if (kind === "search" && ([401, 403, 429].includes(status) || hasRetryAfter)) throw new LyonSearchAccessError(`Lyon Stahl search HTTP ${status}`, status);
+          if (kind === "search") throw new LyonSearchHttpError(status);
           if ([429, 500, 502, 503, 504].includes(status) && !hasRetryAfter && cancelled) {
             throw new LyonStahlRetryableFetchError(`Lyon Stahl HTTP ${status}`);
           }
@@ -822,7 +830,7 @@ export async function lyonStahlFetchText(
         const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
         if (kind === "search" && !/^application\/json(?:\s*;|$)/.test(contentType)) {
           if (!await lyonStahlCancelBody(response.body, timeoutMs)) throw new NativeEvidenceTerminalError("Lyon Stahl search response body did not settle");
-          throw new Error("Lyon Stahl search response is not JSON");
+          throw new LyonSearchAccessError("Lyon Stahl search response is not JSON", response.status);
         }
         if (contentType.includes("application/pdf")) {
           await lyonStahlCancelBody(response.body, timeoutMs);
@@ -857,7 +865,8 @@ export async function lyonStahlFetchText(
 export async function srcLyonStahl(
   tx: Tx,
   max: number,
-  _monitor: boolean
+  _monitor: boolean,
+  invocationFetch?: FetchLike
 ): Promise<SourceResult> {
   if (tx === "lease") {
     return {
@@ -871,7 +880,8 @@ export async function srcLyonStahl(
     };
   }
 
-  const pacedFetch = lyonStahlPacedFetch();
+  const pacedFetch = invocationFetch ?? lyonStahlPacedFetch();
+  if (!isLyonStahlPacedFetch(pacedFetch)) throw new Error("Lyon source requires an invocation-owned paced fetch");
   const indexXml = await lyonStahlFetchText(LYON_STAHL_SITEMAP_URL, "xml", pacedFetch);
   const propertySitemaps = lyonStahlPropertySitemaps(indexXml);
   if (!propertySitemaps.length) {

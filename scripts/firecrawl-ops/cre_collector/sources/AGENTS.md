@@ -210,10 +210,13 @@ archive-only shards fail. Sitemap membership does not establish active status,
 historical identity compatibility or first-seen admission.
 
 The source-owned Lyon search observation helper captures the three advertised
-all/sale/lease AJAX filters with one shared 10-second physical-start gate, at
-most one attempt per filter, bounded response bodies and terminal handling of
-unsettled cleanup. It retains decoded JSON, clocks, hashes and card occurrence
-references, including typed query-form WordPress IDs. Search observations are
+all/sale/lease AJAX filters with an invocation-owned 10-second physical-start
+gate also passed to any other Lyon requests in that invocation. It makes at
+most one attempt per filter, retains settled local failures and continues
+eligible filters, and stops on access denial, rate limiting or unsettled
+cleanup. It retains decoded JSON, clocks, hashes and card occurrence references,
+including typed query-form WordPress IDs. Earlier snapshots accompany an
+unsettled terminal error, whose global-stop classification is unchanged. Search observations are
 partial evidence only: filter membership does not prove current status,
 exclusive tenure, a complete inventory, a crosswalk or numeric price semantics.
 The helper is not wired to the collector, scheduler, admission or database.

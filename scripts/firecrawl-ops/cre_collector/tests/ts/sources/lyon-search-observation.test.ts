@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createHash } from "node:crypto";
 import { captureLyonSearch, projectLyonSearch } from "../../../sources/lyon-search-observation.js";
-import { LYON_SEARCH_URLS, lyonStahlFetchText } from "../../../sources/lyon-stahl.js";
+import { LYON_SEARCH_URLS, lyonStahlFetchText, lyonStahlPacedFetch } from "../../../sources/lyon-stahl.js";
 import { NativeEvidenceTerminalError } from "../../../lib/source-evidence/terminal-error.js";
 
 async function withClock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
@@ -105,53 +105,93 @@ test("search header timeout stops on unsettled fetch and safely rejects a settle
   assert.equal(cancellations, 1);
 });
 
-test("bounded search uses one ten-second gate and keeps prior pages on settled failure", async (t) => {
+test("search shares the invocation gate with a detail request", async (t) => {
   const starts: number[] = [];
   const page = JSON.stringify([card("one", { sale_price: "$2.95/RSF NNN monthly" })]);
-  const result = await withClock(t, () => captureLyonSearch(async () => {
-    starts.push(Date.now());
-    return new Response(page, { headers: { "content-type": "application/json" } });
-  }));
-  assert.deepEqual(starts, [100_000, 110_000, 120_000]);
+  const result = await withClock(t, async () => {
+    const paced = lyonStahlPacedFetch(async input => {
+      starts.push(Date.now());
+      return String(input).includes("admin-ajax")
+        ? new Response(page, { headers: { "content-type": "application/json" } })
+        : new Response("<html></html>", { headers: { "content-type": "text/html" } });
+    });
+    await lyonStahlFetchText(`${base}one/`, "html", paced, 60_000, 1024, 1);
+    return captureLyonSearch(paced);
+  });
+  assert.deepEqual(starts, [100_000, 110_000, 120_000, 130_000]);
   assert.equal(result.candidates.length, 1);
   assert.equal(result.snapshots.length, 3);
   assert.equal(result.coverage, "partial_unknown");
 });
 
-test("bounded search preserves earlier pages after a settled failure and stops", async (t) => {
+test("bounded search keeps eligible filters after a settled local failure", async (t) => {
   let requests = 0;
-  await assert.rejects(withClock(t, () => captureLyonSearch(async () => {
+  const result = await withClock(t, () => captureLyonSearch(lyonStahlPacedFetch(async () => {
     requests++;
     if (requests === 2) return new Response("unavailable", { status: 503 });
     return new Response("[]", { headers: { "content-type": "application/json" } });
-  })), (error: any) => {
-    assert.equal(error.retainedObservations[0].coverage, "partial_unknown");
-    assert.equal(error.retainedObservations[0].pages.length, 1);
-    assert.equal(error.retainedObservations[0].pages[0].responseText, "[]");
-    return true;
-  });
-  assert.equal(requests, 2);
+  })));
+  assert.equal(result.coverage, "partial_unknown");
+  assert.equal(result.snapshots.length, 2);
+  assert.deepEqual(result.failures, [{ filter: "sale", reason: "acquisition_failed", status: 503 }]);
+  assert.equal(result.snapshots[1].filter, "lease");
+  assert.equal(requests, 3);
 });
 
-test("bounded search retains the malformed response without requesting later filters", async (t) => {
+test("bounded search retains malformed response and continues later filters", async (t) => {
   let requests = 0;
-  await assert.rejects(withClock(t, () => captureLyonSearch(async () => {
+  const result = await withClock(t, () => captureLyonSearch(lyonStahlPacedFetch(async () => {
     requests++;
-    return new Response(requests === 1 ? "[]" : "{broken", { headers: { "content-type": "application/json" } });
-  })), (error: any) => {
-    assert.equal(error.retainedObservations[0].pages.length, 2);
-    assert.equal(error.retainedObservations[0].pages[1].responseText, "{broken");
-    return true;
-  });
-  assert.equal(requests, 2);
+    return new Response(requests === 2 ? "{broken" : "[]", { headers: { "content-type": "application/json" } });
+  })));
+  assert.equal(result.snapshots[1].responseText, "{broken");
+  assert.deepEqual(result.failures, [{ filter: "sale", reason: "invalid_response" }]);
+  assert.equal(result.snapshots[2].filter, "lease");
+  assert.equal(requests, 3);
 });
 
 test("unsettled search response cleanup remains terminal and stops dispatch", async (t) => {
   let requests = 0;
-  await assert.rejects(withClock(t, () => captureLyonSearch(async () => {
+  await assert.rejects(withClock(t, () => captureLyonSearch(lyonStahlPacedFetch(async () => {
     requests++;
     if (requests === 1) return new Response("[]", { headers: { "content-type": "application/json" } });
     return new Response(new ReadableStream({ cancel() { return Promise.reject(Error("unsettled")); } }), { status: 503 });
-  })), error => error instanceof NativeEvidenceTerminalError);
+  }))), (error: any) => {
+    assert.ok(error instanceof NativeEvidenceTerminalError);
+    const retained = (error as NativeEvidenceTerminalError & { retainedObservations: any[] }).retainedObservations;
+    assert.equal(retained[0].snapshots[0].responseText, "[]");
+    assert.equal(retained[0].coverage, "partial_unknown");
+    return true;
+  });
   assert.equal(requests, 2);
+});
+
+for (const status of [401, 403, 429]) test(`search stops after HTTP ${status} without dispatching later filters`, async (t) => {
+  let requests = 0;
+  const result = await withClock(t, () => captureLyonSearch(lyonStahlPacedFetch(async () => {
+    requests++;
+    return requests === 2 ? new Response("denied", { status }) : new Response("[]", { headers: { "content-type": "application/json" } });
+  })));
+  assert.equal(requests, 2);
+  assert.equal(result.stopped, true);
+  assert.deepEqual(result.failures, [{ filter: "sale", reason: "access_stopped", status }]);
+  assert.equal(result.snapshots[0].responseText, "[]");
+});
+
+for (const kind of ["retry-after", "redirect", "non-json"] as const) test(`search stops on ${kind} response`, async (t) => {
+  let requests = 0;
+  const result = await withClock(t, () => captureLyonSearch(lyonStahlPacedFetch(async () => {
+    requests++;
+    if (requests === 1) return new Response("[]", { headers: { "content-type": "application/json" } });
+    if (kind === "retry-after") return new Response("later", { status: 503, headers: { "retry-after": "60" } });
+    if (kind === "redirect") return new Response(null, { status: 302, headers: { location: LYON_SEARCH_URLS.lease } });
+    return new Response("<html>challenge</html>", { headers: { "content-type": "text/html" } });
+  })));
+  assert.equal(requests, 2);
+  assert.equal(result.stopped, true);
+  assert.deepEqual(result.failures, [{ filter: "sale", reason: "access_stopped", status: kind === "retry-after" ? 503 : kind === "redirect" ? 302 : 200 }]);
+});
+
+test("search refuses a raw ungated fetch", async () => {
+  await assert.rejects(captureLyonSearch(fetch), /invocation-owned paced fetch/);
 });

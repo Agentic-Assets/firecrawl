@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { observationNow } from "../lib/observation-clock.js";
-import { RetainedSourceError } from "../lib/source-observations.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
-import { LYON_SEARCH_URLS, lyonStahlFetchText, lyonStahlListingId, lyonStahlPacedFetch } from "./lyon-stahl.js";
+import { LyonSearchAccessError, LyonSearchHttpError } from "./lyon-search-headers.js";
+import { LYON_SEARCH_URLS, isLyonStahlPacedFetch, lyonStahlFetchText, lyonStahlListingId, lyonStahlPacedFetch } from "./lyon-stahl.js";
 
 type Filter = keyof typeof LYON_SEARCH_URLS;
 type Page = { filter: Filter; observedAt: string; responseText: string };
@@ -65,21 +65,39 @@ export function projectLyonSearch(pages: Page[]) {
     })), held };
 }
 
-/** Three bounded page-advertised requests with one shared physical-start gate. */
-export async function captureLyonSearch(fetchImpl: typeof fetch = fetch) {
-  const paced = lyonStahlPacedFetch(fetchImpl);
+function snapshot(page: Page) {
+  return { ...page, endpoint: LYON_SEARCH_URLS[page.filter],
+    responseTextSha256: createHash("sha256").update(page.responseText, "utf8").digest("hex") };
+}
+
+/** The source owner supplies the same paced transport used by any other Lyon route. */
+export async function captureLyonSearch(paced: ReturnType<typeof lyonStahlPacedFetch>) {
+  if (!isLyonStahlPacedFetch(paced)) throw new Error("Lyon search requires an invocation-owned paced fetch");
   const pages: Page[] = [];
-  try {
-    for (const filter of ["all", "sale", "lease"] as const) {
+  const valid: Page[] = [];
+  const failures: Array<{ filter: Filter; reason: "acquisition_failed" | "invalid_response" | "access_stopped"; status?: number }> = [];
+  let stopped = false;
+  for (const filter of ["all", "sale", "lease"] as const) {
+    try {
       const responseText = await lyonStahlFetchText(LYON_SEARCH_URLS[filter], "search", paced, undefined, undefined, 1);
-      pages.push({ filter, observedAt: observationNow(), responseText });
-      projectLyonSearch(pages);
+      const page = { filter, observedAt: observationNow(), responseText };
+      pages.push(page);
+      try { projectLyonSearch([page]); valid.push(page); }
+      catch { failures.push({ filter, reason: "invalid_response" }); }
+    } catch (error) {
+      if (error instanceof NativeEvidenceTerminalError) {
+        Object.defineProperty(error, "retainedObservations", { value: [{ schema: "lyon-search-incomplete-v1",
+          coverage: "partial_unknown", snapshots: pages.map(snapshot), failures }], enumerable: false });
+        throw error;
+      }
+      if (!(error instanceof Error)) throw error;
+      if (error instanceof LyonSearchAccessError) {
+        failures.push({ filter, reason: "access_stopped", ...(error.status === undefined ? {} : { status: error.status }) });
+        stopped = true;
+        break;
+      }
+      failures.push({ filter, reason: "acquisition_failed", ...(error instanceof LyonSearchHttpError ? { status: error.status } : {}) });
     }
-    return projectLyonSearch(pages);
-  } catch (error) {
-    if (!(error instanceof Error) || error instanceof NativeEvidenceTerminalError || pages.length === 0) throw error;
-    throw new RetainedSourceError(error, [{ schema: "lyon-search-incomplete-v1", coverage: "partial_unknown",
-      pages: pages.map(page => ({ ...page, endpoint: LYON_SEARCH_URLS[page.filter],
-        responseTextSha256: createHash("sha256").update(page.responseText, "utf8").digest("hex") })) }]);
   }
+  return { ...projectLyonSearch(valid), snapshots: pages.map(snapshot), failures, stopped };
 }
