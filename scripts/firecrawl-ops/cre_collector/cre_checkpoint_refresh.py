@@ -6363,7 +6363,7 @@ def recover_interrupted_ingest(
         checkpoint["state"] = "ingest_recovery_required"
         save_manifest(run_dir, manifest)
         raise GlobalStageError(
-            "JLL partial ingest outcome is not exact; manual reconciliation is required before replay"
+            f"{source} partial ingest outcome is not exact; manual reconciliation is required before replay"
         )
     if not recovery["readback_ok"]:
         generation_id, _generation_started = _generation_expectation(

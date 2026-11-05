@@ -315,3 +315,64 @@ def test_series_recognizes_only_exact_partial_binding():
     assert series.franklin_partial_child(child)
     binding["whole_source_coverage"] = True
     assert not series.franklin_partial_child(child)
+
+
+def recovery_manifest(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    manifest = refresh.new_manifest(run, git_sha="a" * 40, git_dirty=False,
+                                    sources=("franklin-street",), page_cap=400, concurrency=1,
+                                    database_target={"algorithm": "sha256", "value": "b" * 64})
+    manifest["sources"]["franklin-street"].update(
+        artifact={"franklin_partial": True, "sha256": "1" * 64, "path": "sources/site.json"},
+        state="ingesting", ingest={"started_at": "2026-11-04T12:00:00Z", "finished_at": None, "rc": None})
+    return run, manifest
+
+
+def test_interrupted_owner_never_probes_or_replays_without_settlement(tmp_path, monkeypatch):
+    run, manifest = recovery_manifest(tmp_path)
+    monkeypatch.setattr(refresh, "run_command", lambda *_args, **_kwargs: pytest.fail("unsettled owner probed DB"))
+    with pytest.raises(refresh.GlobalStageError, match="settled-owner"):
+        refresh.recover_interrupted_ingest(run, manifest, "franklin-street", None)
+    checkpoint = manifest["sources"]["franklin-street"]
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest_recovery"]["reason"] == "franklin_unsettled_ingest"
+
+
+def test_nonzero_ingest_requires_reconciliation_before_peer_dispatch(tmp_path, monkeypatch):
+    run, manifest = recovery_manifest(tmp_path)
+    checkpoint = manifest["sources"]["franklin-street"]
+    checkpoint["state"] = "dry_run_passed"
+    checkpoint["subset_ingest_attempt_id"] = "c" * 32
+    monkeypatch.setattr(refresh, "subset_ingest_arguments", lambda *_args: ["--franklin-site-claims", "fixture"])
+    monkeypatch.setattr(refresh, "run_command", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(refresh, "recover_interrupted_ingest",
+                        lambda *_args: pytest.fail("nonzero outcome was automatically replayed"))
+    with pytest.raises(refresh.GlobalStageError, match="manual exact-generation reconciliation"):
+        refresh.ingest_source(run, manifest, "franklin-street", run / "sources/site.json", None)
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest_recovery"]["readback_ok"] is False
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_settled_recovery_requires_exact_job_and_card_readback(tmp_path, monkeypatch, exact):
+    run, manifest = recovery_manifest(tmp_path)
+    checkpoint = manifest["sources"]["franklin-street"]
+    checkpoint["ingest"]["finished_at"] = "2026-11-04T12:05:00Z"
+    def fake_run(argv, _log, **_kwargs):
+        Path(argv[argv.index("--out") + 1]).write_text("{}")
+        return 0
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    monkeypatch.setattr(refresh, "require_full_validation_report", lambda *_args: None)
+    monkeypatch.setattr(refresh, "franklin_partial_readback", lambda *_args: {"ok": exact})
+    monkeypatch.setattr(refresh, "verify_validation_readback", lambda *_args, **_kwargs: {"ok": exact})
+    monkeypatch.setattr(refresh, "_artifact_run_job_probe_is_exact", lambda *_args, **_kwargs: exact)
+    if exact:
+        refresh.recover_interrupted_ingest(run, manifest, "franklin-street", None)
+        assert checkpoint["state"] == "ingested"
+        assert checkpoint["ingest_recovery"]["readback_ok"] is True
+    else:
+        with pytest.raises(refresh.GlobalStageError, match="partial ingest outcome is not exact"):
+            refresh.recover_interrupted_ingest(run, manifest, "franklin-street", None)
+        assert checkpoint["state"] == "ingest_recovery_required"
+        assert checkpoint["ingest_recovery"]["readback_ok"] is False

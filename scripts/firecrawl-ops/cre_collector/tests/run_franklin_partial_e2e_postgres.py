@@ -1,7 +1,6 @@
 """Owned no-TCP PostgreSQL end-to-end Franklin partial admission contract."""
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -93,59 +92,44 @@ def main():
                    "rejected_artifact": "rejected/franklin-street-attempt-1.json",
                    "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
         checkpoint = {"attempts": [attempt], "state": "collecting"}
-        manifest = {"run_id": "run-1", "started_at": gen, "collector_git_sha": "a" * 40, "collector_git_dirty": False,
+        code_sha, dirty = refresh.git_identity()
+        if dirty:
+            raise RuntimeError("end-to-end proof requires an unchanged clean checkout")
+        manifest = {"run_id": "run-1", "started_at": gen, "collector_git_sha": code_sha, "collector_git_dirty": False,
                     "config": {"sources": ["franklin-street"], "transactions": ["sale", "lease"], "max_items": 0,
                                "additive": True, "mark_missing": False, "status_activation": False, "pipeline": False},
                     "scope": {"source_keys": ["franklin-street"]},
                     "preflight": {"database_target": {"algorithm": "sha256", "value": target}},
                     "sources": {"franklin-street": checkpoint}}
-        old_git, old_save = refresh.git_identity, refresh.save_manifest
-        refresh.git_identity = lambda: ("a" * 40, False)
+        old_save = refresh.save_manifest
         refresh.save_manifest = lambda *_args: None
         try:
             assert refresh.prepare_franklin_partial_candidate(run, manifest, attempt, candidate_only=False)
             path = run / checkpoint["artifact"]["path"]
-            checkpoint["franklin_identity_probe"] = admission.run_identity_probe(
-                path, manifest, env_file=str(env_file), process_env={"PATH": os.environ["PATH"]})
-            gate_path = cluster_root / "gate.json"
-            gate = subprocess.run([sys.executable, str(ROOT / "cre_gate.py"), "--in", str(path),
-                                   "--apply", "--strict", "--out", str(gate_path),
-                                   "--env-file", str(env_file), "--expected-db-target-sha256", target],
-                                  check=False, capture_output=True, text=True, timeout=60, cwd=ROOT)
-            if gate.returncode not in (0, 2):
-                raise RuntimeError("fixture gate failed: " + gate.stderr)
-            source_report = json.loads(gate_path.read_text())
-            source_binding = admission.admit(path, manifest, source_report, code_sha="a" * 40, dirty=False,
-                                             env={"PATH": os.environ["PATH"]}, phase="source")
-            checkpoint["gate"] = {"current_inventory_proof": source_binding}
-            aggregate_report = json.loads(gate_path.read_text())
-            assert admission.admit(path, manifest, aggregate_report, code_sha="a" * 40, dirty=False,
-                                   env={"PATH": os.environ["PATH"]}, phase="aggregate") == source_binding
-            envelope = {"manifest": manifest, "source_report": source_report,
-                        "aggregate_report": aggregate_report, "binding": source_binding, "attempt_id": "d" * 32}
-            claims_dir = run / "claims"
-            claims_dir.mkdir(mode=0o700)
-            claims = claims_dir / "claims.json"
-            claims.write_text(json.dumps(envelope))
-            claims.chmod(0o600)
+            refresh.gate_source(run, manifest, "franklin-street", path, str(env_file))
+            source_binding = checkpoint["gate"]["current_inventory_proof"]
+            source_report = refresh._load_json(run / checkpoint["gate"]["path"])
+            aggregate_report = json.loads(json.dumps(source_report))
+            refresh._admit_current_inventory(run, manifest, aggregate_report, path, "aggregate",
+                                             source="franklin-street")
+            assert aggregate_report["per_source"]["franklin-street"]["verdict"] == "ok_additive_verified_subset"
+            claims_info = checkpoint["franklin_partial_claims"]
+            claims = Path(claims_info["path"])
+            attempt_id = checkpoint["subset_ingest_attempt_id"]
             args = SimpleNamespace(inputs=[str(path)], mark_missing=False, activate_status=False, require_strict_freshness=True,
-                expected_db_target_sha256=target, checkpoint_ingest_attempt="d" * 32, jll_partial_claims=None,
+                expected_db_target_sha256=target, checkpoint_ingest_attempt=attempt_id, jll_partial_claims=None,
                 daum_verified_subset_claims=None, pyramid_verified_subset_claims=None, matthews_targeted_claims=None,
                 newmark_page_attempt=None, newmark_page_claims=None, checkpoint_collector_git_sha=None,
                 checkpoint_pyramid_code_sha=None, checkpoint_jll_code_sha=None, franklin_site_claims=str(claims),
                 keep_artifacts=None, dry_run=False, env_file=str(env_file))
             admission.run_ingest(args)
-            context = admission.ingest_subset_context(path, envelope, code_sha="a" * 40, dirty=False,
-                                                       target_sha256=target, attempt_id="d" * 32,
-                                                       env={"PATH": os.environ["PATH"]})
-            result = admission.run_readback(path, manifest, context, target_sha256=target,
-                                            env_file=str(env_file), process_env={"PATH": os.environ["PATH"]})
+            result = refresh.franklin_partial_readback(run, manifest, str(env_file))
             assert result["ok"] is True and result["expected"] == 1
             assert source_binding["buildout_pending"] == 1 and source_binding["whole_source_coverage"] is False
             assert original.read_bytes() == raw
             print("Owned no-TCP Franklin partial end-to-end proof passed")
         finally:
-            refresh.git_identity, refresh.save_manifest = old_git, old_save
+            refresh.save_manifest = old_save
 
 
 if __name__ == "__main__":
