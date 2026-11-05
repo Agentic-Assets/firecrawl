@@ -1745,3 +1745,18 @@ def test_pipeline_legacy_complete_jll_keeps_normal_qualification(evidence):
     assert result["failed_source_keys"] == []
     assert result["unverifiable_source_keys"] == []
     assert [row["source_key"] for row in result["per_source_summaries"]] == ["jll-investor", setup["source2"]]
+
+
+def test_jll_singleton_hold_notifies_verified_peer_without_whole_watermark(evidence):
+    setup = pipeline_evidence(evidence, second_source="jll")
+    child = setup["child"]
+    child["sources"]["jll"]["state"] = "jll_image_guard_refused"
+    child["pipeline"]["source_results"]["jll"] = {
+        "state": "failed", "reason": "jll_image_guard_refusal", "unit_id": "unit-0002"}
+    child["pipeline"]["units"].append({"unit_id": "unit-0002", "sources": ["jll"], "state": "source_held"})
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, "jll"])
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["jll"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert "verified_listings" not in result

@@ -6876,3 +6876,28 @@ def test_serial_hold_does_not_hide_failed_peer_validation(tmp_path, monkeypatch)
     monkeypatch.setattr(refresh, "run_final_validation", fail)
     with pytest.raises(refresh.GlobalStageError, match="peer readback failed"):
         refresh.validate_serial_sources(tmp_path, {}, None, ["savills", "jll"], ["jll"])
+
+
+def test_serial_jll_owner_loss_fences_siblings_after_refusal(tmp_path, monkeypatch):
+    import cre_pyramid_rollback_result as outcome
+    sources = ["savills", "jll", "hanley"]
+    manifest = {"config": {"sources": sources},
+                "sources": {source: {"state": "dry_run_passed"} for source in sources}}
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", lambda *a: (tmp_path / "artifact", {}))
+    checked = []
+    def owner_check():
+        checked.append(True)
+        if len(checked) == 3:
+            raise refresh.GlobalStageError("owner lost")
+    calls = []
+    def ingest(run, state, source, artifact, env):
+        calls.append(source)
+        if source == "jll":
+            raise refresh.JllImageGuardRefusal("typed")
+        state["sources"][source]["state"] = "ingested"
+    monkeypatch.setattr(refresh, "ingest_source", ingest)
+    monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pytest.fail("must check owner first"))
+    with pytest.raises(refresh.GlobalStageError, match="owner lost"):
+        refresh.ingest_admitted_sources(tmp_path, manifest, None, owner_check=owner_check)
+    assert calls == ["savills", "jll"]
+    assert "serial_guard_holds" not in manifest
