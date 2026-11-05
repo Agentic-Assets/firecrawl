@@ -2,7 +2,9 @@
 import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
+// Bind the worker's process-local observation clock to the fixed source fixture.
+Date.now = () => Date.parse("2026-11-04T16:01:00Z");
+const { buildColliersWindowArtifact } = await import("../../../sources/colliers-partial-window-worker.js");
 const dir = process.env.COLLIERS_FIXTURE_DIRECTORY;
 if (!dir) throw new Error("fixture directory missing");
 chmodSync(dir, 0o700);

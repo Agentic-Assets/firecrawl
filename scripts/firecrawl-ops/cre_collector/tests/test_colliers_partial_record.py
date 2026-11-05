@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from cre_colliers_partial import verify_detail_record
 
 
@@ -167,12 +166,22 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     counts, errors, observed, _, rejected = count_artifacts([str(tmp_path / "artifact")], True)
     assert counts == {"colliers": 1} and observed == {"colliers"} and rejected == 0
     assert errors["colliers"] == "original source pass failed"
-    from cre_checkpoint_refresh import _validate_source_artifact_local
+    from cre_checkpoint_refresh import (
+        ArtifactValidationError,
+        _validate_source_artifact_local,
+    )
 
     partial_stats = _validate_source_artifact_local(tmp_path / "artifact", "colliers", "2026-11-04T15:00:00Z",
         expected_generation_id="gen", expected_generation_started_at="2026-11-04T14:00:00Z",
-        expected_transactions=("sale", "lease"), require_strict_freshness=True)
+        expected_transactions=("sale", "lease"), require_strict_freshness=True,
+        now=datetime(2026, 11, 4, 16, 3, tzinfo=UTC))
     assert partial_stats["colliers_partial"] is True and partial_stats["staged_unique"] == 1
+    with pytest.raises(ArtifactValidationError, match="Colliers partial artifact invalid") as stale:
+        _validate_source_artifact_local(tmp_path / "artifact", "colliers", "2026-11-04T15:00:00Z",
+            expected_generation_id="gen", expected_generation_started_at="2026-11-04T14:00:00Z",
+            expected_transactions=("sale", "lease"), require_strict_freshness=True,
+            now=datetime(2026, 11, 5, 16, 3, tzinfo=UTC))
+    assert "partial observation exceeds freshness SLO" in str(stale.value.__cause__)
     unguarded = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(tmp_path / "artifact"), "--dry-run"],
                                cwd=collector, capture_output=True, text=True, timeout=30, check=False)
     assert unguarded.returncode != 0
