@@ -2618,6 +2618,7 @@ def fresh_source_env(
     collector_concurrency: int | None = None,
     daum_verified_subset: bool = False,
     daum_subset_policy: str = "tenure-only-v1",
+    lyon_bounded_search: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -2646,7 +2647,7 @@ def fresh_source_env(
             name = partial_env_name(partial_source, partial_field)
             if name in env:
                 clear(name)
-    if source in PARTIAL_PAGE_SOURCES:
+    if source in PARTIAL_PAGE_SOURCES and (source != "lyon-stahl" or lyon_bounded_search):
         from cre_partial_page_custody import expected_path
         partial = expected_path(run_dir, attempt_number, source)
         try:
@@ -3712,7 +3713,12 @@ def run_cohort_collection_worker(
         collector_concurrency=concurrency,
         daum_verified_subset=daum_verified_subset,
         daum_subset_policy=daum_subset_policy,
+        lyon_bounded_search=source == "lyon-stahl",
     )
+    if source == "lyon-stahl" and not env.get(partial_env_name(source, "PATH")):
+        attempt_log.parent.mkdir(parents=True, exist_ok=True)
+        attempt_log.write_text("Lyon bounded search custody unavailable; no source request dispatched.\n", encoding="utf-8")
+        return 1
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
             run_dir,
@@ -3939,6 +3945,7 @@ def _cohort_attempt(
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
                 collector_concurrency=collector_concurrency,
+                lyon_bounded_search=source == "lyon-stahl",
                 daum_verified_subset=current_inventory.is_verified_subset(
                     manifest["config"], source
                 ),
@@ -5063,7 +5070,7 @@ def collect_source(
         else:
             tmp_artifact.unlink(missing_ok=True)
         partial_state = None
-        if source in PARTIAL_PAGE_SOURCES:
+        if source in PARTIAL_PAGE_SOURCES and source != "lyon-stahl":
             from cre_partial_page_custody import prepare
             partial_state = prepare(run_dir, attempt_number, source)
         env, overrides = fresh_source_env(

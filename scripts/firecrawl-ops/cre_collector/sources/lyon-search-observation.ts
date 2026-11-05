@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { observationNow } from "../lib/observation-clock.js";
+import type { PartialPageSpool } from "../lib/partial-page-spool.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { LyonSearchAccessError, LyonSearchHttpError } from "./lyon-search-headers.js";
 import { LYON_SEARCH_URLS, isLyonStahlPacedFetch, lyonStahlFetchText, lyonStahlListingId, lyonStahlPacedFetch } from "./lyon-stahl.js";
@@ -71,7 +73,7 @@ function snapshot(page: Page) {
 }
 
 /** The source owner supplies the same paced transport used by any other Lyon route. */
-export async function captureLyonSearch(paced: ReturnType<typeof lyonStahlPacedFetch>) {
+export async function captureLyonSearch(paced: ReturnType<typeof lyonStahlPacedFetch>, onPage?: (page: ReturnType<typeof snapshot>) => void) {
   if (!isLyonStahlPacedFetch(paced)) throw new Error("Lyon search requires an invocation-owned paced fetch");
   const pages: Page[] = [];
   const valid: Page[] = [];
@@ -82,6 +84,7 @@ export async function captureLyonSearch(paced: ReturnType<typeof lyonStahlPacedF
       const responseText = await lyonStahlFetchText(LYON_SEARCH_URLS[filter], "search", paced, undefined, undefined, 1);
       const page = { filter, observedAt: observationNow(), responseText };
       pages.push(page);
+      onPage?.(snapshot(page));
       try { projectLyonSearch([page]); valid.push(page); }
       catch { failures.push({ filter, reason: "invalid_response" }); }
     } catch (error) {
@@ -100,4 +103,19 @@ export async function captureLyonSearch(paced: ReturnType<typeof lyonStahlPacedF
     }
   }
   return { ...projectLyonSearch(valid), snapshots: pages.map(snapshot), failures, stopped };
+}
+
+/** Run only the bounded search route when the checkpoint has provisioned custody. */
+export async function srcLyonSearchPartial(spool: PartialPageSpool): Promise<never> {
+  if (!spool.writable) throw new NativeEvidenceTerminalError("Lyon search custody unavailable");
+  const paced = lyonStahlPacedFetch();
+  const result = await captureLyonSearch(paced, page => {
+    spool.record({ kind: "lyon_search_response", transaction: "sale", pass: ["all", "sale", "lease"].indexOf(page.filter) + 1,
+      page: 1, observedAt: page.observedAt, documents: [page] });
+    if (!spool.writable) throw new NativeEvidenceTerminalError("Lyon search custody failed");
+  });
+  throw new RetainedSourceError(new Error("Lyon search is partial and requires source-bound admission"), [{
+    schema: "lyon-search-summary-v1", coverage: "partial_unknown", stopped: result.stopped,
+    failures: result.failures, candidates: result.candidates.length, held: result.held.length,
+  }]);
 }
