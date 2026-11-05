@@ -308,6 +308,56 @@ def jll_partial_child(child: Mapping[str, Any]) -> bool:
         return False
 
 
+def colliers_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize a source-bound partial window with settled cursor custody."""
+    try:
+        checkpoint = child["sources"]["colliers"]
+        artifact, gate = checkpoint["artifact"], checkpoint["gate"]
+        binding, settlement = gate["current_inventory_proof"], checkpoint["partial_cursor_settlement"]
+        held, history = binding["held"], binding["history_holds"]
+        attempt = checkpoint["subset_ingest_attempt_id"]
+        return (child["config"].get("pipeline") is True
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and isinstance(child.get("started_at"), str) and bool(child["started_at"])
+                and isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[a-f0-9]{40}", child["collector_git_sha"])
+                and artifact.get("colliers_partial") is True
+                and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False
+                and gate.get("admission_scope") == "colliers_partial_window_v1"
+                and binding.get("schema") == "colliers-partial-window-v1"
+                and binding.get("scope") == "colliers_partial_window_v1"
+                and binding.get("source_key") == "colliers"
+                and binding.get("original_source_outcome") == "source_error"
+                and binding.get("whole_source_coverage") is False
+                and binding.get("artifact_sha256") == artifact.get("sha256")
+                and binding.get("generation_id") == child.get("run_id")
+                and binding.get("generation_started_at") == child.get("started_at")
+                and binding.get("producer_sha") == child.get("collector_git_sha")
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                        for key in ("artifact_sha256", "database_target_sha256", "staged_sha256",
+                                    "evidence_sha256", "source_sha256", "source_main_sha256", "preimage_sha256"))
+                and type(binding.get("attempt")) is int and binding["attempt"] > 0
+                and artifact.get("path") == f"colliers-partial/window-{binding['attempt']}-artifact.json"
+                and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
+                and isinstance(held, list) and all(isinstance(value, str) and value for value in held)
+                and len(held) == len(set(held)) and isinstance(history, dict)
+                and all(isinstance(key, str) and key and isinstance(value, str) and value for key, value in history.items())
+                and not set(held) & set(history)
+                and type(binding.get("held_count")) is int and binding["held_count"] == len(held) + len(history)
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 0
+                and type(artifact.get("staged_unique")) is int and artifact["staged_unique"] > 0
+                and artifact["staged_unique"] == binding["emitted_count"] + binding["held_count"]
+                and type(binding.get("cursor")) is int and binding["cursor"] > 0
+                and type(binding.get("next_cursor")) is int and binding["next_cursor"] > 0
+                and settlement.get("state") == "settled" and settlement.get("attempt_id") == attempt
+                and settlement.get("artifact_sha256") == artifact.get("sha256")
+                and settlement.get("cursor") == binding["cursor"] and settlement.get("next_cursor") == binding["next_cursor"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def pyramid_subset_counts(child: Mapping[str, Any]) -> dict[str, int]:
     binding = child["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
     return {"inventory": binding["inventory_count"], "emitted": binding["emitted_count"],
@@ -1915,7 +1965,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -1925,11 +1975,18 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
                 unit_cache=unit_cache,
                 parent_attempts=row["attempts"],
             )
-            else "interrupted",
+            else ("failed_source" if (child.get("sources", {}).get(key, {}).get("state") in {
+                "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
+                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed"
+                and child.get("pipeline", {}).get("commit_outcome_unknown") is not True
+                and child.get("pipeline", {}).get("status") != "reconciliation_required")
+                else "interrupted"),
             checkpoint_status=child["status"],
             error=child.get("error"),
         )
         if row["state"] in {"complete", "qualified_partial_subset"}:
+            row["error"] = None
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -1943,6 +2000,22 @@ def _pipeline_member_report_matches(
     """Cross-bind saved exact readback fields to the hashed full query output."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "colliers" and artifact.get("colliers_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("colliers_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "colliers_partial_window"
+                and readback.get("whole_source_coverage") is False
+                and observed.get("ok") is True and observed.get("outcome") == "exact_commit"
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                and observed.get("staged_sha256") == binding.get("staged_sha256")
+                and _exact_json_equal(observed.get("held"), binding.get("held"))
+                and _exact_json_equal(observed.get("history_holds"), binding.get("history_holds"))
+                and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count")
+                and observed.get("child_collections_verified") is False)
     if source == "jll-investor" and artifact.get("jll_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("jll_partial_readback")
@@ -2223,6 +2296,11 @@ def pipeline_source_qualified(
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
             pyramid_partial = key == "pyramid-brokerage" and pyramid_partial_child(child)
             jll_partial = key == "jll-investor" and jll_partial_child(child)
+            colliers_partial = key == "colliers" and colliers_partial_child(child)
+            if ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
+                    or binding.get("schema") == "colliers-partial-window-v1"
+                    or binding.get("scope") == "colliers_partial_window_v1") and not colliers_partial:
+                return False
             if key == "jll-investor" and (checkpoint.get("artifact") or {}).get("jll_partial") is True and not jll_partial:
                 return False
             if (key == "pyramid-brokerage"
@@ -2230,13 +2308,13 @@ def pipeline_source_qualified(
                          or binding.get("scope") == "pyramid_incomplete_v2")
                     and not pyramid_partial):
                 return False
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial:
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or colliers_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
                     or (key == "daum-commercial" and child.get("scope", {}).get("kind") != "collector_registry_verified_subset")):
                     return False
-                if jll_partial and any(not _exact_json_equal(proof.get(name), binding.get(name))
+                if (jll_partial or colliers_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
                     return False
                 if key == "pyramid-brokerage":
@@ -2305,12 +2383,14 @@ def run_pipeline_series(
     root.mkdir(parents=True, exist_ok=True)
     logs = series_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources) and all(
-        manifest["sources"][key].get("state") in {"complete", "qualified_partial_subset"}
-        for key in sources
-    ):
+    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources):
         # A handled partial is not another collection/apply opportunity.
         # Reuse the same independent bound report qualification as reconciliation.
+        if any(manifest["sources"][key].get("state") not in {"complete", "qualified_partial_subset", "failed_source"}
+               for key in sources):
+            raise SeriesError("handled subset has unresolved source state")
+        failed = [key for key in sources if manifest["sources"][key].get("state") == "failed_source"]
+        verified = [key for key in sources if key not in failed]
         refs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
         if len(refs) != 1 or not isinstance(next(iter(refs)), str):
             raise SeriesError("handled subset has no exact shared owner")
@@ -2320,18 +2400,26 @@ def run_pipeline_series(
         _, child = _load_child_manifest(root, before=set(), source=",".join(sources),
             git_sha=manifest["collector_git_sha"], expected_path=series_dir/relative/"manifest.json",
             expected_config=_expected_child_config(",".join(sources), config))
+        pipeline = child.get("pipeline") or {}
+        if (pipeline.get("commit_outcome_unknown") is True or pipeline.get("status") == "reconciliation_required"
+                or any((child.get("sources", {}).get(key, {}).get("state") not in {
+                    "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
+                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                    or pipeline.get("source_results", {}).get(key, {}).get("state") != "failed") for key in failed)):
+            raise SeriesError("handled subset has unresolved source failure")
         cache = {}
-        if (child.get("status") != "qualified_partial_subset"
+        if (child.get("status") != ("failed" if failed else "qualified_partial_subset")
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
                 parent_started_at=manifest["started_at"],parent_finished_at=utc_now(),
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
-            for key in sources
+            for key in verified
         )):
             raise SeriesError("handled subset evidence no longer qualifies")
-        manifest.update(status="qualified_partial_subset", finished_at=utc_now(), error=None)
+        manifest.update(status="failed" if failed else "qualified_partial_subset", finished_at=utc_now(),
+                        error=(manifest.get("error") or "pipeline source failures remain") if failed else None)
         save_manifest(series_dir, manifest)
-        return 0
+        return 1 if failed else 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
     resume = None
     if prior_runs != {None}:
@@ -2464,7 +2552,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -2480,6 +2568,7 @@ def run_pipeline_series(
                 "gate_blocked",
                 "baseline_seed_required",
                 "dry_run_failed",
+                "partial_held_no_write",
             }:
                 outcome = "failed_source"
             elif state in {
