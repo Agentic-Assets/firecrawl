@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cre_franklin_site_sql import stage
 from source_evidence.psql_process import run
+from source_evidence.document_process import DocumentProcessCleanupUnknown
 
 ROOT = Path(__file__).resolve().parent
 MAX_BRIDGE_BYTES = 72 * 1024 * 1024
@@ -87,6 +88,8 @@ def project(raw, generation_id, env):
         except OverflowError:
             hold_page(entry, "projection_input_bound")
             continue
+        except DocumentProcessCleanupUnknown:
+            raise
         except RuntimeError as exc:
             reasons = {"psql outcome unknown: stdout_limit": "projection_output_bound",
                        "psql outcome unknown: nonzero_exit": "page_validation_refused"}

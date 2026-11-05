@@ -135,7 +135,7 @@ def test_unknown_worker_settlement_fences_all_pages(monkeypatch):
     from source_evidence.document_process import DocumentProcessCleanupUnknown
 
     def refuse(*args, **kwargs):
-        raise DocumentProcessCleanupUnknown("synthetic unknown settlement")
+        raise DocumentProcessCleanupUnknown("psql outcome unknown: nonzero_exit")
 
     monkeypatch.setattr(projection, "run", refuse)
     with pytest.raises(DocumentProcessCleanupUnknown):
