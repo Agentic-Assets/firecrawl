@@ -19,6 +19,15 @@ def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monk
     shutil.copytree(collector, target, ignore=shutil.ignore_patterns(
         "node_modules", "out", "__pycache__", ".pytest_cache", "*.pyc"))
     (target / "node_modules").symlink_to(collector / "node_modules", target_is_directory=True)
+    if database:
+        # The private synthetic worker logs its exception, without changing
+        # admission behavior or exposing errors in the production entrypoint.
+        worker = target / "cre_pipeline_artifact_worker.py"
+        code = worker.read_text()
+        old_handler = '    except Exception:\n        result["error"] = "artifact computation failed"'
+        new_handler = '    except Exception:\n        import traceback\n        traceback.print_exc()\n        result["error"] = "artifact computation failed"'
+        assert code.count(old_handler) == 1
+        worker.write_text(code.replace(old_handler, new_handler))
     (repo / ".gitignore").write_text("node_modules\nout\n")
     for args in (("init", "-q"), ("add", "."),
                  ("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.test", "commit", "-qm", "fixture")):
@@ -126,6 +135,9 @@ globalThis.fetch = async (input) => {
 
             if database:
                 import cre_ingest as ingest
+                # The compute worker must resolve Git identity from the same
+                # synthetic repository bound into this fixture's manifest.
+                monkeypatch.setattr(pipeline, "__file__", str(target / "cre_refresh_pipeline.py"))
                 monkeypatch.setattr(ingest, "find_psql", lambda: str(database["psql"]))
             if not database:
                 monkeypatch.setattr(pipeline, "preseal_source_gate", fake_gate)
