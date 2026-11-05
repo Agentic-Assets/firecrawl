@@ -1978,7 +1978,9 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             else ("failed_source" if (child.get("sources", {}).get(key, {}).get("state") in {
                 "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
                 "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
-                and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed")
+                and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed"
+                and child.get("pipeline", {}).get("commit_outcome_unknown") is not True
+                and child.get("pipeline", {}).get("status") != "reconciliation_required")
                 else "interrupted"),
             checkpoint_status=child["status"],
             error=child.get("error"),
@@ -2398,6 +2400,13 @@ def run_pipeline_series(
         _, child = _load_child_manifest(root, before=set(), source=",".join(sources),
             git_sha=manifest["collector_git_sha"], expected_path=series_dir/relative/"manifest.json",
             expected_config=_expected_child_config(",".join(sources), config))
+        pipeline = child.get("pipeline") or {}
+        if (pipeline.get("commit_outcome_unknown") is True or pipeline.get("status") == "reconciliation_required"
+                or any((child.get("sources", {}).get(key, {}).get("state") not in {
+                    "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
+                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"}
+                    or pipeline.get("source_results", {}).get(key, {}).get("state") != "failed") for key in failed)):
+            raise SeriesError("handled subset has unresolved source failure")
         cache = {}
         if (child.get("status") != ("failed" if failed else "qualified_partial_subset")
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(

@@ -168,6 +168,17 @@ def test_mixed_failure_reconciliation_preserves_verified_peers_without_replay(tm
     assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
     assert manifest["status"] == "failed"
     assert all(len(manifest["sources"][key]["attempts"]) == 1 for key in settings["sources"])
+    child["pipeline"]["commit_outcome_unknown"] = True
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    child["pipeline"]["commit_outcome_unknown"] = False
+    child["sources"]["savills"]["state"] = "ingest_recovery_required"
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    # A stale parent label must not turn an uncertain child write into a local failure.
+    manifest["sources"]["savills"]["state"] = "running"
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert manifest["sources"]["savills"]["state"] == "interrupted"
 
 
 def test_source_health_keeps_partial_distinct_from_complete(tmp_path):

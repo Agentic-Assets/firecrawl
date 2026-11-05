@@ -1653,6 +1653,16 @@ def test_pipeline_colliers_partial_summary_preserves_verified_peer(evidence, tam
         assert source not in rows and source in result["unverifiable_source_keys"]
 
 
+def test_foreign_colliers_partial_marker_is_never_reported_as_complete(evidence):
+    setup = pipeline_evidence(evidence)
+    qualify_pipeline_second_source(evidence, setup)
+    setup["child"]["sources"][SOURCE]["artifact"]["colliers_partial"] = True
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, setup["source2"]])
+    assert SOURCE in result["unverifiable_source_keys"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [setup["source2"]]
+
+
 def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(evidence):
     setup = pipeline_evidence(evidence, second_source="pyramid-brokerage")
     child = setup["child"]

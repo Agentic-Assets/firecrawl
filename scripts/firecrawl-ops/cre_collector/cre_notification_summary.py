@@ -1059,6 +1059,12 @@ def verified_pipeline_summary(
             source_readback = checkpoint.get("readback")
             source_gate = checkpoint.get("gate")
             source_binding = source_gate.get("current_inventory_proof") if isinstance(source_gate, dict) else None
+            if source != "colliers" and ((isinstance(source_artifact, dict) and source_artifact.get("colliers_partial") is True)
+                    or (isinstance(source_binding, dict) and (source_binding.get("schema") == "colliers-partial-window-v1"
+                        or source_binding.get("scope") == "colliers_partial_window_v1"))):
+                failed.append(source)
+                unverifiable.append(source)
+                continue
             colliers_partial_candidate = (
                 source == "colliers" and (
                     parent_entry.get("state") == "qualified_partial_subset"
