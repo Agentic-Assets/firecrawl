@@ -59,6 +59,33 @@ def test_mixed_partial_accounts_pending_peers_without_claiming_they_were_saved(t
     assert "refusing Franklin site partial without guarded checkpoint admission" in response.stderr
 
 
+def test_invalid_sale_page_keeps_valid_lease_in_derived_candidate():
+    raw, binding = mixed()
+    original = json.loads(raw)
+    bad = original["sources"][0]["retainedObservations"][0]
+    good = json.loads(json.dumps(bad))
+    good["transaction"] = "lease"
+    good["sourceUrl"] = "https://franklinst.com/properties/for-lease/"
+    good["decodedHtml"] = good["decodedHtml"].replace("FOR_SALE", "FOR_LEASE").replace("/for-sale/", "/for-lease/")
+    good["decodedHtmlSha256"] = hashlib.sha256(good["decodedHtml"].encode()).hexdigest()
+    good["cards"][0]["html"] = good["decodedHtml"]
+    good["cards"][0]["attributes"]["data-offer-type"] = "FOR_LEASE"
+    bad["decodedHtmlSha256"] = "0" * 64
+    original["sources"][1] = {"sourceKey": "franklin-street", "transaction": "lease",
+                              "error": "failed", "retainedObservations": [good]}
+    original["listings"] = []
+    original["totalListings"] = 0
+    raw = json.dumps(original).encode()
+    binding["artifact_sha256"] = hashlib.sha256(raw).hexdigest()
+    result = derive(raw, binding, {"PATH": os.environ["PATH"]})
+    assert [row["transactionMode"] for row in result["listings"]] == ["lease"]
+    assert result["runMeta"]["franklinSitePartial"]["heldCardObservations"] == 1
+    assert result["runMeta"]["franklinSitePartial"]["coverage"] == "partial_unknown"
+    assert json.loads(raw)["sources"][0]["retainedObservations"][0] == bad
+    assert len(validate_derived(result, "run-1", binding["generation_started_at"], "2026-11-04T11:59:30Z",
+                                now=datetime(2026, 11, 4, 12, 0, 3, tzinfo=UTC))) == 1
+
+
 def test_wrong_artifact_binding_cannot_be_projected():
     raw, binding = mixed()
     binding["artifact_sha256"] = "0" * 64
