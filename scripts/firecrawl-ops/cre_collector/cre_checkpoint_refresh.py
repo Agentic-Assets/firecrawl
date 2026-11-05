@@ -5602,6 +5602,7 @@ def gate_source(
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
         if (source == "nai-global" and full_transaction_scope
+                and manifest["config"].get("pipeline") is True
                 and manifest["config"].get("additive") is True
                 and manifest["config"].get("mark_missing") is False
                 and manifest["config"].get("status_activation") is False

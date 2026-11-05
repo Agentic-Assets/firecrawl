@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 
 import pytest
 
@@ -63,3 +64,51 @@ def test_canonical_allowance_is_source_specific_and_bounded():
     assert not any("nai-global" in failure for failure in result["failures"])
     with pytest.raises(ValueError):
         compare_validation_quality(before, after, nai_new_missing_canonical=True)
+
+
+def test_mixed_partial_complete_and_failed_peers_remain_distinct(tmp_path):
+    import cre_checkpoint_series as series
+    from tests.test_lyon_partial_series import mixed_child
+    from tests.test_pipeline_configuration import RUN_ID, qualification_context
+
+    run = tmp_path / RUN_ID
+    child = mixed_child(run)
+    fixture, _ = child_fixture()
+    checkpoint = fixture["sources"]["nai-global"]
+    checkpoint["state"] = "ingested"
+    checkpoint["ingest"] = {"rc": 0}
+    checkpoint["artifact"].update(path="sources/nai-global.json", bytes=123, staged_unique=1)
+    proof = checkpoint["gate"]["current_inventory_proof"]
+    probe = checkpoint["nai_post_identity_probe"]
+    observed = checkpoint["readback"]["observation"]
+    for value in (proof, probe, observed):
+        value["generation_id"] = RUN_ID
+        value["artifact_sha256"] = "9" * 64
+        value["database_target_sha256"] = "c" * 64
+    for value in (proof, probe):
+        value["producer_sha"] = "a" * 40
+    checkpoint["artifact"]["sha256"] = "9" * 64
+    child["sources"]["nai-global"] = checkpoint
+    child["sources"]["savills"] = {"state": "collect_failed"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed"}
+    unit = child["pipeline"]["units"][0]
+    unit["sources"].append("nai-global")
+    source_result = copy.deepcopy(child["pipeline"]["source_results"]["cbre"])
+    source_result.update(artifact_sha256="9" * 64, qualification="qualified_partial_subset", partial=True,
+                         whole_source_coverage=False, emitted_count=1, held_count=0)
+    child["pipeline"]["source_results"]["nai-global"] = source_result
+    path = run / unit["validation_path"]
+    full = json.loads(path.read_bytes())
+    full["nai_post_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(full).encode()
+    path.write_bytes(raw)
+    unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    for result in child["pipeline"]["source_results"].values():
+        if result.get("state") == "verified":
+            result["validation_sha256"] = unit["validation_sha256"]
+    assert series.pipeline_source_qualified(child, "nai-global", **qualification_context(run))
+    assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+    assert series.pipeline_source_qualified(child, "lyon-stahl", **qualification_context(run))
+    assert not series.pipeline_source_qualified(child, "savills", **qualification_context(run))
+    checkpoint["readback"]["observation"]["attempt_id"] = "f" * 32
+    assert not series.pipeline_source_qualified(child, "nai-global", **qualification_context(run))
