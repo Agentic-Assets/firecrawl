@@ -132,7 +132,25 @@ def main():
             assert result["ok"] is True and result["expected"] == 1
             assert source_binding["buildout_pending"] == 1 and source_binding["whole_source_coverage"] is False
             assert original.read_bytes() == raw
-            print("Owned no-TCP Franklin partial end-to-end proof passed")
+            settled = checkpoint["ingest"]["finished_at"]
+            checkpoint["ingest"]["finished_at"] = None
+            try:
+                refresh.recover_interrupted_ingest(run, manifest, "franklin-street", str(env_file))
+            except refresh.GlobalStageError as error:
+                assert "settled-owner" in str(error)
+            else:
+                raise AssertionError("unsettled owner was accepted")
+            checkpoint["ingest"]["finished_at"] = settled
+            try:
+                refresh.recover_interrupted_ingest(run, manifest, "franklin-street", str(env_file))
+            except Exception:
+                recovery_log = run / "logs" / "franklin-street-ingest-recovery.log"
+                if recovery_log.exists():
+                    print("synthetic recovery log:", recovery_log.read_text()[-4000:], file=sys.stderr)
+                raise
+            assert checkpoint["state"] == "ingested"
+            assert checkpoint["ingest_recovery"]["readback_ok"] is True
+            print("Owned no-TCP Franklin partial end-to-end and recovery proof passed")
         finally:
             refresh.save_manifest = old_save
 
