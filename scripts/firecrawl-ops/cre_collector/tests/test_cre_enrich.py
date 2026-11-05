@@ -543,3 +543,20 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
 
     monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
     return calls
+
+
+def test_newmark_403_requires_bound_generic_observation():
+    row = {"id": "queue-id", "source_key": "newmark", "external_id": "property", "url": "https://example.test/p"}
+    claim = {"sourceKey": "newmark", "externalId": "property", "url": row["url"], "identity": "unverified"}
+    obs = {"event": "generic_enrichment_observation", "claim": claim,
+           "scrapedDoc": {"metadata": {"statusCode": 403}}, "omissions": {"rawHtml": "field_byte_limit"}}
+    artifact = {"sources": [{"sourceKey": "newmark", "retainedObservations": [obs]}]}
+    assert cre_enrich.newmark_403_claim_ids([row], artifact) == {"queue-id"}
+    for status in (404, 500, None, True, "403"):
+        changed = {**obs, "scrapedDoc": {"metadata": {"statusCode": status}}}
+        assert cre_enrich.newmark_403_claim_ids([row], {"sources": [{"sourceKey": "newmark", "retainedObservations": [changed]}]}) == set()
+    mismatch = {**obs, "claim": {**claim, "externalId": "other"}}
+    assert cre_enrich.newmark_403_claim_ids([row], {"sources": [{"sourceKey": "newmark", "retainedObservations": [mismatch]}]}) == set()
+    assert cre_enrich.newmark_403_claim_ids([{**row, "source_key": "svn"}], artifact) == set()
+    assert cre_enrich.newmark_403_claim_ids([row, row], artifact) == set()
+    assert cre_enrich.newmark_403_claim_ids([row], {"sources": None}) == set()
