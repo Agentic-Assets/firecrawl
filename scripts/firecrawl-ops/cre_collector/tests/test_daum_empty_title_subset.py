@@ -100,6 +100,34 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
     assert binding["emitted_count"] == 101 and binding["held_count"] == 0
 
 
+@pytest.mark.parametrize("fault", ["page_title", "card_title", "listing_title", "unexpected_city", "missing_witness", "duplicate_witness", "foreign_post"])
+def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
+    import copy
+    from test_daum_current_inventory import produce
+    import test_essex_current_inventory as helpers
+    from test_daum_verified_subset import admit
+
+    generated = produce(tmp_path, total=101, empty_title=True, corroborated_title=True,
+                        subset_policy="tenure-and-empty-title-v2")
+    monkeypatch.setattr(helpers, "SOURCE", "daum-commercial")
+    prepared = helpers.setup(tmp_path, generated)
+    prepared[3]["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+    artifact = prepared[2]
+    for source in artifact["sources"]:
+        rows = source["currentInventoryProof"]["titleFallbackObservations"]
+        if fault == "page_title": rows[0]["documentTitle"] = "Different – Daum Commercial"
+        elif fault == "missing_witness": rows.clear()
+        elif fault == "duplicate_witness": rows.append(copy.deepcopy(rows[0]))
+        elif fault == "foreign_post": rows[0]["postId"] = "59999"
+    listing = next(item for item in artifact["listings"] if item["daumPostId"] == "50100")
+    if fault == "card_title": listing["daumSearchCard"]["title"] = "Different"
+    elif fault == "listing_title": listing["name"] = "Different"
+    elif fault == "unexpected_city": listing["city"] = "AL"
+    helpers.refresh(prepared[1], artifact, prepared[3])
+    with pytest.raises(ValueError):
+        admit(prepared)
+
+
 @pytest.mark.parametrize(
     "fault",
     [
