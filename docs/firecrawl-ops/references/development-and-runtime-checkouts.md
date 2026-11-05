@@ -136,6 +136,18 @@ using SETUP; do not copy `node_modules`, virtual environments, database or webho
 or runtime artifacts between checkouts. Keep credentials in private host-local files, and keep
 runtime outputs in their owning runtime directory.
 
+## Checkout cleanup
+
+Keep only the permanent development, launcher and runtime checkouts and the
+temporary clones or worktrees still needed for active work. After a phase is
+merged or its result is otherwise preserved, remove its temporary checkout
+promptly rather than leaving another Firecrawl folder behind. Before removal,
+check the exact path, owner and running processes, branch tip, and tracked,
+untracked and ignored files. Preserve unique changes and necessary evidence;
+leave uncertain or actively owned checkouts in place. Use `git worktree remove`
+for registered worktrees and the host's native removal command for independent
+clones. Never remove a live runtime or another agent's checkout.
+
 ## Independent verification captures
 
 Give each independent observation a new, unique output directory under ignored
