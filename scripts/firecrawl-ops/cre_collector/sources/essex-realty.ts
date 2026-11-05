@@ -1,4 +1,6 @@
 import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import {
@@ -48,6 +50,13 @@ const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").d
 let completedProof: { key: string; proof: EssexCurrentInventoryProof } | undefined;
 
 class EssexResponseLimitError extends Error {}
+
+class EssexInventoryMismatchError extends Error {
+  constructor(message: string, readonly archiveOnly: string[], readonly sitemapOnly: string[],
+    readonly lifecycleOverlap: string[] = []) {
+    super(message);
+  }
+}
 
 function essexRequestRole(url: string): DirectProviderRequestRole {
   if (url === ESSEX_LISTINGS_URL) return "current_archive";
@@ -333,11 +342,10 @@ export function reconcileEssexInventory(
 ): EssexInventory {
   const currentUrls = new Set(current.map((row) => row.url));
   const closedUrls = new Set(closed.map((row) => row.url));
-  for (const url of currentUrls) {
-    if (closedUrls.has(url)) {
-      throw new Error(`Essex lifecycle overlap for ${url}`);
-    }
-  }
+  const lifecycleOverlap = [...currentUrls].filter((url) => closedUrls.has(url)).sort();
+  if (lifecycleOverlap.length) throw new EssexInventoryMismatchError(
+    `Essex lifecycle overlap for ${lifecycleOverlap[0]}`, [], [], lifecycleOverlap
+  );
   const union = new Set([...currentUrls, ...closedUrls]);
   const sitemap = new Set(sitemapUrls);
   const missingFromSitemap = [...union].filter((url) => !sitemap.has(url));
@@ -347,10 +355,11 @@ export function reconcileEssexInventory(
     || missingFromSitemap.length
     || missingFromArchives.length
   ) {
-    throw new Error(
+    throw new EssexInventoryMismatchError(
       `Essex archive/sitemap reconciliation failed `
       + `(archives=${union.size}, sitemap=${sitemap.size}, `
-      + `archive_only=${missingFromSitemap.length}, sitemap_only=${missingFromArchives.length})`
+      + `archive_only=${missingFromSitemap.length}, sitemap_only=${missingFromArchives.length})`,
+      missingFromSitemap.sort(), missingFromArchives.sort()
     );
   }
   return {
@@ -374,29 +383,60 @@ export async function fetchEssexInventory(
 async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
   inventory: EssexInventory;
   pass: EssexInventoryPass;
+  responseText: { current: string; closed: string; sitemap: string };
 }> {
-  const currentHtml = await transport.getText(ESSEX_LISTINGS_URL);
-  const currentAt = observationNow();
-  const closedHtml = await transport.getText(ESSEX_CLOSED_URL);
-  const closedAt = observationNow();
-  const sitemapXml = await transport.getText(ESSEX_SITEMAP_URL);
-  const sitemapAt = observationNow();
-  const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
-  const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
-  const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
-  const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
-  const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
-    endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
-    rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
-  });
-  const pass: EssexInventoryPass = {
-    fingerprint: "",
-    current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
-    closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
-    sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+  const responses: { endpoint: string; observedAt: string; responseTextSha256: string; responseText: string }[] = [];
+  const read = async (endpoint: string) => {
+    const responseText = await transport.getText(endpoint);
+    const observedAt = observationNow();
+    responses.push({ endpoint, observedAt, responseTextSha256: textSha256(responseText), responseText });
+    return { responseText, observedAt };
   };
-  pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
-  return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
+  try {
+    const { responseText: currentHtml, observedAt: currentAt } = await read(ESSEX_LISTINGS_URL);
+    const { responseText: closedHtml, observedAt: closedAt } = await read(ESSEX_CLOSED_URL);
+    const { responseText: sitemapXml, observedAt: sitemapAt } = await read(ESSEX_SITEMAP_URL);
+    const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
+    const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
+    const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
+    const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
+    const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
+      endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
+      rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
+    });
+    const pass: EssexInventoryPass = {
+      fingerprint: "",
+      current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
+      closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
+      sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+    };
+    pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
+    const responseText = { current: currentHtml, closed: closedHtml, sitemap: sitemapXml };
+    try {
+      return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass, responseText };
+    } catch (error) {
+      if (!(error instanceof EssexInventoryMismatchError)) throw error;
+      throw new RetainedSourceError(error, [{
+        schema: "essex-inventory-mismatch-v1",
+        coverage: "partial_unknown",
+        generationId: refreshGenerationId(),
+        generationStartedAt: refreshStartedAt(),
+        pass,
+        responseText,
+        archiveOnly: error.archiveOnly,
+        sitemapOnly: error.sitemapOnly,
+        lifecycleOverlap: error.lifecycleOverlap,
+      }]);
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error instanceof RetainedSourceError ||
+        error instanceof NativeEvidenceTerminalError || responses.length === 0) throw error;
+    throw new RetainedSourceError(error, [{
+      schema: "essex-inventory-mismatch-v1", coverage: "partial_unknown",
+      generationId: refreshGenerationId(), generationStartedAt: refreshStartedAt(),
+      kind: "incomplete_pass", responses,
+    }]);
+  }
 }
 
 function labeledDetailValue($: cheerio.CheerioAPI, label: RegExp): string | null {
@@ -631,8 +671,22 @@ export async function srcEssexRealty(
   const passes = [first.pass];
   let inventory = first.inventory;
   if (proofEligible) {
-    const second = await fetchEssexInventoryPass(transport);
-    if (first.pass.fingerprint !== second.pass.fingerprint) throw new Error("Essex complete inventory passes drifted");
+    const retainedPass = (value: typeof first) => ({
+      schema: "essex-inventory-mismatch-v1", coverage: "partial_unknown",
+      generationId, generationStartedAt, pass: value.pass, responseText: value.responseText,
+      archiveOnly: [], sitemapOnly: [], lifecycleOverlap: [],
+    });
+    let second: typeof first;
+    try { second = await fetchEssexInventoryPass(transport); }
+    catch (error) {
+      if (!(error instanceof Error) || error instanceof NativeEvidenceTerminalError) throw error;
+      throw new RetainedSourceError(error, [retainedPass(first),
+        ...(error instanceof RetainedSourceError ? error.retainedObservations : [])]);
+    }
+    if (first.pass.fingerprint !== second.pass.fingerprint) {
+      throw new RetainedSourceError(new Error("Essex complete inventory passes drifted"),
+        [retainedPass(first), retainedPass(second)]);
+    }
     inventory = second.inventory;
     passes.push(second.pass);
     for (const url of inventory.sitemapUrls) proofPath(url);
