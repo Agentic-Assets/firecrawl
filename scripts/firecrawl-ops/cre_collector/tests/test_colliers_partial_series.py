@@ -290,7 +290,8 @@ def test_deadline_reconciliation_preserves_verified_units_without_replay(
     monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
     monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
     control = SimpleNamespace(work_started=True, cleanup_unknown=False, spawn_uncertain=False,
-                              group=None, child_unverified=False)
+                              group=None, child_unverified=False, checkpoint_run=run,
+                              child_invocation_id="bound", checkpoint_pid=123)
     series.reconcile_settled_interruption(tmp_path, manifest, control)
     assert [manifest["sources"][key]["state"] for key in settings["sources"]] == [
         "complete", "qualified_partial_subset", "interrupted"]
@@ -314,10 +315,15 @@ def test_deadline_reconciliation_requires_local_settlement_and_intact_unit(tmp_p
             attempts=[{"started_at": child["started_at"]}])
     monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
     control = SimpleNamespace(work_started=True, cleanup_unknown=True, spawn_uncertain=False,
-                              group=None, child_unverified=False)
+                              group=None, child_unverified=False, checkpoint_run=run,
+                              child_invocation_id="bound", checkpoint_pid=123)
     series.reconcile_settled_interruption(tmp_path, manifest, control)
     assert all(row["state"] == "interrupted" for row in manifest["sources"].values())
     control.cleanup_unknown = False
+    control.checkpoint_run = tmp_path / "runs" / "foreign"
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert all(row["state"] == "interrupted" for row in manifest["sources"].values())
+    control.checkpoint_run = run
     report = run / child["pipeline"]["units"][0]["validation_path"]
     report.write_bytes(report.read_bytes() + b" ")
     series.reconcile_settled_interruption(tmp_path, manifest, control)
@@ -351,7 +357,11 @@ def test_controlled_deadline_publishes_qualified_units_and_interrupted_peer(tmp_
         for source in settings["sources"]:
             current["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
                 attempts=[{"started_at": child["started_at"]}])
-        kwargs["control"].work_started = True
+        owner = kwargs["control"]
+        owner.work_started = True
+        owner.checkpoint_run = run
+        owner.child_invocation_id = "bound"
+        owner.checkpoint_pid = 123
         os.kill(os.getpid(), signal.SIGALRM)
 
     monkeypatch.setattr(series, "run_series", work)

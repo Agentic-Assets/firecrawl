@@ -1961,12 +1961,17 @@ def reconcile_settled_interruption(series_dir: Path, manifest: dict, control) ->
     if (not (manifest.get("config") or {}).get("pipeline")
             or not control.work_started or control.cleanup_unknown
             or control.spawn_uncertain or control.group is not None
-            or control.child_unverified):
+            or control.child_unverified or control.checkpoint_run is None
+            or control.child_invocation_id is None or control.checkpoint_pid is None):
         return
-    candidate = copy.deepcopy(manifest)
     try:
+        refs = {row.get("checkpoint_run") for row in manifest["sources"].values()}
+        if (len(refs) != 1 or not isinstance(next(iter(refs)), str)
+                or series_dir / next(iter(refs)) != control.checkpoint_run):
+            return
+        candidate = copy.deepcopy(manifest)
         reconcile_pipeline_series(series_dir, candidate, publish=False)
-    except (OSError, ValueError, KeyError, TypeError, SeriesError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, SeriesError):
         # Retain the interrupted report if exact custody cannot be established.
         return
     manifest["sources"] = candidate["sources"]
