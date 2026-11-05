@@ -53,6 +53,7 @@ def run_schedule(
     jll_guard_refusal=False,
     colliers_partial=None,
     colliers_failure_nonzero=False,
+    clock_deferrals=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -75,6 +76,8 @@ def run_schedule(
     clock = {"now": 0.0}
     events = []
     alive = {}
+    if clock_deferrals:
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *a: None)
     if deterministic_clock or failure_once is not None:
         epoch = datetime(2026, 10, 21, tzinfo=UTC)
@@ -97,6 +100,9 @@ def run_schedule(
     )
 
     def start(root, owner, source, **kwargs):
+        if clock_deferrals and clock["now"] < clock_deferrals.get(("start", source), 0):
+            events.append(("clock_start_pending", source, clock["now"]))
+            raise refresh.ClockOrderingPending("synthetic wall reversal")
         assert source not in alive
         lanes = refresh.source_worker_lanes(source)
         assert all(not lanes & refresh.source_worker_lanes(other) for other in alive)
@@ -127,6 +133,14 @@ def run_schedule(
         return item
 
     def publish(root, owner, item, **kwargs):
+        if clock_deferrals and clock["now"] < clock_deferrals.get(("finish", item.source), 0):
+            if not kwargs.get("clock_expired"):
+                events.append(("clock_finish_pending", item.source, clock["now"]))
+                raise refresh.ClockOrderingPending("synthetic wall reversal")
+            del alive[item.source]
+            owner["sources"][item.source]["state"] = "collect_infrastructure_failed"
+            events.append(("clock_finish_refused", item.source, clock["now"]))
+            return False
         del alive[item.source]
         checkpoint = owner["sources"][item.source]
         checkpoint["candidate"] = {
@@ -243,6 +257,43 @@ def run_schedule(
         source_workers=workers,
     )
     return manifest, events, failures
+
+
+def test_clock_deferred_source_does_not_block_peer_or_db_polling(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("savills", "transwestern"),
+        clock_deferrals={("start", "savills"): 0.15, ("finish", "savills"): 0.8})
+    assert failures == []
+    assert any(event[:2] == ("clock_start_pending", "savills") for event in events)
+    assert any(event[:2] == ("clock_finish_pending", "savills") for event in events)
+    assert next(event[2] for event in events if event[:2] == ("start", "transwestern")) < 0.15
+    assert all(manifest["pipeline"]["source_results"][key]["state"] == "verified"
+               for key in ("savills", "transwestern"))
+
+
+def test_clock_deferred_single_source_makes_progress_without_active_worker(tmp_path, monkeypatch):
+    manifest, _, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("savills",), clock_deferrals={("start", "savills"): 0.15})
+    assert failures == []
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+
+
+def test_clock_deferred_first_source_does_not_starve_single_worker_peer(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("savills", "transwestern"), clock_deferrals={("start", "savills"): 0.15})
+    assert failures == []
+    assert next(event[1] for event in events if event[0] == "start") == "transwestern"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+
+
+@pytest.mark.parametrize("phase", ["start", "finish"])
+def test_clock_deferral_timeout_fails_only_source(tmp_path, monkeypatch, phase):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("savills", "transwestern"), clock_deferrals={(phase, "savills"): 10})
+    assert failures == ["savills"]
+    assert manifest["pipeline"]["source_results"]["transwestern"]["state"] == "verified"
+    assert manifest["sources"]["savills"]["state"] == "collect_infrastructure_failed"
+    assert not any(event[:2] == ("db_start", ("savills",)) for event in events)
 
 
 @pytest.mark.parametrize("outcome", ["accepted", "held"])
