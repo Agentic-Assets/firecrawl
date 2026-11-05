@@ -2,7 +2,7 @@
 
 def staged_fallback_members(data):
     """Bind corroborated fallback witnesses to their source listing identities."""
-    from cre_daum_current_inventory import SUBSET_SCHEMA_V2, _path_key, _post, subset_source_scope
+    from cre_daum_current_inventory import SUBSET_SCHEMA_V2, _path_key, _post, _time, subset_source_scope
     from cre_ingest import is_daum_title_fallback
 
     scope = subset_source_scope(data)
@@ -38,7 +38,11 @@ def staged_fallback_members(data):
         if listing.get("id") != external_id or listing["daumTitleFallback"] != {
                 "cardTitle": expected[post]["cardTitle"], "documentTitle": expected[post]["documentTitle"]}:
             raise ValueError("DAUM fallback source binding differs")
-        row = {"native_id": post, "external_id": external_id, "source_url": source_url}
+        inventory_at, detail_at = listing.get("inventoryObservedAt"), listing.get("detailObservedAt")
+        if _time(inventory_at) > _time(detail_at):
+            raise ValueError("DAUM fallback observation times differ")
+        row = {"native_id": post, "external_id": external_id, "source_url": source_url,
+               "inventory_at": inventory_at, "detail_at": detail_at}
         if post in rows and rows[post] != row:
             raise ValueError("DAUM fallback pass identity differs")
         rows[post] = row
@@ -54,16 +58,18 @@ def identity_probe_sql(members):
     """
     import json
 
-    from cre_daum_current_inventory import _path_key, _post
+    from cre_daum_current_inventory import _path_key, _post, _time
     from cre_ingest import sql_lit
 
     if not isinstance(members, list):
         raise ValueError("DAUM fallback members invalid")
     ids, keys, urls = set(), set(), set()
     for row in members:
-        if not isinstance(row, dict) or set(row) != {"native_id", "external_id", "source_url"}:
+        if not isinstance(row, dict) or set(row) != {"native_id", "external_id", "source_url", "inventory_at", "detail_at"}:
             raise ValueError("DAUM fallback member invalid")
         _post(row["native_id"])
+        if _time(row["inventory_at"]) > _time(row["detail_at"]):
+            raise ValueError("DAUM fallback observation times differ")
         if (row["external_id"] != _path_key(row["source_url"])
                 or row["native_id"] in ids or row["external_id"] in keys
                 or row["source_url"] in urls):
@@ -75,7 +81,7 @@ def identity_probe_sql(members):
     return f"""
 WITH candidate AS (
   SELECT * FROM jsonb_to_recordset({payload}::jsonb)
-    AS c(native_id text, external_id text, source_url text)
+    AS c(native_id text, external_id text, source_url text, inventory_at timestamptz, detail_at timestamptz)
 ), scoped AS (
   SELECT c.*, b.id AS brokerage_id FROM candidate c
   JOIN credeals.cre_brokerages b ON b.slug='daum-commercial'
@@ -109,6 +115,8 @@ WITH candidate AS (
         OR si.source_key IS DISTINCT FROM 'daum-commercial'
       ) THEN 'source_index_unqualified'
       WHEN own.id IS NULL AND si.id IS NOT NULL THEN 'orphan_source_index'
+      WHEN own.scraped_at > c.detail_at OR si.last_enumerated_at > c.inventory_at
+        THEN 'newer_target_observation'
       ELSE NULL
     END AS hold_reason,
     encode(sha256(convert_to(COALESCE(to_jsonb(own)::text,'null') || E'\\n' || COALESCE(to_jsonb(si)::text,'null'), 'UTF8')), 'hex') AS preimage
@@ -145,7 +153,8 @@ def transaction_guard_sql(members, partition, *, filter_src=False):
         if (key in seen or key not in expected
                 or any(item[k] != expected[key][k] for k in ("native_id", "external_id", "source_url"))
                 or item["hold_reason"] not in (None, "identity_conflict", "existing_parent_unqualified",
-                                               "source_index_unqualified", "orphan_source_index")
+                                               "source_index_unqualified", "orphan_source_index",
+                                               "newer_target_observation")
                 or not isinstance(item["preimage"], str)
                 or not re.fullmatch(r"[a-f0-9]{64}", item["preimage"])):
             raise ValueError("DAUM fallback partition entry differs")
@@ -158,7 +167,7 @@ def transaction_guard_sql(members, partition, *, filter_src=False):
 CREATE TEMP TABLE _daum_fallback_members ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, m.*
 FROM jsonb_to_recordset({payload}::jsonb)
-  AS m(native_id text, external_id text, source_url text)
+  AS m(native_id text, external_id text, source_url text, inventory_at timestamptz, detail_at timestamptz)
 JOIN credeals.cre_brokerages b ON b.slug='daum-commercial';
 -- The transaction-wide lifecycle advisory lock is already held. Lock in the
 -- same source-index-then-parent order used by the shared ingest.

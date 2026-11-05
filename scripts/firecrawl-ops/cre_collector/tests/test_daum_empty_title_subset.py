@@ -105,12 +105,16 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
         "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
         "database_target_sha256": manifest["preflight"]["database_target"]["value"],
         "members_sha256": _sha(members),
-        "partition": [{**member, "hold_reason": None, "preimage": "f" * 64} for member in members],
+        "partition": [{**{k: member[k] for k in ("native_id", "external_id", "source_url")},
+                       "hold_reason": None, "preimage": "f" * 64} for member in members],
     }
     binding = admit(prepared)
     assert binding["emitted_count"] == 101 and binding["held_count"] == 0
     from cre_daum_fallback_partition import staged_fallback_members
-    assert staged_fallback_members(artifact) == [{"native_id": "50100", "external_id": listing["id"], "source_url": listing["url"]}]
+    assert staged_fallback_members(artifact) == [{
+        "native_id": "50100", "external_id": listing["id"], "source_url": listing["url"],
+        "inventory_at": listing["inventoryObservedAt"], "detail_at": listing["detailObservedAt"],
+    }]
     from cre_daum_current_inventory import checkpoint_retained_unknown_ids
     assert checkpoint_retained_unknown_ids(artifact) == frozenset()
     import cre_checkpoint_refresh as checkpoint

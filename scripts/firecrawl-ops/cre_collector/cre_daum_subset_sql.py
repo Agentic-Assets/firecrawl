@@ -84,8 +84,7 @@ def guard_sql(claims):
         require({row["native_id"] for row in fallback_members} == fallback_ids)
         for row in fallback_members:
             member = by_id[row["native_id"]]
-            require(row == {"native_id": member["native_id"], "external_id": member["external_id"],
-                            "source_url": member["source_url"]})
+            require(all(row[key] == member[key] for key in ("native_id", "external_id", "source_url")))
         transaction_guard_sql(fallback_members, fallback_partition)
     else:
         require(not v2 or not fallback_ids)

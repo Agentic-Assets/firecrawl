@@ -291,6 +291,8 @@ try:
                     {"native_id": "59999", "external_id": "property/Synthetic-new",
                      "source_url": "https://daumcommercial.com/property/Synthetic-new/"},
                 ]
+                for member in members_probe:
+                    member.update(inventory_at="2026-10-17T00:00:00Z", detail_at="2026-10-17T00:00:01Z")
                 probe_query = identity_probe_sql(members_probe)
                 def probe(prefix=""):
                     result = sql("BEGIN;" + prefix + probe_query + "; ROLLBACK;", db).stdout.strip().split("|", 2)
@@ -360,6 +362,12 @@ try:
                 assert terminal["50000"]["hold_reason"] == "existing_parent_unqualified"
                 assert terminal["59999"]["hold_reason"] is None
                 assert terminal["50000"]["preimage"] != normal["50000"]["preimage"]
+                newer_parent = probe("UPDATE credeals.cre_listings SET scraped_at='2026-10-18T00:00:00Z' WHERE external_id='property/Synthetic-0';")
+                assert newer_parent["50000"]["hold_reason"] == "newer_target_observation"
+                assert newer_parent["59999"]["hold_reason"] is None
+                newer_inventory = probe("UPDATE credeals.cre_source_index SET last_enumerated_at='2026-10-18T00:00:00Z' WHERE external_id='property/Synthetic-0';")
+                assert newer_inventory["50000"]["hold_reason"] == "newer_target_observation"
+                assert newer_inventory["59999"]["hold_reason"] is None
                 sql("UPDATE credeals.cre_listings SET status='withdrawn' WHERE external_id='property/Synthetic-0';", db)
                 held_now = probe()
                 held_partition = [held_now[key] for key in sorted(held_now, key=lambda key: held_now[key]["external_id"])]
