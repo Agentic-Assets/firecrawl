@@ -133,6 +133,9 @@ procedure and gates, `sources/AGENTS.md` for adapter contracts,
    [completion playbook](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md),
    especially its [current-blocker path](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#choose-the-next-step-from-the-current-blocker)
    and [listing-fidelity standard](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
+   Use the [`cre-source-investigation` skill](../../../.agents/skills/cre-source-investigation/SKILL.md)
+   to investigate failed, stale or incomplete feeds, including changed URLs and
+   the gap between source observations and actual database readback.
 4. Read the current owning Linear records for nontrivial work:
    [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902) owns source
    blockers and remaining-source acceptance; [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752)

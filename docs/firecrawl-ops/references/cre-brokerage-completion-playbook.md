@@ -38,6 +38,46 @@ Batch related fixes into one coherent candidate and review, with per-source
 regression cases and acceptance retained. Shared code success does not transfer
 identity, access or freshness evidence between brokerages.
 
+## Investigate a failed or incomplete source
+
+Use the current run, source adapter and owning Linear issue to identify the
+failure and what was actually collected, admitted, written and read back. A
+source scheduled to run, a successful page request, and an ingested listing are
+different outcomes. Check relevant source or URL groups separately when several
+feeds share one brokerage; a brokerage-wide latest timestamp can hide a stale feed.
+
+Compare the configured URLs, operations, filters and provider with the
+brokerage's current public navigation. Follow source-owned listing, search,
+map and document links, and check representative changed or missing listing
+URLs. Capture HTTP status, redirect destination and a useful error body when
+available. A 404, empty response, count mismatch or rejected query is a reason to
+investigate the current route and source behavior, not proof that all listings
+are gone. A failed or stale complete feed is not a prerequisite for checking the
+site's current public navigation.
+
+Choose useful, permitted methods for the question: inspect the site with the
+`agent-browser` skill, use the Firecrawl plugin or local API for reachable pages,
+and compare ordinary direct requests or source-advertised APIs when appropriate.
+Record which method and actual URL produced each result, when it was observed,
+and whether it returned a real listing, a shell, an error or a challenge. Keep
+requests bounded and respect the source's pacing; do not evade access denials.
+
+Inspect the available records and fields, including addresses, ZIPs, coordinates,
+spaces, price/rent terms, contacts and asset URLs. Compare representative records
+with actual Supabase rows when read access is available. Preserve source-qualified
+observations when provider IDs or URLs differ, flag potential duplicates, and
+reconcile them only when identity evidence supports it. Keep source-reported
+values and contradictions, and label reliable inference.
+Save identifiable partial records through an implemented, tested partial path;
+leave missing values unknown, continue valid peers and do not retire records
+based on a partial sample. Neither an evidence artifact nor a successful test is
+proof of a live database write.
+
+Record attempted routes, methods, observations, source-specific limitations and
+the next concrete fix in Linear. In user updates, name working and failed feeds,
+provide representative listing URLs, and distinguish merged code, deployed
+runtime, source success and generation-exact database readback.
+
 ## Verify at the appropriate boundary
 
 | Work being done | Required verification at this stage |
@@ -76,11 +116,13 @@ A brokerage is complete only when all of these are true:
 
 After an identity or layout refusal, use the existing diagnosis if its relevant
 inputs and validator are unchanged. For a proposed identity/layout rule change,
-start with a minimal reproducer; before a fresh source trial, replay the full
-available retained corpus through the real validator, including previously
-accepted controls and every saved candidate endpoint. Catch and group each
-result independently instead of using another production run to discover only
-its first failure. Compare the
+start with a minimal reproducer and replay relevant retained examples through
+the real validator, including accepted controls and rejected variations. Before
+relying on a rule claimed to cover a whole source, replay the full available
+retained corpus, including saved candidate endpoints. An unfinished full replay
+does not block current-source investigation or a tested partial path that does
+not rely on the changed rule. Catch and group each result independently instead
+of using another production run to discover only its first failure. Compare the
 previous and proposed source blobs against identical feed, response and complete
 URL-ownership inputs. Keep original bytes and exact hashes; report missing bodies,
 changed routes and historical observation times explicitly.
@@ -100,11 +142,16 @@ validator and its negative controls. Preserve genuine publisher conflicts; do
 not add per-ID exceptions or restore a permissive fallback to recover old counts.
 Use bounded permitted acquisition only for evidence the replay cannot supply.
 
-Before a transport comparison, derive the exact target from the bound complete
-feed and validate its ownership and offline preconditions; a mistyped locator is
-not a website change. Preserve earlier failed observations. Reuse sufficiently
-fresh, hash-bound inputs with their original capture times rather than repeating
-downloads, and give each new experiment its own output and finite deadline.
+For acceptance or a comparison validating a member of a known complete feed,
+bind the target to that feed and check its ownership and offline preconditions.
+When the configured feed is failed or stale, independently inspect the current
+official navigation and source-advertised routes to find candidates; do not treat
+the old feed as a prerequisite for discovery, infer feed membership, or
+automatically equate changed URLs.
+A mistyped locator is not a website change. Preserve earlier failed observations.
+Reuse sufficiently fresh, hash-bound inputs with their original capture times
+rather than repeating downloads, and give each new experiment its own output and
+finite deadline.
 Compare actual identity and listing facts across transports. Different HTML
 bytes do not prove additional detail, and an unreported engine remains unknown:
 a successful local API call does not by itself prove browser rendering occurred.
