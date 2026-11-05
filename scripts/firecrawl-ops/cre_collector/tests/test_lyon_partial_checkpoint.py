@@ -6,7 +6,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cre_lyon_partial_checkpoint import replay_settled_source
+from cre_lyon_partial_checkpoint import candidate_data, replay_settled_source, validate_candidate
 from cre_partial_page_custody import prepare, settle
 from tests.test_lyon_search_replay import spool
 
@@ -57,6 +57,31 @@ class LyonCheckpointTests(unittest.TestCase):
             self.assertEqual(result["staged"][0]["external_id"], "example")
             self.assertEqual(result["records"][0]["occurrences"][0]["row"]["title"], "Source value")
             self.assertEqual(result["held"], [])
+
+    def test_candidate_projects_source_identity_without_status_inference(self):
+        from cre_gate import count_artifacts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, _, _ = self.case(root)
+            source = replay_settled_source(root, manifest, 1, "a" * 40, False)
+            candidate = candidate_data(source, manifest["started_at"])
+            self.assertEqual(validate_candidate(candidate, source, manifest["started_at"]), source["staged"])
+            candidate["listings"][0]["id"] = "forged"
+            with self.assertRaises(ValueError):
+                validate_candidate(candidate, source, manifest["started_at"])
+            candidate = candidate_data(source, manifest["started_at"])
+            listing = candidate["listings"][0]
+            self.assertNotIn("status", listing)
+            self.assertNotIn("transactionType", listing)
+            self.assertEqual(listing["lyonSearchRecord"], source["records"][0])
+            path = root / "candidate.json"
+            path.write_text(json.dumps(candidate))
+            current, errors, sources, _, rejects = count_artifacts([str(path)], True)
+            self.assertEqual(current, {"lyon-stahl": 1})
+            self.assertEqual(errors, {"lyon-stahl": "original source pass was partial"})
+            self.assertEqual(sources, {"lyon-stahl"})
+            self.assertEqual(rejects, 0)
 
     def test_changed_attempt_owner_or_clock_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

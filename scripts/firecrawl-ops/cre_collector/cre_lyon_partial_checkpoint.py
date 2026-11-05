@@ -124,3 +124,34 @@ def replay_settled_source(run_dir, manifest, attempt_number, current_code_sha, c
             "finished_at": attempt["finished_at"], "producer_sha": current_code_sha,
             "database_target_sha256": target["value"], "source_sha256": state["sha256"],
             "main_sha256": state["main_sha256"], "records": records, "staged": staged, "held": held}
+
+
+def candidate_data(source, generation_started_at):
+    """Project a source replay for the existing gate, without asserting status."""
+    generation, started, finished = source["generation"], source["started_at"], source["finished_at"]
+    records, staged = source["records"], source["staged"]
+    if len(records) != len(staged):
+        raise ValueError("Lyon candidate partition differs")
+    listings = [{"sourceKey": "lyon-stahl", "id": row["external_id"], "url": row["source_url"],
+                 "lyonSearchRecord": record} for record, row in zip(records, staged, strict=True)]
+    return {"schema": "lyon-search-partial/v1", "sourceKey": "lyon-stahl",
+            "binding": {"generation": generation, "attempt": source["attempt"], "startedAt": started,
+                        "finishedAt": finished, "sourceSha256": source["source_sha256"],
+                        "sourceMainSha256": source["main_sha256"], "producerSha": source["producer_sha"],
+                        "targetSha256": source["database_target_sha256"]},
+            "coverage": "partial_unknown", "held": source["held"],
+            "runMeta": {"mode": "partial", "transactions": ["sale", "lease"], "startedAt": started,
+                        "finishedAt": finished, "freshness": {"generationId": generation,
+                        "generationStartedAt": generation_started_at, "requireFreshDetails": False}},
+            "sources": [{"sourceKey": "lyon-stahl", "transaction": "sale", "supported": True,
+                         "truncated": True, "listingsCollected": len(listings), "error": "original source pass was partial"},
+                        {"sourceKey": "lyon-stahl", "transaction": "lease", "supported": True,
+                         "truncated": True, "listingsCollected": 0}],
+            "listings": listings, "brokers": [], "totalListings": len(listings)}
+
+
+def validate_candidate(data, source, generation_started_at):
+    """Bind the gate projection to an independently replayed source receipt."""
+    if data != candidate_data(source, generation_started_at):
+        raise ValueError("Lyon candidate differs from source replay")
+    return source["staged"]
