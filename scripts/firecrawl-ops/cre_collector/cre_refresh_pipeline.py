@@ -319,31 +319,55 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
         source in refresh.STRICT_FRESHNESS_SOURCE_KEYS
         or source in refresh.PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
     )
-    stats = run_artifact_compute(
-        run_dir,
-        "validate",
-        {
-            "path": str(path),
-            "source": source,
-            "file_identity": candidate["file_identity"],
-            "attempt_started_at": candidate["attempt_started_at"],
-            "kwargs": {
-                "require_strict_freshness": source
-                in refresh.STRICT_FRESHNESS_SOURCE_KEYS,
-                "expected_generation_id": manifest["run_id"]
-                if generation_bound
-                else None,
-                "expected_generation_started_at": manifest["started_at"]
-                if generation_bound
-                else None,
-                "expected_transactions": manifest["config"]["transactions"],
-                "daum_verified_subset": refresh.current_inventory.is_verified_subset(
-                    manifest["config"], source
-                ),
-                "pyramid_subset_allowed": refresh.pyramid_subset_authorized(manifest["config"], source),
+    try:
+        stats = run_artifact_compute(
+            run_dir,
+            "validate",
+            {
+                "path": str(path),
+                "source": source,
+                "file_identity": candidate["file_identity"],
+                "attempt_started_at": candidate["attempt_started_at"],
+                "kwargs": {
+                    "require_strict_freshness": source
+                    in refresh.STRICT_FRESHNESS_SOURCE_KEYS,
+                    "expected_generation_id": manifest["run_id"]
+                    if generation_bound
+                    else None,
+                    "expected_generation_started_at": manifest["started_at"]
+                    if generation_bound
+                    else None,
+                    "expected_transactions": manifest["config"]["transactions"],
+                    "daum_verified_subset": refresh.current_inventory.is_verified_subset(
+                        manifest["config"], source
+                    ),
+                    "pyramid_subset_allowed": refresh.pyramid_subset_authorized(manifest["config"], source),
+                },
             },
-        },
-    )
+        )
+    except refresh.ArtifactValidationError:
+        if source != "franklin-street" or checkpoint.get("franklin_original"):
+            raise
+        attempts = checkpoint.get("attempts") or []
+        if not attempts or attempts[-1].get("number") != candidate.get("attempt_number"):
+            raise refresh.GlobalStageError("Franklin candidate attempt changed")
+        attempt = attempts[-1]
+        original_stat = path.lstat()
+        identity = [original_stat.st_dev, original_stat.st_ino, original_stat.st_size,
+                    original_stat.st_mtime_ns, original_stat.st_ctime_ns]
+        if identity != candidate.get("file_identity"):
+            raise refresh.GlobalStageError("Franklin candidate changed after inspection")
+        rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
+        if os.path.lexists(rejected):
+            raise refresh.GlobalStageError("Franklin rejected evidence path already occupied")
+        # Archive the original exactly once before creating the private subset.
+        relative, digest = refresh.archive_rejected_with_evidence(path, run_dir, manifest, source, attempt)
+        attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = relative, digest
+        if not refresh.prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=True):
+            raise
+        candidate = checkpoint["candidate"]
+        path = run_dir / candidate["path"]
+        return prepare_candidate(run_dir, manifest, source)
     # The subprocess cannot replace the parent's canonical source state.
     checkpoint["artifact"] = {
         **stats,

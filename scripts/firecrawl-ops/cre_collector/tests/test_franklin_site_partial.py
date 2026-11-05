@@ -3,12 +3,15 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from test_franklin_site_projection import artifact
 
-from cre_franklin_site_partial import derive
+import cre_checkpoint_refresh as refresh
+import cre_refresh_pipeline as pipeline
+from cre_franklin_site_partial import derive, prepare_candidate, validate_derived
 
 
 def mixed():
@@ -56,3 +59,144 @@ def test_wrong_artifact_binding_cannot_be_projected():
     binding["artifact_sha256"] = "0" * 64
     with pytest.raises(ValueError):
         derive(raw, binding, {"PATH": os.environ["PATH"]})
+
+def test_derived_structure_is_source_local_fresh_and_explicitly_partial():
+    raw, binding = mixed()
+    result = derive(raw, binding, {"PATH": os.environ["PATH"]})
+    def validate(value):
+        return validate_derived(value, "run-1", "2026-11-04T11:59:00Z",
+                                "2026-11-04T11:59:30Z", now=datetime(2026, 11, 4, 12, 0, 3, tzinfo=UTC))
+    assert len(validate(result)) == 1
+    result["runMeta"]["franklinSitePartial"]["identityUncertainty"]["siteToBuildout"] = "guessed"
+    with pytest.raises(ValueError):
+        validate(result)
+
+
+def test_checkpoint_preliminary_validation_keeps_partial_marker(tmp_path):
+    raw, binding = mixed()
+    derived = derive(raw, binding, {"PATH": os.environ["PATH"]})
+    path = tmp_path / "site.json"
+    path.write_text(json.dumps(derived))
+    kwargs = {"require_strict_freshness": True, "expected_generation_id": "run-1",
+              "expected_generation_started_at": "2026-11-04T11:59:00Z",
+              "now": datetime(2026, 11, 4, 12, 0, 3, tzinfo=UTC)}
+    result = refresh._validate_source_artifact_local(path, "franklin-street", "2026-11-04T11:59:30Z", **kwargs)
+    assert result["franklin_partial"] is True
+    assert result["strict_freshness"] is False
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh._validate_source_artifact_local(path, "svn", "2026-11-04T11:59:30Z", **kwargs)
+
+
+def test_settled_candidate_keeps_private_original_and_never_overwrites(tmp_path):
+    raw, binding = mixed()
+    run = tmp_path / "run-1"
+    original = run / "rejected" / "franklin-street-attempt-1.json"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(raw)
+    original.chmod(0o600)
+    manifest = {"run_id": "run-1", "started_at": binding["generation_started_at"],
+                "collector_git_sha": "a" * 40, "collector_git_dirty": False,
+                "config": {"transactions": ["sale", "lease"], "max_items": 0, "additive": True,
+                           "mark_missing": False, "status_activation": False}}
+    attempt = {"rc": 1, "finished_at": "2026-11-04T12:00:03Z", "started_at": "2026-11-04T11:59:30Z"}
+    manifest["config"]["sources"] = ["franklin-street"]
+    manifest["sources"] = {"franklin-street": {"attempts": [attempt]}}
+    result = prepare_candidate(run, manifest, attempt, "rejected/franklin-street-attempt-1.json",
+                               binding["artifact_sha256"], {"PATH": os.environ["PATH"]},
+                               git_identity=lambda: ("a" * 40, False),
+                               now=datetime(2026, 11, 4, 12, 0, 3, tzinfo=UTC))
+    assert original.read_bytes() == raw
+    assert result["buildout_pending"] == 1
+    assert (run / result["path"]).stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        prepare_candidate(run, manifest, attempt, "rejected/franklin-street-attempt-1.json",
+                          binding["artifact_sha256"], {"PATH": os.environ["PATH"]},
+                          git_identity=lambda: ("a" * 40, False),
+                               now=datetime(2026, 11, 4, 12, 0, 3, tzinfo=UTC))
+
+
+def test_failed_attempt_becomes_preliminary_candidate_without_source_acceptance(tmp_path, monkeypatch):
+    raw, _ = mixed()
+    original_data = json.loads(raw)
+    now = datetime.now(UTC)
+    generation_start = (now - timedelta(minutes=3)).isoformat()
+    attempt_start = (now - timedelta(minutes=2)).isoformat()
+    started = (now - timedelta(minutes=1)).isoformat()
+    observed = (now - timedelta(seconds=30)).isoformat()
+    finished = now.isoformat()
+    original_data["runMeta"].update(startedAt=started, finishedAt=finished,
+                                   freshness={"generationId": "run-1", "generationStartedAt": generation_start,
+                                              "requireFreshDetails": True})
+    original_data["sources"][0]["retainedObservations"][0]["observedAt"] = observed
+    raw = json.dumps(original_data).encode()
+    run = tmp_path / "run-1"
+    original = run / "rejected" / "franklin-street-attempt-1.json"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(raw)
+    original.chmod(0o600)
+    attempt = {"number": 1, "rc": 80, "started_at": attempt_start, "finished_at": finished,
+               "rejected_artifact": "rejected/franklin-street-attempt-1.json",
+               "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
+    manifest = {"run_id": "run-1", "started_at": generation_start,
+                "collector_git_sha": "a" * 40, "collector_git_dirty": False,
+                "config": {"sources": ["franklin-street"], "transactions": ["sale", "lease"],
+                           "max_items": 0, "additive": True, "mark_missing": False, "status_activation": False},
+                "sources": {"franklin-street": {"attempts": [attempt], "state": "collecting"}}}
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    result = refresh.prepare_franklin_partial_candidate(run, manifest, attempt, candidate_only=True)
+    assert result is not None and original.read_bytes() == raw
+    checkpoint = manifest["sources"]["franklin-street"]
+    assert checkpoint["state"] == "candidate"
+    assert checkpoint["franklin_original"]["buildout_pending"] == 1
+    assert not refresh.gate_verdict_is_admitted(manifest, "hold", source="franklin-street")
+
+
+def test_pipeline_mixed_rejection_retains_original_before_partial_candidate(tmp_path, monkeypatch):
+    raw, _ = mixed()
+    data = json.loads(raw)
+    now = datetime.now(UTC)
+    generation = (now - timedelta(minutes=3)).isoformat()
+    attempt_start = (now - timedelta(minutes=2)).isoformat()
+    started = (now - timedelta(minutes=1)).isoformat()
+    observed = (now - timedelta(seconds=30)).isoformat()
+    finished = now.isoformat()
+    data["runMeta"].update(startedAt=started, finishedAt=finished,
+                           freshness={"generationId": "run-1", "generationStartedAt": generation,
+                                      "requireFreshDetails": True})
+    data["sources"][0]["retainedObservations"][0]["observedAt"] = observed
+    raw = json.dumps(data).encode()
+    run = tmp_path / "run-1"
+    path = run / "sources" / "franklin-street.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    st = path.stat()
+    attempt = {"number": 1, "rc": 0, "started_at": attempt_start, "finished_at": finished}
+    checkpoint = {"attempts": [attempt], "state": "candidate",
+                  "candidate": {"path": "sources/franklin-street.json", "attempt_number": 1,
+                                "attempt_started_at": attempt_start,
+                                "file_identity": [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns],
+                                "bytes": st.st_size}}
+    manifest = {"run_id": "run-1", "started_at": generation,
+                "collector_git_sha": "a" * 40, "collector_git_dirty": False,
+                "config": {"sources": ["franklin-street"], "transactions": ["sale", "lease"],
+                           "max_items": 0, "additive": True, "mark_missing": False, "status_activation": False},
+                "sources": {"franklin-street": checkpoint}}
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    calls = []
+    def compute(_root, _action, arguments):
+        calls.append(1)
+        if len(calls) == 1:
+            raise refresh.ArtifactValidationError("mixed source incomplete")
+        kwargs = arguments["kwargs"]
+        return refresh._validate_source_artifact_local(Path(arguments["path"]), arguments["source"],
+                                                       arguments["attempt_started_at"], **kwargs)
+    monkeypatch.setattr(pipeline, "run_artifact_compute", compute)
+    assert pipeline.prepare_candidate(run, manifest, "franklin-street")
+    assert checkpoint["state"] == "validated"
+    assert checkpoint["artifact"]["franklin_partial"] is True
+    assert checkpoint["franklin_original"]["buildout_pending"] == 1
+    assert (run / checkpoint["franklin_original"]["path"]).read_bytes() == raw
+    assert len(calls) == 2

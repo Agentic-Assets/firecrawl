@@ -2929,6 +2929,29 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    meta = data.get("runMeta") if isinstance(data, dict) else None
+    if isinstance(meta, dict) and meta.get("franklinSitePartial") is not None:
+        if (expected_source != "franklin-street" or not require_strict_freshness
+                or tuple(expected_transactions) != TRANSACTIONS
+                or not expected_generation_id or expected_generation_started_at is None):
+            raise ArtifactValidationError("Franklin partial source scope invalid")
+        try:
+            from cre_franklin_site_partial import validate_derived
+            members = validate_derived(data, expected_generation_id, expected_generation_started_at,
+                                       attempt_started_at, now=now, max_age_hours=max_observation_age_hours)
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["staged_unique"] != len(members):
+                raise ValueError("Franklin partial staged identity differs")
+            artifact_sha256 = sha256_file(path)
+            artifact_bytes = path.stat().st_size
+            return {**stats, "started_at": meta["startedAt"], "finished_at": meta["finishedAt"],
+                    "max_observation_age_hours": max_observation_age_hours,
+                    "strict_freshness": False, "property_detail_freshness": False,
+                    "franklin_partial": True, "freshness_generation_id": expected_generation_id,
+                    "freshness_generation_started_at": expected_generation_started_at,
+                    "sha256": artifact_sha256, "bytes": artifact_bytes}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError("Franklin partial structural validation refused") from exc
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
     daum_retained_unknown_ids = frozenset()
@@ -4054,6 +4077,9 @@ def _finalize_cohort_collection(
         )
         seal_source_evidence(run_dir, manifest, item.source, item.attempt,
                              run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
+        if (item.source == "franklin-street" and rc == COHORT_SETTLED_FAILURE_EXIT
+                and prepare_franklin_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only)):
+            return True
         checkpoint["state"] = "collect_failed"
         terminal = None
         if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
@@ -4140,6 +4166,9 @@ def _finalize_cohort_collection(
         ) = archive_rejected_with_evidence(
             item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
+        if item.source == "franklin-street" and prepare_franklin_partial_candidate(
+                run_dir, manifest, item.attempt, candidate_only=candidate_only):
+            return True
         checkpoint["state"] = "artifact_rejected"
         save_manifest(run_dir, manifest)
         return False
@@ -4661,6 +4690,50 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         raise
 
 
+def prepare_franklin_partial_candidate(run_dir, manifest, attempt, *, candidate_only):
+    """Publish preliminary Franklin cards; later gates still require exact claims."""
+    relative = attempt.get("rejected_artifact")
+    digest = attempt.get("rejected_artifact_sha256")
+    if not relative or not digest:
+        return None
+    from cre_franklin_site_partial import prepare_candidate
+
+    try:
+        info = prepare_candidate(run_dir, manifest, attempt, relative, digest,
+                                 safe_process_env(), git_identity=git_identity)
+        path = run_dir / info["path"]
+        stats = validate_source_artifact(
+            path, "franklin-street", attempt["started_at"], require_strict_freshness=True,
+            expected_generation_id=manifest["run_id"], expected_generation_started_at=manifest["started_at"],
+            expected_transactions=tuple(manifest["config"]["transactions"]),
+        )
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+        if _cleanup_unknown_in_chain(exc):
+            raise GlobalStageError("Franklin candidate worker settlement unknown") from exc
+        return None
+    checkpoint = manifest["sources"]["franklin-street"]
+    checkpoint["franklin_original"] = {
+        "path": relative, "sha256": digest, "attempt_number": attempt["number"],
+        "buildout_pending": info["buildout_pending"], "held_observations": info["held_observations"],
+    }
+    if candidate_only:
+        identity = path.stat()
+        checkpoint["candidate"] = {
+            "path": info["path"], "attempt_started_at": attempt["started_at"],
+            "attempt_number": attempt["number"],
+            "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                              identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size,
+        }
+        checkpoint["state"] = "candidate"
+    else:
+        checkpoint["artifact"] = {**stats, "path": info["path"],
+                                   "attempt_started_at": attempt["started_at"]}
+        checkpoint["state"] = "validated"
+    save_manifest(run_dir, manifest)
+    return path, stats
+
+
 def save_foreground_evidence(run_dir: Path, manifest: dict) -> None:
     """Persist work, then honor a sticky watchdog trip before more foreground I/O.
 
@@ -5101,6 +5174,10 @@ def collect_source(
             seal_source_evidence(run_dir, manifest, source, attempt,
                                  run_dir / attempt["rejected_artifact"] if attempt["rejected_artifact"] else tmp_artifact)
             pump_source_evidence(run_dir, manifest)
+            if source == "franklin-street" and rc == 1:
+                partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             checkpoint["state"] = "collect_failed"
             terminal = None
             if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
@@ -5161,6 +5238,10 @@ def collect_source(
             ) = archive_rejected_with_evidence(
                 tmp_artifact, run_dir, manifest, source, attempt
             )
+            if source == "franklin-street":
+                partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             checkpoint["state"] = "artifact_rejected"
             save_manifest(run_dir, manifest)
             # The completed artifact is rejected, not a retryable process exit.
