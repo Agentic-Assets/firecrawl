@@ -24,6 +24,11 @@ def command(*args, text=None, check=True):
 
 def main():
     name = "colliers-multi-" + uuid.uuid4().hex[:12]
+    # Only this synthetic directory is shared with the networkless container.
+    root = Path(tempfile.mkdtemp(prefix="colliers-multi-"))
+    os.environ["TMPDIR"] = str(root)
+    tempfile.tempdir = str(root)
+    print(f"synthetic fixture evidence: {root}", flush=True)
 
     def sql(query):
         result = command("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
@@ -35,6 +40,7 @@ def main():
     try:
         command("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
                 "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+                "--mount", f"type=bind,src={root},dst={root}",
                 "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
         for _ in range(100):
             logs = command("docker", "logs", name, check=False)
@@ -54,10 +60,6 @@ def main():
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
         # Retain synthetic artifacts and child logs on either success or failure.
-        # They contain no production data or credentials.
-        temporary = tempfile.mkdtemp(prefix="colliers-multi-")
-        root = Path(temporary)
-        print(f"synthetic fixture evidence: {root}", flush=True)
         db_url = "postgresql://postgres:synthetic-only@localhost/postgres"
         env_file = root / "synthetic.env"
         env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
@@ -66,7 +68,7 @@ def main():
         shim.write_text("#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\n"
             "if '-f' in args and args[args.index('-f')+1] != '-':\n"
             " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n"
-            "os.execvp('docker',['docker','exec','-i'," + repr(name) + ",'psql','-U','postgres',*args])\n",
+            "os.execvp('docker',['docker','exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(name) + ",'psql','-U','postgres',*args])\n",
             encoding="utf8")
         shim.chmod(0o700)
         database = {"target": ingest.database_target_fingerprint_from_url(db_url), "psql": shim, "env_file": env_file}
