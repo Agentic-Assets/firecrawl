@@ -30,6 +30,31 @@ def run_mixed_contract(sql, container_name):
         env_file = root / "synthetic.env"
         env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
         env_file.chmod(0o600)
+        # Seed ordinary, unrelated on-market rows so the production search
+        # smoke checks and Savills' previously established baseline are real.
+        sql("""
+INSERT INTO credeals.cre_source_baseline
+    (source_key, brokerage_slug, median_active_rows, last_active_rows)
+VALUES ('savills', 'savills', 2, 2);
+INSERT INTO credeals.cre_listings
+    (brokerage_id, external_id, source_url, canonical_url, status, title,
+     address, city, state, property_type, transaction_type, raw_data)
+SELECT id, 'synthetic-industrial', 'https://example.test/seed/industrial',
+       'https://example.test/seed/industrial', 'active', 'Industrial Lee',
+       '100 National Avenue', 'Dallas', 'TX', 'industrial', 'sale', '{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lee-associates';
+INSERT INTO credeals.cre_listings
+    (brokerage_id, external_id, source_url, canonical_url, status, title,
+     city, state, property_type, transaction_type, raw_data)
+SELECT id, 'synthetic-office', 'https://example.test/seed/office',
+       'https://example.test/seed/office', 'active', 'Office',
+       'Dallas', 'TX', 'office', 'sale', '{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lee-associates';
+""")
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN ('synthetic-industrial','synthetic-office')") == "2"
+        for query in ("'industrial',NULL,'TX',NULL,'sale'", "'office',NULL,NULL,NULL,'sale'",
+                      "'Lee',NULL,NULL,NULL,NULL", "'National Avenue',NULL,NULL,NULL,NULL"):
+            assert int(sql(f"SELECT count(*) FROM credeals.search_cre_listings({query})")) > 0
         shim = root / "psql"
         shim.write_text("#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:]\n"
             "if '-f' in a and a[a.index('-f')+1] != '-':\n"
@@ -69,6 +94,9 @@ globalThis.fetch=async (input,init={})=>{ const u=String(input);
             payload = strict_artifact(source, detail_scope="detail_page", generation=owner["run_id"],
                 generation_started_at=owner["started_at"])
             payload["runMeta"].update(startedAt=stamp, finishedAt=stamp)
+            for entry in payload["sources"]:
+                entry.update(totalAvailableOnSource=entry["listingsCollected"],
+                    sourceUrl="https://www.savills.us/properties/", method="synthetic-owned-worker")
             for row in payload["listings"]:
                 row.update(inventoryObservedAt=stamp, detailObservedAt=stamp)
             child = ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
