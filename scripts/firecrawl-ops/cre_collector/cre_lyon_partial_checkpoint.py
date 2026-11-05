@@ -155,3 +155,121 @@ def validate_candidate(data, source, generation_started_at):
     if data != candidate_data(source, generation_started_at):
         raise ValueError("Lyon candidate differs from source replay")
     return source["staged"]
+
+
+def run_replay_worker(run_dir, manifest, owner, save):
+    """Build one private candidate under the canonical checkpoint owner.
+
+    Caller has settled the collector group. This does not grant admission.
+    """
+    import cre_checkpoint_refresh as refresh
+    from cre_stop_guarded_tier import _safe_stat
+
+    run_dir = Path(run_dir)
+    if not run_dir.is_absolute() or not isinstance(owner, refresh.SharedLock) or not callable(save):
+        raise ValueError("Lyon replay owner invalid")
+
+    def check_owner():
+        owner._require_authority()
+        descriptor = owner._owned_directory_fd()
+        os.close(descriptor)
+        if owner.path.resolve() != refresh.canonical_shared_lock_dir().resolve():
+            raise ValueError("Lyon replay lock differs")
+
+    check_owner()
+    config = manifest["config"]
+    if (config.get("additive") is not True or config.get("mark_missing") is not False
+            or config.get("status_activation") is not False or config.get("transactions") != ["sale", "lease"]
+            or config.get("max_items") != 0 or "lyon-stahl" not in config.get("sources", [])):
+        raise ValueError("Lyon replay scope invalid")
+    checkpoint = manifest["sources"]["lyon-stahl"]
+    if checkpoint.get("lyon_partial_worker") is not None:
+        raise ValueError("Lyon replay already attempted")
+    attempts = checkpoint.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise ValueError("Lyon source attempt missing")
+    number = attempts[-1].get("number")
+    producer, dirty = refresh.git_identity()
+    source = replay_settled_source(run_dir, manifest, number, producer, dirty)
+    checkpoint["lyon_partial_worker"] = {"state": "preparing", "attempt": number}
+    save(run_dir, manifest)
+    try:
+        if not source["staged"]:
+            checkpoint["lyon_partial_worker"]["state"] = "settled_no_write"
+            checkpoint["state"] = "partial_held_no_write"
+            save(run_dir, manifest)
+            return None
+        data = candidate_data(source, manifest["started_at"])
+        encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii") + bytes([10])
+        path = run_dir / "lyon-stahl-partial" / f"candidate-{number}.json"
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            try:
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(encoded)
+                    output.flush()
+                    os.fsync(output.fileno())
+            finally:
+                os.fsync(directory)
+        finally:
+            os.close(directory)
+        check_owner()
+        if refresh.git_identity() != (producer, False) or replay_settled_source(run_dir, manifest, number, producer, False) != source:
+            raise ValueError("Lyon replay source or code changed")
+        if _read_private_file(path, len(encoded)) != encoded:
+            raise ValueError("Lyon replay candidate changed")
+        identity = path.stat()
+        checkpoint["candidate"] = {"path": str(path.relative_to(run_dir)), "attempt_started_at": source["started_at"],
+            "attempt_number": number, "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                                                          identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size}
+        checkpoint["lyon_partial_worker"].update(state="settled", sha256=hashlib.sha256(encoded).hexdigest())
+        checkpoint["state"] = "candidate"
+        save(run_dir, manifest)
+        return path
+    except BaseException as exc:
+        checkpoint.pop("candidate", None)
+        checkpoint["lyon_partial_worker"]["state"] = "failed"
+        try:
+            save(run_dir, manifest)
+        except BaseException as save_error:
+            raise BaseExceptionGroup("Lyon replay and checkpoint save failed", [exc, save_error]) from exc
+        raise
+
+
+def candidate_structure(data):
+    """Validate self-consistency only; this does not authenticate source bytes."""
+    if not isinstance(data, dict) or not isinstance(data.get("binding"), dict):
+        raise ValueError("Lyon candidate structure invalid")
+    binding = data["binding"]
+    if set(binding) != {"generation", "attempt", "startedAt", "finishedAt", "sourceSha256", "sourceMainSha256", "producerSha", "targetSha256"}:
+        raise ValueError("Lyon candidate binding invalid")
+    if (not isinstance(binding["generation"], str) or not binding["generation"]
+            or type(binding["attempt"]) is not int or binding["attempt"] < 1
+            or not isinstance(binding["producerSha"], str) or not re.fullmatch(r"[a-f0-9]{40}", binding["producerSha"])
+            or any(not isinstance(binding[key], str) or not re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                   for key in ("sourceSha256", "sourceMainSha256", "targetSha256"))
+            or not isinstance(data.get("listings"), list)):
+        raise ValueError("Lyon candidate binding invalid")
+    records = []
+    for listing in data["listings"]:
+        if not isinstance(listing, dict) or set(listing) != {"sourceKey", "id", "url", "lyonSearchRecord"}:
+            raise ValueError("Lyon candidate listing invalid")
+        records.append(listing["lyonSearchRecord"])
+    staged = [stage_record(record) for record in records]
+    if not staged:
+        raise ValueError("Lyon candidate empty")
+    _validate_staged(staged)
+    source = {"generation": binding["generation"], "attempt": binding["attempt"], "started_at": binding["startedAt"],
+              "finished_at": binding["finishedAt"], "source_sha256": binding["sourceSha256"],
+              "main_sha256": binding["sourceMainSha256"], "producer_sha": binding["producerSha"],
+              "database_target_sha256": binding["targetSha256"], "records": records,
+              "staged": staged, "held": data.get("held")}
+    try:
+        generation_started_at = data["runMeta"]["freshness"]["generationStartedAt"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("Lyon candidate generation missing") from exc
+    validate_candidate(data, source, generation_started_at)
+    return source

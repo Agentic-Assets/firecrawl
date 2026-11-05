@@ -5,8 +5,9 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
-from cre_lyon_partial_checkpoint import candidate_data, replay_settled_source, validate_candidate
+from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate
 from cre_partial_page_custody import prepare, settle
 from tests.test_lyon_search_replay import spool
 
@@ -67,6 +68,7 @@ class LyonCheckpointTests(unittest.TestCase):
             source = replay_settled_source(root, manifest, 1, "a" * 40, False)
             candidate = candidate_data(source, manifest["started_at"])
             self.assertEqual(validate_candidate(candidate, source, manifest["started_at"]), source["staged"])
+            self.assertEqual(candidate_structure(candidate), source)
             candidate["listings"][0]["id"] = "forged"
             with self.assertRaises(ValueError):
                 validate_candidate(candidate, source, manifest["started_at"])
@@ -82,6 +84,27 @@ class LyonCheckpointTests(unittest.TestCase):
             self.assertEqual(errors, {"lyon-stahl": "original source pass was partial"})
             self.assertEqual(sources, {"lyon-stahl"})
             self.assertEqual(rejects, 0)
+
+    def test_owned_replay_worker_produces_bound_private_candidate(self):
+        import cre_checkpoint_refresh as refresh
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, _, _ = self.case(root)
+            manifest["config"] = {"additive": True, "mark_missing": False, "status_activation": False,
+                                  "transactions": ["sale", "lease"], "max_items": 0, "sources": ["lyon-stahl"]}
+            lock_path = root / "lock"
+            with patch.object(refresh, "canonical_shared_lock_dir", return_value=lock_path),                  patch.object(refresh, "git_identity", return_value=("a" * 40, False)),                  refresh.SharedLock(lock_path) as owner:
+                path = run_replay_worker(root, manifest, owner, lambda *_: None)
+                self.assertEqual(path.stat().st_mode & 0o077, 0)
+                self.assertEqual(manifest["sources"]["lyon-stahl"]["state"], "candidate")
+                self.assertEqual(json.loads(path.read_text())["totalListings"], 1)
+                stats = refresh._validate_source_artifact_local(path, "lyon-stahl", manifest["sources"]["lyon-stahl"]["attempts"][0]["started_at"],
+                    expected_generation_id=root.name, expected_generation_started_at=manifest["started_at"])
+                self.assertIs(stats["lyon_partial"], True)
+                self.assertIs(stats["strict_freshness"], False)
+                with self.assertRaises(ValueError):
+                    run_replay_worker(root, manifest, owner, lambda *_: None)
 
     def test_changed_attempt_owner_or_clock_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
