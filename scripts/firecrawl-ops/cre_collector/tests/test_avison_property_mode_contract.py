@@ -25,8 +25,19 @@ import {EventEmitter} from 'node:events';
 import {syncBuiltinESMExports} from 'node:module';
 const mode=process.env.AVISON_CONTRACT_CASE;
 const calls=[];
-globalThis.fetch=async(input)=>{
+globalThis.fetch=async(input,options)=>{
   const u=new URL(String(input));
+  if(mode==='non-direct-drain' && u.pathname==='/v2/scrape'){
+    const target=new URL(JSON.parse(options.body).url);
+    const index=Number((target.hostname+target.pathname).match(/fixture-(?:sale|lease)-(\d)/)?.[1]);
+    calls.push({native:target.hostname.endsWith('.sharplaunch.com'),index});
+    if(index===1)await new Promise(resolve=>setTimeout(resolve,150));
+    const html=index===0
+      ? '<html><h1>Access denied</h1><p>captcha</p></html>'
+      : '<html><main class="property-detail"><h1>Fixture Property</h1><p>Current property details.</p></main></html>';
+    return new Response(JSON.stringify({success:true,data:{rawHtml:html,metadata:{statusCode:200,sourceURL:target.href}}}),
+      {headers:{'content-type':'application/json'}});
+  }
   if(u.hostname==='www.avisonyoung.us')return new Response(
     "<script>SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')</script>");
   if(u.hostname!=='pse-api.sharplaunch.com')throw Error('unexpected offline fetch');
@@ -113,6 +124,8 @@ def prepare(tmp_path, case):
     # Keep transient controls fast without changing their attempt budget.
     env["AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS"] = "0"
     env.pop("AVISON_YOUNG_DETAIL_CONCURRENCY", None)
+    if case.startswith("one-good-"):
+        env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
     if case == "explicit-strict":
         env["CRE_REQUIRE_FRESH_DETAILS"] = "1"
     return preload, started, env
@@ -303,8 +316,24 @@ def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tm
     assert attempt["avison-young_partial"]["state"] == "sealed_local"
     pages = (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()
     records = [json.loads(page) for page in pages[1:]]
-    assert all(record["kind"] == "validated_detail" for record in records)
-    observed = [record["documents"][0] for record in records]
+    outcomes = [record for record in records if record["kind"] == "detail_outcomes"]
+    details = [record for record in records if record["kind"] == "validated_detail"]
+    assert len(outcomes) == 2
+    assert len(outcomes) + len(details) == len(records)
+    for entry in outcomes:
+        items = entry["documents"]
+        ids = {"sale": {"9001", "9002", "9003"}, "lease": {"9004", "9005", "9006"}}
+        assert {item["id"] for item in items} == ids[entry["transaction"]]
+        states = {item["id"]: item["state"] for item in items}
+        assert states["9002" if entry["transaction"] == "sale" else "9005"] == (
+            "required_detail_404" if case == "one-good-404" else "failed"
+        )
+        assert states["9003" if entry["transaction"] == "sale" else "9006"] == "unattempted"
+        assert set(states.values()) <= {"validated", "required_detail_404", "failed", "unattempted"}
+        detail_ids = {str(record["documents"][0]["id"]) for record in details
+                      if record["transaction"] == entry["transaction"]}
+        assert {identity for identity, state in states.items() if state == "validated"} == detail_ids
+    observed = [record["documents"][0] for record in details]
     assert all(row["sourceKey"] == "avison-young" for row in observed)
     assert all(row["freshnessProvenance"]["detailScope"] == "detail_page" for row in observed)
     assert all(str(row["id"]) in {"9001", "9003", "9004", "9006"} for row in observed)
@@ -329,3 +358,54 @@ def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tm
         refresh.validate_source_artifact(archived, "avison-young", started,
                                          expected_generation_id=tmp_path.name,
                                          expected_generation_started_at=started)
+
+
+def test_all_missing_details_still_fail_and_publish_only_private_outcomes(tmp_path):
+    preload, started, env = prepare(tmp_path, "both-404")
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    assert data["listings"] == []
+    assert all(source.get("error") for source in data["sources"])
+    rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
+    records = [json.loads(line) for line in
+               (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    assert len(records) == 2
+    assert all(record["kind"] == "detail_outcomes" for record in records)
+    for record in records:
+        assert [item["state"] for item in record["documents"]] == [
+            "required_detail_404", "unattempted", "unattempted"
+        ]
+
+
+def test_nondirect_failed_worker_drains_delayed_peer_before_outcome_record(tmp_path):
+    preload, started, env = prepare(tmp_path, "non-direct-drain")
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    env["AVISON_YOUNG_DETAIL_TRANSPORT"] = "nondirect"
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "2"
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["listings"] == [] and all(source.get("error") for source in data["sources"])
+    rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
+    records = [json.loads(line) for line in
+               (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    for transaction in ("sale", "lease"):
+        selected = [record for record in records if record["transaction"] == transaction]
+        assert [record["kind"] for record in selected] == ["validated_detail", "detail_outcomes"]
+        assert [item["state"] for item in selected[-1]["documents"]] == [
+            "failed", "validated", "unattempted"
+        ]

@@ -173,6 +173,12 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
               kind: "validated_detail", pass: 1, observedAt: observationNow(), documents: [{ ...listing, sourceKey: key, transactionMode: tx }] }); }
             catch { spools["avison-young"]!.markFailure(); }
           }
+        : undefined, spools["avison-young"]
+        ? (outcomes) => {
+            try { spools["avison-young"]!.record({ transaction: tx, page: 1,
+              kind: "detail_outcomes", pass: 1, observedAt: observationNow(), documents: outcomes }); }
+            catch { spools["avison-young"]!.markFailure(); }
+          }
         : undefined);
     case "savills":
       return srcSavills(tx, max, monitor);

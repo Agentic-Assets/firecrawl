@@ -2553,7 +2553,8 @@ export async function enrichAvisonYoungListing(
 }
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
-  onValidatedDetail?: (listing: any, index: number) => void): Promise<SourceResult> {
+  onValidatedDetail?: (listing: any, index: number) => void,
+  onDetailOutcomes?: (outcomes: Array<{ id: string; state: string }>) => void): Promise<SourceResult> {
   const strict = requireFreshDetails();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   if (requireLiveDetails && !refreshGenerationId()) {
@@ -2661,19 +2662,36 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const enrichedListings = detailLimit
+  const outcomes = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const trackedEnrich = async (listing: any, index: number) => {
+    outcomes[index]!.state = "started";
+    try {
+      const result = await enrichSelected(listing, index);
+      outcomes[index]!.state = "validated";
+      return result;
+    } catch (error) {
+      outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
+      throw error;
+    }
+  };
+  let enrichedListings: any[];
+  try {
+    enrichedListings = detailLimit
     ? requireLiveDetails && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
       ? await mapAvisonYoungStrictDetails(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
-          enrichSelected
+          trackedEnrich
         )
       : await pmap(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
-          enrichSelected
+          trackedEnrich
         )
     : [];
+  } finally {
+    if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
+  }
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
   assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
   if (requireLiveDetails) {
