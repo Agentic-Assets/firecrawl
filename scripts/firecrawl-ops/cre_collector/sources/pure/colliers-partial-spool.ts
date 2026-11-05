@@ -52,7 +52,10 @@ function driftIdentities(pair: any, total: number, available: number): Identity[
       (changedTotal === total && changedAvailable === available) ||
       typeof list?.html !== "string" || !Array.isArray(map?.projectLocations)) throw new Error("drift counts invalid");
   const cards = parseColliersReceiptCards(list.html, groupColliersMapLocations(map.projectLocations), pair.start);
-  return replayColliersPage({ start: pair.start, pageSize: pair.pageSize, list: listText, map: mapText, cards },
+  // Regular pagination requests a full page even when a changed total leaves
+  // fewer rows; require exactly the changed-total bounded response.
+  const size = Math.min(pair.pageSize, changedTotal - pair.start + 1);
+  return replayColliersPage({ start: pair.start, pageSize: size, list: listText, map: mapText, cards },
     changedTotal, changedAvailable);
 }
 
@@ -98,8 +101,9 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
       if (pending && !failureOnlyPair(pending)) {
         let identities: Identity[] | undefined;
         try {
-          if (countDrift || row.reason !== "recovery_stopped" || pending.start !== row.start ||
-              pending.page !== row.page || pending.pageSize !== row.pageSize ||
+          if (countDrift || row.reason !== "count_drift" || pending.start !== row.start ||
+              pending.page !== row.page || !Number.isSafeInteger(pending.pageSize) ||
+              row.pageSize !== Math.min(pending.pageSize, total - pending.start + 1) ||
               Date.parse(pending.observedAt) > observedMs) throw new Error("drift hole differs");
           identities = driftIdentities(pending, total, available);
         } catch { heldPages++; }
@@ -117,7 +121,7 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
       if (onHole) onHole(row.start, row.pageSize, row.reason);
       if (row.reason === "provider_failure" && row.pageSize === 1) providerHoles++;
       else if (["budget_exhausted", "requested_limit", "page_cap"].includes(row.reason) ||
-               (row.reason === "recovery_stopped" && countDrift)) { /* explicit unexamined range */ }
+               (["recovery_stopped", "count_drift"].includes(row.reason) && countDrift)) { /* explicit unexamined range */ }
       else stopped = true;
       return;
     }

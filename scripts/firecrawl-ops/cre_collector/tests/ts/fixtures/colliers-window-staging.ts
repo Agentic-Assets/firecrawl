@@ -31,7 +31,7 @@ if (process.env.COLLIERS_FIXTURE_COUNT_DRIFT === "1") {
     { ...common, start: 2, pageSize: 1, observedAt: "2026-11-04T15:30:02.000Z", kind: "unqualified_response_pair",
       documents: [{ list: JSON.stringify(changedList), map: JSON.stringify(changedMap) }] },
     { ...common, start: 2, pageSize: 1, observedAt: "2026-11-04T15:30:03.000Z", kind: "recovery_hole",
-      reason: "recovery_stopped", documents: [] });
+      reason: "count_drift", documents: [] });
 }
 const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
 const source = join(dir, "source"), output = join(dir, "evidence");
