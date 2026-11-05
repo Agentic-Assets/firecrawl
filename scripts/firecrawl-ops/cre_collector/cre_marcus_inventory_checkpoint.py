@@ -358,3 +358,75 @@ def admit_inventory(artifact_path, manifest, report, *, current_code_sha, curren
                        "transactions": ["sale", "lease"], "whole_source_coverage": False}
     manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
     return deepcopy(binding)
+
+
+def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_git_dirty,
+                          expected_database_target_sha256, attempt_id):
+    """Reprove source and both subset gates immediately before SQL creation."""
+    import re
+    import uuid
+    from copy import deepcopy
+
+    if (not isinstance(envelope, dict)
+            or set(envelope) != {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"}
+            or not isinstance(attempt_id, str) or not re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+            or envelope["attempt_id"] != attempt_id):
+        raise ValueError("Marcus inventory claims invalid")
+    manifest = deepcopy(envelope["manifest"])
+    if manifest["preflight"]["database_target"] != {"algorithm": "sha256", "value": expected_database_target_sha256}:
+        raise ValueError("Marcus inventory target changed")
+    binding = envelope["binding"]
+    for phase, name in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = deepcopy(envelope[name])
+        if (report["per_source"]["marcus-millichap"].get("current_inventory_proof") != binding
+                or admit_inventory(artifact_path, manifest, report, current_code_sha=current_code_sha,
+                                   current_git_dirty=current_git_dirty, phase=phase) != binding):
+            raise ValueError("Marcus inventory gate proof changed")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                         current_git_dirty=current_git_dirty)
+    probe = manifest["sources"]["marcus-millichap"]["marcus_inventory_probe"]
+    preimage = load_probe_preimage(verified["run_dir"], verified["source"]["attempt"], probe)
+    return {"binding": binding, "staged": verified["staged"], "held": probe["held"], "preimage": preimage,
+            "source": verified["source"], "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
+
+
+def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file):
+    """Read back exact owned postconditions without retrying an uncertain write."""
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_marcus_inventory_db import partial_readback_sql
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    def context():
+        producer, dirty = git_identity()
+        if producer != code_sha or dirty is not False:
+            raise ValueError("Marcus readback code changed")
+        return ingest_subset_context(artifact_path, envelope, current_code_sha=producer, current_git_dirty=dirty,
+            expected_database_target_sha256=target, attempt_id=attempt_id)
+
+    before = context()
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("Marcus readback target changed")
+    sql = partial_readback_sql(before["staged"], before["held"], before["preimage"], before["source"], before["job_id"])
+    result = _run_psql_script(find_psql(), db_url,
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS
+        + "\n" + sql + ";\nROLLBACK;\n", timeout=60)
+    if result.returncode:
+        raise RuntimeError("Marcus inventory readback query failed")
+    parsed = parse_tsv(result.stdout)
+    current_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(current_url).get("value") != target or context() != before:
+        raise ValueError("Marcus inventory readback input or target changed")
+    if parsed != [{"jobs": "1", "observed": str(len(before["staged"])), "mismatches": "0"}]:
+        raise ValueError("Marcus inventory readback postconditions differ")
+    held = set(before["held"])
+    new_missing = sum(item["listing"] is None and item["external_id"] not in held for item in before["preimage"])
+    return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
+            "generation_id": before["source"]["generation"], "attempt_id": attempt_id,
+            "database_target_sha256": target, "expected": before["binding"]["emitted_count"],
+            "held": before["held"], "new_missing_canonical_count": new_missing,
+            "staged_sha256": before["binding"]["staged_sha256"], "detail_qualified": 0,
+            "checked": ["partial_job", "projected_scalars", "source_history", "parent_lifecycle",
+                        "source_index", "contacts", "documents", "images", "media", "links", "held_parents"],
+            "whole_source_coverage": False}
