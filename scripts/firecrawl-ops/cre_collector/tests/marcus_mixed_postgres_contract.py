@@ -98,7 +98,7 @@ globalThis.fetch=async (input,init={})=>{ const u=String(input);
                 entry.update(totalAvailableOnSource=entry["listingsCollected"],
                     sourceUrl="https://www.savills.us/properties/", method="synthetic-owned-worker")
             for row in payload["listings"]:
-                row.update(inventoryObservedAt=stamp, detailObservedAt=stamp)
+                row.update(inventoryObservedAt=stamp, detailObservedAt=stamp, canonicalUrl=row["url"])
             child = ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
                      if source == "savills" else f"import sys; sys.exit({refresh.COHORT_SETTLED_FAILURE_EXIT})")
             log_path.parent.mkdir(parents=True, exist_ok=True)
