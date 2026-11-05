@@ -66,12 +66,10 @@ def test_canonical_allowance_is_source_specific_and_bounded():
         compare_validation_quality(before, after, nai_new_missing_canonical=True)
 
 
-def test_mixed_partial_complete_and_failed_peers_remain_distinct(tmp_path):
-    import cre_checkpoint_series as series
+def mixed_nai_child(run):
     from tests.test_lyon_partial_series import mixed_child
-    from tests.test_pipeline_configuration import RUN_ID, qualification_context
+    from tests.test_pipeline_configuration import RUN_ID
 
-    run = tmp_path / RUN_ID
     child = mixed_child(run)
     fixture, _ = child_fixture()
     checkpoint = fixture["sources"]["nai-global"]
@@ -106,9 +104,45 @@ def test_mixed_partial_complete_and_failed_peers_remain_distinct(tmp_path):
     for result in child["pipeline"]["source_results"].values():
         if result.get("state") == "verified":
             result["validation_sha256"] = unit["validation_sha256"]
+    return child
+
+
+def test_mixed_partial_complete_and_failed_peers_remain_distinct(tmp_path):
+    import cre_checkpoint_series as series
+    from tests.test_pipeline_configuration import RUN_ID, qualification_context
+
+    run = tmp_path / RUN_ID
+    child = mixed_nai_child(run)
     assert series.pipeline_source_qualified(child, "nai-global", **qualification_context(run))
     assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
     assert series.pipeline_source_qualified(child, "lyon-stahl", **qualification_context(run))
     assert not series.pipeline_source_qualified(child, "savills", **qualification_context(run))
-    checkpoint["readback"]["observation"]["attempt_id"] = "f" * 32
+    child["sources"]["nai-global"]["readback"]["observation"]["attempt_id"] = "f" * 32
     assert not series.pipeline_source_qualified(child, "nai-global", **qualification_context(run))
+
+
+def test_mixed_reconciliation_never_replays_verified_partial_and_fences_unknown(tmp_path, monkeypatch):
+    import cre_checkpoint_series as series
+    from tests.test_pipeline_configuration import PARENT_START, RUN_ID, config
+
+    settings = config(pipeline=True, sources=["cbre", "lyon-stahl", "nai-global", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+                                   database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_nai_child(run)
+    child.update(error="Savills source failure",
+                 config=series._expected_child_config("cbre,lyon-stahl,nai-global,savills", settings))
+    child["pipeline"]["source_results"]["savills"]["reason"] = "provider failure"
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+                                           attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert [manifest["sources"][key]["state"] for key in settings["sources"]] == [
+        "complete", "qualified_partial_subset", "qualified_partial_subset", "failed_source"]
+    assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
+    child["pipeline"]["commit_outcome_unknown"] = True
+    with pytest.raises(series.SeriesError, match="unresolved source failure"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
