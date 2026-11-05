@@ -192,3 +192,20 @@ def test_candidate_exposes_inventory_without_claiming_detail_or_coverage():
     assert candidate["sources"][0]["truncated"] is True
     assert candidate["listings"][0]["marcusInventoryRecord"] == listing()
     assert "detailObservedAt" not in candidate["listings"][0]
+
+
+def test_candidate_structure_rederives_identity_and_rejects_forged_wrapper():
+    from cre_marcus_inventory import candidate_data
+    from cre_marcus_inventory_checkpoint import candidate_structure
+
+    row = stage(listing())
+    receipt = {"schema": "marcus-inventory-custody/v1", "generation": GENERATION,
+               "generation_started_at": START, "attempt": 1, "started_at": START, "finished_at": FINISH,
+               "coordinator_finished_at": FINISH, "source_sha256": "a" * 64, "source_bytes": 100,
+               "producer_sha": "b" * 40, "target_sha256": "c" * 64, "detail_errors": 1,
+               "partition": {"staged": [row], "held": []}}
+    candidate = candidate_data(receipt)
+    assert candidate_structure(candidate)["partition"]["staged"] == [row]
+    candidate["listings"][0]["id"] = "999"
+    with pytest.raises(ValueError):
+        candidate_structure(candidate)

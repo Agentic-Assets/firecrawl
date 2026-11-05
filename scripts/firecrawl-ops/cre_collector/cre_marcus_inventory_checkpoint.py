@@ -124,3 +124,52 @@ def verify_candidate_artifact(artifact_path, manifest, *, current_code_sha, curr
         raise ValueError("Marcus inventory candidate differs from source")
     return {"run_dir": run_dir, "source": source, "staged": source["partition"]["staged"],
             "sha256": worker["sha256"], "bytes": size}
+
+
+def candidate_structure(data):
+    """Check the candidate's own structure; source custody remains separate."""
+    import re
+    from cre_marcus_inventory import stage_inventory
+    from cre_marcus_inventory_db import validate_staged
+
+    if not isinstance(data, dict) or not isinstance(data.get("binding"), dict):
+        raise ValueError("Marcus inventory candidate invalid")
+    binding = data["binding"]
+    if (set(binding) != {"generation", "attempt", "startedAt", "finishedAt", "coordinatorFinishedAt",
+                        "sourceSha256", "sourceBytes", "producerSha", "targetSha256"}
+            or not isinstance(binding["generation"], str) or not binding["generation"]
+            or type(binding["attempt"]) is not int or binding["attempt"] < 1
+            or type(binding["sourceBytes"]) is not int or binding["sourceBytes"] < 1
+            or not isinstance(binding["producerSha"], str) or not re.fullmatch(r"[a-f0-9]{40}", binding["producerSha"])
+            or any(not isinstance(binding[key], str) or not re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                   for key in ("sourceSha256", "targetSha256"))
+            or type(data.get("detailErrors")) is not int or data["detailErrors"] < 1
+            or type(data.get("detailQualified")) is not int or data["detailQualified"] != 0
+            or not isinstance(data.get("listings"), list)
+            or not isinstance(data.get("held"), list)):
+        raise ValueError("Marcus inventory candidate binding invalid")
+    held = data["held"]
+    if (any(not isinstance(item, dict) or set(item) != {"index", "reason"}
+            or type(item["index"]) is not int or item["index"] < 0
+            or item["reason"] not in {"unqualified_inventory_identity", "conflicting_inventory_identity"}
+            for item in held)
+            or [item["index"] for item in held] != sorted({item["index"] for item in held})):
+        raise ValueError("Marcus inventory held partition invalid")
+    staged = []
+    for listing in data["listings"]:
+        if not isinstance(listing, dict) or set(listing) != {"sourceKey", "id", "url", "marcusInventoryRecord"}:
+            raise ValueError("Marcus inventory candidate listing invalid")
+        staged.append(stage_inventory(listing["marcusInventoryRecord"], binding["generation"],
+                                      binding["startedAt"], binding["finishedAt"]))
+    validate_staged(staged, binding["generation"], binding["startedAt"], binding["finishedAt"])
+    generation_start = data["runMeta"]["freshness"]["generationStartedAt"]
+    source = {"schema": "marcus-inventory-custody/v1", "source": "marcus-millichap",
+              "generation": binding["generation"], "generation_started_at": generation_start,
+              "attempt": binding["attempt"], "started_at": binding["startedAt"], "finished_at": binding["finishedAt"],
+              "coordinator_finished_at": binding["coordinatorFinishedAt"], "source_sha256": binding["sourceSha256"],
+              "source_bytes": binding["sourceBytes"], "producer_sha": binding["producerSha"],
+              "target_sha256": binding["targetSha256"], "detail_errors": data["detailErrors"],
+              "detail_qualified": 0, "coverage": "partial", "partition": {"staged": staged, "held": data["held"]}}
+    if candidate_data(source) != data:
+        raise ValueError("Marcus inventory candidate differs")
+    return source
