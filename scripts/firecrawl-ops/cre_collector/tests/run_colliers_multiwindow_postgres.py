@@ -62,6 +62,27 @@ def main():
         # created by the collector-owned schema migrations.
         schema += "\nCREATE VIEW credeals.v_cre_market_summary AS SELECT 1 WHERE false;\n"
         sql(schema)
+        # Match the real search smoke prerequisites with unrelated active rows.
+        sql("""
+INSERT INTO credeals.cre_listings
+    (brokerage_id, external_id, source_url, canonical_url, status, title,
+     address, city, state, property_type, transaction_type, raw_data)
+SELECT id, 'synthetic-industrial', 'https://example.test/seed/industrial',
+       'https://example.test/seed/industrial', 'active', 'Industrial Lee',
+       '100 National Avenue', 'Dallas', 'TX', 'industrial', 'sale', '{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lee-associates';
+INSERT INTO credeals.cre_listings
+    (brokerage_id, external_id, source_url, canonical_url, status, title,
+     city, state, property_type, transaction_type, raw_data)
+SELECT id, 'synthetic-office', 'https://example.test/seed/office',
+       'https://example.test/seed/office', 'active', 'Office',
+       'Dallas', 'TX', 'office', 'sale', '{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lee-associates';
+""")
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN ('synthetic-industrial','synthetic-office')") == "2"
+        for query in ("'industrial',NULL,'TX',NULL,'sale'", "'office',NULL,NULL,NULL,'sale'",
+                      "'Lee',NULL,NULL,NULL,NULL", "'National Avenue',NULL,NULL,NULL,NULL"):
+            assert int(sql(f"SELECT count(*) FROM credeals.search_cre_listings({query})")) > 0
         # Retain synthetic artifacts and child logs on either success or failure.
         db_url = "postgresql://postgres:synthetic-only@localhost/postgres"
         env_file = root / "synthetic.env"
@@ -78,8 +99,8 @@ def main():
         (root / "fixture").mkdir()
         with pytest.MonkeyPatch.context() as patch:
             exercise_pipeline(root / "fixture", patch, False, journal=True, database=database)
-        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE status IS NULL") == "200"
-        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE status IS NOT NULL") == "0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id LIKE 'id%' AND status IS NULL") == "200"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id LIKE 'id%' AND status IS NOT NULL") == "0"
         windows = database["manifest"]["sources"]["colliers"]["partial_windows"]
         assert [window["state"] for window in windows] == ["verified", "verified", "settled_no_write"]
         print("Two real database windows and settled rotation: PASS")
