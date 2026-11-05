@@ -1227,6 +1227,7 @@ def run_bounded_pipeline(
                                     buildout_pending=binding.get("buildout_pending"),
                                     held_observations=binding.get("held_observations"),
                                     identity_uncertainty=binding.get("identity_uncertainty"),
+                                    visibility_limitation="site-card rows without explicit ACTIVE status are excluded from active views",
                                 )
                             if binding.get("schema") == "pyramid-incomplete-v2":
                                 state["source_results"][source].update(

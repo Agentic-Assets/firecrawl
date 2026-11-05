@@ -78,6 +78,18 @@ def main():
         first = item(identity, "a", "2026-11-04T12:00:01Z", "Subject to Offer")
         assert json.loads(sql(partial.identity_probe_sql([first]))) == {"staged": 1, "joined": 1, "held": []}
         assert json.loads(sql(write_sql([first], [])).splitlines()[-1])["held"] == []
+        # Real schema defaults to active; a partial site card explicitly stores
+        # unknown status and is excluded by the shipped on-market views.
+        assert sql("SELECT status IS NULL FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "t"
+        assert sql("SELECT count(*) FROM credeals.v_cre_active_for_sale WHERE external_id=" + partial.sql_lit(first["id"])) == "0"
+        assert sql("SELECT count(*) FROM credeals.v_cre_active_for_lease WHERE external_id=" + partial.sql_lit(first["id"])) == "0"
+        active = item("dddddddd-3333-5333-8333-333333333333", "explicit-active", "2026-11-04T12:00:01Z", "active evidence")
+        active["franklinSiteObservation"]["card"]["attributes"].update({
+            "data-status": "ACTIVE", "data-listing-address": "12921 Camino Real, Niederwald, TX, Kyle, TX 78640"})
+        assert json.loads(sql(write_sql([active], [])).splitlines()[-1])["held"] == []
+        active_row = json.loads(sql("SELECT json_build_object('status', status, 'address', address, 'city', city, 'zip', zip) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(active["id"])))
+        assert active_row == {"status": "active", "address": "12921 Camino Real, Niederwald, TX, Kyle, TX 78640", "city": None, "zip": None}
+        assert sql("SELECT count(*) FROM credeals.v_cre_active_for_sale WHERE external_id=" + partial.sql_lit(active["id"])) == "1"
         changed_attempt = {**binding([first]), "attempt_id": "f" * 32}
         try:
             sql(partial.build_sql([first], [], changed_attempt))
@@ -85,20 +97,26 @@ def main():
             assert "Franklin partial job binding differs" in str(error)
         else:
             raise AssertionError("same artifact with different attempt was accepted")
-        assert sql("SELECT count(*) FROM credeals.cre_scrape_jobs WHERE status='partial';") == "1"
-        sql("""UPDATE credeals.cre_listings SET status='sold', title='Prior title';
+        assert sql("SELECT count(*) FROM credeals.cre_scrape_jobs WHERE status='partial';") == "2"
+        sql("""UPDATE credeals.cre_listings SET status='sold', title='Prior title', address='Prior address'
+               WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';
                INSERT INTO credeals.cre_listing_contacts (listing_id,name)
-               SELECT id,'Prior contact' FROM credeals.cre_listings;""")
+               SELECT id,'Prior contact' FROM credeals.cre_listings
+               WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';""")
         second = item(identity, "a", "2026-11-04T12:00:02Z", "Visible new field")
+        second["franklinSiteObservation"]["card"]["attributes"].update(
+            {"data-status": "ACTIVE", "data-listing-address": "New literal address"})
         assert json.loads(sql(write_sql([second], [])).splitlines()[-1])["held"] == []
         readback = json.loads(sql(readback_sql([second], [])))
         assert readback == {"expected": 1, "invalid": [], "matching_jobs": 1}
         assert json.loads(sql(readback_sql([first], [])))["invalid"] == [first["id"]]
-        result = json.loads(sql("SELECT json_build_object('status',status,'title',title,'raw',raw_data,'scraped',scraped_at) FROM credeals.cre_listings;"))
-        assert result["status"] == "sold" and result["title"] == "Prior title" and result["scraped"] is None
+        result = json.loads(sql("SELECT json_build_object('status',status,'title',title,'address',address,'raw',raw_data,'scraped',scraped_at) FROM credeals.cre_listings WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';"))
+        assert result["status"] == "sold" and result["title"] == "Prior title" and result["address"] == "Prior address" and result["scraped"] is None
         assert [x["card"]["html"] for x in result["raw"]["franklinSiteObservations"]] == ["Subject to Offer", "Visible new field"]
         assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE name='Prior contact';") == "1"
         repeat = item(identity, "a", "2026-11-04T12:00:04Z", "Visible new field")
+        repeat["franklinSiteObservation"]["card"]["attributes"].update(
+            {"data-status": "ACTIVE", "data-listing-address": "New literal address"})
         assert json.loads(sql(write_sql([repeat], [])).splitlines()[-1])["held"] == []
         intermediate = item(identity, "a", "2026-11-04T12:00:03Z", "stale new text")
         assert json.loads(sql(write_sql([intermediate], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
@@ -109,7 +127,7 @@ def main():
         assert json.loads(sql(write_sql([changed_url], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
         cycle = item(identity, "a", "2026-11-04T12:00:05Z", "Subject to Offer")
         assert json.loads(sql(write_sql([cycle], [])).splitlines()[-1])["held"] == []
-        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings;") == "3"
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';") == "3"
         conflict_id = "87654321-4321-5432-8432-abcdefabcdef"
         clean_id = "aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee"
         conflict = item(conflict_id, "legacy", "2026-11-04T12:00:06Z", "conflict")
@@ -129,6 +147,29 @@ def main():
         assert result["held"] == [conflict["id"]]
         assert json.loads(sql(readback_sql([conflict, clean], result["held"]))) == {"expected": 1, "invalid": [], "matching_jobs": 1}
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='franklin-site:sale:aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';") == "1"
+        # Existing same-broker canonical URLs and deleted parents remain
+        # identity conflicts, even when their scraped source URL differs.
+        canonical = item("bbbbbbbb-1111-5111-8111-111111111111", "canonical", "2026-11-04T12:00:06Z", "canonical conflict")
+        deleted = item("cccccccc-2222-5222-8222-222222222222", "deleted", "2026-11-04T12:00:06Z", "deleted conflict")
+        sql("""INSERT INTO credeals.cre_listings (brokerage_id, external_id, source_url, canonical_url, deleted_at)
+               SELECT id, 'legacy-canonical', 'https://legacy.example/item',
+                      'https://franklinst.com/properties/for-sale/canonical', NULL
+               FROM credeals.cre_brokerages WHERE slug='franklin-street'
+               UNION ALL
+               SELECT id, 'legacy-deleted', 'https://franklinst.com/properties/for-sale/deleted',
+                      NULL, now()
+               FROM credeals.cre_brokerages WHERE slug='franklin-street';""")
+        expected = sorted([canonical["id"], deleted["id"]])
+        assert json.loads(sql(partial.identity_probe_sql([canonical, deleted])))["held"] == expected
+        assert json.loads(sql(write_sql([canonical, deleted], expected)).splitlines()[-1])["held"] == expected
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN (" +
+                   ",".join(partial.sql_lit(v) for v in expected) + ");") == "0"
+
+        # Never mutate an existing site parent whose canonical URL drifted.
+        sql("UPDATE credeals.cre_listings SET canonical_url='https://legacy.example/changed' WHERE external_id=" + partial.sql_lit(first["id"]))
+        assert json.loads(sql(partial.identity_probe_sql([repeat])))["held"] == [first["id"]]
+        sql("UPDATE credeals.cre_listings SET canonical_url=source_url WHERE external_id=" + partial.sql_lit(first["id"]))
+
         sql("""UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{franklinSiteObservations}',
                  (SELECT jsonb_agg((raw_data->'franklinSiteObservations'->-1) || jsonb_build_object('fixtureIndex', n)) FROM generate_series(1,128) AS n))
                WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';""")

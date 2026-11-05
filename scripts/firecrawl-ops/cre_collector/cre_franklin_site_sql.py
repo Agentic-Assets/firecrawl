@@ -1,13 +1,13 @@
-"""Offline SQL planner for source-qualified Franklin site-card observations.
+"""SQL for the admitted Franklin source-qualified partial-ingest path.
 
-This is not a writer or an admission gate. A future refresh owner must rederive
-and seal the projection from the retained artifact, bind code/generation/target,
-and reconcile uncertain commits before invoking this plan.
+The checkpoint owner rederives the projection from the retained source artifact,
+binds code, generation and target, and fences uncertain commits before calling
+this module. New rows use source-explicit ACTIVE status only; unknown status
+is stored as NULL and excluded from active views.
 
 At the observation limit, changed cards are held, not truncated. The caller must
-retain the exact source artifact as durable private evidence and report the
-held IDs; an append-only evidence store with reviewed access is the intended
-overflow path. Until that custody is proven, this planner must not be enabled.
+retain the exact source artifact as private evidence and report held IDs; durable
+overflow custody and reviewed access remain production activation gates.
 """
 import hashlib
 import json
@@ -75,10 +75,15 @@ def stage(listings):
         ids.add(identity)
         urls.add(url)
         generations.add(item["franklinSiteGenerationId"])
+        address = attrs.get("data-listing-address")
+        if not isinstance(address, str) or not address.strip():
+            address = None
+        status = "active" if attrs.get("data-status") == "ACTIVE" else None
         staged.append({key: row.get(key) for key in (
             "external_id", "source_url", "canonical_url", "transaction_type",
             "title", "state", "lat", "lng",
-        )} | {"observation": {**observed, "generationId": item["franklinSiteGenerationId"]}})
+        )} | {"address": address, "status": status,
+              "observation": {**observed, "generationId": item["franklinSiteGenerationId"]}})
     if len(generations) != 1:
         raise ValueError("mixed Franklin site generations")
     return staged
@@ -126,7 +131,7 @@ def _site_query(payload):
     return f"""SELECT b.id AS brokerage_id, x.*
 FROM jsonb_to_recordset({payload}::jsonb) AS x(
  external_id text, source_url text, canonical_url text, transaction_type text,
- title text, state text, lat double precision, lng double precision, observation jsonb)
+ title text, state text, lat double precision, lng double precision, address text, status text, observation jsonb)
 JOIN credeals.cre_brokerages b ON b.slug='franklin-street'"""
 
 
@@ -134,6 +139,7 @@ def _held_query():
     return f"""SELECT s.external_id FROM _franklin_site s
 LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
 WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS DISTINCT FROM s.source_url
+ OR own.canonical_url IS DISTINCT FROM s.canonical_url
  OR own.raw_data->>'franklinSitePartialVersion' IS DISTINCT FROM '1'
  OR jsonb_typeof(own.raw_data->'franklinSiteObservations') IS DISTINCT FROM 'array'
  OR own.raw_data->>'franklinSiteLastObservedAt' IS NULL
@@ -148,8 +154,10 @@ WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS D
                AND own.raw_data->'franklinSiteObservations'->-1->'card' IS DISTINCT FROM s.observation->'card'))
          ELSE false END))
  OR EXISTS (SELECT 1 FROM credeals.cre_listings other
-            WHERE other.brokerage_id=s.brokerage_id AND other.source_url=s.source_url
-              AND other.deleted_at IS NULL AND (own.id IS NULL OR other.id<>own.id))"""
+            WHERE other.brokerage_id=s.brokerage_id
+              AND (other.source_url IN (s.source_url, s.canonical_url)
+                   OR other.canonical_url IN (s.source_url, s.canonical_url))
+              AND (own.id IS NULL OR other.id<>own.id))"""
 
 
 def identity_probe_sql(listings):
@@ -186,7 +194,9 @@ END $$;
 CREATE TEMP TABLE _franklin_site_locks ON COMMIT DROP AS
 SELECT l.id FROM credeals.cre_listings l
 JOIN _franklin_site s ON s.brokerage_id=l.brokerage_id
- AND (s.external_id=l.external_id OR s.source_url=l.source_url)
+ AND (s.external_id=l.external_id
+      OR l.source_url IN (s.source_url, s.canonical_url)
+      OR l.canonical_url IN (s.source_url, s.canonical_url))
 ORDER BY l.id FOR UPDATE OF l;
 CREATE TEMP TABLE _franklin_site_held ON COMMIT DROP AS
 {_held_query()};
@@ -213,9 +223,9 @@ DO $$ BEGIN
  END IF;
 END $$;
 INSERT INTO credeals.cre_listings AS target
- (brokerage_id, external_id, source_url, canonical_url, transaction_type, title, state, lat, lng, scraped_at, raw_data)
+ (brokerage_id, external_id, source_url, canonical_url, transaction_type, title, state, lat, lng, address, status, scraped_at, raw_data)
 SELECT s.brokerage_id, s.external_id, s.source_url, s.canonical_url, s.transaction_type,
-       s.title, s.state, s.lat, s.lng, NULL,
+       s.title, s.state, s.lat, s.lng, s.address, s.status, NULL,
        jsonb_build_object('sourceKey', 'franklin-street', 'franklinSitePartialVersion', '1',
                           'franklinSiteObservations', jsonb_build_array(s.observation),
                           'franklinSiteLastObservedAt', s.observation->>'observedAt',
@@ -224,6 +234,7 @@ FROM _franklin_site s
 WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)
 ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL DO UPDATE SET
  title=COALESCE(target.title, EXCLUDED.title),
+ address=COALESCE(target.address, EXCLUDED.address),
  state=COALESCE(target.state, EXCLUDED.state),
  lat=CASE WHEN target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lat ELSE target.lat END,
  lng=CASE WHEN target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lng ELSE target.lng END,

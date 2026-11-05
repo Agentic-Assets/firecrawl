@@ -2866,6 +2866,9 @@ def run_series(
                     binding = child_manifest["sources"]["franklin-street"]["gate"]["current_inventory_proof"]
                     checkpoint["partial_counts"] = {key: binding[key] for key in
                         ("emitted_count", "held_count", "buildout_pending", "held_observations", "identity_uncertainty")}
+                    checkpoint["partial_counts"]["visibility_limitation"] = (
+                        "site-card rows without explicit ACTIVE status are excluded from active views"
+                    )
                 save_manifest(series_dir, manifest)
                 break
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:

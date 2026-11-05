@@ -43,3 +43,13 @@ test('holds an oversized card without discarding its valid peer', () => {
   assert.equal(result.listings.length, 1);
   assert.equal((result.held[0] as any).reason, 'card_too_large');
 });
+
+test('holds both cards sharing a URL and retains their raw evidence alongside a valid peer', () => {
+  const other = '87654321-4321-5432-8432-abcdefabcdef';
+  const peer = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+  const html = card(uuid, 'same') + card(other, 'same') + card(peer, 'unique');
+  const result = projectFranklinSiteCards(html, '2026-11-04T12:00:00Z', 'sale');
+  assert.deepEqual(result.held.map((x: any) => x.reason), ['duplicate_url', 'duplicate_url']);
+  assert.deepEqual(result.held.map((x: any) => x.card.html), [card(uuid, 'same'), card(other, 'same')]);
+  assert.equal((result.listings[0] as any).id, `franklin-site:sale:${peer}`);
+});
