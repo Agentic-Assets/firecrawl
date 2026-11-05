@@ -385,12 +385,13 @@ foreach($enabled in @($false,$true)) {
    @('"-Source" "colliers"','"-Sources" "colliers,newmark"'),
    @('"-Pipeline"',''),
    @('"-Pipeline"','"-Pipeline" "-AdmitBaselineHoldAdditively"'),
-   @('"-Pipeline"','"-Pipeline" "-AdmitDaumVerifiedSubset"'),
-   @('"-ExpectedSha" "'+$old+'"','"-ExpectedSha" "'+('c'*40)+'"')
+   @('"-Pipeline"','"-Pipeline" "-AdmitDaumVerifiedSubset"')
  )) {
   $fixture.tasks[$colliers.key].xml=([string]$colliersSnapshot[3].xml).Replace($mutation[0],$mutation[1])
   try {$null=Get-CreReviewedTaskSnapshot $colliersRelease $old $new;throw 'invalid Colliers task accepted'} catch {if($_.Exception.Message -ceq 'invalid Colliers task accepted'){throw}}
  }
+ $fixture.tasks[$colliers.key].xml=([string]$colliersSnapshot[3].xml).Replace($old,('c'*40))
+ try {$null=Get-CreReviewedTaskSnapshot $colliersRelease $old $new;throw 'changed Colliers pin accepted'} catch {if($_.Exception.Message -ceq 'changed Colliers pin accepted'){throw}}
  $fixture.tasks[$colliers.key].xml=[string]$colliersSnapshot[3].xml
  $d=Get-CreReviewedSnapshotDigest $colliersRelease $colliersSnapshot $old $new
  Invoke-CreReviewedTaskHold $colliersRelease $colliersSnapshot $old $new $d $assertOwner
