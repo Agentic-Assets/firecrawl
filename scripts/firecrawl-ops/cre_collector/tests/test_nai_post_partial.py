@@ -63,6 +63,15 @@ def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis(
     assert stage_post(lease, "gen-1")["lease_rate_min"] is None
 
 
+def test_conflicting_building_class_tags_remain_raw_without_projection():
+    source = post()
+    source["buildingClass"] = "A"
+    source["publicPost"]["tags"] = ["BuildingClassA", "BuildingClassB"]
+    staged = stage_post(source, "gen-1")
+    assert staged["building_class"] is None
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == source
+
+
 def test_alias_and_native_id_collisions_hold_only_affected_peers():
     alias = "https://www.naiglobal.com/listings/?propertyId=collision"
     records = [post(1, alias), post(2, alias), post(3), post(3), post(4)]

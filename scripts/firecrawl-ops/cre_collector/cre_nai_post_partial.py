@@ -127,6 +127,14 @@ def stage_post(listing, generation):
     # not turn a lease amount into $/SF/year. DOLLAR supports USD only when a
     # source location explicitly says United States; the mapper defaults US.
     price_source = listing.get("publicPost") or listing["feedRow"]
+    tags = price_source.get("tags")
+    classes = set()
+    for tag in tags if isinstance(tags, list) else []:
+        match = re.fullmatch(r"BuildingClass([A-D])", tag.strip(), re.IGNORECASE) if isinstance(tag, str) else None
+        if match:
+            classes.add(match.group(1).upper())
+    if len(classes) != 1 or projected["building_class"] not in classes:
+        projected["building_class"] = None
     locations = price_source.get("locations")
     first_location = locations[0] if isinstance(locations, list) and locations else None
     location_path = (first_location.get("path") or first_location.get("name")) if isinstance(first_location, dict) else None
