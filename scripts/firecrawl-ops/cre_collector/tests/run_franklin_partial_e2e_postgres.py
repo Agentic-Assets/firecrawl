@@ -10,7 +10,6 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +19,6 @@ sys.path[:0] = [str(ROOT), str(HERE / "observation_store")]
 from test_franklin_site_partial import mixed
 
 import cre_checkpoint_refresh as refresh
-import cre_franklin_site_admission as admission
 from cre_ingest import database_target_fingerprint_from_url, psql_connection_env
 
 
@@ -123,16 +121,13 @@ def main():
             refresh._admit_current_inventory(run, manifest, aggregate_report, path, "aggregate",
                                              source="franklin-street")
             assert aggregate_report["per_source"]["franklin-street"]["verdict"] == "ok_additive_verified_subset"
-            claims_info = checkpoint["franklin_partial_claims"]
-            claims = Path(claims_info["path"])
-            attempt_id = checkpoint["subset_ingest_attempt_id"]
-            args = SimpleNamespace(inputs=[str(path)], mark_missing=False, activate_status=False, require_strict_freshness=True,
-                expected_db_target_sha256=target, checkpoint_ingest_attempt=attempt_id, jll_partial_claims=None,
-                daum_verified_subset_claims=None, pyramid_verified_subset_claims=None, matthews_targeted_claims=None,
-                newmark_page_attempt=None, newmark_page_claims=None, checkpoint_collector_git_sha=None,
-                checkpoint_pyramid_code_sha=None, checkpoint_jll_code_sha=None, franklin_site_claims=str(claims),
-                keep_artifacts=None, dry_run=False, env_file=str(env_file))
-            admission.run_ingest(args)
+            try:
+                refresh.ingest_source(run, manifest, "franklin-street", path, str(env_file))
+            except Exception:
+                for log in (run / "logs").glob("franklin-street-ingest*.log"):
+                    print("synthetic ingest log:", log.read_text()[-4000:], file=sys.stderr)
+                raise
+            assert checkpoint["state"] == "ingested"
             result = refresh.franklin_partial_readback(run, manifest, str(env_file))
             assert result["ok"] is True and result["expected"] == 1
             assert source_binding["buildout_pending"] == 1 and source_binding["whole_source_coverage"] is False
