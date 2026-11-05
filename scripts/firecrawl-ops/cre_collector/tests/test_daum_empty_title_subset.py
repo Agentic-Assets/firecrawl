@@ -78,6 +78,28 @@ def test_actual_v2_producer_through_both_gates_and_unique_staging(v2):
     assert admit(v2, phase="aggregate") == binding
 
 
+def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, monkeypatch):
+    from test_daum_current_inventory import produce
+    import test_essex_current_inventory as helpers
+    from test_daum_verified_subset import admit
+
+    generated = produce(tmp_path, total=101, empty_title=True, corroborated_title=True, with_spaces=True,
+                        subset_policy="tenure-and-empty-title-v2")
+    monkeypatch.setattr(helpers, "SOURCE", "daum-commercial")
+    prepared = helpers.setup(tmp_path, generated)
+    prepared[3]["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+    artifact = prepared[2]
+    proof = artifact["sources"][0]["currentInventoryProof"]
+    assert proof["titleFallbackObservations"] == [{"postId": "50100", "cardTitle": "Synthetic 100",
+                                                   "documentTitle": "Synthetic 100 – Daum Commercial"}]
+    listing = next(item for item in artifact["listings"] if item["daumPostId"] == "50100")
+    assert listing["name"] == "Synthetic 100" and listing["daumSearchCard"]["title"] == listing["name"]
+    assert all(not listing.get(key) for key in ("city", "state", "postalCode"))
+    assert "$6,600 per month" in listing["daumAvailableSpaceObservations"][0]["text"]
+    binding = admit(prepared)
+    assert binding["emitted_count"] == 101 and binding["held_count"] == 0
+
+
 @pytest.mark.parametrize(
     "fault",
     [

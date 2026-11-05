@@ -280,8 +280,8 @@ function daumCloudflareEmail(hex: string | undefined): string | null {
 }
 
 export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail;
-export function parseDaumDetail(html: string, expectedUrl: string, allowEmptyTitle: true): DaumDetail | DaumEmptyTitleObservation;
-export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTitle = false): DaumDetail | DaumEmptyTitleObservation {
+export function parseDaumDetail(html: string, expectedUrl: string, allowEmptyTitle: true, cardTitle?: string): DaumDetail | DaumEmptyTitleObservation;
+export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTitle = false, cardTitle?: string): DaumDetail | DaumEmptyTitleObservation {
   const shell = cheerio.load(html);
   const shellTitle = clean(shell("title").text());
   const shortBody = html.length < 2_000 ? clean(shell("body").text()) : null;
@@ -307,7 +307,7 @@ export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTi
       throw new Error(`DAUM detail identity mismatch for ${expectedUrl}`);
     }
   }
-  const title = clean($(".main-section .title-property").first().text());
+  let title = clean($(".main-section .title-property").first().text());
   const tenureText = clean($(".main-section .title-about").first().text());
   // Preserve each published space as source context, including conflicting
   // values and markup; it is not by itself an offering-tenure or price claim.
@@ -315,11 +315,19 @@ export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTi
     .map((_, element) => ({ html: $.html(element), text: clean($(element).text()) ?? "" }))
     .get();
   const spaceObservation = availableSpaceObservations.length ? { availableSpaceObservations } : {};
+  let titleFallback: DaumDetail["titleFallback"];
   if (!title && allowEmptyTitle && $(".main-section .title-property").length === 1) {
     const canonical = canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href"));
     if ($('link[rel="canonical"]').length !== 1 || $('link[rel="shortlink"]').length !== 1
       || !canonical || canonical !== expectedUrl) throw new Error("DAUM empty-title observation has ambiguous identity");
-    return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true, ...spaceObservation };
+    const card = clean(cardTitle);
+    const documentTitle = $("head > title").length === 1 ? clean($("head > title").text()) : null;
+    if (card && documentTitle === `${card} – Daum Commercial`) {
+      title = card;
+      titleFallback = { cardTitle: card, documentTitle };
+    } else {
+      return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true, ...spaceObservation };
+    }
   }
   if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const locationParts = $(".main-section .state-city li")
@@ -403,6 +411,7 @@ export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTi
     observedCanonicalUrl: canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href")),
     facts,
     title,
+    ...(titleFallback ? { titleFallback } : {}),
     tenure: daumTenure(tenureText),
     tenureText,
     city: locationParts[0] ?? null,
@@ -667,9 +676,9 @@ export function mapDaumListing(
     highlights: detail.highlights,
     daumAvailableSpaceObservations: detail.availableSpaceObservations,
     street: detail.title ?? inventory.title,
-    city: detail.city ?? inventory.city,
-    state: detail.state ?? inventory.state,
-    postalCode: detail.postalCode ?? inventory.postalCode,
+    city: detail.titleFallback ? null : detail.city ?? inventory.city,
+    state: detail.titleFallback ? null : detail.state ?? inventory.state,
+    postalCode: detail.titleFallback ? null : detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude,
     longitude: inventory.longitude,
     salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
@@ -710,6 +719,7 @@ export function mapDaumListing(
     },
     daumObservedCanonicalUrl: detail.observedCanonicalUrl,
     daumSearchCard: inventory,
+    daumTitleFallback: detail.titleFallback,
     detailFacts: detail.facts,
   });
 }
@@ -742,7 +752,11 @@ async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: Dau
     const html = await transport.get(inventory.url);
     const observedAt = observationNow();
     try {
-      const detail = mode === "verified_subset_empty_title" ? parseDaumDetail(html, inventory.url, true) : parseDaumDetail(html, inventory.url);
+      let detail = mode === "verified_subset_empty_title" ? parseDaumDetail(html, inventory.url, true, inventory.title) : parseDaumDetail(html, inventory.url);
+      if (!("emptyRequiredTitle" in detail) && detail.titleFallback && resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") {
+        detail = { postId: detail.postId, observedCanonicalUrl: detail.observedCanonicalUrl, tenure: detail.tenure,
+          tenureText: detail.tenureText, emptyRequiredTitle: true, ...(detail.availableSpaceObservations ? { availableSpaceObservations: detail.availableSpaceObservations } : {}) };
+      }
       if (detail.observedCanonicalUrl !== inventory.url) throw new Error("DAUM strict proof requires observed canonical identity");
       try {
         if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown" && mode === "complete") throw new Error("DAUM strict proof has unresolved tenure");

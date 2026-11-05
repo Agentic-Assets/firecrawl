@@ -653,7 +653,7 @@ def _admit(
         require(observed <= _time(clock) <= end)
         _digest(body_hash)
         details[post] = (canonical, clock, body_hash)
-    empty_titles, title_urls = set(), []
+    empty_titles, title_urls, title_fallbacks = set(), [], {}
     if v2:
         observations = proof.get("titleObservations")
         require(isinstance(observations, list))
@@ -665,6 +665,18 @@ def _admit(
             empty_titles.add(post)
             title_urls.append(native[post][0])
         require(title_urls == sorted(title_urls))
+        fallback_urls = []
+        fallbacks = proof.get("titleFallbackObservations", [])
+        require(isinstance(fallbacks, list))
+        for item in fallbacks:
+            require(isinstance(item, dict) and set(item) == {"postId", "cardTitle", "documentTitle"})
+            post, card, document = item["postId"], item["cardTitle"], item["documentTitle"]
+            require(isinstance(post, str) and post in details and post not in title_fallbacks and post not in empty_titles)
+            require(isinstance(card, str) and bool(card.strip()) and card == card.strip())
+            require(document == f"{card} – Daum Commercial")
+            title_fallbacks[post] = {"cardTitle": card, "documentTitle": document}
+            fallback_urls.append(native[post][0])
+        require(fallback_urls == sorted(fallback_urls))
     held = [[post, "empty_required_property_title" if post in empty_titles
              else "unknown_inventory_and_detail_tenure"]
             for post, row in native.items() if post in empty_titles or row[-1] == "unknown"]
@@ -721,6 +733,15 @@ def _admit(
             and listing.get("detailObservedAt") == clock
             and listing.get("daumDetailResponseSha256") == body_hash
         )
+        if post in title_fallbacks:
+            title = title_fallbacks[post]["cardTitle"]
+            card = listing.get("daumSearchCard")
+            require(isinstance(card, dict) and card.get("url") == url and card.get("title") == title)
+            require(listing.get("daumTitleFallback") == title_fallbacks[post])
+            require(listing.get("name") == title and listing.get("street") == title)
+            require(all(listing.get(key) is None for key in ("city", "state", "postalCode")))
+        else:
+            require(listing.get("daumTitleFallback") is None)
         require(
             listing.get("preserveChildCollections", False) is (post in retained_ids)
             and (post in retained_ids or not listing.get("daumUnknownTenure"))
