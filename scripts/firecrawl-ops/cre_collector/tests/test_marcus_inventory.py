@@ -125,3 +125,17 @@ def test_trailing_slash_alias_is_a_conflicting_identity_witness():
     result = partition_inventory([first, conflicting], GENERATION, START, FINISH)
     assert not result["staged"]
     assert {item["index"] for item in result["held"]} == {0, 1}
+
+
+def test_probe_refuses_derived_field_tampering_and_duplicate_alias():
+    from cre_marcus_inventory_db import identity_probe_sql
+
+    row = stage(listing())
+    tampered = dict(row, title="invented")
+    with pytest.raises(ValueError, match="inconsistent"):
+        identity_probe_sql([tampered], GENERATION, START, FINISH)
+    with pytest.raises(ValueError, match="duplicate"):
+        identity_probe_sql([row, row], GENERATION, START, FINISH)
+    sql = identity_probe_sql([row], GENERATION, START, FINISH)
+    assert "cre_source_index" in sql and "cre_listings" in sql
+    assert "INSERT " not in sql and "UPDATE " not in sql and "DELETE " not in sql
