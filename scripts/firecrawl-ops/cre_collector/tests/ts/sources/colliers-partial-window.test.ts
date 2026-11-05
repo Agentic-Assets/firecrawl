@@ -213,7 +213,7 @@ test("worker seals an all-held source stop without claiming an admitted listing"
   writeFileSync(sourcePath, bytes, { mode: 0o600 });
   const result = await buildColliersWindowArtifact({ ...binding, sourcePath, sourceBytes: bytes.length,
     sourceSha256: createHash("sha256").update(bytes).digest("hex"), evidencePath: join(dir, "evidence"),
-    artifactPath, cursor: 1, producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+    artifactPath, cursor: 1, generationStartedAt: "2026-11-04T14:00:00Z", producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
     originalSourceMainSha256: "c".repeat(64) },
     async () => { throw new ColliersSettledSourceStop("detail_http_failure", 503); });
   assert.equal(result.admitted, 0); assert.equal(result.held, 1); assert.equal(result.unattempted, 1);

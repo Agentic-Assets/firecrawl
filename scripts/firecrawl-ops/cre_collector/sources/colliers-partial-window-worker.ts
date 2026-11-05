@@ -10,7 +10,7 @@ import { reverifyColliersWindow } from "./colliers-partial-window-reverify.js";
 
 type Native = { detail: any; decodedText: string; nativeBytes: Uint8Array };
 type Input = { sourcePath: string; sourceBytes: number; sourceSha256: string; evidencePath: string; artifactPath: string;
-  generation: string; attempt: number; startedAt: string; finishedAt: string; cursor: number;
+  generation: string; generationStartedAt: string; attempt: number; startedAt: string; finishedAt: string; cursor: number;
   producerSha: string; targetSha256: string; originalSourceMainSha256: string; softBytes?: number; limit?: number };
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
 
@@ -75,6 +75,9 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
     try {
       const header = { schema: "colliers-partial-window/v1", sourceKey: "colliers", binding, detailFinishedAt,
         producerSha: input.producerSha, targetSha256: input.targetSha256,
+        runMeta: { mode: "partial", transactions: ["sale", "lease"], startedAt: input.startedAt,
+          finishedAt: detailFinishedAt, freshness: { generationId: input.generation,
+            generationStartedAt: input.generationStartedAt, requireFreshDetails: true } },
         source: { bytes: input.sourceBytes, sha256: input.sourceSha256, mainSha256: input.originalSourceMainSha256 },
         sourceOutcome: "source_error", coverage: "unverified", cursor: input.cursor, proposedCursor: result.proposedCursor,
         selected: result.selection.selected, total: result.selection.total, heldOther: result.selection.heldOther,
@@ -83,9 +86,20 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
       replay = await withColliersPartialSpool(input.evidencePath, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>
         reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
           { ...binding, detailFinishedAt }, input.cursor, receipt.records, result.proposedCursor,
-          async item => { artifact.write((emitted ? "," : "") + JSON.stringify(item)); emitted++; }, input.limit));
+          async item => {
+            if (Object.hasOwn(item.listing, "colliersPartialRecord")) throw new Error("partial listing key collision");
+            const { listing, ...record } = item;
+            artifact.write((emitted ? "," : "") + JSON.stringify({ ...listing, colliersPartialRecord: record }));
+            emitted++;
+          }, input.limit));
       if (replay.emitted !== emitted) throw new Error("partial emitted partition differs");
-      artifact.write('],"held":' + replay.held + "}\n");
+      const sources = [
+        { sourceKey: "colliers", transaction: "sale", supported: true, truncated: true,
+          listingsCollected: emitted, error: "original source pass failed" },
+        { sourceKey: "colliers", transaction: "lease", supported: true, truncated: false, listingsCollected: 0 },
+      ];
+      artifact.write('],"held":' + replay.held + ',"sources":' + JSON.stringify(sources) +
+        ',"brokers":[],"totalListings":' + emitted + "}\n");
     } catch (error) { artifact.abort(); throw error; }
     const sealed = artifact.finish();
     await withColliersPartialSpool(input.artifactPath, sealed.bytes, sealed.sha256, async () => {});

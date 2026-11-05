@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -152,11 +153,20 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
 
     artifact = json.loads((tmp_path / "artifact").read_text())
     source = artifact["source"]
-    receipt = {"generation": "gen", "attempt": 1, "started_at": "2026-11-04T15:00:00Z",
+    receipt = {"generation": "gen", "generation_started_at": "2026-11-04T14:00:00Z", "attempt": 1, "started_at": "2026-11-04T15:00:00Z",
                "finished_at": "2026-11-04T16:00:00Z", "bytes": source["bytes"], "sha256": source["sha256"],
                "main_sha256": "c" * 64, "producer_sha": "a" * 40, "database_target_sha256": "b" * 64}
     result = validate_window_artifact(artifact, receipt, artifact["evidence"])
     assert result == [staged]
+    from cre_gate import count_artifacts
+
+    counts, errors, observed, _, rejected = count_artifacts([str(tmp_path / "artifact")], True)
+    assert counts == {"colliers": 1} and observed == {"colliers"} and rejected == 0
+    assert errors["colliers"] == "original source pass failed"
+    unguarded = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(tmp_path / "artifact"), "--dry-run"],
+                               cwd=collector, capture_output=True, text=True, timeout=30, check=False)
+    assert unguarded.returncode != 0
+    assert "refusing Colliers partial artifact without guarded checkpoint admission" in unguarded.stderr
     for key, value in [("targetSha256", "0" * 64), ("sourceOutcome", "success"), ("unattempted", 999)]:
         changed = copy.deepcopy(artifact)
         changed[key] = value

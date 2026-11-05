@@ -30,10 +30,12 @@ const decodedText = new TextDecoder("utf-8", { fatal: true }).decode(native);
 const artifactPath = join(dir, "artifact");
 const result = await buildColliersWindowArtifact({ ...binding, sourcePath: source, sourceBytes: bytes.length,
   sourceSha256: digest, evidencePath: output, artifactPath, cursor: 1,
+  generationStartedAt: "2026-11-04T14:00:00Z",
   producerSha: "a".repeat(40), targetSha256: "b".repeat(64), originalSourceMainSha256: "c".repeat(64) },
   async () => ({ detail: JSON.parse(decodedText), decodedText, nativeBytes: native }));
 const artifactBytes = readFileSync(artifactPath);
 if (artifactBytes.length !== result.artifact.bytes ||
     createHash("sha256").update(artifactBytes).digest("hex") !== result.artifact.sha256) throw new Error("fixture artifact differs");
 const artifact = JSON.parse(artifactBytes.toString("utf8"));
-process.stdout.write(JSON.stringify({ rows: artifact.listings, artifactFinishedAt: result.detailFinishedAt }) + "\n");
+const verifiedRows = artifact.listings.map(({ colliersPartialRecord, ...listing }: any) => ({ listing, ...colliersPartialRecord }));
+process.stdout.write(JSON.stringify({ rows: verifiedRows, artifactFinishedAt: result.detailFinishedAt }) + "\n");

@@ -7678,6 +7678,8 @@ def main():
             require_canonical_artifact(data)
         except ValueError as exc:
             sys.exit(str(exc))
+        if data.get("schema") == "colliers-partial-window/v1":
+            sys.exit("refusing Colliers partial artifact without guarded checkpoint admission")
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "

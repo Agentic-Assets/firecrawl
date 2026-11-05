@@ -578,13 +578,26 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
     """
     keys = {"schema", "sourceKey", "binding", "detailFinishedAt", "producerSha", "targetSha256",
             "source", "sourceOutcome", "coverage", "cursor", "proposedCursor", "selected", "total",
-            "heldOther", "unattempted", "evidence", "listings", "held"}
+            "heldOther", "unattempted", "evidence", "listings", "held", "runMeta", "sources", "brokers", "totalListings"}
     if not isinstance(data, dict) or set(data) != keys or not isinstance(source_receipt, dict):
         raise ValueError("partial worker artifact shape invalid")
     binding = {"generation": source_receipt.get("generation"), "attempt": source_receipt.get("attempt"),
                "startedAt": source_receipt.get("started_at"), "finishedAt": source_receipt.get("finished_at")}
     expected_source = {"bytes": source_receipt.get("bytes"), "sha256": source_receipt.get("sha256"),
                        "mainSha256": source_receipt.get("main_sha256")}
+    run_meta = {"mode": "partial", "transactions": ["sale", "lease"], "startedAt": binding["startedAt"],
+                "finishedAt": data["detailFinishedAt"], "freshness": {"generationId": binding["generation"],
+                "generationStartedAt": source_receipt.get("generation_started_at"), "requireFreshDetails": True}}
+    if not isinstance(data["listings"], list):
+        raise TypeError("partial worker listings invalid")
+    source_entries = [
+        {"sourceKey": "colliers", "transaction": "sale", "supported": True, "truncated": True,
+         "listingsCollected": len(data["listings"]), "error": "original source pass failed"},
+        {"sourceKey": "colliers", "transaction": "lease", "supported": True, "truncated": False, "listingsCollected": 0},
+    ]
+    if (data["runMeta"] != run_meta or data["sources"] != source_entries or data["brokers"] != []
+            or type(data["totalListings"]) is not int or data["totalListings"] != len(data["listings"])):
+        raise ValueError("partial worker gate scope differs")
     if (data["schema"] != "colliers-partial-window/v1" or data["sourceKey"] != "colliers"
             or data["sourceOutcome"] != "source_error" or data["coverage"] != "unverified"
             or data["binding"] != binding or data["source"] != expected_source
@@ -608,8 +621,16 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
         raise ValueError("partial worker counts differ")
     if not (_time(binding["finishedAt"]) <= _time(data["detailFinishedAt"]) <= datetime.now(UTC) + timedelta(minutes=5)):
         raise ValueError("partial worker finish invalid")
+    records = []
+    for listing in data["listings"]:
+        if not isinstance(listing, dict) or not isinstance(listing.get("colliersPartialRecord"), dict):
+            raise TypeError("partial worker record invalid")
+        payload = listing["colliersPartialRecord"]
+        if set(payload) != {"source", "decodedDetail", "nativeBase64"}:
+            raise TypeError("partial worker record invalid")
+        records.append({"listing": {key: value for key, value in listing.items() if key != "colliersPartialRecord"}, **payload})
     staged = [stage_detail_record(item, binding["generation"], binding["attempt"], binding["startedAt"],
-                                   binding["finishedAt"], data["detailFinishedAt"]) for item in data["listings"]]
+                                   binding["finishedAt"], data["detailFinishedAt"]) for item in records]
     if staged:
         _validate_staged(staged)
     return staged
