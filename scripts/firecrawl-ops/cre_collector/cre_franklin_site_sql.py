@@ -186,6 +186,7 @@ def build_sql(listings, held, binding):
     return f"""
 BEGIN;
 SET LOCAL statement_timeout='600s';
+SET LOCAL TIME ZONE 'UTC';
 {lifecycle_transaction_lock_sql()}
 CREATE TEMP TABLE _franklin_site ON COMMIT DROP AS
 {_site_query(payload)};
@@ -295,7 +296,7 @@ DO $$ BEGIN
 END $$;
 UPDATE credeals.cre_scrape_jobs j
 SET notes={sql_lit(job["notes"])} || ':' || (
- SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'))
+ SELECT encode(sha256(convert_to(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'), 'UTF8')), 'hex')
  FROM _franklin_site s
  JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
  WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id))
@@ -303,7 +304,7 @@ WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.notes={sql_lit(job["notes"])};
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs j
    WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.notes={sql_lit(job["notes"])} || ':' || (
-    SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'))
+    SELECT encode(sha256(convert_to(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY s.external_id)::text, '[]'), 'UTF8')), 'hex')
     FROM _franklin_site s
     JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
     WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)))
@@ -322,6 +323,7 @@ def readback_sql(listings, held, binding):
     accepted = [row for row in staged if row["external_id"] not in set(held)]
     payload = sql_lit(json.dumps(accepted, ensure_ascii=False, separators=(",", ":")))
     return f"""
+SET TIME ZONE 'UTC';
 WITH expected AS (
  SELECT * FROM jsonb_to_recordset({payload}::jsonb) AS x(
   external_id text, source_url text, canonical_url text, title text, address text, state text,
@@ -349,7 +351,7 @@ SELECT json_build_object('expected', (SELECT count(*) FROM expected),
    JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id AND b.slug='franklin-street'
    WHERE j.id={sql_lit(job["job_id"])}::uuid AND j.artifact_run_key={sql_lit(job["key"])}
     AND j.status='partial' AND j.notes={sql_lit(job["notes"])} || ':' || (
-      SELECT md5(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY e.external_id)::text, '[]'))
+      SELECT encode(sha256(convert_to(COALESCE(jsonb_agg(to_jsonb(l) ORDER BY e.external_id)::text, '[]'), 'UTF8')), 'hex')
       FROM expected e
       JOIN credeals.cre_brokerages b ON b.slug='franklin-street'
       JOIN credeals.cre_listings l ON l.brokerage_id=b.id AND l.external_id=e.external_id))) AS result;
