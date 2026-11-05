@@ -20,8 +20,9 @@ from tests.test_cre_checkpoint_refresh import strict_artifact
 
 
 def run_mixed_contract(sql, container_name):
-    with tempfile.TemporaryDirectory(prefix="marcus-mixed-contract-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="marcus-mixed-contract-", delete=False) as temporary:
         root = Path(temporary)
+        print(f"Marcus mixed private evidence: {root}", flush=True)
         run_dir = root / "generation-mixed"
         run_dir.mkdir()
         db_url = "postgresql://postgres:synthetic-only@localhost/postgres"
@@ -71,7 +72,7 @@ globalThis.fetch=async (input,init={})=>{ const u=String(input);
             for row in payload["listings"]:
                 row.update(inventoryObservedAt=stamp, detailObservedAt=stamp)
             child = ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
-                     if source == "savills" else "import sys; sys.exit(1)")
+                     if source == "savills" else f"import sys; sys.exit({refresh.COHORT_SETTLED_FAILURE_EXIT})")
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log = log_path.open("a")
             process = subprocess.Popen([sys.executable, "-c", child, str(temporary_artifact), json.dumps(payload)],
