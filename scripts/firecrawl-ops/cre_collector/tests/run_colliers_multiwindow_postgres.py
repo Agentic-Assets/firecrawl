@@ -58,6 +58,9 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_APPROVAL_REF AGENTIC-5261",
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
+        # This external market view is counted by full validation but is not
+        # created by the collector-owned schema migrations.
+        schema += "\nCREATE VIEW credeals.v_cre_market_summary AS SELECT 1 WHERE false;\n"
         sql(schema)
         # Retain synthetic artifacts and child logs on either success or failure.
         db_url = "postgresql://postgres:synthetic-only@localhost/postgres"
