@@ -115,7 +115,17 @@ def _pipeline_admissions(config, selected_sources):
 def _subset_summary_fields(child, source, count):
     """Partial accounting is source-scoped and never grants complete-source credit."""
     from cre_current_inventory_admission import is_verified_subset, admission_configuration
-    from cre_checkpoint_series import pyramid_partial_child
+    from cre_checkpoint_series import jll_partial_child, pyramid_partial_child
+    if source == "jll-investor" and jll_partial_child(child):
+        checkpoint = child["sources"][source]
+        binding = checkpoint["gate"]["current_inventory_proof"]
+        require(binding["emitted_count"] == count
+                and binding.get("excluded_source_identities") == "unknown")
+        return {"measurement": "generation_exact_verified_subset",
+                "qualification": "qualified_partial_subset", "partial": True,
+                "whole_source_coverage": False, "whole_lease_coverage": "unknown",
+                "emitted_count": count, "held_count": binding["held_count"],
+                "excluded_source_identities": "unknown"}
     pyramid = source == "pyramid-brokerage" and pyramid_partial_child(child)
     if not pyramid and not is_verified_subset(child["config"], source):
         return {}
@@ -201,7 +211,20 @@ def _daum_unknown_breakdown(child, source, count):
             "measurement": "current_staged_inventory_transaction_types"}
 
 
+def _jll_emitted_breakdown(child, source, count):
+    from cre_checkpoint_series import jll_partial_child
+    if source != "jll-investor" or not jll_partial_child(child):
+        return None
+    binding = child["sources"][source]["gate"]["current_inventory_proof"]
+    require(binding.get("emitted_count") == count)
+    return {"sale": count, "lease": 0, "both": 0,
+            "measurement": "current_staged_inventory_transaction_types"}
+
+
 def _artifact_expected_count(child, source, count):
+    from cre_checkpoint_series import jll_partial_child
+    if source == "jll-investor" and jll_partial_child(child):
+        return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
     if _pyramid_emitted_breakdown(child, source, count) is not None:
         return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
     return count
@@ -557,7 +580,9 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         require(type(count) is int and 0 < count <= 500000)
         require(
             readback.get("ok") is True
-            and readback.get("latest_inventory_batch_active") == count
+            and (readback.get("latest_inventory_batch_active") == count
+                 or (source == "jll-investor" and readback.get("kind") == "jll_investor_partial"
+                     and readback.get("observation", {}).get("expected") == count))
         )
         require(artifact.get("staged_unique") == _artifact_expected_count(child, source, count))
         require(artifact.get("rejected_by_ingest") == 0)
@@ -573,7 +598,11 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         breakdown_basis = "none"
         breakdown_reason = "staging_stats_absent"
         staged_stats = artifact.get("transaction_breakdown")
-        if _daum_unknown_breakdown(child, source, count) is not None:
+        if _jll_emitted_breakdown(child, source, count) is not None:
+            transaction_breakdown = _jll_emitted_breakdown(child, source, count)
+            breakdown_basis = "bound_emitted_partition"
+            breakdown_reason = None
+        elif _daum_unknown_breakdown(child, source, count) is not None:
             transaction_breakdown = _daum_unknown_breakdown(child, source, count)
             breakdown_basis = "bound_emitted_partition"
             breakdown_reason = None
@@ -958,7 +987,8 @@ def verified_pipeline_summary(
         qualified = []
         failed = []
         pending = []
-        validated_units = set()
+        unverifiable = []
+        validated_units = {}
         total_validation_bytes = 0
         for source in selected_sources:
             result = source_results.get(source)
@@ -1025,9 +1055,29 @@ def verified_pipeline_summary(
                 pending.append(source)
                 continue
             require(state == "verified")
+            source_artifact = checkpoint.get("artifact")
+            source_readback = checkpoint.get("readback")
+            source_gate = checkpoint.get("gate")
+            source_binding = source_gate.get("current_inventory_proof") if isinstance(source_gate, dict) else None
+            jll_partial_candidate = (
+                source == "jll-investor"
+                and (parent_entry.get("state") == "qualified_partial_subset"
+                     or (isinstance(source_artifact, dict) and source_artifact.get("jll_partial") is True)
+                     or (isinstance(source_readback, dict) and source_readback.get("kind") == "jll_investor_partial")
+                     or (isinstance(source_gate, dict) and (
+                         source_gate.get("verdict") == "ok_additive_verified_subset"
+                         or source_gate.get("admission_scope") == "jll_investor_partial_v1"
+                         or source_gate.get("qualification") == "qualified_partial_subset"))
+                     or (isinstance(source_binding, dict) and (
+                         source_binding.get("schema") == "jll-investor-partial-v1"
+                         or source_binding.get("scope") == "jll_investor_partial_v1"
+                         or source_binding.get("qualification") == "qualified_partial_subset")))
+            )
             require(
-                interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
-                    or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))) else "complete")
+                interrupted or ((jll_partial_candidate and parent_entry.get("state") in {"complete", "qualified_partial_subset"}
+                    or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
+                    or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
+                    or jll_partial_candidate) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1078,11 +1128,52 @@ def verified_pipeline_summary(
                 )
                 require_full_validation_report(validation)
                 require(validation.get("ok") is True)
-                validated_units.add(unit_id)
+                validated_units[unit_id] = validation
+            if source == "jll-investor" and "jll_partial_readback" in validated_units[unit_id]:
+                jll_partial_candidate = True
             checkpoint = checkpoints[source]
-            require(checkpoint.get("state") == "ingested")
-            require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
-            artifact, readback = checkpoint["artifact"], checkpoint["readback"]
+            jll_summary = jll_breakdown = None
+            if jll_partial_candidate:
+                from cre_checkpoint_series import _pipeline_member_report_matches, jll_partial_child
+
+                try:
+                    artifact, readback = checkpoint["artifact"], checkpoint["readback"]
+                    count = readback["expected_staged_unique"]
+                    jll_proven = (
+                        checkpoint.get("state") == "ingested"
+                        and isinstance(checkpoint.get("ingest"), dict)
+                        and type(checkpoint["ingest"].get("rc")) is int
+                        and checkpoint["ingest"]["rc"] == 0
+                        and parent_entry.get("state") == "qualified_partial_subset"
+                        and jll_partial_child(child)
+                        and checkpoint["gate"]["current_inventory_proof"].get("excluded_source_identities") == "unknown"
+                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and type(count) is int and 0 < count <= 500000
+                        and isinstance(artifact.get("sha256"), str)
+                        and re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+                        and type(artifact.get("bytes")) is int
+                        and 0 < artifact["bytes"] <= MAX_ARTIFACT_BINDING_BYTES
+                        and result.get("artifact_sha256") == artifact["sha256"]
+                        and readback.get("kind") == "jll_investor_partial"
+                        and artifact.get("path") == f"sources/{source}.json"
+                        and artifact.get("rejected_by_ingest") == 0
+                    )
+                    if jll_proven:
+                        inventory_only = _verified_inventory_only(source, artifact, readback, child["started_at"])
+                        jll_summary = _subset_summary_fields(child, source, count)
+                        jll_breakdown = _jll_emitted_breakdown(child, source, count)
+                        require(jll_summary.get("partial") is True and jll_breakdown is not None)
+                        require(artifact["staged_unique"] == _artifact_expected_count(child, source, count))
+                except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+                    jll_proven = False
+                if not jll_proven:
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
+            else:
+                require(checkpoint.get("state") == "ingested")
+                require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
+                artifact, readback = checkpoint["artifact"], checkpoint["readback"]
             count = readback["expected_staged_unique"]
             artifact_sha = artifact.get("sha256")
             artifact_bytes = artifact.get("bytes")
@@ -1096,25 +1187,28 @@ def verified_pipeline_summary(
             )
             require(
                 readback.get("ok") is True
-                and readback.get("latest_inventory_batch_active") == count
+                and (readback.get("latest_inventory_batch_active") == count
+                 or (source == "jll-investor" and readback.get("kind") == "jll_investor_partial"
+                     and readback.get("observation", {}).get("expected") == count))
                 and readback.get("generation_id") == run_id
                 and artifact.get("path") == f"sources/{source}.json"
                 and artifact.get("staged_unique") == _artifact_expected_count(child, source, count)
                 and artifact.get("rejected_by_ingest") == 0
             )
-            inventory_only = _verified_inventory_only(
-                source, artifact, readback, child["started_at"]
-            )
-            qualified.append((source, count, checkpoint, unit, inventory_only))
+            if not jll_partial_candidate:
+                inventory_only = _verified_inventory_only(
+                    source, artifact, readback, child["started_at"]
+                )
+            qualified.append((source, count, checkpoint, unit, inventory_only, jll_summary, jll_breakdown))
 
         for descriptor, name, limit, raw in snapshots:
             require(safe._read_at(descriptor, name, limit)[0] == raw)
 
         result_rows = []
         total_artifact_bytes = 0
-        for source, count, checkpoint, unit, inventory_only in qualified:
+        for source, count, checkpoint, unit, inventory_only, jll_summary, jll_breakdown in qualified:
             row = {"source_key": source, "verified_listings": count}
-            row.update(_subset_summary_fields(child, source, count))
+            row.update(jll_summary if jll_summary is not None else _subset_summary_fields(child, source, count))
             if inventory_only:
                 row["verified_inventory_only"] = inventory_only
             breakdown = None
@@ -1123,7 +1217,11 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if _daum_unknown_breakdown(child, source, count) is not None:
+            if jll_breakdown is not None:
+                breakdown = jll_breakdown
+                breakdown_basis = "bound_emitted_partition"
+                breakdown_reason = None
+            elif _daum_unknown_breakdown(child, source, count) is not None:
                 breakdown = _daum_unknown_breakdown(child, source, count)
                 breakdown_basis = "bound_emitted_partition"
                 breakdown_reason = None
@@ -1245,6 +1343,7 @@ def verified_pipeline_summary(
             "per_source_summaries": result_rows,
             "qualified_subset_source_keys": qualified_subset_sources,
             "failed_source_keys": failed_sources,
+            "unverifiable_source_keys": [s for s in selected_sources if s in set(unverifiable)],
             "pending_source_keys": pending_sources,
             "complete": complete,
             "local_settlement": "confirmed",

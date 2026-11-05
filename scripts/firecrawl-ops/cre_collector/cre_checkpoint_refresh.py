@@ -2849,8 +2849,20 @@ def pyramid_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("pyramid_subset") is True)
 
 
+def jll_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "jll-investor"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("jll_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
-    return current_inventory.is_verified_subset(manifest["config"], source) or pyramid_subset_candidate(manifest, source)
+    return (current_inventory.is_verified_subset(manifest["config"], source)
+            or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source))
+
+
+def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if jll_partial_candidate(manifest, source):
+        return "jll_partial_claims"
+    return "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
 
 
 def validate_source_artifact(
@@ -2949,6 +2961,16 @@ def _validate_source_artifact_local(
                     for item in entry["currentInventoryProof"].get("incomplete", [])}
             except (KeyError, TypeError, ValueError) as exc:
                 raise ArtifactValidationError("Pyramid subset structural evidence refused") from exc
+    jll_partial = expected_source == "jll-investor" and any(
+        isinstance(entry, dict) and entry.get("transaction") == "sale" and entry.get("truncated") is True
+        for entry in (data.get("sources") if isinstance(data.get("sources"), list) else []))
+    if jll_partial:
+        from cre_jll_partial import verified_members
+        try:
+            generation = ((data.get("runMeta") or {}).get("freshness") or {}).get("generationId")
+            verified_members(data, generation)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError("JLL partial source identity evidence refused") from exc
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -3109,11 +3131,11 @@ def _validate_source_artifact_local(
         if entry.get("error"):
             raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
         truncated = entry.get("truncated")
-        if truncated is True and not (daum_verified_subset or pyramid_partial):
+        if truncated is True and not (daum_verified_subset or pyramid_partial or jll_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} reported truncated=true"
             )
-        if truncated is not False and not (daum_verified_subset or pyramid_partial):
+        if truncated is not False and not (daum_verified_subset or pyramid_partial or jll_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} is missing explicit truncated=false"
             )
@@ -3428,6 +3450,7 @@ def _validate_source_artifact_local(
         "strict_freshness": strict_freshness,
         "property_detail_freshness": property_detail_freshness,
         **({"pyramid_subset": True} if pyramid_partial else {}),
+        **({"jll_partial": True} if jll_partial else {}),
         "freshness_generation_id": generation_id,
         "freshness_generation_started_at": (
             generation_started.isoformat() if generation_started is not None else None
@@ -5214,7 +5237,7 @@ def _admit_current_inventory(
             claims = response.get("subset_claims")
             if not isinstance(claims, dict) or sha256_file(Path(claims["path"])) != claims["sha256"]:
                 raise GlobalStageError("verified subset claims evidence changed")
-            key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+            key = subset_claims_key(manifest, source)
             manifest["sources"][source][key] = claims
         manifest["scope"].update(scope)
         report.clear()
@@ -5235,6 +5258,10 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if jll_partial_candidate(manifest, source):
+            from cre_jll_partial import admit as admit_jll_partial
+            return admit_jll_partial(artifact, manifest, report, current_code_sha=git_sha,
+                                     current_git_dirty=git_dirty, phase=phase)
         return current_inventory.admit(
             artifact,
             manifest,
@@ -5282,7 +5309,15 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
-        if current_inventory.admission_configuration(manifest["config"], source):
+        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
+            if jll_partial_candidate(manifest, source):
+                from cre_jll_partial import run_identity_probe
+                try:
+                    checkpoint["jll_identity_probe"] = run_identity_probe(
+                        artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                        manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("JLL partial identity classification failed") from exc
             if source == "pyramid-brokerage":
                 from cre_pyramid_identity_probe import run_probe
                 try:
@@ -5394,7 +5429,7 @@ def subset_ingest_arguments(run_dir, manifest, source):
         return []
     checkpoint = manifest["sources"][source]
     pyramid = pyramid_subset_candidate(manifest, source)
-    claims = checkpoint.get("pyramid_verified_subset_claims" if pyramid else "daum_verified_subset_claims")
+    claims = checkpoint.get(subset_claims_key(manifest, source))
     if not isinstance(claims, dict):
         raise GlobalStageError("verified subset requires both sealed gate claims")
     path = Path(claims["path"])
@@ -5403,7 +5438,9 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    return ["--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims", str(path),
+    flag = ("--jll-partial-claims" if jll_partial_candidate(manifest, source)
+            else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
+    return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
             "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
 
@@ -5415,7 +5452,7 @@ def dry_run_source(
     artifact: Path,
 ) -> bool:
     checkpoint = manifest["sources"][source]
-    claim_key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+    claim_key = subset_claims_key(manifest, source)
     if verified_subset_candidate(manifest, source) and not checkpoint.get(claim_key):
         checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
         save_manifest(run_dir, manifest)
@@ -5892,7 +5929,7 @@ def run_aggregate_gate(
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
     for source, artifact in zip(selected, artifacts):
-        if current_inventory.admission_configuration(manifest["config"], source):
+        if current_inventory.admission_configuration(manifest["config"], source) or jll_partial_candidate(manifest, source):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6150,6 +6187,10 @@ def recover_interrupted_ingest(
                 }
             },
         }
+        if jll_partial_candidate(manifest, source):
+            validation["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+            atomic_write_json(output, validation)
+            probe_manifest["sources"][source] = dict(checkpoint)
         readback = verify_validation_readback(
             run_dir,
             probe_manifest,
@@ -6171,6 +6212,14 @@ def recover_interrupted_ingest(
     )
     recovery["artifact_run_job_match_ok"] = committed_job_exact
     recovery["readback_ok"] = readback["ok"] and committed_job_exact
+    if not recovery["readback_ok"] and jll_partial_candidate(manifest, source):
+        # The ordinary generation report omits deleted parents. Its absence
+        # cannot establish that this partial transaction rolled back.
+        checkpoint["state"] = "ingest_recovery_required"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(
+            "JLL partial ingest outcome is not exact; manual reconciliation is required before replay"
+        )
     if not recovery["readback_ok"]:
         generation_id, _generation_started = _generation_expectation(
             probe_manifest, artifact_info, source
@@ -6303,6 +6352,26 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
     return values if len(values) == len(value) and values else None
 
 
+def jll_partial_readback(run_dir, manifest, env_file):
+    """Revalidate sealed claims and read exact emitted IDs on the bound target."""
+    from cre_jll_partial import ingest_subset_context, run_readback
+
+    source = "jll-investor"
+    checkpoint = manifest["sources"][source]
+    arguments = subset_ingest_arguments(run_dir, manifest, source)
+    if len(arguments) < 2:
+        raise GlobalStageError("JLL partial readback claims are missing")
+    envelope = _load_json(Path(arguments[1]))
+    code_sha, dirty = git_identity()
+    target = manifest_database_target_sha256(manifest)
+    claims = ingest_subset_context(
+        run_dir / checkpoint["artifact"]["path"], envelope, current_code_sha=code_sha,
+        current_git_dirty=dirty, expected_database_target_sha256=target,
+        attempt_id=checkpoint["subset_ingest_attempt_id"])
+    return run_readback(run_dir / checkpoint["artifact"]["path"], claims,
+                        expected_database_target_sha256=target, env_file=env_file)
+
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6413,6 +6482,24 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if jll_partial_candidate(manifest, source):
+            observed = validation.get("jll_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("invalid") == []
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and type(observed.get("expected")) is int
+                  and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "jll_investor_partial",
+                                      "generation_id": binding.get("generation_id"),
+                                      "expected_staged_unique": binding.get("emitted_count"),
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         try:
             staged = int(artifact["staged_unique"])
             if source == "pyramid-brokerage" and pyramid_subset_candidate(manifest, source):
@@ -6936,6 +7023,9 @@ def run_final_validation(
         transwestern_image_transition=tw_transition if tw_required else None,
     )
     absolute_quality = verify_absolute_validation_quality(result)
+    if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
+        result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)
         if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources)

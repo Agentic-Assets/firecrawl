@@ -277,6 +277,7 @@ async function main() {
           note: res.note ?? null,
           ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
           ...(res.retainedObservations !== undefined ? { retainedObservations: res.retainedObservations } : {}),
+          ...(res.jllInvestorHeldObservations !== undefined ? { jllInvestorHeldObservations: res.jllInvestorHeldObservations } : {}),
           ...(res.jllInvestorNotFoundObservations !== undefined ? { jllInvestorNotFoundObservations: res.jllInvestorNotFoundObservations } : {}),
           freshness,
         });

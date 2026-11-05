@@ -1606,3 +1606,142 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
     assert result["failed_source_keys"] == ["pyramid-brokerage"]
     assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
     assert "verified_listings" not in result
+
+
+@pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing",
+                                    "artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed",
+                                    "parent_complete", "parent_complete_bad_report", "zero_held_readback_marker",
+                                    "zero_held_gate_marker", "zero_held_report_marker", "excluded_identities",
+                                    "inventory_malformed", "inventory_readback_bad", "source_state", "ingest_rc"])
+def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
+    setup = pipeline_evidence(evidence, primary_source="jll-investor")
+    source = "jll-investor"
+    parent, child = setup["parent"], setup["child"]
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    child["preflight"]["database_target"] = {"algorithm": "sha256", "value": "d" * 64}
+    parent["database_target"] = child["preflight"]["database_target"]
+    artifact.update(jll_partial=True, staged_unique=4)
+    binding = {"schema": "jll-investor-partial-v1", "scope": "jll_investor_partial_v1",
+               "artifact_sha256": artifact["sha256"], "generation_id": RUN,
+               "collector_git_sha": SHA, "database_target_sha256": "d" * 64,
+               "staged_sha256": "e" * 64, "held": ["investor:held"], "held_count": 1,
+               "emitted_count": 3, "excluded_source_identities": "unknown",
+               "whole_source_coverage": False}
+    observation = {"artifact_sha256": artifact["sha256"], "generation_id": RUN,
+                   "staged_sha256": "e" * 64, "expected": 3, "held": ["investor:held"],
+                   "invalid": [], "ok": True}
+    checkpoint["gate"] = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                          "current_inventory_proof": binding}
+    checkpoint["readback"].update(kind="jll_investor_partial", observation=observation,
+                                  whole_source_coverage=False)
+    qualify_pipeline_second_source(evidence, setup)
+    peer = child["sources"][setup["source2"]]
+    peer["artifact"].pop("jll_partial", None)
+    peer["artifact"]["staged_unique"] = 3
+    parent["sources"][source]["state"] = "qualified_partial_subset"
+    validation_path = evidence["series"] / "runs" / RUN / "pipeline/unit-0001/validation.json"
+    validation = json.loads(validation_path.read_text())
+    validation["jll_partial_readback"] = observation
+    raw = json.dumps(validation, separators=(",", ":")).encode()
+    validation_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    for key in (source, setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    jll = next(row for row in result["per_source_summaries"] if row["source_key"] == source)
+    assert jll["partial"] is True
+    assert jll["whole_source_coverage"] is False
+    assert jll["verified_listings"] == 3
+    assert jll["held_count"] == 1
+    assert jll["excluded_source_identities"] == "unknown"
+    assert result["complete"] is False
+    assert result["qualified_subset_source_keys"] == [source]
+    assert any(row["source_key"] == setup["source2"] for row in result["per_source_summaries"])
+    if tamper in {"zero_held_readback_marker", "zero_held_gate_marker", "zero_held_report_marker"}:
+        parent["sources"][source]["state"] = "complete"
+        artifact["jll_partial"] = False
+        artifact["staged_unique"] = 3
+        binding.update(held=[], held_count=0)
+        observation["held"] = []
+        if tamper == "zero_held_readback_marker":
+            checkpoint["gate"] = {}
+        else:
+            checkpoint["readback"].pop("kind")
+            if tamper == "zero_held_report_marker":
+                checkpoint["gate"] = {}
+        raw = json.dumps(validation, separators=(",", ":")).encode()
+        validation_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        child["pipeline"]["units"][0]["validation_sha256"] = digest
+        for key in (source, setup["source2"]):
+            child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+            parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    elif tamper in {"parent_complete", "parent_complete_bad_report"}:
+        parent["sources"][source]["state"] = "complete"
+        if tamper == "parent_complete_bad_report":
+            validation["jll_partial_readback"] = {**observation, "generation_id": "other"}
+            raw = json.dumps(validation, separators=(",", ":")).encode()
+            validation_path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            child["pipeline"]["units"][0]["validation_sha256"] = digest
+            for key in (source, setup["source2"]):
+                child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+                parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    elif tamper == "coverage":
+        binding["whole_source_coverage"] = True
+    elif tamper == "excluded_identities":
+        binding["excluded_source_identities"] = "none"
+    elif tamper == "inventory_malformed":
+        artifact["inventory_only"] = "malformed"
+    elif tamper == "inventory_readback_bad":
+        checkpoint["readback"]["inventory_only"] = {"expected_active": 1, "ok": True}
+    elif tamper == "source_state":
+        checkpoint["state"] = "gated"
+    elif tamper == "ingest_rc":
+        checkpoint["ingest"] = {"rc": "bad"}
+    elif tamper in {"artifact_missing", "artifact_malformed", "readback_missing", "readback_malformed"}:
+        key, variant = tamper.split("_")
+        if variant == "missing":
+            checkpoint.pop(key)
+        else:
+            checkpoint[key] = "malformed"
+    else:
+        if tamper == "missing":
+            del validation["jll_partial_readback"]
+        else:
+            field, value = {"staged": ("staged_sha256", "f" * 64),
+                            "artifact": ("artifact_sha256", "f" * 64),
+                            "generation": ("generation_id", "other"),
+                            "held": ("held", []), "invalid": ("invalid", ["bad"])}[tamper]
+            validation["jll_partial_readback"] = {**observation, field: value}
+        raw = json.dumps(validation, separators=(",", ":")).encode()
+        validation_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        child["pipeline"]["units"][0]["validation_sha256"] = digest
+        for key in (source, setup["source2"]):
+            child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+            parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    assert result["complete"] is False
+    assert result["unverifiable_source_keys"] == [source]
+    assert result["failed_source_keys"] == [source]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [setup["source2"]]
+    # A corrupted unit report is shared evidence failure and remains global.
+    validation_path.write_bytes(b"{}")
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence, source_keys=[source, setup["source2"]])
+
+
+def test_pipeline_legacy_complete_jll_keeps_normal_qualification(evidence):
+    setup = pipeline_evidence(evidence, primary_source="jll-investor")
+    qualify_pipeline_second_source(evidence, setup)
+    result = read_pipeline(evidence, source_keys=["jll-investor", setup["source2"]])
+    assert result["complete"] is True
+    assert result["failed_source_keys"] == []
+    assert result["unverifiable_source_keys"] == []
+    assert [row["source_key"] for row in result["per_source_summaries"]] == ["jll-investor", setup["source2"]]
