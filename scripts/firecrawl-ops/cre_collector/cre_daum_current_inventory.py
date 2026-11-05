@@ -741,7 +741,7 @@ def _admit(
             card = listing.get("daumSearchCard")
             require(isinstance(card, dict) and card.get("url") == url and card.get("title") == title)
             require(listing.get("daumTitleFallback") == title_fallbacks[post])
-            require(listing.get("name") == title and listing.get("street") == title)
+            require(listing.get("name") == title and listing.get("street") is None)
             require(all(listing.get(key) is None for key in ("city", "state", "postalCode")))
         else:
             require(listing.get("daumTitleFallback") is None)

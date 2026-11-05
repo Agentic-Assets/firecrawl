@@ -342,6 +342,8 @@ try:
                                      "WHERE external_id='property/Synthetic-100';", db).stdout)
         import base64
         source_saved = json.loads(base64.b64decode(fallback_raw["daumTitleFallbackHistory"][0]["rawBase64"]))
+        assert sql("SELECT address IS NULL FROM credeals.cre_listings "
+                   "WHERE external_id='property/Synthetic-100';", db).stdout.strip() == "t"
         assert source_saved["daumTitleFallbackDetail"]["city"] == "Phoenix"
         assert "$6,600 per month" in source_saved["daumAvailableSpaceObservations"][0]["text"]
         generations = [line.split("|") for line in sql(validate.QUERIES["freshness_generations"], db).stdout.splitlines()]
@@ -485,13 +487,17 @@ try:
                 replay_claims = copy.deepcopy(later_claims)
                 replay_claims["fallbackPartition"] = replay_partition
                 replay_claims["binding"]["fallback_partition_sha256"] = _sha(replay_partition)
-                sql(generated([later] + [row(index) for index in range(1, 100)], replay_claims), db)
+                replay = sql(generated([later] + [row(index) for index in range(1, 100)], replay_claims), db, check=False)
+                assert replay.returncode and "DAUM fallback artifact already committed" in replay.stderr
+                assert sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
+                           "WHERE status='partial' ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial|100"
                 replay_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
                                             "WHERE external_id='property/Synthetic-0';", db).stdout)
                 assert replay_raw["daumTitleFallbackHistory"] == later_raw["daumTitleFallbackHistory"]
             else:
                 assert "daumTitleFallbackHistory" not in raw
-                sql(generated(incoming, fallback_claims), db)
+                replay = sql(generated(incoming, fallback_claims), db, check=False)
+                assert replay.returncode and "DAUM fallback artifact already committed" in replay.stderr
                 assert sql("SELECT status || '|' || listings_saved::text FROM credeals.cre_scrape_jobs "
                            "WHERE status='partial';", db).stdout.strip() == "partial|99"
             checks.append("fallback_actual_ingest_" + fallback_case)

@@ -275,11 +275,16 @@ DELETE FROM _src s USING _daum_fallback_skipped h
     return sql
 
 
+class DaumSourceProbeRefusal(Exception):
+    """A settled source-local identity query cannot qualify this source."""
+
+
 def run_identity_probe(artifact_path, artifact_sha256, generation, producer, target_sha256, env_file):
     """Capture a read-only partition bound to the source artifact and target."""
     import hashlib
     import json
     import re
+    import subprocess
 
     from cre_checkpoint_refresh import git_identity
     from cre_code_handoff_git import read_file
@@ -293,29 +298,64 @@ def run_identity_probe(artifact_path, artifact_sha256, generation, producer, tar
     raw = read_file(artifact_path)
     if hashlib.sha256(raw).hexdigest() != artifact_sha256 or git_identity() != (producer, False):
         raise ValueError("DAUM fallback probe input changed")
-    members = staged_fallback_members(json.loads(raw))
-    if not members:
-        raise ValueError("DAUM fallback probe has no candidates")
     db_url, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(db_url).get("value") != target_sha256:
         raise ValueError("DAUM fallback probe target differs")
-    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
-           + PIN_STRING_LITERALS + "\n" + identity_probe_sql(members) + ";\nROLLBACK;\n")
-    result = _run_psql_script(find_psql(), db_url, sql, timeout=45)
+
+    def recheck():
+        current_url, _ = load_db_url(env_file)
+        if (database_target_fingerprint_from_url(current_url).get("value") != target_sha256
+                or read_file(artifact_path) != raw or git_identity() != (producer, False)):
+            raise ValueError("DAUM fallback probe input or target changed")
+
+    def source_refusal(cause):
+        # The direct psql child is reaped by subprocess.run on timeout. A
+        # separate read-only check must prove this exact target is healthy.
+        recheck()
+        try:
+            health = _run_psql_script(find_psql(), db_url,
+                                      "BEGIN TRANSACTION READ ONLY;\nSELECT 1 AS healthy;\nROLLBACK;\n",
+                                      timeout=10)
+            healthy = health.returncode == 0 and parse_tsv(health.stdout) == [{"healthy": "1"}]
+        except (OSError, RuntimeError, ValueError, TypeError, SystemExit, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("DAUM fallback probe target health is unknown") from exc
+        recheck()
+        if not healthy:
+            raise RuntimeError("DAUM fallback probe target health is unknown") from cause
+        raise DaumSourceProbeRefusal("DAUM fallback identity could not be qualified") from cause
+
+    try:
+        members = staged_fallback_members(json.loads(raw))
+        if not members:
+            raise ValueError("DAUM fallback probe has no candidates")
+        query = identity_probe_sql(members)
+    except ValueError as exc:
+        source_refusal(exc)
+    sql = ("\\set VERBOSITY verbose\nBEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+           + PIN_STRING_LITERALS + "\n" + query + ";\nROLLBACK;\n")
+    try:
+        result = _run_psql_script(find_psql(), db_url, sql, timeout=45)
+    except subprocess.TimeoutExpired as exc:
+        source_refusal(exc)
     if result.returncode:
-        raise RuntimeError("DAUM fallback identity probe failed")
-    rows = parse_tsv(result.stdout)
-    if (len(rows) != 1 or set(rows[0]) != {"staged", "joined", "partition"}
-            or rows[0]["staged"] != str(len(members)) or rows[0]["joined"] != str(len(members))):
-        raise ValueError("DAUM fallback probe result differs")
-    partition = json.loads(rows[0]["partition"])
-    transaction_guard_sql(members, partition)
-    current_url, _ = load_db_url(env_file)
-    if (database_target_fingerprint_from_url(current_url).get("value") != target_sha256
-            or read_file(artifact_path) != raw or git_identity() != (producer, False)):
-        raise ValueError("DAUM fallback probe input or target changed")
+        state = re.search(r"ERROR:\s+([0-9A-Z]{5}):", getattr(result, "stderr", "") or "")
+        if (result.returncode == 3 and state
+                and (state.group(1).startswith("22") or state.group(1) in {"42601", "57014"})):
+            source_refusal(RuntimeError("DAUM source identity query was refused"))
+        raise RuntimeError("DAUM fallback identity probe target or query failed")
+    recheck()
+    try:
+        rows = parse_tsv(result.stdout)
+        if (len(rows) != 1 or set(rows[0]) != {"staged", "joined", "partition"}
+                or rows[0]["staged"] != str(len(members)) or rows[0]["joined"] != str(len(members))):
+            raise ValueError("DAUM fallback probe result differs")
+        partition = json.loads(rows[0]["partition"])
+        transaction_guard_sql(members, partition)
+    except (ValueError, TypeError, KeyError, SystemExit) as exc:
+        source_refusal(exc)
+    recheck()
     member_hash = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":"),
-                                              ensure_ascii=False).encode()).hexdigest()
+                                             ensure_ascii=False).encode()).hexdigest()
     return {"artifact_sha256": artifact_sha256, "generation_id": generation,
             "producer_sha": producer, "database_target_sha256": target_sha256,
             "members_sha256": member_hash, "partition": partition}

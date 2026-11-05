@@ -50,8 +50,9 @@ Historical proofs without the list retain their original hold-only behavior.
 For V2, when one visible detail title is empty, the search-card title may
 supply the title only if the unique owned document title exactly corroborates
 it, the canonical URL and native post ID match, and tenure is resolved. The
-parsed detail and inventory card remain in raw evidence. Detail locality is
-retained there rather than promoted when the fallback is used. If that title
+parsed detail and inventory card remain in raw evidence. The title alone does
+not establish a street address; canonical address and locality remain null when
+the fallback is used. If that title
 cannot be corroborated, the identified record remains an
 `empty_required_property_title` hold. Missing or multiple title containers
 still fail. Unknown-tenure fallback and records with no usable card title are

@@ -255,6 +255,10 @@ class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
 
+class DaumPartialProbeHold(SourceGuardRefusal):
+    """Settled DAUM source identity output cannot be qualified."""
+
+
 class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
 
@@ -5616,15 +5620,16 @@ def gate_source(
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("Franklin partial identity classification failed") from exc
             if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
-                from cre_daum_fallback_partition import run_identity_probe, staged_fallback_members
+                from cre_daum_fallback_partition import DaumSourceProbeRefusal, run_identity_probe
                 try:
                     daum_data = _load_json(artifact)
                     if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations")
                            for entry in (daum_data.get("sources") or [])):
-                        if staged_fallback_members(daum_data):
-                            checkpoint["daum_fallback_probe"] = run_identity_probe(
-                                artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
-                                manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                        checkpoint["daum_fallback_probe"] = run_identity_probe(
+                            artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                            manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except DaumSourceProbeRefusal as exc:
+                    raise DaumPartialProbeHold("DAUM source identity could not be qualified") from exc
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("DAUM fallback identity classification failed") from exc
             if source == "pyramid-brokerage":

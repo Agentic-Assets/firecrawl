@@ -675,7 +675,7 @@ export function mapDaumListing(
     description: detail.description,
     highlights: detail.highlights,
     daumAvailableSpaceObservations: detail.availableSpaceObservations,
-    street: detail.title ?? inventory.title,
+    street: detail.titleFallback ? null : detail.title ?? inventory.title,
     city: detail.titleFallback ? null : detail.city ?? inventory.city,
     state: detail.titleFallback ? null : detail.state ?? inventory.state,
     postalCode: detail.titleFallback ? null : detail.postalCode ?? inventory.postalCode,

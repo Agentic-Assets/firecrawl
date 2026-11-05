@@ -119,6 +119,7 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
                                                    "documentTitle": "Synthetic 100 – Daum Commercial"}]
     listing = next(item for item in artifact["listings"] if item["daumPostId"] == "50100")
     assert listing["name"] == "Synthetic 100" and listing["daumSearchCard"]["title"] == listing["name"]
+    assert listing.get("street") is None
     assert all(not listing.get(key) for key in ("city", "state", "postalCode"))
     assert listing["daumTitleFallbackDetail"]["city"] == "Phoenix"
     assert listing["daumTitleFallbackDetail"]["state"] == "AZ"
@@ -217,9 +218,27 @@ def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
 def test_wip_fallback_cannot_use_unguarded_generic_ingest():
     from cre_ingest import build_sql
 
-    row = {"raw_data": {"daumTitleFallback": {"cardTitle": "Synthetic 100"}}}
+    row = {"slug": "daum-commercial", "raw_data": {"daumTitleFallback": {"cardTitle": "Synthetic 100"}}}
     with pytest.raises(ValueError, match="requires guarded partial persistence"):
         build_sql([row], [], "2026-11-05T11:00:00Z", [])
+
+
+def test_fallback_marker_is_a_source_scoped_key_not_arbitrary_text():
+    from cre_ingest import build_sql, to_row
+
+    daum = to_row({"sourceKey": "daum-commercial", "id": "property/example",
+                   "url": "https://daumcommercial.com/property/example/",
+                   "name": "A literal daumTitleFallback in a description",
+                   "daumPostId": "123"}, {}, "2026-11-05T11:00:00Z")
+    other = to_row({"sourceKey": "savills", "id": "foreign",
+                    "url": "https://example.invalid/foreign",
+                    "name": "Other source", "daumTitleFallback": "ordinary value"},
+                   {}, "2026-11-05T11:00:00Z")
+    sql = build_sql([daum, other], [], "2026-11-05T11:00:00Z", [])
+    assert "A literal daumTitleFallback" in sql and "Other source" in sql
+    daum["raw_data"] = {"primary": {"secondary_pass": {"daumTitleFallback": {}}}}
+    with pytest.raises(ValueError, match="requires guarded partial persistence"):
+        build_sql([daum, other], [], "2026-11-05T11:00:00Z", [])
 
 
 @pytest.mark.parametrize(

@@ -1295,7 +1295,8 @@ def is_daum_title_fallback(listing):
             and detail.get("observedCanonicalUrl") == listing.get("url")
             and detail.get("availableSpaceObservations") == listing.get("daumAvailableSpaceObservations")
             and detail.get("facts") == listing.get("detailFacts")
-            and card.get("title") == listing.get("name") == listing.get("street") == title
+            and card.get("title") == listing.get("name") == title
+            and listing.get("street") is None
             and card.get("url") == listing.get("url") == listing.get("canonicalUrl") == listing.get("daumObservedCanonicalUrl")
             and all(listing.get(key) is None for key in ("city", "state", "postalCode"))
             and listing.get("preserveChildCollections") is True
@@ -4022,9 +4023,13 @@ def build_sql(
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
 ):
-    # WIP: do not permit fallback rows to use the ordinary overwrite/revival
-    # policy before their source-specific target partition is connected.
-    if (any("daumTitleFallback" in json.dumps(row.get("raw_data") or {}) for row in rows)
+    def daum_marker(payload):
+        if not isinstance(payload, dict):
+            return False
+        return ("daumTitleFallback" in payload
+                or any(daum_marker(payload.get(key)) for key in ("primary", "secondary_pass")))
+
+    if (any(row.get("slug") == "daum-commercial" and daum_marker(row.get("raw_data")) for row in rows)
             and not (isinstance(daum_verified_subset_claims, dict)
                      and daum_verified_subset_claims.get("fallbackMembers"))):
         raise ValueError("DAUM title fallback requires guarded partial persistence")
@@ -4532,6 +4537,19 @@ CREATE TEMP TABLE _jobmeta (
         )
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
+    if daum_fallback_guard:
+        w("""
+-- A committed immutable fallback artifact must be resolved by readback, not
+-- re-probed and replayed with a potentially different held partition.
+DO $$ BEGIN
+ IF EXISTS (
+   SELECT 1 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug=jm.slug
+   JOIN credeals.cre_scrape_jobs j
+     ON j.id=jm.job_id OR (j.brokerage_id=b.id AND j.artifact_run_key=jm.artifact_run_key)
+   WHERE jm.slug='daum-commercial'
+ ) THEN RAISE EXCEPTION 'DAUM fallback artifact already committed; use exact readback'; END IF;
+END $$;
+""")
 
     w("""
 -- Fail loudly if a sourceKey maps to a brokerage slug that is not seeded.
