@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-import cre_source_health as legacy_health
+from reporting import source_health as legacy_health
 from cre_source_policy import load_source_policy
 
 

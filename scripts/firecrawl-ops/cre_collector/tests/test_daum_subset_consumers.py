@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 import cre_checkpoint_series as series
 import cre_series_control as control
-import cre_source_health as health
+from reporting import source_health as health
 import cre_performance_report as performance
 import cre_performance_compare as compare
 import cre_current_inventory_admission as admission
