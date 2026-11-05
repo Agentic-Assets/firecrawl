@@ -87,7 +87,7 @@ def _partition(staged, held):
 
 def _binding(staged, held, binding):
     required = {"artifact_sha256", "attempt_id", "generation_id", "producer_sha",
-                "database_target_sha256", "started_at", "finished_at"}
+                "database_target_sha256", "generation_started_at", "started_at", "finished_at"}
     if not isinstance(binding, dict) or set(binding) != required:
         raise ValueError("invalid Franklin transaction binding")
     if (any(not isinstance(binding.get(key), str) for key in required)
@@ -98,9 +98,10 @@ def _binding(staged, held, binding):
             or not isinstance(binding.get("generation_id"), str)
             or any(row["observation"]["generationId"] != binding["generation_id"] for row in staged)):
         raise ValueError("invalid Franklin identity binding")
+    generation_started = parse_strict_freshness_timestamp(binding["generation_started_at"], field="generation_started_at")
     started = parse_strict_freshness_timestamp(binding["started_at"], field="started_at")
     finished = parse_strict_freshness_timestamp(binding["finished_at"], field="finished_at")
-    if started > finished:
+    if generation_started > started or started > finished:
         raise ValueError("invalid Franklin attempt clocks")
     for row in staged:
         observed = parse_strict_freshness_timestamp(row["observation"]["observedAt"], field="observedAt")
@@ -111,7 +112,7 @@ def _binding(staged, held, binding):
     claims = {**binding, "held": held, "staged_sha256": staged_digest}
     claims_digest = hashlib.sha256(json.dumps(claims, sort_keys=True, separators=(",", ":"),
                                              ensure_ascii=False).encode()).hexdigest()
-    key, _ = artifact_run_identity_from_digests([binding["artifact_sha256"]])
+    key, _ = artifact_run_identity_from_digests([binding["artifact_sha256"]], lane="franklin-site-partial")
     job_id = str(uuid.uuid5(_RUN_UUID_NAMESPACE, f"{key}:franklin-street"))
     return {"key": key, "job_id": job_id, "notes": "franklin-site-partial-v1:" + claims_digest}
 

@@ -17,7 +17,8 @@ def artifact():
     return {"runMeta": {"mode": "full", "startedAt": "2026-11-04T12:00:00Z", "finishedAt": "2026-11-04T12:00:02Z",
                         "freshness": {"generationId": "run-1"}},
             "sources": [{"sourceKey": "franklin-street", "transaction": "sale", "error": "failed",
-                         "retainedObservations": [page]}]}
+                         "retainedObservations": [page]}],
+            "listings": [], "brokers": [], "totalListings": 0}
 
 
 def test_projection_bridges_exact_private_bytes():

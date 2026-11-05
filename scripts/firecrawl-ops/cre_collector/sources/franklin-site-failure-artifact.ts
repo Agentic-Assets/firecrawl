@@ -14,7 +14,9 @@ export function projectFranklinFailureArtifact(value: unknown, generationId: str
   const meta = object(artifact.runMeta);
   const freshness = object(meta.freshness);
   if (!generationId || freshness.generationId !== generationId || meta.mode !== 'full'
-      || !Array.isArray(artifact.sources) || artifact.sources.length === 0) throw new Error('invalid Franklin artifact scope');
+      || !Array.isArray(artifact.sources) || artifact.sources.length === 0
+      || !Array.isArray(artifact.listings) || !Array.isArray(artifact.brokers)
+      || artifact.totalListings !== artifact.listings.length) throw new Error('invalid Franklin artifact scope');
   const started = Date.parse(String(meta.startedAt));
   const finished = Date.parse(String(meta.finishedAt));
   if (!Number.isFinite(started) || !Number.isFinite(finished) || started > finished) throw new Error('invalid Franklin artifact clock');
@@ -22,13 +24,25 @@ export function projectFranklinFailureArtifact(value: unknown, generationId: str
   const listings: unknown[] = [];
   const held: unknown[] = [];
   const pages: unknown[] = [];
+  const successfulTransactions = new Set<string>();
+  const buildoutTransactions: unknown[] = [];
   for (const entryValue of artifact.sources) {
     const entry = object(entryValue);
     if (entry.sourceKey !== 'franklin-street' || !['sale', 'lease'].includes(String(entry.transaction))
         || seen.has(String(entry.transaction))) throw new Error('mixed or duplicate Franklin source scope');
     const tx = entry.transaction as Tx;
     seen.add(tx);
-    if (!entry.error) continue;
+    if (!entry.error) {
+      const peerCount = artifact.listings.filter(value => {
+        const row = object(value);
+        return row.sourceKey === 'franklin-street' && row.transactionMode === tx;
+      }).length;
+      if (entry.supported !== true || entry.truncated !== false || entry.listingsCollected !== peerCount)
+        throw new Error('invalid Franklin Buildout peer accounting');
+      successfulTransactions.add(tx);
+      buildoutTransactions.push({ transaction: tx, listingsCollected: peerCount });
+      continue;
+    }
     if (!Array.isArray(entry.retainedObservations)) continue;
     const observations = entry.retainedObservations.filter(x => {
       const item = object(x);
@@ -53,5 +67,11 @@ export function projectFranklinFailureArtifact(value: unknown, generationId: str
       decodedHtmlSha256: derived.decodedHtmlSha256, observedCards: derived.cards.length });
   }
   if (!pages.length) throw new Error('no Franklin fallback pages');
-  return { coverage: 'partial_unknown' as const, generationId, pages, listings, held };
+  for (const value of artifact.listings) {
+    const row = object(value);
+    if (row.sourceKey !== 'franklin-street' || !successfulTransactions.has(String(row.transactionMode)))
+      throw new Error('unaccounted Franklin Buildout row');
+  }
+  return { coverage: 'partial_unknown' as const, generationId, pages, listings, held,
+    buildout: { transactions: buildoutTransactions, listings: artifact.listings, brokers: artifact.brokers } };
 }

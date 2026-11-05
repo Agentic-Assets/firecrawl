@@ -32,6 +32,7 @@ def binding(rows):
     return {"artifact_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
             "attempt_id": "a" * 32, "generation_id": "synthetic-run", "producer_sha": "b" * 40,
             "database_target_sha256": "c" * 64,
+            "generation_started_at": "2026-11-04T11:59:00Z",
             "started_at": "2026-11-04T12:00:00Z", "finished_at": "2026-11-04T13:00:00Z"}
 
 
