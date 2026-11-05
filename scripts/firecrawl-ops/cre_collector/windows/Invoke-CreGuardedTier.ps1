@@ -315,8 +315,22 @@ function Write-CreAudit {
         $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
-        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
-        else { [IO.File]::Move($temporary, $Path) }
+        if ([IO.File]::Exists($Path)) {
+            # ReplaceFileW error 1175 leaves both names intact; a short retry
+            # preserves atomic publication without retrying ambiguous outcomes.
+            for ($attempt = 0; ; $attempt++) {
+                try { [IO.File]::Replace($temporary, $Path, [NullString]::Value); break }
+                catch {
+                    $failure = $_.Exception
+                    if ($failure -is [Management.Automation.MethodInvocationException]) {
+                        $failure = $failure.InnerException
+                    }
+                    if ($attempt -ge 2 -or $failure -isnot [IO.IOException] -or
+                        $failure.HResult -ne -2147023721) { throw }
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+        } else { [IO.File]::Move($temporary, $Path) }
     } finally {
         if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
     }
