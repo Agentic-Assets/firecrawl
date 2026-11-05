@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.parametrize("denied", [False, True])
-def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False):
+def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False, database=None):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -73,15 +73,17 @@ globalThis.fetch = async (input) => {
     lock = refresh.SharedLock(target / "out" / "daily" / ".cre.lock", recovery_required=True)
     with lock:
         try:
+            target_binding = database["target"] if database else {"algorithm": "sha256", "value": "b" * 64}
             manifest = refresh.new_manifest(run_dir, git_sha=sha, git_dirty=False, sources=("colliers",),
-                page_cap=3, concurrency=1, pipeline=True,
-                database_target={"algorithm": "sha256", "value": "b" * 64})
+                page_cap=3, concurrency=1, pipeline=True, database_target=target_binding)
             manifest["preflight"]["shared_lock"] = str(lock.path)
             sentinel = tmp_path / "detail-called"
             env = {**os.environ, "NODE_OPTIONS": "--import=" + mock.as_uri(),
                    "SYNTHETIC_DENIAL": "1" if denied else "0", "SYNTHETIC_DRIFT": "1" if drift else "0",
                    "SYNTHETIC_DETAIL_SENTINEL": str(sentinel), "SYNTHETIC_JOURNAL": "1" if journal else "0",
                    "SYNTHETIC_ACCESS_STOP": "1" if access_stop else "0"}
+            if database:
+                env["PSQL_BIN"] = str(database["psql"])
             monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock.path)
             monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
             monkeypatch.setattr(refresh, "safe_process_env", lambda *_: dict(env))
@@ -115,16 +117,22 @@ globalThis.fetch = async (input) => {
                 unit.update(validation_path="synthetic", validation_sha256="c" * 64)
                 return {"path": "synthetic", "sha256": "c" * 64, "sequence": 1}
 
-            monkeypatch.setattr(pipeline, "preseal_source_gate", fake_gate)
-            monkeypatch.setattr(pipeline, "run_database_unit", fake_database)
+            if database:
+                import cre_ingest as ingest
+                monkeypatch.setattr(ingest, "find_psql", lambda: str(database["psql"]))
+            if not database:
+                monkeypatch.setattr(pipeline, "preseal_source_gate", fake_gate)
+                monkeypatch.setattr(pipeline, "run_database_unit", fake_database)
             if not journal:
                 # The dispatch-only cases do not synthesize a DB cursor proof.
                 monkeypatch.setattr("cre_colliers_partial_checkpoint.archive_verified_pipeline_window",
                                     lambda *_: False)
             failures = pipeline.run_bounded_pipeline(run_dir, manifest, ("colliers",), page_cap=3,
-                concurrency=1, attempts_this_run=1, env_file=None, source_workers=1,
+                concurrency=1, attempts_this_run=1, env_file=str(database["env_file"]) if database else None, source_workers=1,
                 owner_check=lock._require_authority)
             checkpoint = manifest["sources"]["colliers"]
+            if database:
+                database["manifest"] = manifest
             assert checkpoint["attempts"][0]["rc"] == refresh.COHORT_SETTLED_FAILURE_EXIT
             rejected = json.loads((run_dir / checkpoint["attempts"][0]["rejected_artifact"]).read_text())
             assert rejected["listings"] == [] and rejected["runMeta"]["evidenceOnly"] is True
