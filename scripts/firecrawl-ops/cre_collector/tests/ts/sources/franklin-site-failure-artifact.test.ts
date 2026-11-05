@@ -1,0 +1,33 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseFranklinPage } from '../../../sources/franklin-street-evidence.js';
+import { projectFranklinFailureArtifact } from '../../../sources/franklin-site-failure-artifact.js';
+
+function fixture() {
+  const observedAt = '2026-11-04T12:00:01Z';
+  const decodedHtml = '<article data-listing-card="true" data-listing-id="12345678-1234-5123-8123-123456789abc" data-offer-type="FOR_SALE"><a href="/properties/for-sale/a">A</a></article>';
+  return { runMeta: { mode: 'full', startedAt: '2026-11-04T12:00:00Z', finishedAt: '2026-11-04T12:00:02Z', freshness: {generationId:'run-1'} },
+    sources: [{sourceKey:'franklin-street', transaction:'sale', error:'feed failed',
+      retainedObservations: [{...parseFranklinPage(decodedHtml, observedAt, 'sale'), decodedHtml, httpStatus:200, contentType:'text/html; charset=utf-8'}]}] };
+}
+test('rederives partial identity from the retained page bytes', () => {
+  const result = projectFranklinFailureArtifact(fixture(), 'run-1');
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.held.length, 0);
+  assert.equal(result.coverage, 'partial_unknown');
+});
+test('rejects mutated cards, hash, clock, transaction, generation and mixed scope', () => {
+  const mutations: Array<(x: any) => void> = [
+    x => {x.sources[0].retainedObservations[0].cards[0].attributes['data-listing-id']='forged';},
+    x => {x.sources[0].retainedObservations[0].decodedHtmlSha256='0'.repeat(64);},
+    x => {x.sources[0].retainedObservations[0].observedAt='2026-11-03T00:00:00Z';},
+    x => {x.sources[0].transaction='lease';},
+    x => {x.runMeta.freshness.generationId='other';},
+    x => {x.sources.push({sourceKey:'other', transaction:'sale'});},
+    x => {x.sources[0].retainedObservations.push(x.sources[0].retainedObservations[0]);},
+  ];
+  for (const mutate of mutations) {
+    const input = fixture(); mutate(input);
+    assert.throws(() => projectFranklinFailureArtifact(input, 'run-1'));
+  }
+});
