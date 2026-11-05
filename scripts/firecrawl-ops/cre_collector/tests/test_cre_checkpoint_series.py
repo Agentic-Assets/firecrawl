@@ -436,3 +436,15 @@ def test_serial_series_jll_guard_only_continues_after_bound_settlement(tmp_path,
         assert rc == 1 and len(started) == 1
         assert manifest["status"] == "failed"
         assert manifest["sources"]["jll"]["state"] == "failed_global"
+
+
+def test_unlimited_page_cap_serializes_and_forwards_as_zero(tmp_path):
+    settings = config(("cbre",))
+    settings["page_cap"] = 0
+    decoded = json.loads(json.dumps(settings))
+    assert decoded["page_cap"] == 0
+    argv = series.build_checkpoint_argv(
+        "cbre", child_out_root=tmp_path / "runs", env_file=None, config=decoded
+    )
+    assert argv[argv.index("--page-cap") + 1] == "0"
+    assert series._expected_child_config("cbre", decoded)["page_cap"] == 0
