@@ -100,6 +100,14 @@ Monitor artifacts are sparse and follow their separate observe-only path, never
 canonical ingest. Each module's scoped instructions and README own its details.
 This map describes code boundaries, not deployment or production acceptance.
 
+`reporting/partial_qualification.py` owns shared source-bound partial
+qualification and readback comparisons; `reporting/source_health.py` projects
+source-health receipts. Keep new reusable modules in an owned folder. The root
+layout baseline in `tests/fixtures/collector-root-layout.json` records existing
+legacy modules and explicitly classified entrypoints; remove moved modules
+from it and add a root entrypoint only when it is a genuine direct CLI. Run
+`tests/test_reporting_architecture.py` for the dependency and layout rules.
+
 ## Read order
 
 For collector execution or test work on a fresh machine or clone, follow
@@ -187,6 +195,7 @@ and resolve confirmed findings before shipping.
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters - see `sources/AGENTS.md` |
 | `lib/` | Shared scrape/config/util - see `lib/AGENTS.md` |
+| `reporting/` | Source-bound partial qualification and source-health receipt projection; no write admission |
 | `source_evidence/` | Private append-only capture planning, admitted append and text search; no canonical listing, lifecycle, normalized fact or OM-fact writes |
 | `document_text/` | Pinned local AnyDoc adapter with explicit extraction/OCR-needed/failure artifacts; no automatic download or hosted upload |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
