@@ -25,7 +25,7 @@ export async function reverifyColliersWindow(
   const selection = await selectColliersWindow(openSource, verifySource, binding, cursor, limit);
   if (selection.available === null) throw new Error("partial source total missing");
   const details = new Map<number, { source: any; decodedDetail: string }>();
-  let lineNo = 0, buffered: Buffer[] = [], size = 0;
+  let lineNo = 0, buffered: Buffer[] = [], size = 0, sourceStopped = false;
   const accept = (raw: Buffer) => {
     const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     if (lineNo++ === 0) {
@@ -33,6 +33,7 @@ export async function reverifyColliersWindow(
         generation: binding.generation, attempt: binding.attempt })) throw new Error("partial evidence header differs");
       return;
     }
+    if (sourceStopped) throw new Error("partial evidence continues after source stop");
     const member = selection.window[lineNo - 2];
     if (!member) throw new Error("partial evidence exceeds selected window");
     const candidate = member.candidate, p = candidate.start + candidate.offset;
@@ -40,6 +41,13 @@ export async function reverifyColliersWindow(
       if (!REASONS.has(row.reason) || !isDeepStrictEqual(row.candidate, candidate) ||
           (!member.eligible && row.reason !== "identity_conflict") ||
           (member.eligible && row.reason === "identity_conflict")) throw new Error("partial held identity differs");
+      if (row.reason === "detail_not_found" && ![404, 410].includes(row.status))
+        throw new Error("partial held HTTP status differs");
+      if (row.reason === "detail_http_failure" &&
+          (!Number.isInteger(row.status) || row.status < 300 || row.status > 599 ||
+           [401, 403, 404, 410, 429].includes(row.status)))
+        throw new Error("partial stopped HTTP status differs");
+      sourceStopped = ["detail_http_failure", "detail_timeout", "detail_provider_rejected", "detail_nonjson_html"].includes(row.reason);
     } else if (row.kind === "detail") {
       if (!member.eligible || !row.source || row.source.mapProjectId !== candidate.mapProjectId ||
           row.source.start !== candidate.start || row.source.offset !== candidate.offset || row.source.page !== candidate.page ||

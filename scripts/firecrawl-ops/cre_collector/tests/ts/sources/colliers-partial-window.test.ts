@@ -120,3 +120,29 @@ test("access refusal aborts without fetching later peers", async () => {
     async () => { calls++; throw new ColliersAccessStop("denied"); }, 2), /denied/);
   assert.equal(calls, 1);
 });
+
+test("replay refuses evidence after a source-wide stop", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-window-stop-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const sourceBytes = Buffer.from([header,pair,page,hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"); writeFileSync(sourcePath, sourceBytes, { mode: 0o600 });
+  const sourceHash = createHash("sha256").update(sourceBytes).digest("hex"), path = join(dir, "detail");
+  const evidence = new ColliersWindowEvidence(path, "gen", 1);
+  const result = await withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (open, verify) =>
+    produceColliersWindow(open, verify, binding, 1, async item => evidence.detail(item),
+      async item => evidence.hold(item), async () => { throw new ColliersSettledSourceStop("detail_http_failure", 503); }, 2));
+  const receipt = evidence.finish();
+  const replay = await withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
+    withColliersPartialSpool(path, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>
+      reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
+        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 1, result.proposedCursor, async () => {}, 2)));
+  assert.equal(replay.emitted, 0); assert.equal(replay.held, 1);
+  const records = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  records.push({ ...records[1], candidate: { ...records[1].candidate, mapProjectId: "b" } });
+  const forged = Buffer.from(records.map(row => JSON.stringify(row)).join("\n") + "\n");
+  const forgedPath = join(dir, "forged"); writeFileSync(forgedPath, forged, { mode: 0o600 });
+  await assert.rejects(withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
+    withColliersPartialSpool(forgedPath, forged.length, createHash("sha256").update(forged).digest("hex"), (openEvidence, verifyEvidence) =>
+      reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
+        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
+});
