@@ -17,14 +17,14 @@ export async function reverifyColliersWindow(
   openSource: () => Readable, verifySource: () => Promise<void>,
   openEvidence: () => Readable, verifyEvidence: () => Promise<void>,
   binding: Binding, cursor: number, expectedRecords: number, expectedCursor: number,
-  sink: (item: { listing: any; source: any; decodedDetail: string }) => Promise<void>, limit?: number,
+  sink: (item: { listing: any; source: any; decodedDetail: string; nativeBase64: string }) => Promise<void>, limit?: number,
 ) {
   if (!Number.isSafeInteger(expectedRecords) || expectedRecords < 1 || expectedRecords > 2048)
     throw new Error("invalid partial evidence count");
   await verifySource(); await verifyEvidence();
   const selection = await selectColliersWindow(openSource, verifySource, binding, cursor, limit);
   if (selection.available === null) throw new Error("partial source total missing");
-  const details = new Map<number, { source: any; decodedDetail: string }>();
+  const details = new Map<number, { source: any; decodedDetail: string; nativeBase64: string }>();
   let lineNo = 0, buffered: Buffer[] = [], size = 0, sourceStopped = false;
   const accept = (raw: Buffer) => {
     const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
@@ -63,7 +63,7 @@ export async function reverifyColliersWindow(
       if (row.kind === "detail") {
         if (createHash("sha256").update(native).digest("hex") !== row.source.nativeSha256)
           throw new Error("partial native hash differs");
-        details.set(p, { source: row.source, decodedDetail: new TextDecoder("utf-8", { fatal: true }).decode(native) });
+        details.set(p, { source: row.source, decodedDetail: new TextDecoder("utf-8", { fatal: true }).decode(native), nativeBase64: encoded });
       }
     } else if (row.kind === "detail") throw new Error("partial native bytes missing");
   };
@@ -93,7 +93,7 @@ export async function reverifyColliersWindow(
         if (!detail) continue;
         const mapped = await deriveColliersPartialDetail({ ...page, cards: page.identities },
           detail.source, detail.decodedDetail, binding, selection.total, selection.available!);
-        await sink({ listing: mapped.listing, source: detail.source, decodedDetail: detail.decodedDetail });
+        await sink({ listing: mapped.listing, source: detail.source, decodedDetail: detail.decodedDetail, nativeBase64: detail.nativeBase64 });
         details.delete(p); emitted++;
       }
     }, () => {});

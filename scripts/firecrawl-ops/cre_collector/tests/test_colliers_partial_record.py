@@ -1,3 +1,4 @@
+import base64
 import copy
 import hashlib
 import json
@@ -24,7 +25,8 @@ def sample():
                "freshnessProvenance": {"generationId": "gen", "method": "colliers_salestracker_slp_detail"},
                "colliersPartialEvidence": {"schema": "colliers-partial-detail-v1", **source},
                "colliersSalesTrackerDetail": {"projectId": "42"}}
-    return {"listing": listing, "source": source, "decodedDetail": raw}
+    return {"listing": listing, "source": source, "decodedDetail": raw,
+            "nativeBase64": base64.b64encode(raw.encode()).decode()}
 
 
 def verify(item):
@@ -110,6 +112,8 @@ def test_canonical_mapper_rejects_colliers_main_namespace():
     item = sample()
     item["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "main:42"}})
     item["source"]["decodedDetailSha256"] = hashlib.sha256(item["decodedDetail"].encode()).hexdigest()
+    item["source"]["nativeSha256"] = item["source"]["decodedDetailSha256"]
+    item["nativeBase64"] = base64.b64encode(item["decodedDetail"].encode()).decode()
     item["source"]["mapProjectId"] = "main:42"
     item["listing"]["id"] = "main:42"
     item["listing"]["colliersSalesTrackerDetail"]["projectId"] = "main:42"
@@ -142,3 +146,9 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
                                  "2026-11-04T16:00:00Z", fixture["artifactFinishedAt"])
     assert staged["external_id"] == "native-e2e"
     assert fixture["rows"][0]["listing"]["city"] == "Native City"
+
+def test_native_byte_change_is_rejected_even_when_decoded_text_matches():
+    item = sample()
+    item["nativeBase64"] = base64.b64encode(b"\xef\xbb\xbf" + item["decodedDetail"].encode()).decode()
+    with pytest.raises(ValueError, match="native binding"):
+        verify_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z")

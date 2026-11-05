@@ -3,6 +3,8 @@
 This module does not authorize writes: caller must bind the original page spool,
 settled owner, artifact, code, target and both checkpoint gates.
 """
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -95,11 +97,22 @@ def revalidate_source_receipt(run_dir, manifest, attempt_number, current_code_sh
 
 def verify_detail_record(item, generation, attempt, started_at, finished_at):
     """Validate one private native detail against its exact partial listing."""
-    if not isinstance(item, dict) or set(item) != {"listing", "source", "decodedDetail"}:
+    if not isinstance(item, dict) or set(item) != {"listing", "source", "decodedDetail", "nativeBase64"}:
         raise ValueError("partial detail record invalid")
     listing, source, raw = item["listing"], item["source"], item["decodedDetail"]
     if not isinstance(listing, dict) or not isinstance(source, dict) or not isinstance(raw, str):
         raise TypeError("partial detail content invalid")
+    encoded_native = item["nativeBase64"]
+    if not isinstance(encoded_native, str) or len(encoded_native) > ((16 * 1024 * 1024 + 2) // 3) * 4:
+        raise ValueError("partial native bytes invalid")
+    try:
+        native = base64.b64decode(encoded_native, validate=True)
+        decoded_native = native.decode("utf-8-sig")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("partial native bytes invalid") from exc
+    if (len(native) > 16 * 1024 * 1024 or base64.b64encode(native).decode("ascii") != encoded_native
+            or decoded_native != raw or hashlib.sha256(native).hexdigest() != source.get("nativeSha256")):
+        raise ValueError("partial native binding differs")
     expected_fields = {"generation", "attempt", "start", "page", "pageSize", "offset", "inventoryObservedAt",
                        "detailObservedAt", "mapProjectId", "listSha256", "mapSha256", "detailTokenSha256", "decodedDetailSha256", "nativeSha256"}
     if set(source) != expected_fields or source["generation"] != generation or type(attempt) is not int or type(source["attempt"]) is not int or source["attempt"] != attempt:
