@@ -1,0 +1,126 @@
+"""Mixed-unit qualification of Colliers' independently bound partial readback."""
+import copy
+import hashlib
+import json
+
+import cre_checkpoint_series as series
+import pytest
+from tests.test_pipeline_configuration import (
+    PARENT_START,
+    RUN_ID,
+    config,
+    qualification_context,
+    qualified_child,
+)
+
+
+def mixed_child(run):
+    child = qualified_child(run)
+    child.update(collector_git_sha="a" * 40, config={"pipeline": True},
+                 preflight={"database_target": {"algorithm": "sha256", "value": "c" * 64}},
+                 scope={"kind": "collector_registry_verified_subset", "whole_source_coverage": False},
+                 status="qualified_partial_subset")
+    binding = {"schema": "colliers-partial-window-v1", "scope": "colliers_partial_window_v1",
+        "source_key": "colliers", "artifact_sha256": "b" * 64, "producer_sha": "a" * 40,
+        "database_target_sha256": "c" * 64, "generation_id": RUN_ID, "generation_started_at": child["started_at"],
+        "staged_sha256": "d" * 64, "attempt": 1, "evidence_sha256": "1" * 64,
+        "source_sha256": "2" * 64, "source_main_sha256": "3" * 64, "preimage_sha256": "4" * 64,
+        "held": ["held-id"], "history_holds": {"unknown-id": "reserved native history is unknown"},
+        "held_count": 2, "emitted_count": 1, "cursor": 1, "next_cursor": 4,
+        "original_source_outcome": "source_error", "whole_source_coverage": False}
+    observed = {"ok": True, "outcome": "exact_commit", "artifact_sha256": "b" * 64,
+        "generation_id": RUN_ID, "attempt_id": "e" * 32, "database_target_sha256": "c" * 64,
+        "expected": 1, "held": binding["held"], "history_holds": binding["history_holds"],
+        "staged_sha256": "d" * 64, "child_collections_verified": False}
+    checkpoint = {"state": "ingested", "artifact": {"colliers_partial": True, "sha256": "b" * 64,
+        "path": "colliers-partial/window-1-artifact.json",
+        "bytes": 123, "staged_unique": 3}, "gate": {"verdict": "ok_additive_verified_subset",
+        "mark_missing_safe": False, "admission_scope": "colliers_partial_window_v1", "current_inventory_proof": binding},
+        "subset_ingest_attempt_id": "e" * 32, "readback": {"ok": True, "kind": "colliers_partial_window",
+        "whole_source_coverage": False, "observation": observed},
+        "partial_cursor_settlement": {"state": "settled", "attempt_id": "e" * 32,
+         "cursor": 1, "next_cursor": 4, "artifact_sha256": "b" * 64}}
+    child["sources"]["colliers"] = checkpoint
+    unit = child["pipeline"]["units"][0]
+    unit["sources"].append("colliers")
+    result = copy.deepcopy(child["pipeline"]["source_results"]["cbre"])
+    result.update(artifact_sha256="b" * 64, qualification="qualified_partial_subset", partial=True,
+                  whole_source_coverage=False, emitted_count=1, held_count=2)
+    child["pipeline"]["source_results"]["colliers"] = result
+    path = run / unit["validation_path"]
+    report = json.loads(path.read_bytes())
+    report["colliers_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(report).encode()
+    path.write_bytes(raw)
+    unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    for entry in child["pipeline"]["source_results"].values():
+        entry["validation_sha256"] = unit["validation_sha256"]
+    return child
+
+
+def test_mixed_partial_and_complete_sources_qualify_as_distinct_scopes(tmp_path):
+    run = tmp_path / RUN_ID
+    child = mixed_child(run)
+    assert series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+
+
+@pytest.mark.parametrize("field", ["wrong_source", "wrong_target", "wrong_code", "wrong_outcome",
+    "count_mismatch", "overlap", "missing_settlement", "wrong_attempt", "wrong_readback", "false_complete"])
+def test_partial_claim_drift_refuses_entire_mixed_unit(tmp_path, field):
+    run = tmp_path / RUN_ID
+    child = mixed_child(run)
+    checkpoint = child["sources"]["colliers"]
+    binding = checkpoint["gate"]["current_inventory_proof"]
+    if field == "wrong_source": binding["source_key"] = "cbre"
+    elif field == "wrong_target": binding["database_target_sha256"] = "0" * 64
+    elif field == "wrong_code": binding["producer_sha"] = "0" * 40
+    elif field == "wrong_outcome": binding["original_source_outcome"] = "success"
+    elif field == "count_mismatch": binding["held_count"] = 1
+    elif field == "overlap": binding["history_holds"]["held-id"] = "unknown"
+    elif field == "missing_settlement": checkpoint["partial_cursor_settlement"]["state"] = "publishing"
+    elif field == "wrong_attempt": checkpoint["subset_ingest_attempt_id"] = "0" * 32
+    elif field == "wrong_readback": checkpoint["readback"]["observation"]["expected"] = 2
+    else: child["pipeline"]["source_results"]["colliers"]["whole_source_coverage"] = True
+    assert not series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+
+
+def test_mixed_reconciliation_and_rerun_preserve_partial_without_replay(tmp_path, monkeypatch):
+    settings = config(pipeline=True, sources=["cbre", "colliers"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = mixed_child(run)
+    child["config"] = series._expected_child_config("cbre,colliers", settings)
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert manifest["sources"]["colliers"]["state"] == "qualified_partial_subset"
+    assert manifest["sources"]["cbre"]["state"] == "complete"
+    assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 0
+    assert manifest["status"] == "qualified_partial_subset"
+    assert all(len(manifest["sources"][key]["attempts"]) == 1 for key in settings["sources"])
+    report = run / child["pipeline"]["units"][0]["validation_path"]
+    report.write_bytes(report.read_bytes() + b" ")
+    with pytest.raises(series.SeriesError, match="no longer qualifies"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+
+
+def test_source_health_keeps_partial_distinct_from_complete(tmp_path):
+    import cre_source_health as health
+
+    child = mixed_child(tmp_path / RUN_ID)
+    checkpoint = {"state": "qualified_partial_subset"}
+    observed = "2026-10-15T12:00:30Z"
+    assert health._qualified_subset_attempt(checkpoint, child, observed,
+        computed_at="2026-10-15T12:02:01Z", source_key="colliers")
+    assert health._publication_status(checkpoint, child, observed,
+        computed_at="2026-10-15T12:02:01Z", source_key="colliers") == "partial"
+    child["sources"]["colliers"]["readback"]["observation"]["generation_id"] = "other"
+    assert not health._qualified_subset_attempt(checkpoint, child, observed,
+        computed_at="2026-10-15T12:02:01Z", source_key="colliers")

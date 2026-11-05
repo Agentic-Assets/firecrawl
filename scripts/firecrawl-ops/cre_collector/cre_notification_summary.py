@@ -1059,6 +1059,14 @@ def verified_pipeline_summary(
             source_readback = checkpoint.get("readback")
             source_gate = checkpoint.get("gate")
             source_binding = source_gate.get("current_inventory_proof") if isinstance(source_gate, dict) else None
+            colliers_partial_candidate = (
+                source == "colliers" and (
+                    parent_entry.get("state") == "qualified_partial_subset"
+                    or (isinstance(source_artifact, dict) and source_artifact.get("colliers_partial") is True)
+                    or (isinstance(source_readback, dict) and source_readback.get("kind") == "colliers_partial_window")
+                    or (isinstance(source_binding, dict) and (
+                        source_binding.get("schema") == "colliers-partial-window-v1"
+                        or source_binding.get("scope") == "colliers_partial_window_v1"))))
             jll_partial_candidate = (
                 source == "jll-investor"
                 and (parent_entry.get("state") == "qualified_partial_subset"
@@ -1077,7 +1085,7 @@ def verified_pipeline_summary(
                 interrupted or ((jll_partial_candidate and parent_entry.get("state") in {"complete", "qualified_partial_subset"}
                     or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
-                    or jll_partial_candidate) else "complete"))
+                    or jll_partial_candidate or colliers_partial_candidate) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1132,6 +1140,42 @@ def verified_pipeline_summary(
             if source == "jll-investor" and "jll_partial_readback" in validated_units[unit_id]:
                 jll_partial_candidate = True
             checkpoint = checkpoints[source]
+            if source == "colliers" and "colliers_partial_readback" in validated_units[unit_id]:
+                colliers_partial_candidate = True
+            if colliers_partial_candidate:
+                from cre_checkpoint_series import _pipeline_member_report_matches, colliers_partial_child
+
+
+                binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+                artifact = checkpoint.get("artifact") or {}
+                readback = checkpoint.get("readback") or {}
+                count = binding.get("emitted_count")
+                proven = (checkpoint.get("state") == "ingested"
+                        and type((checkpoint.get("ingest") or {}).get("rc")) is int
+                        and checkpoint["ingest"]["rc"] == 0
+                        and parent_entry.get("state") == "qualified_partial_subset"
+                        and colliers_partial_child(child)
+                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and result.get("qualification") == "qualified_partial_subset"
+                        and result.get("partial") is True and result.get("whole_source_coverage") is False
+                        and type(count) is int and 0 <= count <= 500000
+                        and type(result.get("emitted_count")) is int and type(result.get("held_count")) is int
+                        and result.get("emitted_count") == count
+                        and result.get("held_count") == binding.get("held_count")
+                        and result.get("artifact_sha256") == artifact.get("sha256")
+                        and type(artifact.get("bytes")) is int and 0 < artifact["bytes"] <= MAX_ARTIFACT_BINDING_BYTES
+                        and readback.get("kind") == "colliers_partial_window")
+                if not proven:
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
+                summary = {"measurement": "generation_exact_verified_subset", "qualification": "qualified_partial_subset",
+                           "partial": True, "whole_source_coverage": False,
+                           "emitted_count": count, "held_count": binding["held_count"]}
+                breakdown = {"sale": count, "lease": 0, "both": 0,
+                             "measurement": "current_staged_inventory_transaction_types"}
+                qualified.append((source, count, checkpoint, unit, 0, summary, breakdown))
+                continue
             jll_summary = jll_breakdown = None
             if jll_partial_candidate:
                 from cre_checkpoint_series import _pipeline_member_report_matches, jll_partial_child

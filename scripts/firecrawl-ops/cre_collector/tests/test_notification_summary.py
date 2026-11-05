@@ -1593,6 +1593,66 @@ def test_interrupted_pipeline_keeps_every_settlement_and_unit_guard(evidence, fa
         read_pipeline(evidence)
 
 
+@pytest.mark.parametrize("tamper", [None, "generation", "held", "cursor", "target"])
+def test_pipeline_colliers_partial_summary_preserves_verified_peer(evidence, tamper):
+    setup = pipeline_evidence(evidence, primary_source="colliers")
+    parent, child = setup["parent"], setup["child"]
+    qualify_pipeline_second_source(evidence, setup)
+    source = "colliers"
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"] = target
+    child["scope"] = {"kind": "collector_registry_verified_subset", "whole_source_coverage": False}
+    artifact.update(colliers_partial=True, staged_unique=5, path="colliers-partial/window-1-artifact.json")
+    binding = {"schema": "colliers-partial-window-v1", "scope": "colliers_partial_window_v1",
+        "source_key": source, "artifact_sha256": artifact["sha256"], "generation_id": RUN,
+        "generation_started_at": child["started_at"], "producer_sha": SHA, "database_target_sha256": "d" * 64,
+        "staged_sha256": "e" * 64, "evidence_sha256": "1" * 64, "source_sha256": "2" * 64,
+        "source_main_sha256": "3" * 64, "preimage_sha256": "4" * 64, "attempt": 1,
+        "held": ["held"], "history_holds": {"unknown": "unknown history"}, "held_count": 2,
+        "emitted_count": 3, "cursor": 1, "next_cursor": 6,
+        "original_source_outcome": "source_error", "whole_source_coverage": False}
+    observed = {"ok": True, "outcome": "exact_commit", "artifact_sha256": artifact["sha256"],
+        "generation_id": RUN, "attempt_id": "f" * 32, "database_target_sha256": "d" * 64,
+        "expected": 3, "held": binding["held"], "history_holds": binding["history_holds"],
+        "staged_sha256": "e" * 64, "child_collections_verified": False}
+    checkpoint.update(gate={"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+        "admission_scope": "colliers_partial_window_v1", "current_inventory_proof": binding},
+        subset_ingest_attempt_id="f" * 32,
+        partial_cursor_settlement={"state": "settled", "attempt_id": "f" * 32, "cursor": 1,
+            "next_cursor": 6, "artifact_sha256": artifact["sha256"]},
+        readback={"ok": True, "kind": "colliers_partial_window", "whole_source_coverage": False, "observation": observed})
+    result = child["pipeline"]["source_results"][source]
+    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False,
+                  emitted_count=3, held_count=2)
+    parent["sources"][source]["state"] = "qualified_partial_subset"
+    validation_path = evidence["series"] / "runs" / RUN / "pipeline/unit-0001/validation.json"
+    validation = json.loads(validation_path.read_text())
+    validation["colliers_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(validation, separators=(",", ":")).encode()
+    validation_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    for key in (source, setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    if tamper == "generation": checkpoint["readback"]["observation"]["generation_id"] = "other"
+    elif tamper == "held": binding["held_count"] = 1
+    elif tamper == "cursor": checkpoint["partial_cursor_settlement"]["state"] = "publishing"
+    elif tamper == "target": binding["database_target_sha256"] = "0" * 64
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    assert result["complete"] is False
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert setup["source2"] in rows
+    if tamper is None:
+        assert rows[source]["partial"] is True and rows[source]["whole_source_coverage"] is False
+        assert rows[source]["verified_listings"] == 3 and rows[source]["held_count"] == 2
+    else:
+        assert source not in rows and source in result["unverifiable_source_keys"]
+
+
 def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(evidence):
     setup = pipeline_evidence(evidence, second_source="pyramid-brokerage")
     child = setup["child"]

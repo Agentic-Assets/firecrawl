@@ -368,6 +368,27 @@ def _load_child(
 
 
 def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, source_key=None):
+    if source_key == "colliers" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
+        from cre_checkpoint_series import _pipeline_member_report_matches, colliers_partial_child
+
+        try:
+            source = _source_checkpoint(child, source_key)
+            readback = _mapping(source.get("readback"))
+            bound = _mapping(readback.get("observation"))
+            start, observed, finished = (_parse_timestamp(value) for value in
+                (child.get("started_at"), observation, child.get("finished_at")))
+            return (colliers_partial_child(child) and child.get("status") == "qualified_partial_subset"
+                    and _mapping(child.get("scope")).get("whole_source_coverage") is False
+                    and source.get("state") == "ingested" and readback.get("ok") is True
+                    and readback.get("kind") == "colliers_partial_window"
+                    and bound.get("ok") is True and bound.get("outcome") == "exact_commit"
+                    and bound.get("generation_id") == child.get("run_id")
+                    and bound.get("attempt_id") == source.get("subset_ingest_attempt_id")
+                    and _pipeline_member_report_matches({"colliers_partial_readback": bound}, source, source_key, child["run_id"])
+                    and None not in (start, observed, finished) and start <= observed <= finished
+                    and _within_clock_skew(observation, computed_at))
+        except (KeyError, TypeError, ValueError):
+            return False
     if source_key == "jll-investor" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
         from cre_checkpoint_series import jll_partial_child
         try:
