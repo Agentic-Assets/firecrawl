@@ -11,11 +11,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from run_franklin_site_lifecycle_postgres import run
-from test_franklin_site_partial import mixed
-
 import cre_franklin_site_sql as partial
 from cre_franklin_site_partial import derive
+from run_franklin_site_lifecycle_postgres import run
+from test_franklin_site_partial import mixed
 
 
 def item(identity, slug, stamp, text):
