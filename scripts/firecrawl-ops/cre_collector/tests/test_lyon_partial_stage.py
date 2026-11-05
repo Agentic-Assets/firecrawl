@@ -50,3 +50,22 @@ def test_ambiguous_literal_urls_cannot_choose_a_winner():
     with pytest.raises(ValueError):
         identity_probe_sql([first, second, sibling])
     assert "sibling" in identity_probe_sql([sibling])
+
+
+def test_conflicting_optional_values_stay_in_evidence_and_do_not_override_columns():
+    item = record("https://lyonstahl.com/properties/example/", "property_path", "example")
+    item["occurrences"][0]["row"].update(title="First", latitude="34.1", longitude="-118.2")
+    item["occurrences"].append({**item["occurrences"][0], "filter": "sale", "row": {
+        "permalink": item["url"], "title": "Second", "latitude": "34.2", "longitude": "-118.2"}})
+    staged = stage_record(item)
+    assert staged["title"] is None
+    assert staged["lat"] is None and staged["lng"] is None
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == item
+
+
+def test_unrepresentable_optional_text_is_preserved_but_not_projected():
+    item = record("https://lyonstahl.com/properties/example/", "property_path", "example")
+    item["occurrences"][0]["row"]["title"] = "unsafe\x00value"
+    staged = stage_record(item)
+    assert staged["title"] is None
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == item
