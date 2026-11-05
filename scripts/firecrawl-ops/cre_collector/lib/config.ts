@@ -18,7 +18,7 @@ export const { values: flags } = parseArgs({
     "matthews-targeted-refresh": { type: "boolean" }, // caller-bound partial Matthews refresh
   },
 });
-const pageCapText = flags["page-cap"] ?? "60";
+const pageCapText = flags["page-cap"] ?? (flags.monitor ? "60" : "0");
 export const PAGE_CAP = Number(pageCapText);
 if (!/^\+?\d+$/.test(pageCapText) || !Number.isSafeInteger(PAGE_CAP) || PAGE_CAP < 0) {
   throw new Error("page-cap must be a nonnegative safe integer (0 means unlimited)");
