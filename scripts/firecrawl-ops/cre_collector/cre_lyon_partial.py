@@ -164,20 +164,9 @@ conflicts AS (
       WHERE n.value #>> '{{}}' IS DISTINCT FROM s.r->>'native_id'))
    OR (own.raw_data ? 'lyonSearchObservations' AND NOT COALESCE(
       jsonb_typeof(own.raw_data->'lyonSearchObservations')='object'
-      AND CASE WHEN jsonb_typeof(own.raw_data->'lyonSearchObservations')='object' THEN
-        ((own.raw_data->'lyonSearchObservations') - ARRAY['schema','sourceKey','externalId','entries'])='{{}}'::jsonb
-        ELSE false END
-      AND own.raw_data#>>'{{lyonSearchObservations,schema}}'='lyon-search-history/v1'
       AND own.raw_data#>>'{{lyonSearchObservations,sourceKey}}'='lyon-stahl'
       AND own.raw_data#>>'{{lyonSearchObservations,externalId}}'=s.r->>'external_id'
-      AND CASE WHEN jsonb_typeof(own.raw_data#>'{{lyonSearchObservations,entries}}')='array' THEN NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements(own.raw_data#>'{{lyonSearchObservations,entries}}') e(value)
-        WHERE CASE WHEN jsonb_typeof(e.value)='object' THEN
-           e.value - 'recordBase64' <> '{{}}'::jsonb
-           OR jsonb_typeof(e.value->'recordBase64') IS DISTINCT FROM 'string'
-           OR COALESCE(e.value->>'recordBase64','') !~ '^[A-Za-z0-9+/]+={{0,2}}$'
-           OR length(e.value->>'recordBase64') % 4 <> 0 ELSE true END)
-      ELSE false END, false))))
+      AND jsonb_typeof(own.raw_data#>'{{lyonSearchObservations,entries}}')='array', false))))
  OR (si.id IS NOT NULL AND (si.source_key IS DISTINCT FROM 'lyon-stahl' OR si.url IS DISTINCT FROM s.r->>'source_url'
       OR si.soft_deleted IS TRUE OR si.observation_present IS FALSE))
  OR EXISTS (SELECT 1 FROM credeals.cre_listings other WHERE other.brokerage_id=s.brokerage_id
@@ -276,18 +265,20 @@ UPDATE credeals.cre_listings t SET
      THEN (r->>'lng')::double precision ELSE t.lng END,
  raw_data=jsonb_set(t.raw_data,'{{lyonSearchObservations}}',
    CASE WHEN t.raw_data ? 'lyonSearchObservations' THEN
-     CASE WHEN (t.raw_data#>'{{lyonSearchObservations,entries}}') @> jsonb_build_array(jsonb_build_object('recordBase64',r->>'observation_base64'))
+     CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(t.raw_data#>'{{lyonSearchObservations,entries}}') old(value)
+                        WHERE jsonb_typeof(old.value)='object' AND old.value->>'recordBase64'=r->>'observation_base64')
        THEN t.raw_data->'lyonSearchObservations'
-       ELSE jsonb_set(t.raw_data->'lyonSearchObservations','{{entries}}', (t.raw_data#>'{{lyonSearchObservations,entries}}') || jsonb_build_array(jsonb_build_object('recordBase64',r->>'observation_base64'))) END
+       ELSE jsonb_set(t.raw_data->'lyonSearchObservations','{{entries}}', (t.raw_data#>'{{lyonSearchObservations,entries}}')
+         || jsonb_build_array(jsonb_build_object('schema','lyon-search-entry/v1','recordBase64',r->>'observation_base64'))) END
    ELSE jsonb_build_object('schema','lyon-search-history/v1','sourceKey','lyon-stahl','externalId',r->>'external_id',
-        'entries',jsonb_build_array(jsonb_build_object('recordBase64',r->>'observation_base64'))) END)
+        'entries',jsonb_build_array(jsonb_build_object('schema','lyon-search-entry/v1','recordBase64',r->>'observation_base64'))) END)
 FROM _lyon_rows s WHERE t.brokerage_id=s.brokerage_id AND t.external_id=r->>'external_id';
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,title,address,zip,lat,lng,raw_data)
 SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,NULL,r->>'title',r->>'address',r->>'zip',
  (r->>'lat')::double precision,(r->>'lng')::double precision,
  jsonb_build_object('sourceKey','lyon-stahl','id',r->>'external_id','lyonSearchObservations',
  jsonb_build_object('schema','lyon-search-history/v1','sourceKey','lyon-stahl','externalId',r->>'external_id',
- 'entries',jsonb_build_array(jsonb_build_object('recordBase64',r->>'observation_base64'))))
+ 'entries',jsonb_build_array(jsonb_build_object('schema','lyon-search-entry/v1','recordBase64',r->>'observation_base64'))))
 FROM _lyon_rows s WHERE NOT EXISTS (SELECT 1 FROM credeals.cre_listings t
  WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.r->>'external_id');
 COMMIT;
@@ -307,7 +298,7 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
     expected = []
     for row in staged:
         before = prior[row["external_id"]]
-        entry = {"recordBase64": row["observation_base64"]}
+        entry = {"schema": "lyon-search-entry/v1", "recordBase64": row["observation_base64"]}
         listing = before["listing"]
         if row["external_id"] in held:
             raw = None
@@ -322,7 +313,8 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
                 history = {"schema": "lyon-search-history/v1", "sourceKey": "lyon-stahl",
                            "externalId": row["external_id"], "entries": []}
                 raw["lyonSearchObservations"] = history
-            if entry not in history["entries"]:
+            if not any(isinstance(old, dict) and old.get("recordBase64") == row["observation_base64"]
+                       for old in history["entries"]):
                 history["entries"].append(entry)
         expected.append({"r": row, "p": before, "held": row["external_id"] in held, "raw": raw})
     payload = _payload(expected)

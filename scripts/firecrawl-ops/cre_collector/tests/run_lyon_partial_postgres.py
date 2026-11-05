@@ -130,6 +130,40 @@ SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE exte
         assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='peer-full'") == "Peer listing"
         assert json.loads(sql(identity_probe_sql([staged[0]])).split("|", 3)[2]) == ["legacy"]
         sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(after)) + "::jsonb WHERE external_id='legacy'")
+        # Unfamiliar but identity-bound history arrays are opaque. Preserve
+        # every existing value and metadata and append our versioned entry.
+        before_opaque = json.loads(sql("SELECT raw_data FROM credeals.cre_listings WHERE external_id='legacy'"))
+        opaque = {"schema": "future-history/v9", "sourceKey": "lyon-stahl", "externalId": "legacy",
+                  "extra": {"keep": True}, "entries": ["unknown", {"recordBase64": "not valid!", "extra": 7}, None]}
+        sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{lyonSearchObservations}', "
+            + ingest.sql_lit(json.dumps(opaque)) + "::jsonb) WHERE external_id='legacy'")
+        opaque_peer = stage_record(record("https://lyonstahl.com/properties/opaque-peer/", "property_path", "opaque-peer"))
+        mixed_stage = [staged[0], opaque_peer]
+        mixed_probe = sql(identity_probe_sql(mixed_stage)).split("|", 3)
+        mixed_held, mixed_prior = json.loads(mixed_probe[2]), json.loads(mixed_probe[3])
+        assert mixed_held == []
+        mixed_job = str(uuid.uuid4())
+        sql(build_partial_sql(mixed_stage, mixed_held, mixed_prior, mixed_job, start, finish))
+        assert sql(partial_readback_sql(mixed_stage, mixed_held, mixed_prior, mixed_job, start, finish)) == "1|2|0"
+        after_opaque = json.loads(sql("SELECT raw_data->'lyonSearchObservations' FROM credeals.cre_listings WHERE external_id='legacy'"))
+        assert {key: value for key, value in after_opaque.items() if key != "entries"} == {key: value for key, value in opaque.items() if key != "entries"}
+        assert after_opaque["entries"][:len(opaque["entries"])] == opaque["entries"]
+        assert after_opaque["entries"][-1] == {"schema": "lyon-search-entry/v1", "recordBase64": staged[0]["observation_base64"]}
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='opaque-peer'") == "1"
+        unsafe = {**opaque, "sourceKey": "different-source"}
+        sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{lyonSearchObservations}', "
+            + ingest.sql_lit(json.dumps(unsafe)) + "::jsonb) WHERE external_id='legacy'")
+        safe_peer = stage_record(record("https://lyonstahl.com/properties/safe-peer/", "property_path", "safe-peer"))
+        partition = [staged[0], safe_peer]
+        unsafe_probe = sql(identity_probe_sql(partition)).split("|", 3)
+        unsafe_held, unsafe_prior = json.loads(unsafe_probe[2]), json.loads(unsafe_probe[3])
+        assert unsafe_held == ["legacy"]
+        unsafe_job = str(uuid.uuid4())
+        sql(build_partial_sql(partition, unsafe_held, unsafe_prior, unsafe_job, start, finish))
+        assert sql(partial_readback_sql(partition, unsafe_held, unsafe_prior, unsafe_job, start, finish)) == "1|2|0"
+        assert json.loads(sql("SELECT raw_data->'lyonSearchObservations' FROM credeals.cre_listings WHERE external_id='legacy'")) == unsafe
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='safe-peer'") == "1"
+        sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(before_opaque)) + "::jsonb WHERE external_id='legacy'")
         sql("UPDATE credeals.cre_listings SET canonical_url='https://lyonstahl.com/properties/collision/' WHERE external_id='legacy'")
         collision = stage_record(record("https://lyonstahl.com/properties/collision/", "property_path", "collision"))
         assert json.loads(sql(identity_probe_sql([collision])).split("|", 3)[2]) == ["collision"]
