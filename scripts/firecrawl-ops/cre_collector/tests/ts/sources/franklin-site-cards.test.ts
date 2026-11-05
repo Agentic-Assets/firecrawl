@@ -37,11 +37,12 @@ test('refuses invalid input clocks and holds transaction mismatches', () => {
   assert.equal((projectFranklinSiteCards(html, '2026-11-04T12:00:00Z', 'sale').held[0] as any).reason, 'transaction_mismatch');
   assert.throws(() => projectFranklinSiteCards(html, 'invalid', 'sale'));
 });
-test('holds an oversized card without discarding its valid peer', () => {
+test('retains a card over 64 KiB and its valid peer', () => {
   const other = '87654321-4321-5432-8432-abcdefabcdef';
   const result = projectFranklinSiteCards(card(uuid, 'a') + card(other, 'b').replace('</article>', 'x'.repeat(65536) + '</article>'), '2026-11-04T12:00:00Z', 'sale');
-  assert.equal(result.listings.length, 1);
-  assert.equal((result.held[0] as any).reason, 'card_too_large');
+  assert.equal(result.listings.length, 2);
+  assert.equal(result.held.length, 0);
+  assert.ok((result.listings[1] as any).franklinSiteObservation.card.html.length > 65536);
 });
 
 test('holds both cards sharing a URL and retains their raw evidence alongside a valid peer', () => {

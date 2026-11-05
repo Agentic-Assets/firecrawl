@@ -171,12 +171,23 @@ def main():
         sql("UPDATE credeals.cre_listings SET canonical_url=source_url WHERE external_id=" + partial.sql_lit(first["id"]))
 
         sql("""UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{franklinSiteObservations}',
-                 (SELECT jsonb_agg((raw_data->'franklinSiteObservations'->-1) || jsonb_build_object('fixtureIndex', n)) FROM generate_series(1,128) AS n))
+                 (SELECT jsonb_agg(jsonb_set(raw_data->'franklinSiteObservations'->-1,
+                   '{card,html}', to_jsonb('distinct history ' || n))) FROM generate_series(1,128) AS n))
                WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';""")
-        over_limit = item(identity, "a", "2026-11-04T12:00:07Z", "new card past cap")
-        assert json.loads(sql(write_sql([over_limit], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
-        same_at_limit = item(identity, "a", "2026-11-04T12:00:07Z", "Subject to Offer")
+        over_limit = item(identity, "a", "2026-11-04T12:00:07Z", "new card past old cap")
+        assert json.loads(sql(write_sql([over_limit], [])).splitlines()[-1])["held"] == []
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "129"
+        same_at_limit = item(identity, "a", "2026-11-04T12:00:08Z", "new card past old cap")
         assert json.loads(sql(write_sql([same_at_limit], [])).splitlines()[-1])["held"] == []
+        next_change = item(identity, "a", "2026-11-04T12:00:09Z", "130th distinct card")
+        assert json.loads(sql(write_sql([next_change], [])).splitlines()[-1])["held"] == []
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "130"
+        larger = item("eeeeeeee-4444-5444-8444-444444444444", "large", "2026-11-04T12:00:09Z", "A" * 70000)
+        assert json.loads(sql(write_sql([larger], [])).splitlines()[-1])["held"] == []
+        assert sql("SELECT length(raw_data->'franklinSiteObservations'->0->'card'->>'html') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(larger["id"])) == "70000"
+        sizes = sql("SELECT pg_column_size(raw_data) || '/' || octet_length(raw_data::text) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"]))
+        large_size = sql("SELECT pg_column_size(raw_data) || '/' || octet_length(raw_data::text) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(larger["id"]))
+        print("Synthetic raw_data sizes (stored/uncompressed JSON bytes): 130 distinct observations", sizes, "; 70k repetitive card", large_size)
         assert sql("SELECT count(*) FROM credeals.cre_source_index;") == "0"
 
         raw, original_binding = mixed()

@@ -5,9 +5,9 @@ binds code, generation and target, and fences uncertain commits before calling
 this module. New rows use source-explicit ACTIVE status only; unknown status
 is stored as NULL and excluded from active views.
 
-At the observation limit, changed cards are held, not truncated. The caller must
-retain the exact source artifact as private evidence and report held IDs; durable
-overflow custody and reviewed access remain production activation gates.
+Each distinct changed card is retained in raw_data. Source page and artifact
+limits still bound each attempt; accumulating history grows the listing row.
+Durable long-term evidence custody and growth monitoring remain follow-up work.
 """
 import hashlib
 import json
@@ -27,8 +27,6 @@ from cre_ingest import (
 
 _ID = re.compile(r"franklin-site:(sale|lease):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\Z")
 _PATH = re.compile(r"/properties/for-(sale|lease)/[a-z0-9]+(?:[-a-z0-9]*[a-z0-9])?/?\Z")
-MAX_CARD_BYTES = 65536
-MAX_OBSERVATIONS = 128
 
 
 def stage(listings):
@@ -63,7 +61,6 @@ def stage(listings):
                 or not 1 <= len(item["franklinSiteGenerationId"]) <= 128
                 or not re.fullmatch(r"[0-9a-f]{64}", str(observed.get("decodedHtmlSha256", "")))
                 or not isinstance(card.get("html"), str)
-                or len(json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode()) > MAX_CARD_BYTES
                 or identity in ids or url in urls):
             raise ValueError("invalid Franklin site identity or observation")
         parse_strict_freshness_timestamp(observed["observedAt"], field="observedAt")
@@ -136,7 +133,7 @@ JOIN credeals.cre_brokerages b ON b.slug='franklin-street'"""
 
 
 def _held_query():
-    return f"""SELECT s.external_id FROM _franklin_site s
+    return """SELECT s.external_id FROM _franklin_site s
 LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
 WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS DISTINCT FROM s.source_url
  OR own.canonical_url IS DISTINCT FROM s.canonical_url
@@ -150,8 +147,7 @@ WHERE (own.id IS NOT NULL AND (own.deleted_at IS NOT NULL OR own.source_url IS D
            OR ((own.raw_data->>'franklinSiteLastObservedAt')::timestamptz
                     = (s.observation->>'observedAt')::timestamptz
                AND own.raw_data->'franklinSiteObservations'->-1->'card' IS DISTINCT FROM s.observation->'card')
-           OR (jsonb_array_length(own.raw_data->'franklinSiteObservations') >= {MAX_OBSERVATIONS}
-               AND own.raw_data->'franklinSiteObservations'->-1->'card' IS DISTINCT FROM s.observation->'card'))
+           )
          ELSE false END))
  OR EXISTS (SELECT 1 FROM credeals.cre_listings other
             WHERE other.brokerage_id=s.brokerage_id

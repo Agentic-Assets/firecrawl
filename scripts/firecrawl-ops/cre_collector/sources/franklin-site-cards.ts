@@ -19,8 +19,7 @@ function projectObservation(page: Observation) {
     const valid = urls.filter(href => href.startsWith(prefix) && /^\/properties\/for-(?:sale|lease)\/[a-z0-9]+(?:[-a-z0-9]*[a-z0-9])?\/?$/.test(href));
     const reason = !id || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id) ? 'invalid_id'
       : card.attributes['data-offer-type'] !== offer ? 'transaction_mismatch'
-      : valid.length !== 1 ? 'ambiguous_url'
-      : Buffer.byteLength(JSON.stringify(card), 'utf8') > 65536 ? 'card_too_large' : null;
+      : valid.length !== 1 ? 'ambiguous_url' : null;
     return { ordinal, id: id?.toLowerCase(), url: valid[0] ? new URL(valid[0], expectedPage).href : undefined, reason, card };
   });
   const duplicates = (key: 'id' | 'url') => {
