@@ -37,3 +37,9 @@ test('refuses invalid input clocks and holds transaction mismatches', () => {
   assert.equal((projectFranklinSiteCards(html, '2026-11-04T12:00:00Z', 'sale').held[0] as any).reason, 'transaction_mismatch');
   assert.throws(() => projectFranklinSiteCards(html, 'invalid', 'sale'));
 });
+test('holds an oversized card without discarding its valid peer', () => {
+  const other = '87654321-4321-5432-8432-abcdefabcdef';
+  const result = projectFranklinSiteCards(card(uuid, 'a') + card(other, 'b').replace('</article>', 'x'.repeat(65536) + '</article>'), '2026-11-04T12:00:00Z', 'sale');
+  assert.equal(result.listings.length, 1);
+  assert.equal((result.held[0] as any).reason, 'card_too_large');
+});

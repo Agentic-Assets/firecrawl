@@ -47,7 +47,7 @@ export function projectFranklinFailureArtifact(value: unknown, generationId: str
     if (observation.sourceUrl !== derived.sourceUrl || observation.decodedHtmlSha256 !== derived.decodedHtmlSha256
         || JSON.stringify(observation.cards) !== JSON.stringify(derived.cards)) throw new Error('Franklin page differs from retained bytes');
     const projected = projectFranklinSiteCards(observation.decodedHtml, observation.observedAt, tx);
-    listings.push(...projected.listings);
+    listings.push(...projected.listings.map(item => ({ ...object(item), franklinSiteGenerationId: generationId })));
     held.push(...projected.held.map(card => ({ transaction: tx, card })));
     pages.push({ transaction: tx, sourceUrl: derived.sourceUrl, observedAt: observation.observedAt,
       decodedHtmlSha256: derived.decodedHtmlSha256, observedCards: derived.cards.length });
