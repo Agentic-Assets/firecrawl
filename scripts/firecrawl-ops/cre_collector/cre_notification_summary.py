@@ -1421,7 +1421,7 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if source in {"lyon-stahl", "franklin-street"} and row.get("partial") is True:
+            if source in {"lyon-stahl", "franklin-street", "nai-global"} and row.get("partial") is True:
                 breakdown_reason = "source_membership_not_transaction_authority"
             elif jll_breakdown is not None:
                 breakdown = jll_breakdown
@@ -1521,7 +1521,7 @@ def verified_pipeline_summary(
             )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
-            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street"}:
+            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street", "nai-global"}:
                 require(breakdown is not None)
             result_rows.append(row)
         for descriptor, name, limit, raw in snapshots:
