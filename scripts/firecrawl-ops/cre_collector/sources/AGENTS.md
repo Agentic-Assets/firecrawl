@@ -1345,8 +1345,8 @@ per-square-foot fallback respects that currency basis for these new source
 facts; legacy records keep their existing behavior. This does not establish
 publisher UI visibility, source authorization, or full detail completeness.
 
-Franklin Street's full sale collection may retain one source-owned sale-page
-observation after a thrown Buildout sale failure. It preserves decoded HTML,
+Franklin Street's full collection may retain a transaction-bound source-owned
+sale or lease page observation after the corresponding Buildout pass fails. It preserves decoded HTML,
 card occurrences, parsed attributes and serialized card HTML with the page
 URL, observation time and SHA-256 of the decoded UTF-8 HTML. The 8 MiB page limit, HTTP/content-type
 checks and 15-second deadline bound acquisition; failed capture leaves the
