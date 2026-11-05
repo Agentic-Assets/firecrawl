@@ -19,7 +19,7 @@ def command(*args, cwd, env=None):
 
 
 @pytest.mark.parametrize(("detail_id", "expected_state", "expected_cursor"),
-                         [("a", "candidate", 1), ("different", "partial_held_no_write", 2)])
+                         [("a", "candidate", 1), ("different", "partial_held_no_write", 2), ("clock", "worker_failed", 1)])
 def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
@@ -69,6 +69,8 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
                 "started_at": "2026-11-04T15:00:00Z", "finished_at": "2026-11-04T16:00:00Z",
                 "bytes": len(source), "sha256": hashlib.sha256(source).hexdigest(), "main_sha256": "c" * 64,
                 "producer_sha": sha, "database_target_sha256": "b" * 64}
+            if detail_id == "clock":
+                source_receipt["finished_at"] = "2026-11-04T15:29:59Z"
             manifest = {"run_id": "gen", "started_at": source_receipt["generation_started_at"],
                 "collector_git_sha": sha, "collector_git_dirty": False,
                 "config": {"additive": True, "mark_missing": False, "status_activation": False,
@@ -84,9 +86,18 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
                 snapshots.append(copy.deepcopy(value))
             def runner(argv, _log, *, env):
                 child = subprocess.run(argv, cwd=target, env=env, capture_output=True, text=True, timeout=30, check=False)
-                assert child.returncode == 0, child.stderr
+                if detail_id == "clock":
+                    assert child.returncode != 0
+                    assert "source observation clock outside capture interval" in child.stderr
+                    assert "ProjectId" not in child.stderr and "authorityToken" not in child.stderr
+                else:
+                    assert child.returncode == 0, child.stderr
                 return child.returncode
             result = partial.run_window_worker(run_dir, manifest, lock, runner, save)
+            if detail_id == "clock":
+                assert result is None and not sentinel.exists()
+                assert manifest["sources"]["colliers"]["colliers_partial_worker"]["state"] == "failed"
+                return
             assert sentinel.read_text() == "fake"
             receipt = json.loads((partial_path(run_dir) / "window-1-receipt.json").read_text())
             assert receipt["admitted"] == (1 if detail_id == "a" else 0)

@@ -79,9 +79,37 @@ def revalidate_source_receipt(run_dir, manifest, attempt_number, current_code_sh
         raise ValueError("partial source directory changed")
     if any(probe["colliers_partial"].get(key) != state.get(key) for key in keys):
         raise ValueError("partial source receipt changed")
+
+    # Source page stamps and the rejected artifact use the same Node-process
+    # monotonic-anchored clock.  Preserve the coordinator finish separately:
+    # after a wall-clock step it can be slightly earlier than the child's
+    # genuine final observation even though the process already settled.
+    from source_evidence.automatic import _read_private
+
+    main = run_dir / main_rel
+    main_bytes = _read_private(main, main.lstat().st_size)
+    if hashlib.sha256(main_bytes).hexdigest() != state["main_sha256"]:
+        raise ValueError("partial source main artifact changed")
+    main_data = json.loads(main_bytes)
+    meta = main_data.get("runMeta") if isinstance(main_data, dict) else None
+    source_finish = attempt["finished_at"]
+    if isinstance(meta, dict) and meta.get("finishedAt") is not None:
+        child_finish = _time(meta["finishedAt"])
+        parent_finish = _time(attempt["finished_at"])
+        freshness = meta.get("freshness")
+        child_start = _time(meta.get("startedAt"))
+        if (not isinstance(freshness, dict)
+                or freshness.get("generationId") != run_dir.name
+                or _time(freshness.get("generationStartedAt")) != _time(manifest["started_at"])
+                or child_start < _time(attempt["started_at"]) or child_finish < child_start
+                or child_finish - parent_finish > timedelta(minutes=5)
+                or child_finish > datetime.now(UTC) + timedelta(minutes=5)):
+            raise ValueError("partial source clock discrepancy exceeds bound")
+        source_finish = meta["finishedAt"]
     return {key: state[key] for key in keys} | {
         "generation": run_dir.name, "generation_started_at": manifest["started_at"], "attempt": attempt_number,
-        "started_at": attempt["started_at"], "finished_at": attempt["finished_at"],
+        "started_at": attempt["started_at"], "finished_at": source_finish,
+        "coordinator_finished_at": attempt["finished_at"],
         "producer_sha": current_code_sha, "database_target_sha256": target["value"],
     }
 
@@ -148,7 +176,7 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
             or len(data["listings"]) + data["held"] != evidence_receipt["records"]
             or evidence_receipt["records"] + data["unattempted"] != data["selected"]):
         raise ValueError("partial worker counts differ")
-    if not (_time(binding["finishedAt"]) <= _time(data["detailFinishedAt"]) <= datetime.now(UTC) + timedelta(minutes=5)):
+    if not (_time(binding["startedAt"]) <= _time(data["detailFinishedAt"]) <= datetime.now(UTC) + timedelta(minutes=5)):
         raise ValueError("partial worker finish invalid")
     records = unpack_window_records(data)
     # Source replay can emit physical pages out of cursor order. Preserve the

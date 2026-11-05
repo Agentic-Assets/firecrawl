@@ -530,6 +530,12 @@ The optional `DaumSubsetPolicy = 'tenure-and-empty-title-v2'` forwards that
 reviewed policy; omission retains the launcher's existing default. The subset
 remains partial and does not establish whole-source coverage.
 
+A failed Colliers source attempt can process one rotating partial window of up
+to 100 eligible cards. Its authenticated cursor advances only after a settled
+commit and verified readback; later attempts resume from that cursor. Other
+cards remain outside that window, so the outcome remains partial and does not
+establish inventory coverage. Detail requests retain the existing serial pacing.
+
 The installer accepts explicit series-only `Concurrency = 1..6` and forwards
 it through the fixed action. If omitted, action bytes are unchanged and inherit
 concurrency **1**. An explicit positive `AttemptsPerSource` is forwarded for a

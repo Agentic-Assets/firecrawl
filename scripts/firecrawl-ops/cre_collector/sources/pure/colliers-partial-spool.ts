@@ -58,8 +58,10 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
     const observedMs = typeof row?.observedAt === "string" ? Date.parse(row.observedAt) : NaN;
     if (!row || row.transaction !== "sale" || row.pass !== 1 || !Number.isSafeInteger(row.page) || row.page < 1 ||
         !Number.isSafeInteger(row.start) || row.start < 1 ||
-        !Number.isFinite(observedMs) || new Date(observedMs).toISOString() !== row.observedAt ||
-        observedMs < startMs || observedMs > endMs) throw new Error("invalid spool observation");
+        !Number.isFinite(observedMs) || new Date(observedMs).toISOString() !== row.observedAt)
+      throw new Error("invalid spool observation");
+    if (observedMs < startMs || observedMs > endMs)
+      throw new Error("partial source observation clock outside capture interval");
     if (row.kind === "unqualified_response_pair") {
       if (pending && !failureOnlyPair(pending)) heldPages++;
       pending = row; return;

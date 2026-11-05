@@ -23,7 +23,7 @@ export async function deriveColliersPartialDetail(page: Page, source: any, decod
       !/^[0-9a-f]{64}$/.test(source.nativeSha256)) throw new Error("partial source binding differs");
   const inventoryAt = Date.parse(source.inventoryObservedAt), detailAt = Date.parse(source.detailObservedAt);
   const start = Date.parse(binding.startedAt), finish = Date.parse(binding.finishedAt), detailFinish = Date.parse(binding.detailFinishedAt);
-  if (![inventoryAt, detailAt, start, finish, detailFinish].every(Number.isFinite) || inventoryAt < start || inventoryAt > finish || detailAt < finish || detailAt > detailFinish || detailFinish > Date.now() + 5 * 60_000)
+  if (![inventoryAt, detailAt, start, finish, detailFinish].every(Number.isFinite) || inventoryAt < start || inventoryAt > finish || detailAt < start || detailAt > detailFinish || detailFinish > Date.now() + 5 * 60_000)
     throw new Error("partial observation clock differs");
   const identities = replayColliersPage(page, total, available);
   const identity = identities[source.offset];

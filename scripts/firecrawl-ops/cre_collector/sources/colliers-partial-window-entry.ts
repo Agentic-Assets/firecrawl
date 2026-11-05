@@ -90,4 +90,10 @@ async function main() {
       producerSha: request.producerSha, targetSha256: request.targetSha256, ...result });
 }
 
-main().catch(() => { process.stderr.write("Colliers partial worker failed; inspect private checkpoint state.\n"); process.exitCode = 1; });
+main().catch(error => {
+  // Only fixed, non-sensitive classifications cross the private worker log.
+  const category = error instanceof Error && error.message === "partial source observation clock outside capture interval"
+    ? "source observation clock outside capture interval" : "unclassified";
+  process.stderr.write(`Colliers partial worker failed (${category}); inspect private checkpoint state.\n`);
+  process.exitCode = 1;
+});
