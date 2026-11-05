@@ -1,28 +1,20 @@
-"""Actual guarded Marcus CLI against the caller's disposable PostgreSQL."""
-import copy
+"""Coordinator, guarded Marcus CLI and readback on disposable PostgreSQL."""
 import hashlib
 import json
 import os
-import shlex
-import subprocess
-import sys
 import tempfile
-import uuid
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 import cre_checkpoint_refresh as refresh
 import cre_ingest as ingest
-from cre_marcus_inventory_checkpoint import admit_inventory, ingest_subset_context, run_replay_worker
-from cre_marcus_inventory import exact_json
-from cre_marcus_inventory_db import identity_probe_sql, partial_readback_sql
+from cre_marcus_inventory_checkpoint import run_replay_worker
 from tests.test_marcus_inventory import listing
 
 
 def run_cli_contract(sql, container_name):
-    """Bind synthetic source/gate evidence, run the shipped CLI and read back."""
+    """Exercise real gates, coordinator ingest and readback from synthetic source."""
     with tempfile.TemporaryDirectory(prefix="marcus-cli-contract-") as temporary:
         root = Path(temporary)
         run_dir = root / "generation"
@@ -38,7 +30,7 @@ def run_cli_contract(sql, container_name):
         child_finish = (now - timedelta(seconds=1)).isoformat()
         code_sha, dirty = refresh.git_identity()
         if dirty or not code_sha:
-            raise RuntimeError("CLI fixture requires a clean exact-head checkout")
+            raise RuntimeError("coordinator fixture requires a clean exact-head checkout")
         db_url = "postgresql://postgres:synthetic-only@localhost/postgres"
         target = ingest.database_target_fingerprint_from_url(db_url)["value"]
         manifest = refresh.new_manifest(run_dir, git_sha=code_sha, git_dirty=False,
@@ -61,65 +53,39 @@ def run_cli_contract(sql, container_name):
                    "rejected_artifact_sha256": hashlib.sha256(original.read_bytes()).hexdigest()}
         checkpoint = manifest["sources"]["marcus-millichap"]
         checkpoint["attempts"] = [attempt]
+        env_file = root / "synthetic.env"
+        env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
+        env_file.chmod(0o600)
+        shim = root / "psql"
+        shim.write_text("#!/usr/bin/env python3\n" +
+            "import os,sys\n" +
+            "args=sys.argv[1:]\n" +
+            "if '-f' in args and args[args.index('-f')+1] != '-':\n" +
+            " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n" +
+            "os.execvp('docker',['docker','exec','-i'," + repr(container_name) + ",'psql','-U','postgres',*args])\n",
+            encoding="utf8")
+        shim.chmod(0o700)
+        env = {"PATH": os.environ["PATH"], "HOME": str(root), "PSQL_BIN": str(shim)}
         lock_path = root / "lock"
-        with patch.object(refresh, "canonical_shared_lock_dir", return_value=lock_path), refresh.SharedLock(lock_path) as owner:
-            candidate = run_replay_worker(run_dir, manifest, owner, lambda *_: None)
+        with patch.object(refresh, "canonical_shared_lock_dir", return_value=lock_path), \
+             patch.object(ingest, "find_psql", return_value=str(shim)), \
+             patch.object(refresh, "safe_process_env", return_value=env), refresh.SharedLock(lock_path) as owner:
+            candidate = run_replay_worker(run_dir, manifest, owner, refresh.save_manifest)
             stats = refresh._validate_source_artifact_local(candidate, "marcus-millichap", child_start,
                 expected_generation_id=run_dir.name, expected_generation_started_at=generation_start)
-            checkpoint["artifact"] = {**stats, "path": str(candidate.relative_to(run_dir))}
-            from cre_marcus_inventory_checkpoint import verify_candidate_artifact
-            verified = verify_candidate_artifact(candidate, manifest, current_code_sha=code_sha, current_git_dirty=False)
-            source, staged = verified["source"], verified["staged"]
-            probe_data = sql(identity_probe_sql(staged, source["generation"], source["started_at"], source["finished_at"])).split("|", 3)
-            assert probe_data[:2] == ["1", "1"]
-            held, preimage = json.loads(probe_data[2]), json.loads(probe_data[3], parse_float=Decimal)
-            assert held == []
-            encoded = exact_json(preimage).encode("ascii")
-            preimage_path = run_dir / "marcus-millichap-partial" / "preimage-1-0123456789abcdef.json"
-            preimage_path.write_bytes(encoded)
-            preimage_path.chmod(0o600)
-            staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-            checkpoint["marcus_inventory_probe"] = {"artifact_sha256": verified["sha256"], "generation_id": run_dir.name,
-                "producer_sha": code_sha, "database_target_sha256": target, "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(),
-                "held": held, "preimage_path": str(preimage_path.relative_to(run_dir)), "preimage_bytes": len(encoded),
-                "preimage_sha256": hashlib.sha256(encoded).hexdigest()}
-            report = {"generated_for_artifact": str(candidate), "summary": {"mode": "live", "torow_errors": 0,
-                "baseline_updated": False, "baseline_update_sources": [], "hold_sources": ["marcus-millichap"],
-                "mark_missing_safe_sources": [], "mark_missing_safe_brokerages": [], "verdict_counts": {}},
-                "per_source": {"marcus-millichap": {"verdict": "first_seen",
-                "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
-                "mark_missing_safe": False, "current_active": 1}}}
-            aggregate = copy.deepcopy(report)
-            binding = admit_inventory(candidate, manifest, report, current_code_sha=code_sha, current_git_dirty=False, phase="source")
-            checkpoint["gate"] = copy.deepcopy(report["per_source"]["marcus-millichap"])
-            assert admit_inventory(candidate, manifest, aggregate, current_code_sha=code_sha,
-                                   current_git_dirty=False, phase="aggregate") == binding
-            attempt_id = uuid.uuid4().hex
-            envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
-                        "binding": binding, "attempt_id": attempt_id}
-            context = ingest_subset_context(candidate, envelope, current_code_sha=code_sha, current_git_dirty=False,
-                                            expected_database_target_sha256=target, attempt_id=attempt_id)
-            claims = run_dir / "marcus-millichap-partial" / "claims.json"
-            claims.write_text(json.dumps(envelope), encoding="utf8")
-            claims.chmod(0o600)
-            env_file = root / "synthetic.env"
-            env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
-            env_file.chmod(0o600)
-            shim = root / "psql"
-            shim.write_text("#!/bin/sh\nexec docker exec -i " + shlex.quote(container_name) +
-                            " psql -U postgres \"$@\"\n", encoding="utf8")
-            shim.chmod(0o700)
-            env = {"PATH": os.environ["PATH"], "HOME": str(root), "PSQL_BIN": str(shim)}
-            cli = subprocess.run([sys.executable, str(HERE / "cre_ingest.py"), "--in", str(candidate),
-                "--marcus-inventory-claims", str(claims), "--require-strict-freshness", "--env-file", str(env_file),
-                "--expected-db-target-sha256", target, "--checkpoint-ingest-attempt", attempt_id],
-                cwd=HERE, env=env, text=True, capture_output=True, timeout=120)
-            if cli.returncode:
-                raise RuntimeError("synthetic Marcus guarded CLI failed: " + cli.stderr[-4000:])
-            readback = partial_readback_sql(context["staged"], context["held"], context["preimage"], context["source"], context["job_id"])
-            assert sql(readback) == "1|1|0"
+            checkpoint["artifact"] = {**stats, "path": str(candidate.relative_to(run_dir)), "attempt_started_at": child_start}
+            checkpoint["state"] = "validated"
+            refresh.gate_source(run_dir, manifest, "marcus-millichap", candidate, str(env_file))
+            assert checkpoint["gate"]["verdict"] == "ok_additive_verified_subset"
+            assert checkpoint["gate"]["mark_missing_safe"] is False
+            refresh.run_aggregate_gate(run_dir, manifest, str(env_file), sources=("marcus-millichap",))
+            refresh.ingest_source(run_dir, manifest, "marcus-millichap", candidate, str(env_file))
+            assert checkpoint["state"] == "ingested" and checkpoint["ingest"]["rc"] == 0
+            observed_result = refresh.marcus_inventory_readback(run_dir, manifest, str(env_file))
+            assert observed_result["ok"] is True and observed_result["outcome"] == "exact_commit"
+            assert observed_result["detail_qualified"] == 0 and observed_result["whole_source_coverage"] is False
+            readback = refresh.verify_validation_readback(run_dir, manifest,
+                {"queries": {}, "marcus_inventory_readback": observed_result}, sources=("marcus-millichap",))
+            assert readback["ok"] is True and checkpoint["readback"]["kind"] == "marcus_inventory_partial"
             assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='301' AND status IS NULL AND scraped_at IS NULL") == "1"
-            print("Marcus actual guarded CLI -> disposable PostgreSQL -> exact readback PASS")
-
-
-HERE = Path(__file__).resolve().parents[1]
+            print("Marcus real source/aggregate gates -> owned coordinator CLI -> bound readback PASS")
