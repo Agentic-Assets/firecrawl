@@ -219,6 +219,7 @@ def stage_detail_record(item, generation, attempt, started_at, finished_at, arti
 # Bound the additional per-listing member, not pre-existing parent raw_data.
 # Overflow is a held record; the sealed private evidence remains available.
 MAX_NATIVE_HISTORY_BYTES = 4 * 1024 * 1024
+MAX_HISTORY_PROBE_BYTES = 16 * 1024 * 1024
 NATIVE_HISTORY_KEY = "colliersNativeObservations"
 
 
@@ -334,12 +335,23 @@ def identity_probe_sql(staged):
     payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
     return f"""
 WITH candidate AS (
- SELECT * FROM jsonb_to_recordset({payload}::jsonb)
+ SELECT x.ordinality AS input_order, c.* FROM jsonb_array_elements({payload}::jsonb) WITH ORDINALITY AS x(value,ordinality)
+ CROSS JOIN LATERAL jsonb_to_record(x.value)
  AS c(slug text, external_id text, source_url text, canonical_url text, transaction_type text,
       inventory_at timestamptz, detail_at timestamptz)
 ), scoped AS (
  SELECT b.id AS brokerage_id, c.* FROM candidate c
  JOIN credeals.cre_brokerages b ON b.slug=c.slug AND b.slug='colliers'
+), history_sizes AS (
+ SELECT s.external_id,s.input_order,
+   CASE WHEN jsonb_typeof(own.raw_data)='object' AND own.raw_data ? 'colliersNativeObservations'
+     THEN octet_length((own.raw_data->'colliersNativeObservations')::text) ELSE 0 END AS size
+ FROM scoped s LEFT JOIN credeals.cre_listings own
+   ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
+), history_budget AS (
+ SELECT external_id,size,sum(CASE WHEN size <= {MAX_NATIVE_HISTORY_BYTES} THEN size ELSE 0 END)
+   OVER (ORDER BY input_order ROWS UNBOUNDED PRECEDING) AS cumulative
+ FROM history_sizes
 ), conflicts AS (
  SELECT DISTINCT s.external_id FROM scoped s
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
@@ -377,12 +389,19 @@ SELECT (SELECT count(*) FROM candidate) AS staged, (SELECT count(*) FROM scoped)
  COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.external_id,
    'listing', CASE WHEN own.id IS NULL THEN NULL ELSE jsonb_build_object('id',own.id,'source_url',own.source_url,
      'canonical_url',own.canonical_url,'status',own.status,'deleted_at',own.deleted_at,'scraped_at',own.scraped_at,'updated_at',own.updated_at,
-     'raw_data',own.raw_data) END,
+     'raw_data_sha256',encode(sha256(convert_to(COALESCE(own.raw_data::text,''),'UTF8')),'hex'),
+     'raw_data_is_object',jsonb_typeof(own.raw_data)='object',
+     'native_history_present',COALESCE(own.raw_data ? 'colliersNativeObservations',false),
+     'native_history_size',hb.size,
+     'native_history_available',(hb.size = 0 OR (hb.size <= {MAX_NATIVE_HISTORY_BYTES} AND hb.cumulative <= {MAX_HISTORY_PROBE_BYTES})),
+     'native_history',CASE WHEN (hb.size = 0 OR (hb.size <= {MAX_NATIVE_HISTORY_BYTES} AND hb.cumulative <= {MAX_HISTORY_PROBE_BYTES}))
+       THEN own.raw_data->'colliersNativeObservations' ELSE NULL END) END,
    'source_index', CASE WHEN si.id IS NULL THEN NULL ELSE jsonb_build_object('id',si.id,'source_key',si.source_key,'url',si.url,
      'soft_deleted',si.soft_deleted,'observation_present',si.observation_present,'last_enumerated_at',si.last_enumerated_at) END)
    ORDER BY s.external_id) FROM scoped s
    LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
-   LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id), '[]'::jsonb) AS preimage
+   LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
+   JOIN history_budget hb ON hb.external_id=s.external_id), '[]'::jsonb) AS preimage
 """
 
 
@@ -475,10 +494,20 @@ def build_partial_sql(items, staged, held, preimage, generation, attempt, starte
         seen.add(external_id)
         row = to_row(item["listing"], {}, artifact_finished_at)
         parent = prior[external_id].get("listing")
-        raw_before = {} if parent is None else parent.get("raw_data")
         history = None
         if external_id not in held:
             try:
+                if parent is not None and parent.get("raw_data_is_object") is not True:
+                    raise PartialHistoryHold("prior raw_data is unknown")
+                if parent is not None and parent.get("native_history_available") is not True:
+                    if type(parent.get("native_history_size")) is not int:
+                        raise PartialHistoryHold("prior native history size is unknown")
+                    if parent["native_history_size"] > MAX_NATIVE_HISTORY_BYTES:
+                        raise PartialHistoryHold("prior native history exceeds per-row bound")
+                    raise PartialHistoryHold("prior native history deferred by probe budget")
+                raw_before = {}
+                if parent is not None and parent.get("native_history_present") is True:
+                    raw_before[NATIVE_HISTORY_KEY] = parent.get("native_history")
                 history = merge_native_observation(raw_before, item, generation, attempt, started_at, finished_at)
             except PartialHistoryHold as exc:
                 history_held[external_id] = str(exc)
@@ -629,8 +658,36 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
         if set(payload) != {"source", "decodedDetail", "nativeBase64"}:
             raise TypeError("partial worker record invalid")
         records.append({"listing": {key: value for key, value in listing.items() if key != "colliersPartialRecord"}, **payload})
+    # Source replay can emit physical pages out of cursor order. Preserve the
+    # producer's rotation order for bounded DB history selection.
+    records.sort(key=lambda item: (
+        item["source"]["start"] + item["source"]["offset"] < data["cursor"],
+        item["source"]["start"] + item["source"]["offset"],
+    ))
     staged = [stage_detail_record(item, binding["generation"], binding["attempt"], binding["startedAt"],
                                    binding["finishedAt"], data["detailFinishedAt"]) for item in records]
     if staged:
         _validate_staged(staged)
     return staged
+
+
+def cursor_after_database_holds(data, history_holds):
+    """Resume at the first budget-deferred row; other holds remain explicit."""
+    if not isinstance(history_holds, dict) or not isinstance(data, dict):
+        raise TypeError("partial cursor partition invalid")
+    cursor = data["cursor"]
+    records = data["listings"]
+    if type(cursor) is not int or cursor < 1 or not isinstance(records, list):
+        raise ValueError("partial cursor partition invalid")
+    ids = [item.get("id") for item in records if isinstance(item, dict)]
+    if len(ids) != len(records) or len(set(ids)) != len(ids) or not set(history_holds) <= set(ids):
+        raise ValueError("partial cursor identities differ")
+    ordered = sorted(records, key=lambda item: (
+        item["colliersPartialRecord"]["source"]["start"] + item["colliersPartialRecord"]["source"]["offset"] < cursor,
+        item["colliersPartialRecord"]["source"]["start"] + item["colliersPartialRecord"]["source"]["offset"],
+    ))
+    for listing in ordered:
+        if history_holds.get(listing.get("id")) == "prior native history deferred by probe budget":
+            source = listing["colliersPartialRecord"]["source"]
+            return source["start"] + source["offset"]
+    return data["proposedCursor"]

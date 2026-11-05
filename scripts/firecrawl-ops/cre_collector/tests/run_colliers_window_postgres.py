@@ -12,6 +12,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+import cre_colliers_partial as partial
 import cre_ingest as ingest
 from cre_colliers_partial import (
     build_partial_sql,
@@ -135,6 +136,40 @@ def main():
         assert not holds
         sql(next_sql)
         assert sql("SELECT jsonb_array_length(raw_data#>'{colliersNativeObservations,entries}') FROM credeals.cre_listings WHERE external_id='43';") == "1"
+        # A bounded history probe holds a large existing member but admits a new peer.
+        sql("ALTER TABLE credeals.cre_listings DISABLE TRIGGER trg_cre_listings_updated_at; UPDATE credeals.cre_listings SET updated_at='2026-11-04T16:02:00Z' WHERE external_id='43'; ALTER TABLE credeals.cre_listings ENABLE TRIGGER trg_cre_listings_updated_at;")
+        bounded_peer = copy.deepcopy(second)
+        bounded_peer["decodedDetail"] = json.dumps({"ProjectSummary": {"ProjectId": "47"}})
+        bounded_peer["nativeBase64"] = base64.b64encode(bounded_peer["decodedDetail"].encode()).decode()
+        bounded_peer["source"].update(mapProjectId="47",
+            decodedDetailSha256=hashlib.sha256(bounded_peer["decodedDetail"].encode()).hexdigest(),
+            nativeSha256=hashlib.sha256(bounded_peer["decodedDetail"].encode()).hexdigest(),
+            detailTokenSha256=hashlib.sha256(b"bounded").hexdigest())
+        bounded_peer["listing"].update(id="47", url=url.replace("fixture", "bounded"),
+            colliersSalesTrackerDetail={"projectId": "47"},
+            colliersPartialEvidence={"schema": "colliers-partial-detail-v1", **bounded_peer["source"]})
+        bounded_items = [second, bounded_peer]
+        bounded_staged = [stage_detail_record(item, "gen", 1, "2026-11-04T15:00:00Z",
+                          "2026-11-04T16:00:00Z", "2026-11-04T16:04:00Z") for item in bounded_items]
+        prior43 = sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='43';")
+        old_limit = partial.MAX_HISTORY_PROBE_BYTES
+        try:
+            partial.MAX_HISTORY_PROBE_BYTES = 1
+            bounded_probe = sql(identity_probe_sql(bounded_staged)).split("|", 3)
+            bounded_preimage = json.loads(bounded_probe[3])
+            prior = next(row["listing"] for row in bounded_preimage if row["external_id"] == "43")
+            assert prior["native_history_available"] is False and prior["native_history"] is None
+            assert "raw_data" not in prior and len(prior["raw_data_sha256"]) == 64
+            bounded_sql, bounded_holds = build_partial_sql(bounded_items, bounded_staged, json.loads(bounded_probe[2]),
+                bounded_preimage, "gen", 1, "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z",
+                "2026-11-04T16:04:00Z", str(uuid.uuid4()))
+            assert list(bounded_holds) == ["43"]
+            sql(bounded_sql)
+        finally:
+            partial.MAX_HISTORY_PROBE_BYTES = old_limit
+        assert sql("SELECT row_to_json(t)::text FROM credeals.cre_listings t WHERE external_id='43';") == prior43
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='47' AND status IS NULL;") == "1"
+
         # An unrecognized reserved member holds just that identity, not a valid peer.
         unknown_old = {**old, "id": "44", "url": url.replace("fixture", "unknown")}
         sql(ingest.build_sql([ingest.to_row(unknown_old, {}, "2026-11-04T14:00:00Z")],

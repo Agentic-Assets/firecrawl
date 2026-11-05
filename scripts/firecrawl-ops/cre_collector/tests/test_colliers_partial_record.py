@@ -149,7 +149,10 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     assert fixture["rows"][0]["listing"]["city"] == "Native City"
     assert fixture["rows"][0]["listing"]["units"] == 10
 
-    from cre_colliers_partial import validate_window_artifact
+    from cre_colliers_partial import (
+        cursor_after_database_holds,
+        validate_window_artifact,
+    )
 
     artifact = json.loads((tmp_path / "artifact").read_text())
     source = artifact["source"]
@@ -158,6 +161,8 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
                "main_sha256": "c" * 64, "producer_sha": "a" * 40, "database_target_sha256": "b" * 64}
     result = validate_window_artifact(artifact, receipt, artifact["evidence"])
     assert result == [staged]
+    assert cursor_after_database_holds(artifact, {"native-e2e": "prior native history deferred by probe budget"}) == 1
+    assert cursor_after_database_holds(artifact, {"native-e2e": "prior native history exceeds per-row bound"}) == artifact["proposedCursor"]
     from cre_gate import count_artifacts
 
     counts, errors, observed, _, rejected = count_artifacts([str(tmp_path / "artifact")], True)
