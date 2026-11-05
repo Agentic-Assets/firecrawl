@@ -173,6 +173,11 @@ This rule does not admit first-seen writes or
 authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With
+an archive/sitemap mismatch, the source fails and carries parsed archive rows,
+sitemap URLs, discrepancy sets, observation clocks and response-text hashes as
+private unqualified evidence. This retains neither raw response bodies nor
+detail records and does not admit any listing or establish complete coverage.
+With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;
 Essex's explicit source-bound current-inventory admission requires two matching
 complete current/closed/sitemap reconciliations and every fresh current detail.

@@ -10,6 +10,7 @@ import {
   withPerformanceSource,
 } from "../../../lib/performance.js";
 import {
+  fetchEssexInventory,
   createEssexTransport,
   essexAssetUrl,
   mapEssexDetail,
@@ -124,6 +125,26 @@ test("Essex archive rejects malformed totals, identities, statuses, and shells",
     () => parseEssexArchive("<html>verify you are human</html>", "current"),
     /error shell/
   );
+});
+
+test("Essex discrepancy retains parsed source evidence while refusing completion", async () => {
+  const current = archive([card("present", "ON MARKET"), card("archive-only", "UNDER CONTRACT")]);
+  const closed = archive([card("closed", "CLOSED")]);
+  const sitemap = `<urlset><url><loc>https://essexrealtygroup.com/properties/present/</loc></url><url><loc>https://essexrealtygroup.com/properties/closed/</loc></url><url><loc>https://essexrealtygroup.com/properties/sitemap-only/</loc></url></urlset>`;
+  const responses = [current, closed, sitemap];
+  await assert.rejects(fetchEssexInventory({ getText: async () => responses.shift()! }), (error: any) => {
+    assert.match(error.message, /reconciliation failed/);
+    const evidence = error.retainedObservations[0];
+    assert.equal(evidence.schema, "essex-inventory-mismatch-v1");
+    assert.equal(evidence.coverage, "partial_unknown");
+    assert.deepEqual(evidence.archiveOnly, ["https://essexrealtygroup.com/properties/archive-only/"]);
+    assert.deepEqual(evidence.sitemapOnly, ["https://essexrealtygroup.com/properties/sitemap-only/"]);
+    assert.equal(evidence.pass.current.rows.length, 2);
+    assert.equal(evidence.pass.closed.rows.length, 1);
+    assert.equal(evidence.pass.sitemap.urls.length, 3);
+    assert.match(evidence.pass.current.responseTextSha256, /^[a-f0-9]{64}$/);
+    return true;
+  });
 });
 
 test("Essex sitemap reconciliation proves 43 current + 713 closed = 756", () => {

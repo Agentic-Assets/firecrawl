@@ -1,4 +1,5 @@
 import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import {
@@ -48,6 +49,12 @@ const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").d
 let completedProof: { key: string; proof: EssexCurrentInventoryProof } | undefined;
 
 class EssexResponseLimitError extends Error {}
+
+class EssexInventoryMismatchError extends Error {
+  constructor(message: string, readonly archiveOnly: string[], readonly sitemapOnly: string[]) {
+    super(message);
+  }
+}
 
 function essexRequestRole(url: string): DirectProviderRequestRole {
   if (url === ESSEX_LISTINGS_URL) return "current_archive";
@@ -347,10 +354,11 @@ export function reconcileEssexInventory(
     || missingFromSitemap.length
     || missingFromArchives.length
   ) {
-    throw new Error(
+    throw new EssexInventoryMismatchError(
       `Essex archive/sitemap reconciliation failed `
       + `(archives=${union.size}, sitemap=${sitemap.size}, `
-      + `archive_only=${missingFromSitemap.length}, sitemap_only=${missingFromArchives.length})`
+      + `archive_only=${missingFromSitemap.length}, sitemap_only=${missingFromArchives.length})`,
+      missingFromSitemap.sort(), missingFromArchives.sort()
     );
   }
   return {
@@ -396,7 +404,20 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
     sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
   };
   pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
-  return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
+  try {
+    return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
+  } catch (error) {
+    if (!(error instanceof EssexInventoryMismatchError)) throw error;
+    throw new RetainedSourceError(error, [{
+      schema: "essex-inventory-mismatch-v1",
+      coverage: "partial_unknown",
+      generationId: refreshGenerationId(),
+      generationStartedAt: refreshStartedAt(),
+      pass,
+      archiveOnly: error.archiveOnly,
+      sitemapOnly: error.sitemapOnly,
+    }]);
+  }
 }
 
 function labeledDetailValue($: cheerio.CheerioAPI, label: RegExp): string | null {
