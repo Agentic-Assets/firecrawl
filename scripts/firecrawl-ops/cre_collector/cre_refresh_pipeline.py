@@ -526,6 +526,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
         refresh.save_manifest(run_dir, manifest)
         return False
+    except refresh.MarcusInventoryProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "marcus-millichap" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("Marcus held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     except refresh.LyonPartialProbeHold:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "lyon-stahl" or refresh.git_identity() != (binding["collector_git_sha"], False)
@@ -833,7 +843,8 @@ def run_database_unit(
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
                 or refresh.colliers_partial_candidate(manifest, source)
                 or refresh.franklin_partial_candidate(manifest, source)
-                or refresh.lyon_partial_candidate(manifest, source)):
+                or refresh.lyon_partial_candidate(manifest, source)
+                or refresh.marcus_inventory_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -1263,6 +1274,25 @@ def run_bounded_pipeline(
                             checkpoint["state"] = "artifact_rejected"
                             checkpoint["attempts"][-1]["error"] = str(exc)
                             archive_failed_candidate(run_dir, manifest, source)
+                            if (source == "marcus-millichap" and checkpoint["attempts"][-1].get("rc") == 0
+                                    and checkpoint["attempts"][-1].get("error") ==
+                                    "marcus-millichap/sale freshness metric detailErrors must be zero"):
+                                from cre_marcus_inventory_checkpoint import run_replay_worker
+                                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                                candidate_path = run_replay_worker(run_dir, manifest, owner, refresh.save_manifest)
+                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                                if candidate_path is not None:
+                                    if not prepare_candidate(run_dir, manifest, source):
+                                        raise refresh.GlobalStageError("Marcus inventory candidate validation failed")
+                                    prepared.append(source)
+                                    continue
+                                if checkpoint.get("state") == "partial_held_no_write":
+                                    terminal_source_holds.add(source)
+                                    checkpoint["pipeline_stage"] = "failed"
+                                    state["source_results"][source] = {"state": "failed", "partial": True,
+                                        "reason": "inventory identity held; no listing writes"}
+                                    continue
                             partial = checkpoint["attempts"][-1].get("colliers_partial") or {}
                             if (source == "colliers" and partial.get("state") == "sealed_local"
                                     and partial.get("outcome") == "source_error"):

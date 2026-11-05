@@ -149,10 +149,75 @@ def lyon_partial_child(child: Mapping[str, Any]) -> bool:
 
 
 
+def marcus_inventory_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only the source-bound inventory subset and DB partition."""
+    try:
+        checkpoint = child["sources"]["marcus-millichap"]
+        artifact, gate = checkpoint["artifact"], checkpoint["gate"]
+        binding, worker, probe = gate["current_inventory_proof"], checkpoint["marcus_inventory_worker"], checkpoint["marcus_inventory_probe"]
+        held, attempt = binding["held"], checkpoint["subset_ingest_attempt_id"]
+        attempts = checkpoint["attempts"]
+        source_attempt = attempts[-1]
+        return (child["config"].get("pipeline") is True
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and isinstance(child.get("started_at"), str) and bool(child["started_at"])
+                and isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[a-f0-9]{40}", child["collector_git_sha"])
+                and artifact.get("marcus_inventory_partial") is True and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False and gate.get("admission_scope") == "marcus_inventory_partial_v1"
+                and binding.get("schema") == "marcus-inventory-partial-v1" and binding.get("scope") == "marcus_inventory_partial_v1"
+                and binding.get("source_key") == "marcus-millichap"
+                and binding.get("original_source_outcome") == "detail_freshness_rejected"
+                and binding.get("whole_source_coverage") is False
+                and type(binding.get("detail_qualified")) is int and binding["detail_qualified"] == 0
+                and type(binding.get("detail_errors")) is int and binding["detail_errors"] > 0
+                and binding.get("artifact_sha256") == artifact.get("sha256") == worker.get("sha256") == probe.get("artifact_sha256")
+                and binding.get("generation_id") == child.get("run_id") == probe.get("generation_id")
+                and binding.get("generation_started_at") == child.get("started_at")
+                and binding.get("producer_sha") == child.get("collector_git_sha") == probe.get("producer_sha")
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"] == probe.get("database_target_sha256")
+                and binding.get("staged_sha256") == probe.get("staged_sha256")
+                and binding.get("preimage_sha256") == probe.get("preimage_sha256")
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                        for key in ("artifact_sha256", "database_target_sha256", "staged_sha256", "source_sha256", "preimage_sha256"))
+                and type(binding.get("attempt")) is int and binding["attempt"] > 0
+                and source_attempt.get("number") == binding["attempt"] and type(source_attempt.get("rc")) is int
+                and source_attempt["rc"] == 0 and source_attempt.get("finished_at")
+                and source_attempt.get("error") == "marcus-millichap/sale freshness metric detailErrors must be zero"
+                and source_attempt.get("rejected_artifact") == f"rejected/marcus-millichap-attempt-{binding['attempt']}.json"
+                and source_attempt.get("rejected_artifact_sha256") == binding["source_sha256"]
+                and artifact.get("path") == f"marcus-millichap-partial/candidate-{binding['attempt']}.json"
+                and worker.get("state") == "settled" and worker.get("attempt") == binding["attempt"]
+                and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
+                and isinstance(held, list) and all(isinstance(value, str) and value for value in held)
+                and held == sorted(set(held)) and _exact_json_equal(held, probe.get("held"))
+                and type(binding.get("held_count")) is int and binding["held_count"] >= len(held)
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 0
+                and type(artifact.get("staged_unique")) is int and artifact["staged_unique"] > 0
+                and artifact["staged_unique"] == binding["emitted_count"] + len(held))
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return False
+
 def partial_member_report_matches(report: dict, checkpoint: dict, source: str, run_id: str) -> bool | None:
     """Return None when this source-specific partial proof does not apply."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "marcus-millichap" and artifact.get("marcus_inventory_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("marcus_inventory_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "marcus_inventory_partial"
+                and readback.get("whole_source_coverage") is False
+                and observed.get("ok") is True and observed.get("outcome") == "exact_commit"
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                and observed.get("staged_sha256") == binding.get("staged_sha256")
+                and _exact_json_equal(observed.get("held"), binding.get("held"))
+                and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count")
+                and type(observed.get("detail_qualified")) is int and observed["detail_qualified"] == 0
+                and observed.get("whole_source_coverage") is False and observed.get("child_collections_verified") is True)
     if source == "franklin-street" and artifact.get("franklin_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("franklin_partial_readback")

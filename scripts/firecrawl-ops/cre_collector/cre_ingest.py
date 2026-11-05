@@ -5236,6 +5236,18 @@ DO $$ BEGIN
     AND s.raw_data ? 'colliersNativeObservations')
  THEN RAISE EXCEPTION 'Colliers native evidence key collision'; END IF;
 END $$;
+-- Preserve Marcus source-native inventory evidence across later full refreshes.
+CREATE TEMP TABLE _marcus_inventory_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'marcusInventoryObservations' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='marcus-millichap' AND jsonb_typeof(t.raw_data)='object'
+ AND t.raw_data ? 'marcusInventoryObservations';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='marcus-millichap'
+            AND s.raw_data ? 'marcusInventoryObservations')
+ THEN RAISE EXCEPTION 'Marcus inventory evidence key collision'; END IF;
+END $$;
 -- Preserve private Lyon search history when an ordinary full source upsert
 -- refreshes raw_data. Existing evidence is opaque; incoming collisions refuse.
 CREATE TEMP TABLE _lyon_search_prior ON COMMIT DROP AS
@@ -5731,6 +5743,15 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('lyonSearchObservations',p.evidence)
 FROM _lyon_search_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _marcus_inventory_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'Marcus inventory evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('marcusInventoryObservations',p.evidence)
+FROM _marcus_inventory_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
@@ -7649,6 +7670,7 @@ def main():
     ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--lyon-partial-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--marcus-inventory-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
@@ -7701,6 +7723,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.marcus_inventory_claims:
+        try:
+            from cre_marcus_inventory_checkpoint import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing Marcus inventory partial ingest: {exc}")
+        return
     if args.franklin_site_claims and args.lyon_partial_claims:
         sys.exit("refusing mixed Franklin and Lyon partial claims")
     if args.franklin_site_claims:
@@ -7910,6 +7939,8 @@ def main():
             require_canonical_artifact(data)
         except ValueError as exc:
             sys.exit(str(exc))
+        if data.get("schema") == "marcus-inventory-partial/v1":
+            sys.exit("refusing Marcus inventory partial without guarded checkpoint admission")
         is_lyon_partial = data.get("schema") == "lyon-search-partial/v1"
         if is_lyon_partial != (lyon_partial_claims is not None):
             sys.exit("refusing Lyon partial artifact without guarded checkpoint admission")
