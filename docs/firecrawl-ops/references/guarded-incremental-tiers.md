@@ -491,6 +491,13 @@ user is logged out, and catchup does not prove Docker or API readiness.
 can collide with another CRE task; the shared owner must refuse overlapping
 work, not force-clear a lock or promise a queued retry.
 
+Run the installer from the **operational native launcher checkout**, for both
+preview and registration. The installer derives both the task's launcher path
+and working directory from its own location; invoking the copy in
+`firecrawl-dev` would bind the task to the development checkout. On this
+workstation the operational checkout is `$env:USERPROFILE\GitHub\firecrawl`;
+use the actual reviewed native checkout on other installations.
+
 Preview an exact source and reviewed, deployed SHA from PowerShell:
 
 ```powershell
@@ -507,10 +514,28 @@ $taskOptions = @{
 # Optional, after provisioning the private channel webhook file:
 # $taskOptions.AlertWebhookFile = (Join-Path $env:USERPROFILE '.config\cre\cre-pipeline.webhook')
 # $taskOptions.NotificationMode = 'StartFinish'
-& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions
+$nativeRoot = Join-Path $env:USERPROFILE 'GitHub\firecrawl'
+$installer = Join-Path $nativeRoot 'scripts\firecrawl-ops\cre_collector\windows\Install-CreScheduledTask.ps1'
+& $installer @taskOptions
 ```
 
-Preview starts no task, WSL, provider or database work. `DailyAt` accepts one
+Preview starts no task, WSL, provider or database work. Inspect its action and
+confirm that the `-File` launcher is in the operational native checkout and
+`WorkingDirectory` is its root before using the same installer for registration.
+After registration or an action change, read back both paths and the task state:
+
+```powershell
+$task = Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName $taskOptions.TaskName -ErrorAction Stop
+$task.Actions | Format-List Execute, Arguments, WorkingDirectory
+$task | Get-ScheduledTaskInfo | Format-List LastRunTime, LastTaskResult, NextRunTime
+Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' | Format-Table TaskName, State
+```
+
+Compare the launcher path and working directory with the reviewed operational
+root, and check the full CRE fleet, enabled states and pins through the
+[reviewed updater procedure](development-and-runtime-checkouts.md).
+A registration readback or a task's Ready state does not establish a successful
+pipeline run. `DailyAt` accepts one
 to four distinct local `HH:mm` values in a single comma-separated string.
 Add `WeeklyOn = 'Saturday'` and use, for example, `DailyAt = '03:00'` for a
 weekly task. A task can select one `Source`, or a finite comma-separated
@@ -536,6 +561,17 @@ commit and verified readback; later attempts resume from that cursor. Other
 cards remain outside that window, so the outcome remains partial and does not
 establish inventory coverage. Detail requests retain the existing serial pacing.
 
+A separate optional task named `Colliers Partial Refresh` can select
+`Tier = 'series'`, `Source = 'colliers'` and `Pipeline = $true` with the
+installer's explicit work budget and deployed SHA. The reviewed fleet updater
+discovers this exact singleton task and includes it in hold, pin and restore.
+Choose its existing daily triggers around the rest of the CRE fleet. It shares
+the same writer lock: a conflicting task is refused, not queued, and a missed
+or refused start does not count as progress. Each successful partial attempt
+uses a newly observed source; rotating positions across changed source results
+do not prove exhaustive coverage. Creating or enabling a task remains a
+separate operator action; preview does not register it.
+
 The installer accepts explicit series-only `Concurrency = 1..6` and forwards
 it through the fixed action. If omitted, action bytes are unchanged and inherit
 concurrency **1**. An explicit positive `AttemptsPerSource` is forwarded for a
@@ -550,7 +586,7 @@ planned/disabled registry scope on
 Then register a disabled task and read back its complete definition:
 
 ```powershell
-& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions -Register
+& $installer @taskOptions -Register
 ```
 
 Run the exact disabled task's action as a supervised pilot at a settled owner

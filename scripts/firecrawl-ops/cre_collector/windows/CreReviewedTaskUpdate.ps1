@@ -223,6 +223,12 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'daum-commercial' -or
            $daumFlag -ne 1 -or @($argv|Where-Object {$_ -iin @('-Pipeline','-AdmitCurrentInventorySource','-AdmitCurrentInventorySources','-AdmitBaselineHoldAdditively')}).Count -ne 0) {throw 'DAUM subset task scope differs'}
     }
+    elseif($Row.key -ceq 'colliers-partial') {
+        $allowedColliers=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-Pipeline','-SourceWorkers','-AttemptsPerSource','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedColliers) {throw 'Unsupported Colliers partial task argument'}}
+        if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'colliers' -or
+           -not $currentArguments.seen.ContainsKey('-Pipeline') -or 'colliers' -cnotin @($Release.supported_sources)) {throw 'Colliers partial task scope differs'}
+    }
     elseif($Row.key -ceq 'qualified') {
         if($single -ne 0 -or $many -ne 1 -or -not $Release.qualified_sources -or
            (Get-CreReviewedArgument $argv '-Sources') -cne [string]$Release.qualified_sources -or
@@ -261,6 +267,7 @@ function Assert-CreReviewedFleetRowSet([object[]]$Rows) {
     foreach($row in $Rows) {
         $key=[string]$row.key
         if($key -ceq 'daum-subset') {$name='DAUM Verified Subset'}
+        elseif($key -ceq 'colliers-partial') {$name='Colliers Partial Refresh'}
         elseif($key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {$name='Enrichment - '+$Matches[1]}
         elseif($expected.ContainsKey($key)) {$name=$expected[$key]}
         else {throw 'Unexpected task identity'}
@@ -277,6 +284,9 @@ function Add-CreReviewedOptionalTasks($Release) {
         if($identity -ceq '\Agentic Assets\CRE\DAUM Verified Subset') {
             if('daum-commercial' -cnotin @($Release.supported_sources)) {throw 'Unsupported DAUM source'}
             $rows+=@{key='daum-subset';task_path='\Agentic Assets\CRE\';task_name='DAUM Verified Subset'}
+        } elseif($identity -ceq '\Agentic Assets\CRE\Colliers Partial Refresh') {
+            if('colliers' -cnotin @($Release.supported_sources)) {throw 'Unsupported Colliers source'}
+            $rows+=@{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Colliers Partial Refresh'}
         } elseif($identity -cmatch '^\\Agentic Assets\\CRE\\Enrichment - ([a-z0-9]+(?:-[a-z0-9]+)*)$') {
             $source=$Matches[1]
             if($source -cnotin @($Release.supported_sources)) {throw 'Unsupported enrichment source'}

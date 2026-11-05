@@ -106,6 +106,12 @@ if ($PSBoundParameters.ContainsKey('DaumSubsetPolicy') -and -not $AdmitDaumVerif
     throw '-DaumSubsetPolicy requires DAUM subset admission.'
 }
 
+if ($TaskName -ceq 'Colliers Partial Refresh' -and
+    ($Tier -cne 'series' -or $Source -cne 'colliers' -or $Sources -or -not $Pipeline -or
+     $selectedAdmissionKeys.Count -ne 0 -or $AdmitDaumVerifiedSubset)) {
+    throw 'Colliers partial task requires a singleton Colliers pipeline series without other admissions.'
+}
+
 if ($ExpectedSha -cnotmatch '^[0-9a-f]{40}\z') { throw 'ExpectedSha must be a full lowercase commit SHA.' }
 if ($Enable -and -not $Register) { throw '-Enable requires -Register; existing tasks are never changed.' }
 $Tier = $Tier.ToLowerInvariant()
