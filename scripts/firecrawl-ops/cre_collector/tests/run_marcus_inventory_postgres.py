@@ -1,6 +1,8 @@
 """Real-schema Marcus inventory proof in disposable, networkless PostgreSQL."""
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -20,7 +22,18 @@ def run(*args, text=None, check=True):
 
 
 def main():
-    name = "marcus-inventory-" + uuid.uuid4().hex[:12]
+    name = os.environ.get("MARCUS_TEST_CONTAINER") or "marcus-inventory-" + uuid.uuid4().hex[:12]
+    if not re.fullmatch(r"marcus-inventory-[a-f0-9]{12}", name):
+        raise ValueError("invalid disposable PostgreSQL name")
+
+    def terminate(_signum, _frame):
+        raise KeyboardInterrupt("disposable PostgreSQL proof interrupted")
+
+    signal.signal(signal.SIGTERM, terminate)
+    cpu = os.environ.get("MARCUS_TEST_CPU")
+    if cpu is not None and not re.fullmatch(r"[0-9]+", cpu):
+        raise ValueError("invalid disposable PostgreSQL CPU")
+    cpu_args = ["--cpuset-cpus=" + cpu] if cpu is not None else []
 
     def sql(query, check=True):
         result = run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
@@ -31,7 +44,7 @@ def main():
 
     try:
         run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--network=none", "--cpus=0.5",
-            "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+            *cpu_args, "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
             "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
         for _ in range(100):
             logs = run("docker", "logs", name, check=False)
