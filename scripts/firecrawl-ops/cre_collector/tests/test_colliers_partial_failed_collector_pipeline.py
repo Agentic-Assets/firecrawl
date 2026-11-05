@@ -105,6 +105,8 @@ globalThis.fetch = async (input) => {
                     if interruption == "unknown_write":
                         checkpoint["state"] = "ingesting"
                         raise RuntimeError("synthetic unknown write")
+                    if interruption == "unknown_settlement":
+                        raise refresh.ProcessCleanupUnknown("synthetic unsettled worker")
                     raise KeyboardInterrupt("synthetic interruption")
                 checkpoint["readback"] = {"ok": True}
                 if journal:
@@ -136,7 +138,8 @@ globalThis.fetch = async (input) => {
                 probes = []
                 monkeypatch.setattr(pipeline, "reconcile_pipeline_ingests",
                     lambda *args, **kwargs: probes.append(kwargs.get("probe_allowed")))
-                expected_error = RuntimeError if interruption == "unknown_write" else KeyboardInterrupt
+                expected_error = (RuntimeError if interruption == "unknown_write" else
+                                  refresh.ProcessCleanupUnknown if interruption == "unknown_settlement" else KeyboardInterrupt)
                 with pytest.raises(expected_error):
                     pipeline.run_bounded_pipeline(run_dir, manifest, ("colliers",), page_cap=3,
                         concurrency=1, attempts_this_run=1, env_file=None, source_workers=1,
@@ -148,6 +151,9 @@ globalThis.fetch = async (input) => {
                 assert manifest["pipeline"]["commit_outcome_unknown"] is (interruption == "unknown_write")
                 if interruption == "unknown_write":
                     assert checkpoint["state"] == "ingesting"
+                    assert "partial_window_terminal" not in checkpoint
+                elif interruption == "unknown_settlement":
+                    assert probes == [False]
                     assert "partial_window_terminal" not in checkpoint
                 else:
                     assert probes == [False]
@@ -205,7 +211,7 @@ def test_real_pipeline_keeps_committed_window_on_settled_access_stop(tmp_path, m
     test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, False, journal=True, access_stop=True)
 
 
-@pytest.mark.parametrize("interruption", ["unknown_write", "interrupt"])
+@pytest.mark.parametrize("interruption", ["unknown_write", "unknown_settlement", "interrupt"])
 def test_later_window_interruption_fences_recovery(tmp_path, monkeypatch, interruption):
     test_evidence_only_collector_failure_reaches_partial_pipeline(
         tmp_path, monkeypatch, False, journal=True, interruption=interruption)
