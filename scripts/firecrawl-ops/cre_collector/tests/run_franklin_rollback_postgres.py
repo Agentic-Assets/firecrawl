@@ -8,10 +8,10 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path[:0] = [str(ROOT), str(HERE)]
-from test_franklin_rollback_evidence import case
-from run_franklin_partial_e2e_postgres import disposable_cluster
 from cre_franklin_rollback_evidence import snapshot_sql
 from cre_ingest import psql_connection_env
+from run_franklin_partial_e2e_postgres import disposable_cluster
+from test_franklin_rollback_evidence import case
 
 
 def main():

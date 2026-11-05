@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import UTC
 from pathlib import Path
 
 ERROR = "Franklin expected scalar postimage differs"
@@ -34,7 +35,7 @@ def classify(*, binding, expected_sql_sha, sql, log, snapshot):
     if not re.fullmatch(r"ingest:v1:[0-9a-f]{64}", binding["artifact_run_key"]):
         raise ValueError("Franklin artifact key invalid")
     if not isinstance(sql, str) or not isinstance(log, str):
-        raise ValueError("Franklin evidence invalid")
+        raise TypeError("Franklin evidence invalid")
     digest = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     if digest != expected_sql_sha:
         raise ValueError("Franklin SQL differs")
@@ -45,10 +46,14 @@ def classify(*, binding, expected_sql_sha, sql, log, snapshot):
     if len(begin) != 1 or len(commit) != 1 or len(guards) != 1 or not begin[0] < guards[0] < commit[0]:
         raise ValueError("Franklin transaction scope differs")
     # psql reports the closing line of the DO statement, not the RAISE line.
-    matches = re.findall(r"^psql:<stdin>:(\d+): ERROR:  Franklin expected scalar postimage differs$", log, re.M)
-    if (len(matches) != 1 or int(matches[0]) != guards[0] + 1
-            or len(re.findall(r"^psql:<stdin>:\d+: ERROR:", log, re.M)) != 1
-            or not re.search(r"(?m)^\[[^\n]+\] rc=1$", log)
+    matches = re.findall(r"^psql:<stdin>:(\d+): ERROR:  Franklin expected scalar postimage differs$", log, re.MULTILINE)
+    results = list(re.finditer(r"(?m)^\[[^\n]+\] rc=(\d+)$", log))
+    error_position = log.find("psql:<stdin>:")
+    if (len(results) != 1 or results[0].group(1) != "1"
+            or results[0].start() <= error_position or log[results[0].end():].strip()
+            or len(matches) != 1 or int(matches[0]) != guards[0] + 1
+            or len(re.findall(r"^psql:<stdin>:\d+: ERROR:", log, re.MULTILINE)) != 1
+
             or "--franklin-site-claims " not in log
             or "--checkpoint-ingest-attempt " + binding["attempt_id"] not in log
             or "--expected-db-target-sha256 " + binding["target_sha256"] not in log):
@@ -178,11 +183,13 @@ def authenticated_report(run_dir, env_file):
     if ingest.get("attempt_id") != attempt:
         raise ValueError("Franklin ingest attempt differs")
     artifact = run_dir / source["artifact"]["path"]
+    if not artifact.is_absolute() or artifact.resolve() != artifact or not artifact.is_relative_to(run_dir):
+        raise ValueError("Franklin artifact path differs")
     artifact_raw = _private_file(artifact, 64 * 1024 * 1024)
     if hashlib.sha256(artifact_raw).hexdigest() != source["artifact"]["sha256"]:
         raise ValueError("Franklin artifact differs")
     claims_path = Path(source["franklin_partial_claims"]["path"])
-    if not claims_path.is_absolute() or not claims_path.is_relative_to(run_dir):
+    if not claims_path.is_absolute() or claims_path.resolve() != claims_path or not claims_path.is_relative_to(run_dir):
         raise ValueError("Franklin claims path differs")
     claims_raw = _private_file(claims_path, 64 * 1024 * 1024)
     if hashlib.sha256(claims_raw).hexdigest() != source["franklin_partial_claims"]["sha256"]:
@@ -199,29 +206,30 @@ def authenticated_report(run_dir, env_file):
     if context["sql_binding"]["generation_id"] != binding["generation_id"]:
         raise ValueError("Franklin generation differs")
     log_path = run_dir / ingest["log"]
+    if not log_path.is_absolute() or log_path.resolve() != log_path or not log_path.is_relative_to(run_dir):
+        raise ValueError("Franklin log path differs")
     log_raw = _private_file(log_path, 2 * 1024 * 1024, public_read=True)
     import shlex
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     lines = log_raw.decode("utf-8").splitlines()
     commands = [line.split("] command: ", 1)[1] for line in lines if "] command: " in line]
     if len(commands) != 1:
         raise ValueError("Franklin ingest command ambiguous")
     argv = shlex.split(commands[0])
-    def option(name, value, *, multiple=False):
-        values = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == name]
-        return bool(values) and all(item == value for item in values) and (multiple or len(values) == 1)
-    if (len(argv) < 2 or Path(argv[1]).name != "cre_ingest.py"
-            or not option("--in", str(artifact))
-            or not option("--franklin-site-claims", str(claims_path))
-            or not option("--checkpoint-ingest-attempt", attempt)
-            or not option("--expected-db-target-sha256", target, multiple=True)
-            or "--mark-missing" in argv or "--activate-status" in argv
-            or "--require-strict-freshness" not in argv):
+    expected_argv = [
+        "/usr/bin/python3", "cre_ingest.py", "--in", str(artifact),
+        "--skip-post-commit-summary", "--require-strict-freshness",
+        "--env-file", env_file, "--expected-db-target-sha256", target,
+        "--franklin-site-claims", str(claims_path),
+        "--checkpoint-ingest-attempt", attempt,
+        "--expected-db-target-sha256", target,
+    ]
+    if argv != expected_argv:
         raise ValueError("Franklin ingest command differs")
-    snapshot_started = datetime.now(timezone.utc).isoformat()
+    snapshot_started = datetime.now(UTC).isoformat()
     snapshot = query_snapshot(binding, env_file)
-    snapshot_finished = datetime.now(timezone.utc).isoformat()
+    snapshot_finished = datetime.now(UTC).isoformat()
     report = classify(binding=binding, expected_sql_sha=source["dry_run"]["sql"]["sha256"],
         sql=sql, log=log_raw.decode("utf-8"), snapshot=snapshot)
     # Recheck every locally observed boundary after the remote read.
