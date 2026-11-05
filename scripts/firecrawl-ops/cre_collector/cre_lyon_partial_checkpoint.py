@@ -298,3 +298,78 @@ def verify_candidate_artifact(artifact_path, manifest, *, current_code_sha, curr
     staged = validate_candidate(data, source, manifest["started_at"])
     return {"run_dir": run_dir, "path": path, "checkpoint": checkpoint, "info": info, "source": source,
             "data": data, "staged": staged, "attempt": attempt}
+
+
+def load_probe_preimage(run_dir, attempt, probe):
+    relative = probe.get("preimage_path") if isinstance(probe, dict) else None
+    if not isinstance(relative, str) or not re.fullmatch(rf"lyon-stahl-partial/preimage-{attempt}-[a-f0-9]{{16}}\.json", relative):
+        raise ValueError("Lyon preimage path invalid")
+    size = probe.get("preimage_bytes")
+    if type(size) is not int or size < 1:
+        raise ValueError("Lyon preimage size invalid")
+    raw = _read_private_file(Path(run_dir) / relative, size)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != probe.get("preimage_sha256"):
+        raise ValueError("Lyon preimage changed")
+    preimage = json.loads(raw)
+    if not isinstance(preimage, list):
+        raise ValueError("Lyon preimage invalid")
+    return preimage
+
+
+def run_identity_probe(artifact_path, manifest, env_file):
+    """Classify source identities against the bound target without writing."""
+    import secrets
+
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_lyon_partial import _validate_partition, identity_probe_sql
+    from cre_stop_guarded_tier import _safe_stat
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    producer, dirty = git_identity()
+    if dirty or producer != manifest.get("collector_git_sha"):
+        raise ValueError("Lyon probe code changed")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=dirty)
+    source, staged = verified["source"], verified["staged"]
+    target = source["database_target_sha256"]
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("Lyon probe target changed")
+    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS
+           + "\n" + identity_probe_sql(staged) + ";\nROLLBACK;\n")
+    result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
+    if result.returncode:
+        raise RuntimeError("Lyon identity probe failed")
+    parsed = parse_tsv(result.stdout)
+    if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
+            or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
+        raise ValueError("Lyon probe result differs")
+    held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
+    _validate_partition(staged, held, preimage)
+    current_url, _ = load_db_url(env_file)
+    after = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
+    if (database_target_fingerprint_from_url(current_url).get("value") != target
+            or git_identity() != (producer, False) or after["source"] != source or after["staged"] != staged):
+        raise ValueError("Lyon probe input or target changed")
+    encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    number = source["attempt"]
+    name = f"preimage-{number}-{secrets.token_hex(8)}.json"
+    directory = os.open(verified["run_dir"] / "lyon-stahl-partial", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(directory, directory=True, private=True)
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            os.fsync(directory)
+    finally:
+        os.close(directory)
+    return {"artifact_sha256": verified["info"]["sha256"], "generation_id": source["generation"],
+            "producer_sha": producer, "database_target_sha256": target,
+            "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(), "held": held,
+            "preimage_path": f"lyon-stahl-partial/{name}", "preimage_bytes": len(encoded),
+            "preimage_sha256": hashlib.sha256(encoded).hexdigest()}

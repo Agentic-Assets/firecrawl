@@ -2,12 +2,13 @@
 import hashlib
 import json
 import tempfile
+from types import SimpleNamespace
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact
+from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact, run_identity_probe, load_probe_preimage
 from cre_partial_page_custody import prepare, settle
 from cre_stop_guarded_tier import StopRefused
 from tests.test_lyon_search_replay import spool
@@ -108,6 +109,19 @@ class LyonCheckpointTests(unittest.TestCase):
                 checkpoint["artifact"] = {**stats, "path": str(path.relative_to(root))}
                 verified = verify_candidate_artifact(path, manifest, current_code_sha="a" * 40, current_git_dirty=False)
                 self.assertEqual(len(verified["staged"]), 1)
+                import cre_ingest as ingest
+                import cre_validate
+                preimage = [{"external_id": "example", "listing": None, "source_index": None, "children": {}}]
+                output = chr(9).join(["staged", "joined", "held", "preimage"]) + chr(10)
+                output += chr(9).join(["1", "1", "[]", json.dumps(preimage)]) + chr(10)
+                result = SimpleNamespace(returncode=0, stdout=output)
+                with patch.object(ingest, "load_db_url", return_value=("synthetic", None)),                      patch.object(ingest, "database_target_fingerprint_from_url", return_value={"value": "b" * 64}),                      patch.object(ingest, "find_psql", return_value="synthetic"),                      patch.object(cre_validate, "_run_psql_script", return_value=result):
+                    probe = run_identity_probe(path, manifest, None)
+                self.assertEqual(load_probe_preimage(root, 1, probe), preimage)
+                probe_path = root / probe["preimage_path"]
+                probe_path.write_bytes(probe_path.read_bytes() + b" ")
+                with self.assertRaises(StopRefused):
+                    load_probe_preimage(root, 1, probe)
                 path.write_bytes(path.read_bytes() + b" ")
                 with self.assertRaises(StopRefused):
                     verify_candidate_artifact(path, manifest, current_code_sha="a" * 40, current_git_dirty=False)
