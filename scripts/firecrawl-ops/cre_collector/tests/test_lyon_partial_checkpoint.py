@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact, run_identity_probe, load_probe_preimage, admit_search, ingest_subset_context, run_partial_readback
+from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact, run_identity_probe, load_probe_preimage, admit_search, ingest_subset_context, run_partial_readback, LyonSourceProbeRefusal
 from cre_partial_page_custody import prepare, settle
 from cre_stop_guarded_tier import StopRefused
 from tests.test_lyon_search_replay import spool
@@ -120,6 +120,12 @@ class LyonCheckpointTests(unittest.TestCase):
                 result = SimpleNamespace(returncode=0, stdout=output)
                 with patch.object(ingest, "load_db_url", return_value=("synthetic", None)),                      patch.object(ingest, "database_target_fingerprint_from_url", return_value={"value": "b" * 64}),                      patch.object(ingest, "find_psql", return_value="synthetic"),                      patch.object(cre_validate, "_run_psql_script", return_value=result):
                     probe = run_identity_probe(path, manifest, None)
+                    bad = SimpleNamespace(returncode=0, stdout=chr(9).join(["staged", "joined", "held", "preimage"]) + chr(10)
+                                          + chr(9).join(["1", "1", "[]", "not-json"]) + chr(10))
+                    with patch.object(cre_validate, "_run_psql_script", return_value=bad), self.assertRaises(LyonSourceProbeRefusal):
+                        run_identity_probe(path, manifest, None)
+                    with patch.object(cre_validate, "_run_psql_script", return_value=SimpleNamespace(returncode=1)), self.assertRaises(RuntimeError):
+                        run_identity_probe(path, manifest, None)
                 self.assertEqual(load_probe_preimage(root, 1, probe), preimage)
                 checkpoint["lyon_identity_probe"] = probe
                 manifest["scope"] = {}
@@ -129,6 +135,14 @@ class LyonCheckpointTests(unittest.TestCase):
                     "per_source": {"lyon-stahl": {"verdict": "first_seen",
                     "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
                     "mark_missing_safe": False, "current_active": 1}}}
+                import cre_lyon_partial_checkpoint as lyon_checkpoint
+                def fake_gate_command(argv, _log, env=None):
+                    Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
+                    return 0
+                with patch.object(refresh, "run_command", side_effect=fake_gate_command),                      patch.object(lyon_checkpoint, "run_identity_probe", side_effect=LyonSourceProbeRefusal("bad partition")),                      self.assertRaises(refresh.LyonPartialProbeHold):
+                    refresh.gate_source(root, manifest, "lyon-stahl", path, None)
+                with patch.object(refresh, "run_command", side_effect=fake_gate_command),                      patch.object(lyon_checkpoint, "run_identity_probe", side_effect=RuntimeError("shared target failure")),                      self.assertRaises(refresh.GlobalStageError):
+                    refresh.gate_source(root, manifest, "lyon-stahl", path, None)
                 aggregate = copy.deepcopy(report)
                 binding = admit_search(path, manifest, report, current_code_sha="a" * 40,
                                        current_git_dirty=False, phase="source")
@@ -137,6 +151,19 @@ class LyonCheckpointTests(unittest.TestCase):
                 checkpoint["gate"] = {"current_inventory_proof": binding}
                 self.assertEqual(admit_search(path, manifest, aggregate, current_code_sha="a" * 40,
                                               current_git_dirty=False, phase="aggregate"), binding)
+                mixed_manifest = copy.deepcopy(manifest)
+                mixed_manifest["config"].update(pipeline=True, sources=["lyon-stahl", "colliers"])
+                mixed_manifest["sources"]["colliers"] = {"artifact": {"path": "colliers-partial/candidate.json"}}
+                mixed_report = copy.deepcopy(aggregate)
+                peer_path = str(root / "colliers-partial" / "candidate.json")
+                mixed_report["generated_for_artifact"] = [str(path), peer_path]
+                peer = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                        "admission_scope": "colliers_partial_window_v1", "current_inventory_proof": {"source_key": "colliers"}}
+                mixed_report["per_source"]["colliers"] = copy.deepcopy(peer)
+                admit_search(path, mixed_manifest, mixed_report, current_code_sha="a" * 40,
+                             current_git_dirty=False, phase="aggregate")
+                self.assertEqual(mixed_report["scope"]["kind"], "collector_registry_verified_subset")
+                self.assertEqual(mixed_report["per_source"]["colliers"], peer)
                 envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
                             "binding": binding, "attempt_id": "e" * 32}
                 context = ingest_subset_context(path, envelope, current_code_sha="a" * 40, current_git_dirty=False,
@@ -182,6 +209,25 @@ class LyonCheckpointTests(unittest.TestCase):
                     verify_candidate_artifact(path, manifest, current_code_sha="a" * 40, current_git_dirty=False)
                 with self.assertRaises(ValueError):
                     run_replay_worker(root, manifest, owner, lambda *_: None)
+
+    def test_preseal_source_hold_and_target_change_fence(self):
+        import cre_checkpoint_refresh as refresh
+        import cre_refresh_pipeline as pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, _, _ = self.case(root)
+            candidate = root / "candidate.json"
+            candidate.write_text("{}")
+            manifest["sources"]["lyon-stahl"]["artifact"] = {"path": "candidate.json", "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()}
+            with patch.object(refresh, "git_identity", return_value=("a" * 40, False)),                  patch.object(refresh, "save_manifest"), patch.object(pipeline, "require_pipeline_owner"),                  patch.object(refresh, "gate_source", side_effect=refresh.LyonPartialProbeHold("invalid source")):
+                self.assertFalse(pipeline.preseal_source_gate(root, manifest, "lyon-stahl", None))
+                self.assertEqual(manifest["sources"]["lyon-stahl"]["partial_probe_hold"], "source_identity_partition_invalid")
+                def change_target(*_args):
+                    manifest["preflight"]["database_target"]["value"] = "c" * 64
+                    raise refresh.LyonPartialProbeHold("invalid source")
+                with patch.object(refresh, "gate_source", side_effect=change_target), self.assertRaises(refresh.GlobalStageError):
+                    pipeline.preseal_source_gate(root, manifest, "lyon-stahl", None)
 
     def test_changed_attempt_owner_or_clock_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -103,9 +103,8 @@ def replay_search_lines(lines, generation, attempt, *, summary=None):
     accepted = []
     for record in records.values():
         identity = record["sourceIdentity"]
-        filters = [entry["filter"] for entry in record["occurrences"]]
         key = ("wordpress:" if identity["kind"] == "wordpress_post" else "") + identity["value"]
-        if len(identities[key]) > 1 or len(filters) != len(set(filters)):
+        if len(identities[key]) > 1:
             held.append({"url": record["url"], "reason": "identity_conflict"})
         else:
             accepted.append(record)
@@ -122,8 +121,9 @@ def replay_search_lines(lines, generation, attempt, *, summary=None):
         invalid_failure = {name for name, reason in by_filter.items() if reason == "invalid_response"}
         if (invalid != invalid_failure or seen_filters & acquired_failure
                 or seen_filters | acquired_failure != set(_FILTERS)
-                or summary["candidates"] != len(records)
-                or summary["held"] != sum(item["reason"] == "invalid_identity" for item in held)):
+                or not len(records) <= summary["candidates"] <= len(records) + sum(
+                    item["reason"] == "invalid_identity" for item in held) - summary["held"]
+                or summary["held"] > sum(item["reason"] == "invalid_identity" for item in held)):
             raise ValueError("Lyon source summary and replay differ")
     return accepted, held
 

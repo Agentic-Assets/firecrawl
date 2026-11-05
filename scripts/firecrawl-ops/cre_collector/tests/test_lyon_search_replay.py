@@ -55,6 +55,29 @@ class LyonReplayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replay_search(raw, "g", 1, summary=summary)
 
+    def test_stricter_replay_identity_holds_only_that_observation(self):
+        rows = [{"permalink": "https://lyonstahl.com/properties/../properties/a"},
+                {"permalink": "https://lyonstahl.com/properties/good"}]
+        raw = spool([("all", json.dumps(rows)), ("sale", "[]"), ("lease", "[]")])
+        summary = {"schema": "lyon-search-summary-v1", "coverage": "partial_unknown", "stopped": False,
+                   "failures": [], "candidates": 2, "held": 0}
+        records, held = replay_search(raw, "g", 1, summary=summary)
+        self.assertEqual([item["sourceIdentity"]["value"] for item in records], ["good"])
+        self.assertEqual(held[0]["reason"], "invalid_identity")
+
+    def test_same_url_duplicate_cards_keep_all_rows_and_valid_peer(self):
+        url = "https://lyonstahl.com/properties/a/"
+        rows = [{"permalink": url, "title": "First"}, {"permalink": url, "title": "First"},
+                {"permalink": url, "title": "Conflict"}, {"permalink": "https://lyonstahl.com/properties/b/"}]
+        records, held = replay_search(spool([("all", json.dumps(rows))]), "g", 1)
+        self.assertEqual(held, [])
+        self.assertEqual([len(record["occurrences"]) for record in records], [3, 1])
+        from cre_lyon_partial import stage_record
+        staged = stage_record(records[0])
+        self.assertIsNone(staged["title"])
+        self.assertEqual([item["row"]["title"] for item in records[0]["occurrences"]], ["First", "First", "Conflict"])
+        self.assertEqual(stage_record(records[1])["external_id"], "b")
+
     def test_path_and_post_identity_namespace_collision_is_held(self):
         rows = [{"permalink": "https://lyonstahl.com/properties/wordpress:40201"},
                 {"permalink": "https://lyonstahl.com/?post_type=properties&p=40201"},

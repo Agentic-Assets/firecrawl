@@ -474,7 +474,18 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         raise refresh.GlobalStageError(
             f"pre-seal gate input identity changed: {source}"
         )
-    refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    try:
+        refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.LyonPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "lyon-stahl" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("Lyon held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     gate = checkpoint["gate"]
     path = run_dir / gate["path"]
     digest = refresh.sha256_file(path)

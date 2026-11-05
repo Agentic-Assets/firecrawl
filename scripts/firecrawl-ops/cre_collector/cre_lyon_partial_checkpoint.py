@@ -18,6 +18,10 @@ from cre_lyon_search_replay import replay_search_lines, validate_source_artifact
 from cre_partial_page_custody import expected_path, settle
 
 
+class LyonSourceProbeRefusal(ValueError):
+    """A settled read-only probe returned an invalid source partition."""
+
+
 def replay_settled_source(run_dir, manifest, attempt_number, current_code_sha, current_git_dirty):
     """Revalidate source custody, outcomes, and exact rows under the owner."""
     run_dir = Path(run_dir)
@@ -355,17 +359,20 @@ def run_identity_probe(artifact_path, manifest, env_file):
     result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
     if result.returncode:
         raise RuntimeError("Lyon identity probe failed")
-    parsed = parse_tsv(result.stdout)
-    if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
-            or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
-        raise ValueError("Lyon probe result differs")
-    held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
-    _validate_partition(staged, held, preimage)
     current_url, _ = load_db_url(env_file)
     after = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
     if (database_target_fingerprint_from_url(current_url).get("value") != target
             or git_identity() != (producer, False) or after["source"] != source or after["staged"] != staged):
         raise ValueError("Lyon probe input or target changed")
+    parsed = parse_tsv(result.stdout)
+    if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
+            or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):
+        raise RuntimeError("Lyon probe query scope differs")
+    try:
+        held, preimage = json.loads(parsed[0]["held"]), json.loads(parsed[0]["preimage"])
+        _validate_partition(staged, held, preimage)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise LyonSourceProbeRefusal("Lyon source identity partition was invalid") from exc
     encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     number = source["attempt"]
@@ -458,7 +465,8 @@ def admit_search(artifact_path, manifest, report, *, current_code_sha, current_g
             value = item.get("verdict")
             counts[value] = counts.get(value, 0) + 1
         summary["verdict_counts"] = counts
-    report["scope"] = {"kind": "lyon_partial_search_v1", "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    report["scope"] = {"kind": ("lyon_partial_search_v1" if phase == "source" else "collector_registry_verified_subset"),
+                       "transactions": ["sale", "lease"], "whole_source_coverage": False}
     manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
     return deepcopy(binding)
 

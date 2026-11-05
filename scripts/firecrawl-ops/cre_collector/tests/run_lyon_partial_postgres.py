@@ -131,6 +131,117 @@ SELECT id,'https://example.test/image.jpg' FROM credeals.cre_listings WHERE exte
         assert json.loads(sql(identity_probe_sql([staged[0]])).split("|", 3)[2]) == ["legacy"]
         sql("UPDATE credeals.cre_listings SET raw_data=raw_data || '{\"lyonStahlPostId\":\"999\"}'::jsonb WHERE external_id='wordpress:40201'")
         assert json.loads(sql(identity_probe_sql([staged[1]])).split("|", 3)[2]) == ["wordpress:40201"]
+        # Partial coordinate components remain in source history without
+        # fabricating a pair; a same-observation pair may later fill the gap.
+        split = record("https://lyonstahl.com/properties/split/", "property_path", "split")
+        split["occurrences"][0]["row"]["latitude"] = "34.1"
+        split["occurrences"].append({**split["occurrences"][0], "index": 1, "row": {
+            "permalink": split["url"], "longitude": "-118.2", "title": "Other"}})
+        split_stage = [stage_record(split)]
+        assert split_stage[0]["lat"] is None and split_stage[0]["lng"] is None
+        split_probe = sql(identity_probe_sql(split_stage)).split("|", 3)
+        split_held, split_prior = json.loads(split_probe[2]), json.loads(split_probe[3])
+        split_job = str(uuid.uuid4())
+        sql(build_partial_sql(split_stage, split_held, split_prior, split_job, start, finish))
+        assert sql(partial_readback_sql(split_stage, split_held, split_prior, split_job, start, finish)) == "1|1|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='split' AND lat IS NULL AND lng IS NULL") == "1"
+        split["occurrences"].append({**split["occurrences"][0], "index": 2, "row": {
+            "permalink": split["url"], "latitude": "34.1", "longitude": "-118.2"}})
+        complete_stage = [stage_record(split)]
+        complete_probe = sql(identity_probe_sql(complete_stage)).split("|", 3)
+        complete_held, complete_prior = json.loads(complete_probe[2]), json.loads(complete_probe[3])
+        complete_job = str(uuid.uuid4())
+        sql(build_partial_sql(complete_stage, complete_held, complete_prior, complete_job, start, finish))
+        assert sql(partial_readback_sql(complete_stage, complete_held, complete_prior, complete_job, start, finish)) == "1|1|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='split' AND lat=34.1 AND lng=-118.2") == "1"
+        # A concurrent noncooperating transaction holds the source-index row.
+        # Lyon must wait there before locking its listing. A separate actor can
+        # update that listing while Lyon waits; the stale preimage then aborts.
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
+SELECT id,'lock-target','https://lyonstahl.com/properties/lock-target/','active','{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lyon-stahl';
+INSERT INTO credeals.cre_source_index (brokerage_id,external_id,source_key,url,observation_present)
+SELECT id,'lock-target','lyon-stahl','https://lyonstahl.com/properties/lock-target/',true
+FROM credeals.cre_brokerages WHERE slug='lyon-stahl';
+""")
+        lock_row = stage_record(record("https://lyonstahl.com/properties/lock-target/", "property_path", "lock-target"))
+        lock_probe = sql(identity_probe_sql([lock_row])).split("|", 3)
+        lock_held, lock_prior = json.loads(lock_probe[2]), json.loads(lock_probe[3])
+        lock_job = str(uuid.uuid4())
+        lock_sql = build_partial_sql([lock_row], lock_held, lock_prior, lock_job, start, finish)
+        locker = subprocess.Popen(["docker", "exec", "-i", "-e", "PGAPPNAME=lyon-fixture-locker", name,
+            "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+            "BEGIN; SELECT id FROM credeals.cre_source_index WHERE external_id='lock-target' FOR UPDATE; SELECT pg_sleep(5); COMMIT;"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        writer = None
+        try:
+            for _ in range(100):
+                if sql("SELECT count(*) FROM pg_stat_activity WHERE application_name='lyon-fixture-locker' AND wait_event='PgSleep'") == "1":
+                    break
+                time.sleep(.05)
+            else:
+                raise RuntimeError("fixture source-index lock not acquired")
+            writer = subprocess.Popen(["docker", "exec", "-i", "-e", "PGAPPNAME=lyon-fixture-writer", name,
+                "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            writer.stdin.write(lock_sql)
+            writer.stdin.close()
+            writer.stdin = None
+            for _ in range(100):
+                if sql("SELECT count(*) FROM pg_stat_activity WHERE application_name='lyon-fixture-writer' AND wait_event_type='Lock'") == "1":
+                    break
+                time.sleep(.05)
+            else:
+                raise RuntimeError("Lyon fixture did not wait on the held index lock")
+            sql("SET lock_timeout='1s'; UPDATE credeals.cre_listings SET title='concurrent' WHERE external_id='lock-target'")
+            locker.communicate(timeout=10)
+            assert locker.returncode == 0
+            _, error = writer.communicate(timeout=10)
+            assert writer.returncode != 0 and "Lyon identity partition changed" in error
+            assert sql("SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='" + lock_job + "'") == "0"
+            assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='lock-target'") == "concurrent"
+        finally:
+            if locker.poll() is None:
+                locker.terminate()
+                locker.communicate(timeout=10)
+            if writer is not None and writer.poll() is None:
+                writer.terminate()
+                writer.communicate(timeout=10)
+        # While the source transaction holds its selected rows, a distinct
+        # Lyon listing is not row-locked by this partial ingestion.
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
+SELECT id,'unrelated','https://lyonstahl.com/properties/unrelated/','active','{}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lyon-stahl';
+""")
+        fresh_probe = sql(identity_probe_sql([lock_row])).split("|", 3)
+        fresh_job = str(uuid.uuid4())
+        fresh_sql = build_partial_sql([lock_row], json.loads(fresh_probe[2]), json.loads(fresh_probe[3]),
+                                      fresh_job, start, finish)
+        assert fresh_sql.count("COMMIT;") == 1
+        fresh_sql = fresh_sql.replace("COMMIT;", "SELECT pg_sleep(4); COMMIT;")
+        writer = subprocess.Popen(["docker", "exec", "-i", "-e", "PGAPPNAME=lyon-fixture-scoped", name,
+            "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            writer.stdin.write(fresh_sql)
+            writer.stdin.close()
+            writer.stdin = None
+            for _ in range(100):
+                if sql("SELECT count(*) FROM pg_stat_activity WHERE application_name='lyon-fixture-scoped' AND wait_event='PgSleep'") == "1":
+                    break
+                time.sleep(.05)
+            else:
+                raise RuntimeError("Lyon fixture did not hold scoped locks")
+            sql("SET lock_timeout='1s'; UPDATE credeals.cre_listings SET title='not blocked' WHERE external_id='unrelated'")
+            _, error = writer.communicate(timeout=10)
+            assert writer.returncode == 0, error
+            assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='unrelated'") == "not blocked"
+        finally:
+            if writer.poll() is None:
+                writer.terminate()
+                writer.communicate(timeout=10)
         print("Lyon disposable PostgreSQL: identity hold, null status, additive history, children, stale preimage and readback passed")
     finally:
         run("docker", "rm", "-f", name, check=False)

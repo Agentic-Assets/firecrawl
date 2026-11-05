@@ -215,7 +215,7 @@ def run_schedule(
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", publish)
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
-    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda _root, _owner, source, _env: not (lyon_partial == "probe_hold" and source == "lyon-stahl"))
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     if colliers_partial:
         import cre_colliers_partial_checkpoint as partial
@@ -306,7 +306,7 @@ def test_pipeline_interrupted_colliers_attempt_never_dispatches_partial(tmp_path
     assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
 
 
-@pytest.mark.parametrize("outcome", ["accepted", "held", "interrupted"])
+@pytest.mark.parametrize("outcome", ["accepted", "held", "interrupted", "probe_hold"])
 def test_pipeline_lyon_partial_keeps_peer_running(tmp_path, monkeypatch, outcome):
     manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
         sources=("lyon-stahl", "savills"), lyon_partial=outcome)

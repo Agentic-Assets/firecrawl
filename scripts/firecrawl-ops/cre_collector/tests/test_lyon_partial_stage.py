@@ -32,9 +32,9 @@ def test_query_identity_rejects_other_or_ambiguous_url(url):
         stage_record(record(url, "wordpress_post", "40201"))
 
 
-def test_duplicate_filter_or_mismatched_source_row_is_rejected():
+def test_duplicate_occurrence_index_or_mismatched_source_row_is_rejected():
     item = record("https://lyonstahl.com/properties/example/", "property_path", "example")
-    item["occurrences"].append(dict(item["occurrences"][0], index=1))
+    item["occurrences"].append(dict(item["occurrences"][0]))
     with pytest.raises(ValueError):
         stage_record(item)
     item["occurrences"].pop()
@@ -69,3 +69,20 @@ def test_unrepresentable_optional_text_is_preserved_but_not_projected():
     staged = stage_record(item)
     assert staged["title"] is None
     assert json.loads(base64.b64decode(staged["observation_base64"])) == item
+
+
+def test_split_coordinate_values_are_retained_without_inventing_a_pair():
+    item = record("https://lyonstahl.com/properties/example/", "property_path", "example")
+    item["occurrences"][0]["row"].update(latitude="34.1")
+    item["occurrences"].append({**item["occurrences"][0], "index": 1, "row": {
+        "permalink": item["url"], "longitude": "-118.2"}})
+    staged = stage_record(item)
+    assert staged["lat"] is None and staged["lng"] is None
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == item
+    item["occurrences"].append({**item["occurrences"][0], "index": 2, "row": {
+        "permalink": item["url"], "latitude": "34.1", "longitude": "-118.2"}})
+    staged = stage_record(item)
+    assert (staged["lat"], staged["lng"]) == (34.1, -118.2)
+    item["occurrences"][1]["row"]["longitude"] = "-118.3"
+    staged = stage_record(item)
+    assert staged["lat"] is None and staged["lng"] is None

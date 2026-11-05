@@ -63,7 +63,7 @@ export function projectLyonSearch(pages: Page[]) {
   }
   return { schema: "lyon-search-observation-v1", coverage: "partial_unknown" as const,
     snapshots, candidates: [...candidates.values()].map(row => ({ ...row,
-      identityConflict: (idCounts.get(identityKey(row.sourceIdentity)) ?? 0) > 1 || new Set(row.occurrences.map(item => item.filter)).size !== row.occurrences.length,
+      identityConflict: (idCounts.get(identityKey(row.sourceIdentity)) ?? 0) > 1,
     })), held };
 }
 

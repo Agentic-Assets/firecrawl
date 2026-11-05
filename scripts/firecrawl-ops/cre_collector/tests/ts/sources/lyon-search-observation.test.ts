@@ -65,6 +65,14 @@ test("retains query-form source post IDs without inventing a property-path cross
   assert.equal(result.snapshots[0].responseText, raw);
 });
 
+test("retains same-URL duplicates without marking an identity conflict", () => {
+  const raw = JSON.stringify([card("same"), card("same"), { ...card("same"), title: "Changed" }, card("peer")]);
+  const result = projectLyonSearch([{ filter: "all", observedAt, responseText: raw }]);
+  assert.deepEqual(result.candidates.map(row => row.identityConflict), [false, false]);
+  assert.equal(result.candidates[0].occurrences.length, 3);
+  assert.equal(result.snapshots[0].responseText, raw);
+});
+
 test("refuses duplicate filters, invalid clocks and non-array responses", () => {
   const page = { filter: "all" as const, observedAt, responseText: "[]" };
   assert.throws(() => projectLyonSearch([page, page]));

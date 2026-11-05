@@ -247,6 +247,10 @@ class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
 
+class LyonPartialProbeHold(SourceGuardRefusal):
+    """Settled Lyon source identity output cannot be qualified."""
+
+
 class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
 
@@ -5443,9 +5447,11 @@ def gate_source(
                 or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
                 or lyon_partial_candidate(manifest, source)):
             if lyon_partial_candidate(manifest, source):
-                from cre_lyon_partial_checkpoint import run_identity_probe
+                from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
                 try:
                     checkpoint["lyon_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except LyonSourceProbeRefusal as exc:
+                    raise LyonPartialProbeHold("Lyon source identity could not be qualified") from exc
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
                     raise GlobalStageError("Lyon partial identity classification failed") from exc
             if colliers_partial_candidate(manifest, source):

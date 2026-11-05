@@ -56,9 +56,9 @@ def stage_record(record):
         if not isinstance(occurrence, dict) or set(occurrence) != {"filter", "index", "observedAt", "responseTextSha256", "row"}:
             raise ValueError("invalid Lyon occurrence")
         filter_name, index = occurrence["filter"], occurrence["index"]
-        if filter_name not in {"all", "sale", "lease"} or type(index) is not int or index < 0 or filter_name in seen:
+        if filter_name not in {"all", "sale", "lease"} or type(index) is not int or index < 0 or (filter_name, index) in seen:
             raise ValueError("duplicate or invalid Lyon occurrence")
-        seen.add(filter_name)
+        seen.add((filter_name, index))
         try:
             clock = datetime.fromisoformat(occurrence["observedAt"])
         except (AttributeError, TypeError, ValueError) as exc:
@@ -84,24 +84,37 @@ def stage_record(record):
             values.add(value.strip())
         return next(iter(values)) if len(values) == 1 else None
 
-    def coordinate(key, bound):
-        values = set()
+    def coordinate_pair():
+        latitudes, longitudes, pairs = set(), set(), set()
         for occurrence in occurrences:
-            value = occurrence["row"].get(key)
-            if value is None or value == "" or isinstance(value, bool):
-                continue
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(number) or abs(number) > bound:
-                return None
-            values.add(number)
-        return next(iter(values)) if len(values) == 1 else None
+            row = occurrence["row"]
+            values = []
+            for key, bound in (("latitude", 90), ("longitude", 180)):
+                value = row.get(key)
+                if value is None or value == "":
+                    values.append(None)
+                    continue
+                if isinstance(value, bool):
+                    return None, None
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    return None, None
+                if not math.isfinite(number) or abs(number) > bound:
+                    return None, None
+                values.append(number)
+            lat, lng = values
+            if lat is not None:
+                latitudes.add(lat)
+            if lng is not None:
+                longitudes.add(lng)
+            if lat is not None and lng is not None:
+                pairs.add((lat, lng))
+        if len(latitudes) != 1 or len(longitudes) != 1 or len(pairs) != 1:
+            return None, None
+        return next(iter(pairs))
 
-    latitude, longitude = coordinate("latitude", 90), coordinate("longitude", 180)
-    if latitude is None or longitude is None:
-        latitude = longitude = None
+    latitude, longitude = coordinate_pair()
     return {"slug": "lyon-stahl", "external_id": external_id, "source_url": url,
             "native_id": value if kind == "wordpress_post" else None,
             "source_kind": kind, "observation_base64": base64.b64encode(payload).decode("ascii"),
@@ -213,8 +226,22 @@ def build_partial_sql(staged, held, preimage, job_id, started_at, finished_at):
 BEGIN;
 {lifecycle_transaction_lock_sql()}
 DO $$ BEGIN
- PERFORM id FROM credeals.cre_listings WHERE brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='lyon-stahl') ORDER BY id FOR UPDATE;
- PERFORM id FROM credeals.cre_source_index WHERE brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='lyon-stahl') ORDER BY id FOR UPDATE;
+ -- Match the shared source-index-before-listing lifecycle lock order. Scope
+ -- row locks to offered identities and existing URL/native-ID collisions.
+ PERFORM si.id FROM credeals.cre_source_index si
+ WHERE si.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='lyon-stahl')
+   AND EXISTS (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+     WHERE si.external_id=c.r->>'external_id' OR si.url=c.r->>'source_url')
+ ORDER BY si.id FOR UPDATE;
+ PERFORM t.id FROM credeals.cre_listings t
+ WHERE t.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='lyon-stahl')
+   AND EXISTS (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+     WHERE t.external_id=c.r->>'external_id' OR t.source_url=c.r->>'source_url'
+       OR t.canonical_url=c.r->>'source_url'
+       OR (c.r->>'native_id' IS NOT NULL AND EXISTS (
+         SELECT 1 FROM jsonb_path_query(t.raw_data, '$.**.lyonStahlPostId') n(value)
+         WHERE n.value #>> '{{}}' = c.r->>'native_id')))
+ ORDER BY t.id FOR UPDATE;
 END $$;
 CREATE TEMP TABLE _lyon_probe ON COMMIT DROP AS {probe};
 DO $$ BEGIN
