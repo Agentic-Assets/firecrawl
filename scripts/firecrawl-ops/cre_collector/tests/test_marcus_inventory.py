@@ -114,6 +114,11 @@ def test_settled_artifact_binds_attempt_bytes_and_preserves_coordinator_clock(tm
     with pytest.raises(ValueError, match="artifact changed"):
         rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
     attempt["rejected_artifact_sha256"] = digest
+    rejected.chmod(0o777)
+    from cre_stop_guarded_tier import StopRefused
+    with pytest.raises(StopRefused):
+        rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
+    rejected.chmod(0o755)
     attempt["rc"] = 1
     with pytest.raises(ValueError, match="unsettled"):
         rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
