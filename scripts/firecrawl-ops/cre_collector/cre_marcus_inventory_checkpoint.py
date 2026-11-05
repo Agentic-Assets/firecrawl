@@ -430,3 +430,78 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
             "checked": ["partial_job", "projected_scalars", "source_history", "parent_lifecycle",
                         "source_index", "contacts", "documents", "images", "media", "links", "held_parents"],
             "whole_source_coverage": False}
+
+
+def run_ingest(args):
+    """Execute a source-bound additive claim within the owned checkpoint process."""
+    import stat
+    import subprocess
+    import sys
+    import tempfile
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import (_status_activation_enabled, assert_expected_database_target, find_psql,
+                            load_db_url, psql_connection_args, psql_connection_env)
+    from cre_marcus_inventory_db import build_partial_sql
+    from cre_stop_guarded_tier import _read_at, _safe_stat
+
+    if (len(args.inputs) != 1 or args.mark_missing or _status_activation_enabled(args.activate_status)
+            or not args.require_strict_freshness or not args.expected_db_target_sha256
+            or not args.checkpoint_ingest_attempt or args.franklin_site_claims or args.colliers_partial_claims
+            or args.lyon_partial_claims or args.jll_partial_claims or args.daum_verified_subset_claims
+            or args.pyramid_verified_subset_claims or args.matthews_targeted_claims
+            or args.newmark_page_attempt or args.newmark_page_claims or args.checkpoint_collector_git_sha
+            or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha):
+        raise ValueError("unbound Marcus inventory ingest")
+    claims = Path(args.marcus_inventory_claims)
+    directory = os.open(claims.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(directory, directory=True, private=True)
+        raw, _ = _read_at(directory, claims.name, limit=64 * 1024 * 1024)
+        envelope = json.loads(raw)
+    finally:
+        os.close(directory)
+    code_sha, dirty = git_identity()
+    context = ingest_subset_context(Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+                                    expected_database_target_sha256=args.expected_db_target_sha256,
+                                    attempt_id=args.checkpoint_ingest_attempt)
+    sql = build_partial_sql(context["staged"], context["held"], context["preimage"], context["source"], context["job_id"])
+
+    def write_and_run(out_dir):
+        out = Path(out_dir)
+        out.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = out.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise ValueError("Marcus inventory SQL directory is not private")
+        fd = os.open(out / "ingest.sql", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as stream:
+                stream.write(sql)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(fd)
+        if args.dry_run:
+            return
+        current_code, current_dirty = git_identity()
+        current = ingest_subset_context(Path(args.inputs[0]), envelope, current_code_sha=current_code,
+                                        current_git_dirty=current_dirty,
+                                        expected_database_target_sha256=args.expected_db_target_sha256,
+                                        attempt_id=args.checkpoint_ingest_attempt)
+        if current != context:
+            raise ValueError("Marcus inventory inputs changed before ingest")
+        db_url, _ = load_db_url(args.env_file)
+        assert_expected_database_target(db_url, args.expected_db_target_sha256)
+        proc = subprocess.run([find_psql(), *psql_connection_args(db_url), "-X", "-q",
+                               "-v", "ON_ERROR_STOP=1", "-f", "-"],
+                              input=sql, text=True, env=psql_connection_env(db_url),
+                              stdout=sys.stdout, stderr=sys.stderr, check=False)
+        if proc.returncode:
+            raise RuntimeError("Marcus inventory ingest outcome requires reconciliation")
+        current_url, _ = load_db_url(args.env_file)
+        assert_expected_database_target(current_url, args.expected_db_target_sha256)
+
+    if args.keep_artifacts:
+        write_and_run(args.keep_artifacts)
+    else:
+        with tempfile.TemporaryDirectory(prefix="cre-marcus-inventory-") as out_dir:
+            write_and_run(out_dir)
