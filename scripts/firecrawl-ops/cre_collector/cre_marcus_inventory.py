@@ -260,9 +260,42 @@ def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sh
         raise ValueError("Marcus source outcome differs")
     partition = partition_inventory(rows, run_dir.name, meta["startedAt"], meta["finishedAt"])
     return {"schema": "marcus-inventory-custody/v1", "source": SOURCE, "generation": run_dir.name,
-            "attempt": attempt_number, "source_sha256": digest, "source_bytes": size,
+            "attempt": attempt_number, "generation_started_at": manifest["started_at"],
+            "source_sha256": digest, "source_bytes": size,
             "producer_sha": current_code_sha, "target_sha256": target["value"],
             "started_at": meta["startedAt"], "finished_at": meta["finishedAt"],
             "coordinator_finished_at": attempt["finished_at"], "detail_qualified": 0,
             "detail_errors": sale[0]["freshness"]["detailErrors"], "coverage": "partial",
             "partition": partition}
+
+
+def candidate_data(source):
+    """Project the rederived inventory as explicitly partial, never fresh detail."""
+    from cre_marcus_inventory_db import validate_staged
+
+    if not isinstance(source, dict) or source.get("schema") != "marcus-inventory-custody/v1":
+        raise ValueError("invalid Marcus inventory source")
+    partition = source.get("partition")
+    if not isinstance(partition, dict) or not isinstance(partition.get("held"), list):
+        raise ValueError("invalid Marcus inventory partition")
+    generation, start, finish = source["generation"], source["started_at"], source["finished_at"]
+    staged = partition.get("staged")
+    validate_staged(staged, generation, start, finish)
+    listings = [{"sourceKey": SOURCE, "id": row["external_id"], "url": row["source_url"],
+                 "marcusInventoryRecord": json.loads(base64.b64decode(row["observation_base64"], validate=True))}
+                for row in staged]
+    return {"schema": "marcus-inventory-partial/v1", "sourceKey": SOURCE,
+            "binding": {"generation": generation, "attempt": source["attempt"], "startedAt": start,
+                        "finishedAt": finish, "coordinatorFinishedAt": source["coordinator_finished_at"],
+                        "sourceSha256": source["source_sha256"], "sourceBytes": source["source_bytes"],
+                        "producerSha": source["producer_sha"], "targetSha256": source["target_sha256"]},
+            "coverage": "partial_unknown", "held": partition["held"],
+            "detailQualified": 0, "detailErrors": source["detail_errors"],
+            "runMeta": {"mode": "partial", "transactions": ["sale", "lease"], "startedAt": start,
+                        "finishedAt": finish, "freshness": {"generationId": generation,
+                        "generationStartedAt": source["generation_started_at"], "requireFreshDetails": False}},
+            "sources": [{"sourceKey": SOURCE, "transaction": "sale", "supported": True, "truncated": True,
+                         "listingsCollected": len(listings), "error": "original source details unverified"},
+                        {"sourceKey": SOURCE, "transaction": "lease", "supported": False,
+                         "truncated": True, "listingsCollected": 0}],
+            "listings": listings, "brokers": [], "totalListings": len(listings)}

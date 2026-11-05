@@ -175,3 +175,20 @@ def test_readback_covers_parent_index_and_all_five_children():
     assert "source_index IS DISTINCT FROM" in sql and "children IS DISTINCT FROM" in sql
     assert all(f"cre_listing_{name}" in sql for name in children)
     assert "'detailQualified'" not in sql  # expected JSON is bound as data, not SQL code
+
+
+def test_candidate_exposes_inventory_without_claiming_detail_or_coverage():
+    from cre_marcus_inventory import candidate_data
+
+    row = stage(listing())
+    receipt = {"schema": "marcus-inventory-custody/v1", "generation": GENERATION,
+               "generation_started_at": START, "attempt": 1, "started_at": START, "finished_at": FINISH,
+               "coordinator_finished_at": FINISH, "source_sha256": "a" * 64, "source_bytes": 100,
+               "producer_sha": "b" * 40, "target_sha256": "c" * 64, "detail_errors": 1,
+               "partition": {"staged": [row], "held": []}}
+    candidate = candidate_data(receipt)
+    assert candidate["coverage"] == "partial_unknown"
+    assert candidate["detailQualified"] == 0 and candidate["detailErrors"] == 1
+    assert candidate["sources"][0]["truncated"] is True
+    assert candidate["listings"][0]["marcusInventoryRecord"] == listing()
+    assert "detailObservedAt" not in candidate["listings"][0]
