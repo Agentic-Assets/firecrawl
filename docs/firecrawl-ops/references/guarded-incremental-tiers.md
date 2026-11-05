@@ -491,6 +491,13 @@ user is logged out, and catchup does not prove Docker or API readiness.
 can collide with another CRE task; the shared owner must refuse overlapping
 work, not force-clear a lock or promise a queued retry.
 
+Run the installer from the **operational native launcher checkout**, for both
+preview and registration. The installer derives both the task's launcher path
+and working directory from its own location; invoking the copy in
+`firecrawl-dev` would bind the task to the development checkout. On this
+workstation the operational checkout is `$env:USERPROFILE\GitHub\firecrawl`;
+use the actual reviewed native checkout on other installations.
+
 Preview an exact source and reviewed, deployed SHA from PowerShell:
 
 ```powershell
@@ -507,10 +514,28 @@ $taskOptions = @{
 # Optional, after provisioning the private channel webhook file:
 # $taskOptions.AlertWebhookFile = (Join-Path $env:USERPROFILE '.config\cre\cre-pipeline.webhook')
 # $taskOptions.NotificationMode = 'StartFinish'
-& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions
+$nativeRoot = Join-Path $env:USERPROFILE 'GitHub\firecrawl'
+$installer = Join-Path $nativeRoot 'scripts\firecrawl-ops\cre_collector\windows\Install-CreScheduledTask.ps1'
+& $installer @taskOptions
 ```
 
-Preview starts no task, WSL, provider or database work. `DailyAt` accepts one
+Preview starts no task, WSL, provider or database work. Inspect its action and
+confirm that the `-File` launcher is in the operational native checkout and
+`WorkingDirectory` is its root before using the same installer for registration.
+After registration or an action change, read back both paths and the task state:
+
+```powershell
+$task = Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName $taskOptions.TaskName -ErrorAction Stop
+$task.Actions | Format-List Execute, Arguments, WorkingDirectory
+$task | Get-ScheduledTaskInfo | Format-List LastRunTime, LastTaskResult, NextRunTime
+Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' | Format-Table TaskName, State
+```
+
+Compare the launcher path and working directory with the reviewed operational
+root, and check the full CRE fleet, enabled states and pins through the
+[reviewed updater procedure](development-and-runtime-checkouts.md).
+A registration readback or a task's Ready state does not establish a successful
+pipeline run. `DailyAt` accepts one
 to four distinct local `HH:mm` values in a single comma-separated string.
 Add `WeeklyOn = 'Saturday'` and use, for example, `DailyAt = '03:00'` for a
 weekly task. A task can select one `Source`, or a finite comma-separated
@@ -561,7 +586,7 @@ planned/disabled registry scope on
 Then register a disabled task and read back its complete definition:
 
 ```powershell
-& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions -Register
+& $installer @taskOptions -Register
 ```
 
 Run the exact disabled task's action as a supervised pilot at a settled owner
