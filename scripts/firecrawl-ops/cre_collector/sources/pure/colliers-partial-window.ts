@@ -38,7 +38,7 @@ export async function selectColliersWindow(
   });
   await verify();
   // A page whose identities are unknown can conflict with any candidate.
-  if (first.heldPages || first.stopped || first.providerHoles < 1 || !first.total || cursor > first.total + 1)
+  if (first.heldPages || first.stopped || first.providerHoles < 1 || !first.total)
     throw new Error("partial source window is not safely scoped");
   const counts = selected.map(() => ({ id: 0, url: 0, token: 0, position: 0, hole: false }));
   const second = await scan(card => {

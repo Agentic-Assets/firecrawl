@@ -35,7 +35,7 @@ export async function produceColliersWindow(
     byPosition.set(p, member);
   }
   const processed = new Set<number>(), unadmitted = new Set<number>();
-  let stopped = false;
+  let stopped = false, sourceStopPosition: number | undefined;
   const drainHeldPrefix = async () => {
     while (!stopped) {
       const member = selection.window.find(item => !processed.has(item.candidate.start + item.candidate.offset));
@@ -99,6 +99,7 @@ export async function produceColliersWindow(
             const observedAt = observationNow();
             const decision = await hold({ candidate, reason, evidence, status, observedAt });
             processed.add(p); unadmitted.add(p);
+            if (error instanceof ColliersSettledSourceStop) sourceStopPosition = p;
             if (decision === "stop" || error instanceof ColliersSettledSourceStop) stopped = true;
             await drainHeldPrefix();
             continue;
@@ -123,7 +124,7 @@ export async function produceColliersWindow(
   let nextCursor = cursor;
   for (const member of selection.window) {
     const p = member.candidate.start + member.candidate.offset;
-    if (!processed.has(p)) break;
+    if (!processed.has(p) || p === sourceStopPosition) break;
     nextCursor = (p % selection.total) + 1;
   }
   return { selection, processed: processed.size, held: unadmitted.size,

@@ -32,6 +32,7 @@ export async function reverifyColliersWindow(
   const details = new Map<number, { source: any; decodedDetail: string; nativeBase64: string }>();
   const identityHolds = new Map<number, { decoded: string; native: Buffer; observedAt: string }>();
   let lineNo = 0, buffered: Buffer[] = [], size = 0, sourceStopped = false;
+  let sourceStopPosition: number | undefined;
   const accept = (raw: Buffer) => {
     const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     if (lineNo++ === 0) {
@@ -94,6 +95,7 @@ export async function reverifyColliersWindow(
         }
       }
       sourceStopped = ["detail_http_failure", "detail_timeout", "detail_provider_rejected", "detail_nonjson_html"].includes(row.reason);
+      if (sourceStopped) sourceStopPosition = p;
       return;
     }
     if (row.kind !== "detail" || Object.keys(row).sort().join(",") !== "kind,nativeBase64,source" ||
@@ -124,8 +126,11 @@ export async function reverifyColliersWindow(
   }
   if (size || lineNo !== expectedRecords + 1) throw new Error("partial evidence partition differs");
   let computedCursor = cursor;
-  for (const member of selection.window.slice(0, expectedRecords))
-    computedCursor = ((member.candidate.start + member.candidate.offset) % selection.total) + 1;
+  for (const member of selection.window.slice(0, expectedRecords)) {
+    const position = member.candidate.start + member.candidate.offset;
+    if (position === sourceStopPosition) break;
+    computedCursor = (position % selection.total) + 1;
+  }
   if (computedCursor !== expectedCursor) throw new Error("partial cursor differs");
   await verifyEvidence();
   let emitted = 0;

@@ -1,11 +1,8 @@
 /** Synthetic cross-language staging fixture, never contacts the source. */
 import { createHash } from "node:crypto";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
-import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
-import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
-import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
+import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
 const dir = process.env.COLLIERS_FIXTURE_DIRECTORY;
 if (!dir) throw new Error("fixture directory missing");
 chmodSync(dir, 0o700);
@@ -30,14 +27,13 @@ const digest = createHash("sha256").update(bytes).digest("hex");
 const native = Buffer.concat([Buffer.from([0xef,0xbb,0xbf]), Buffer.from(JSON.stringify({ ProjectSummary: { ProjectId: "native-e2e", Address: { City: "Native City", State: "TX" } },
   ProjectDetails: { ProjectFields: [{ Name: "Units", Value: "10" }] } }))]);
 const decodedText = new TextDecoder("utf-8", { fatal: true }).decode(native);
-const writer = new ColliersWindowEvidence(output, "gen", 1);
-const result = await withColliersPartialSpool(source, bytes.length, digest, (open, verify) =>
-  produceColliersWindow(open, verify, binding, 1, async item => writer.detail(item), async item => writer.hold(item),
-    async () => ({ detail: JSON.parse(decodedText), decodedText, nativeBytes: native })));
-const receipt = writer.finish(), artifactFinishedAt = new Date(Date.now() + 1000).toISOString();
-const verified: any[] = [];
-await withColliersPartialSpool(source, bytes.length, digest, (openSource, verifySource) =>
-  withColliersPartialSpool(output, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>
-    reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence, { ...binding, detailFinishedAt: artifactFinishedAt },
-      1, receipt.records, result.proposedCursor, async row => { verified.push(row); })));
-process.stdout.write(JSON.stringify({ rows: verified, artifactFinishedAt }) + "\n");
+const artifactPath = join(dir, "artifact");
+const result = await buildColliersWindowArtifact({ ...binding, sourcePath: source, sourceBytes: bytes.length,
+  sourceSha256: digest, evidencePath: output, artifactPath, cursor: 1,
+  producerSha: "a".repeat(40), targetSha256: "b".repeat(64), originalSourceMainSha256: "c".repeat(64) },
+  async () => ({ detail: JSON.parse(decodedText), decodedText, nativeBytes: native }));
+const artifactBytes = readFileSync(artifactPath);
+if (artifactBytes.length !== result.artifact.bytes ||
+    createHash("sha256").update(artifactBytes).digest("hex") !== result.artifact.sha256) throw new Error("fixture artifact differs");
+const artifact = JSON.parse(artifactBytes.toString("utf8"));
+process.stdout.write(JSON.stringify({ rows: artifact.listings, artifactFinishedAt: result.detailFinishedAt }) + "\n");

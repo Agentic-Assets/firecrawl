@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
 import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
 import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
+import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
 import { assertPartialNativeIdentity } from "../../../sources/colliers-partial-native-id.js";
 import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
@@ -35,6 +36,8 @@ test("rotates a bounded window and reports peers outside it", async () => {
   assert.deepEqual(second.eligible.map(x => x.mapProjectId), ["b"]);
   const wrapped = await selectColliersWindow(open, async () => {}, binding, 3, 1);
   assert.deepEqual(wrapped.eligible.map(x => x.mapProjectId), ["a"]);
+  const shrunk = await selectColliersWindow(open, async () => {}, binding, 100, 1);
+  assert.deepEqual(shrunk.eligible.map(x => x.mapProjectId), ["a"]);
 });
 test("holds candidates overlapping another page or a recovery hole", async () => {
   const duplicate = await selectColliersWindow(source([header,pair,page,pair,page,hole]), async () => {}, binding, 1, 1);
@@ -112,7 +115,7 @@ test("a settled provider stop records the hold without fetching later peers", as
     async () => "continue", async item => { reasons.push(item.reason); },
     async () => { calls++; throw new ColliersSettledSourceStop("detail_http_failure", 503); }, 2);
   assert.equal(calls, 1); assert.deepEqual(reasons, ["detail_http_failure"]);
-  assert.equal(result.unattempted, 1); assert.equal(result.proposedCursor, 2);
+  assert.equal(result.unattempted, 1); assert.equal(result.proposedCursor, 1);
 });
 test("access refusal aborts without fetching later peers", async () => {
   let calls = 0;
@@ -173,7 +176,8 @@ test("replay proves held response classes and exact page identity", async () => 
     const data = [ { schema: "colliers-window-evidence/v1", sourceKey: "colliers", generation: "gen", attempt: 1 }, record ];
     return reverifyColliersWindow(open, async () => {}, source(data), async () => {},
       { ...binding, detailFinishedAt: new Date(Date.now() + 1000).toISOString() },
-      1, 1, 2, async () => {}, 1);
+      1, 1, ["detail_http_failure", "detail_timeout", "detail_provider_rejected", "detail_nonjson_html"].includes(reason) ? 1 : 2,
+      async () => {}, 1);
   };
   await assert.rejects(check("detail_identity"), /metadata differs/);
   await assert.rejects(check("detail_identity", full), /identity hold classification differs/);
@@ -199,4 +203,21 @@ test("native ProjectId accepts exact safe integers but refuses booleans and unsa
   assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: true } }, "true"), ColliersIdentityError);
   assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: 1.5 } }, "1.5"), ColliersIdentityError);
   assert.throws(() => assertPartialNativeIdentity({ ProjectSummary: { ProjectId: 9007199254740992 } }, "9007199254740992"), ColliersIdentityError);
+});
+
+test("worker seals an all-held source stop without claiming an admitted listing", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-window-worker-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([header,pair,page,hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"), artifactPath = join(dir, "artifact");
+  writeFileSync(sourcePath, bytes, { mode: 0o600 });
+  const result = await buildColliersWindowArtifact({ ...binding, sourcePath, sourceBytes: bytes.length,
+    sourceSha256: createHash("sha256").update(bytes).digest("hex"), evidencePath: join(dir, "evidence"),
+    artifactPath, cursor: 1, producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+    originalSourceMainSha256: "c".repeat(64) },
+    async () => { throw new ColliersSettledSourceStop("detail_http_failure", 503); });
+  assert.equal(result.admitted, 0); assert.equal(result.held, 1); assert.equal(result.unattempted, 1);
+  const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+  assert.deepEqual(artifact.listings, []); assert.equal(artifact.sourceOutcome, "source_error");
+  assert.equal(artifact.coverage, "unverified"); assert.equal(artifact.targetSha256, "b".repeat(64));
 });
