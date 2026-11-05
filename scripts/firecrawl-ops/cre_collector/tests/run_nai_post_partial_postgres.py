@@ -200,6 +200,25 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
         assert raced.returncode != 0 and "NAI post identity partition changed" in raced.stderr
         assert sql(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{race_job}'::uuid;") == "0"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:7';") == "0"
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
+SELECT id,'infabode:8','https://infabode.com/services/listings/8','withdrawn','Terminal original',
+       '{"sourceKey":"nai-global","id":"infabode:8"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        terminal_rows = [stage_post(post(8), "gen-1"), stage_post(post(9), "gen-1")]
+        terminal_probe = sql(identity_probe_sql(terminal_rows)).split("|", 3)
+        terminal_held = json.loads(terminal_probe[2])
+        terminal_before = json.loads(terminal_probe[3], parse_float=Decimal)
+        assert terminal_held == ["infabode:8"]
+        terminal_job = str(uuid.uuid4())
+        sql(build_partial_sql(terminal_rows, terminal_held, terminal_before, terminal_job,
+                              "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z"))
+        assert sql(partial_readback_sql(terminal_rows, terminal_held, terminal_before, terminal_job,
+                                        "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z")) == "1|2|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:8' "
+                   "AND status='withdrawn' AND title='Terminal original';") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:9' AND status IS NULL;") == "1"
         print("NAI post partial real-schema proof passed")
     finally:
         run("docker", "rm", "-f", name, check=False)
