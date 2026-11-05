@@ -62,7 +62,12 @@ conflicts AS (
 SELECT (SELECT count(*) FROM candidate) AS staged,(SELECT count(*) FROM scoped) AS joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text AS held,
  COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.r->>'external_id',
-  'listing',to_jsonb(own),'source_index',to_jsonb(si)) ORDER BY s.r->>'external_id')
+  'listing',to_jsonb(own),'source_index',to_jsonb(si),'children',jsonb_build_object(
+    'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=own.id),'[]'::jsonb),
+    'documents',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=own.id),'[]'::jsonb),
+    'images',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=own.id),'[]'::jsonb),
+    'media',COALESCE((SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM credeals.cre_listing_media m WHERE m.listing_id=own.id),'[]'::jsonb),
+    'links',COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM credeals.cre_listing_links l WHERE l.listing_id=own.id),'[]'::jsonb))) ORDER BY s.r->>'external_id')
  FROM scoped s LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id
     AND own.external_id=s.r->>'external_id'
  LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id
@@ -80,20 +85,14 @@ def _validate_partition(staged, held, preimage, generation, started_at, finished
     ids = {row["external_id"] for row in staged}
     if (not isinstance(held, list) or held != sorted(set(held)) or not set(held) <= ids
             or not isinstance(preimage, list) or len(preimage) != len(ids)
-            or any(not isinstance(row, dict) or set(row) != {"external_id", "listing", "source_index"} for row in preimage)
+            or any(not isinstance(row, dict) or set(row) != {"external_id", "listing", "source_index", "children"} for row in preimage)
             or {row["external_id"] for row in preimage} != ids):
         raise ValueError("invalid Marcus target partition")
 
 
-def build_partial_sql(staged, held, preimage, receipt, job_id):
-    """Build an additive transaction; caller authenticates receipt and exact target.
-
-    This is not a DB connection or a recovery decision. Unknown commit outcomes
-    remain fenced by the owning checkpoint until exact readback is available.
-    """
+def _validate_write(staged, held, preimage, receipt, job_id):
     import re
     import uuid
-    from cre_ingest import lifecycle_transaction_lock_sql, sql_lit
 
     if (not isinstance(receipt, dict) or receipt.get("schema") != "marcus-inventory-custody/v1"
             or receipt.get("source") != "marcus-millichap" or receipt.get("coverage") != "partial"
@@ -105,9 +104,16 @@ def build_partial_sql(staged, held, preimage, receipt, job_id):
         raise ValueError("invalid Marcus source receipt")
     generation, start, finish = receipt.get("generation"), receipt.get("started_at"), receipt.get("finished_at")
     _validate_partition(staged, held, preimage, generation, start, finish)
-    if receipt.get("partition", {}).get("staged") != staged:
+    if not isinstance(receipt.get("partition"), dict) or receipt["partition"].get("staged") != staged:
         raise ValueError("Marcus staged partition differs from source receipt")
-    job = str(uuid.UUID(job_id))
+    return generation, start, finish, str(uuid.UUID(job_id))
+
+
+def build_partial_sql(staged, held, preimage, receipt, job_id):
+    """Build additive SQL; caller authenticates source, owner and exact target."""
+    from cre_ingest import lifecycle_transaction_lock_sql, sql_lit
+
+    generation, start, finish, job = _validate_write(staged, held, preimage, receipt, job_id)
     payload, held_payload, prior = _payload(staged), _payload(held), _payload(preimage)
     probe = identity_probe_sql(staged, generation, start, finish)
     entry = "jsonb_build_object('schema','marcus-inventory-entry/v1','generation'," + sql_lit(generation) + \
@@ -165,4 +171,67 @@ SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,'sale',r->>'tit
 FROM _marcus_rows s WHERE NOT EXISTS (SELECT 1 FROM credeals.cre_listings t
  WHERE t.brokerage_id=s.brokerage_id AND t.external_id=s.r->>'external_id');
 COMMIT;
+"""
+
+
+def partial_readback_sql(staged, held, preimage, receipt, job_id):
+    """Compare the owned parent/index and five child collections after commit."""
+    import copy
+    from cre_ingest import sql_lit
+
+    _generation, _start, _finish, job = _validate_write(staged, held, preimage, receipt, job_id)
+    prior = {item["external_id"]: item for item in preimage}
+    expected = []
+    for row in staged:
+        before = prior[row["external_id"]]
+        entry = {"schema": "marcus-inventory-entry/v1", "generation": receipt["generation"],
+                 "attempt": receipt["attempt"], "sourceSha256": receipt["source_sha256"],
+                 "detailQualified": False, "recordBase64": row["observation_base64"]}
+        previous = before["listing"]
+        raw = None
+        if row["external_id"] not in held:
+            if previous is None:
+                raw = {"sourceKey": "marcus-millichap", "id": row["external_id"]}
+            else:
+                raw = copy.deepcopy(previous["raw_data"])
+            history = raw.get("marcusInventoryObservations")
+            if history is None:
+                history = {"schema": "marcus-inventory-history/v1", "sourceKey": "marcus-millichap",
+                           "externalId": row["external_id"], "entries": []}
+                raw["marcusInventoryObservations"] = history
+            if entry not in history["entries"]:
+                history["entries"].append(entry)
+        expected.append({"r": row, "p": before, "held": row["external_id"] in held, "raw": raw})
+    payload = _payload(expected)
+    return f"""
+WITH expected AS (SELECT value->'r' r,value->'p' p,(value->>'held')::boolean held,value->'raw' raw
+                  FROM jsonb_array_elements({payload}::jsonb)),
+observed AS (
+ SELECT e.*,to_jsonb(t) listing,to_jsonb(si) source_index,jsonb_build_object(
+  'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=t.id),'[]'::jsonb),
+  'documents',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=t.id),'[]'::jsonb),
+  'images',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=t.id),'[]'::jsonb),
+  'media',COALESCE((SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM credeals.cre_listing_media m WHERE m.listing_id=t.id),'[]'::jsonb),
+  'links',COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM credeals.cre_listing_links l WHERE l.listing_id=t.id),'[]'::jsonb)) children
+ FROM expected e JOIN credeals.cre_brokerages b ON b.slug='marcus-millichap'
+ LEFT JOIN credeals.cre_listings t ON t.brokerage_id=b.id AND t.external_id=e.r->>'external_id'
+ LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=b.id AND si.external_id=e.r->>'external_id'
+), mismatch AS (
+ SELECT 1 FROM observed WHERE source_index IS DISTINCT FROM NULLIF(p->'source_index','null'::jsonb)
+ OR children IS DISTINCT FROM p->'children'
+ OR (held AND listing IS DISTINCT FROM NULLIF(p->'listing','null'::jsonb))
+ OR (NOT held AND (listing IS NULL OR listing->'raw_data' IS DISTINCT FROM raw
+   OR (p->'listing'='null'::jsonb AND (
+       listing->>'source_url' IS DISTINCT FROM r->>'source_url' OR listing->>'canonical_url' IS NOT NULL
+       OR listing->>'status' IS NOT NULL OR listing->>'deleted_at' IS NOT NULL
+       OR listing->>'transaction_type' IS DISTINCT FROM 'sale' OR listing->>'title' IS DISTINCT FROM r->>'title'
+       OR listing->'lat' IS DISTINCT FROM r->'lat' OR listing->'lng' IS DISTINCT FROM r->'lng'))
+   OR (p->'listing'<>'null'::jsonb AND
+       (listing - ARRAY['updated_at','raw_data']) IS DISTINCT FROM ((p->'listing') - ARRAY['updated_at','raw_data']))))
+)
+SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
+ WHERE b.slug='marcus-millichap' AND j.id={sql_lit(job)}::uuid AND j.status='partial'
+ AND j.listings_discovered={len(staged)} AND j.listings_scraped={len(staged)} AND j.listings_saved={len(staged)-len(held)}
+ AND j.started_at={sql_lit(receipt['started_at'])}::timestamptz AND j.completed_at={sql_lit(receipt['finished_at'])}::timestamptz) AS jobs,
+ (SELECT count(*) FROM observed) AS observed,(SELECT count(*) FROM mismatch) AS mismatches
 """

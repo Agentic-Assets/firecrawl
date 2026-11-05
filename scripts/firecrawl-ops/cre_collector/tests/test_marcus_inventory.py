@@ -149,7 +149,7 @@ def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
                "generation": GENERATION, "attempt": 1, "source_sha256": "a" * 64,
                "detail_qualified": 0, "detail_errors": 1, "started_at": START, "finished_at": FINISH,
                "partition": {"staged": [row], "held": []}}
-    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None}]
+    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None, "children": {"contacts": [], "documents": [], "images": [], "media": [], "links": []}}]
     sql = build_partial_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
     assert "Marcus identity partition changed" in sql
     assert "'detailQualified',false" in sql
@@ -159,3 +159,19 @@ def test_additive_sql_rechecks_partition_and_keeps_unverified_detail_separate():
     receipt["detail_errors"] = "0); SELECT 1; --"
     with pytest.raises(ValueError):
         build_partial_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
+
+
+def test_readback_covers_parent_index_and_all_five_children():
+    from cre_marcus_inventory_db import partial_readback_sql
+
+    row = stage(listing())
+    receipt = {"schema": "marcus-inventory-custody/v1", "source": "marcus-millichap", "coverage": "partial",
+               "generation": GENERATION, "attempt": 1, "source_sha256": "a" * 64,
+               "detail_qualified": 0, "detail_errors": 1, "started_at": START, "finished_at": FINISH,
+               "partition": {"staged": [row], "held": []}}
+    children = {name: [] for name in ("contacts", "documents", "images", "media", "links")}
+    preimage = [{"external_id": row["external_id"], "listing": None, "source_index": None, "children": children}]
+    sql = partial_readback_sql([row], [], preimage, receipt, "e1d58a66-76e3-4b13-bdc1-0d67c852df09")
+    assert "source_index IS DISTINCT FROM" in sql and "children IS DISTINCT FROM" in sql
+    assert all(f"cre_listing_{name}" in sql for name in children)
+    assert "'detailQualified'" not in sql  # expected JSON is bound as data, not SQL code
