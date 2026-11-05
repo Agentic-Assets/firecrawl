@@ -44,13 +44,6 @@ from cre_checkpoint_refresh import (
     utc_now,
     validate_run_id,
 )
-from reporting.partial_qualification import (
-    _exact_json_equal,
-    colliers_partial_child,
-    franklin_partial_child,
-    lyon_partial_child,
-    partial_member_report_matches,
-)
 from cre_inventory_generation import publish_series_health
 from cre_memory_guard import (
     DEFAULT_MEMORY_SAMPLE_SECONDS,
@@ -84,6 +77,13 @@ from cre_resource_recovery import (
     wait_for_cpu_recovery,
 )
 from cre_series_control import SeriesControlError, SeriesWorkStopped
+from reporting.partial_qualification import (
+    _exact_json_equal,
+    colliers_partial_child,
+    franklin_partial_child,
+    lyon_partial_child,
+    partial_member_report_matches,
+)
 
 _CLI_CONTROL_CAPABILITY = None
 

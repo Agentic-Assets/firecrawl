@@ -57,7 +57,8 @@ def test_root_layout_blocks_new_unclassified_modules_and_allows_migration():
     assert len(entrypoints) == len(policy["entrypoints"])
     assert len(legacy) == len(policy["legacy_modules"])
     assert not entrypoints & legacy
-    actual = {path.name for pattern in ("*.py", "*.ts") for path in ROOT.glob(pattern)}
+    patterns = ("*.py", "*.js", "*.mjs", "*.cjs", "*.ts", "*.tsx", "*.mts", "*.cts")
+    actual = {path.name for pattern in patterns for path in ROOT.glob(pattern)}
     assert not root_layout_errors(actual, entrypoints, legacy)
     assert not legacy - actual, "Remove migrated modules from the legacy baseline"
     assert not entrypoints - actual, "Remove relocated entrypoints from the root policy"
@@ -67,7 +68,8 @@ def test_root_layout_blocks_new_unclassified_modules_and_allows_migration():
             assert any(isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
                        and ast.unparse(node.test) in {"__name__ == '__main__'", '__name__ == "__main__"'}
                        for node in tree.body), f"{name} is not a direct entrypoint"
-    assert root_layout_errors(actual | {"unclassified_helper.py"}, entrypoints, legacy) == {"unclassified_helper.py"}
+    unclassified = {"unclassified_helper.py", "unclassified_helper.mjs"}
+    assert root_layout_errors(actual | unclassified, entrypoints, legacy) == unclassified
     moved = next(iter(legacy))
     assert not root_layout_errors(actual - {moved}, entrypoints, legacy - {moved})
     assert not root_layout_errors(actual | {"reviewed_cli.py"}, entrypoints | {"reviewed_cli.py"}, legacy)
