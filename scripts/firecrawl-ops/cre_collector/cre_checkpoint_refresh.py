@@ -8328,9 +8328,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
-    if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
+    if args.page_cap < 0 or args.page_cap > 9007199254740991 or not 1 <= args.concurrency <= 6:
         parser.error(
-            "page-cap must be positive and concurrency must be between 1 and 6"
+            "page-cap must be a nonnegative safe integer and concurrency must be between 1 and 6"
         )
     # Wider pools are opt-in for supervised calibration. Provider lanes,
     # exclusive sources, and coordinator-only admission still constrain them.

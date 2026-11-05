@@ -776,10 +776,11 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   let providerRowsScanned = 0;
   let mapRowsScanned = 0;
   let parseOmissions = 0;
+  let mapTotalsDisagree = false;
   let exhausted = false;
   const providerProjectIds = new Set<string>();
   let start = 1;
-  for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
+  for (let page = 1; (PAGE_CAP === 0 || page <= PAGE_CAP) && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
     let listData: any, mapData: any;
     try {
@@ -871,7 +872,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
           const last = Math.min(total, want);
           let tailStart = start + rangeSize;
           let tailPage = page + 1;
-          while (tailStart <= last && tailPage <= PAGE_CAP) {
+          while (tailStart <= last && (PAGE_CAP === 0 || tailPage <= PAGE_CAP)) {
             const tailSize = Math.min(COLLIERS_PAGE_SIZE, last - tailStart + 1);
             try {
               await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
@@ -929,6 +930,19 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       );
     }
     total = total ?? reportedTotal;
+    for (const field of ["total", "totalAvail"] as const) {
+      if (mapData?.[field] != null) {
+        const listValue = Number(listData?.[field]);
+        const mapValue = Number(mapData[field]);
+        const validCount = (raw: unknown, value: number) =>
+          (typeof raw === "number" || (typeof raw === "string" && /^\d+$/.test(raw))) &&
+          Number.isSafeInteger(value) && value >= 0;
+        if (!validCount(listData?.[field], listValue) ||
+            !validCount(mapData[field], mapValue) || mapValue !== listValue) {
+          mapTotalsDisagree = true;
+        }
+      }
+    }
     totalAvail =
       totalAvail ?? (Number.isFinite(Number(listData.totalAvail)) ? Number(listData.totalAvail) : null);
     const pageHtml = String(listData.html ?? "");
@@ -978,11 +992,13 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   const stoppedAtRequestedLimit =
     selected.length >= want && Number.isFinite(max);
   const providerTotalMismatch =
-    !Number.isFinite(max) &&
     total !== null &&
-    providerRowsScanned !== total;
+    (providerRowsScanned < Math.min(total, want) ||
+      providerRowsScanned > total ||
+      (Number.isFinite(max) && total > want));
   let truncated =
     parseOmissions > 0 ||
+    mapTotalsDisagree ||
     providerTotalMismatch ||
     (!exhausted && !stoppedAtRequestedLimit);
   let done = 0;

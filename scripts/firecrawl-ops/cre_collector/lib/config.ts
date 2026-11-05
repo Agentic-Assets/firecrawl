@@ -18,6 +18,10 @@ export const { values: flags } = parseArgs({
     "matthews-targeted-refresh": { type: "boolean" }, // caller-bound partial Matthews refresh
   },
 });
-export const PAGE_CAP = Math.max(1, Number(flags["page-cap"] ?? "60"));
+const pageCapText = flags["page-cap"] ?? "60";
+export const PAGE_CAP = Number(pageCapText);
+if (!/^\+?\d+$/.test(pageCapText) || !Number.isSafeInteger(PAGE_CAP) || PAGE_CAP < 0) {
+  throw new Error("page-cap must be a nonnegative safe integer (0 means unlimited)");
+}
 export const CONCURRENCY = Math.max(1, Math.min(6, Number(flags.concurrency ?? "3")));
 export const OUT_PATH = flags.out ?? null;
