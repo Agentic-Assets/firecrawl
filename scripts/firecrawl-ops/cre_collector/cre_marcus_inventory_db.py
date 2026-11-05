@@ -276,6 +276,8 @@ observed AS (
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
  WHERE b.slug='marcus-millichap' AND j.id={sql_lit(job)}::uuid AND j.status='partial'
  AND j.listings_discovered={len(staged)} AND j.listings_scraped={len(staged)} AND j.listings_saved={len(staged)-len(held)}
+ AND j.errors_count={receipt['detail_errors']}
+ AND j.notes='Marcus inventory observations; details unverified; coverage partial'
  AND j.started_at={sql_lit(receipt['started_at'])}::timestamptz AND j.completed_at={sql_lit(receipt['finished_at'])}::timestamptz) AS jobs,
  (SELECT count(*) FROM observed) AS observed,(SELECT count(*) FROM mismatch) AS mismatches
 """

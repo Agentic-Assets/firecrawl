@@ -102,6 +102,7 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='103'") == "0"
         assert sql(write, check=False).returncode != 0
         assert sql("BEGIN; UPDATE credeals.cre_listings SET status='active' WHERE external_id='102'; " + readback + "; ROLLBACK;") == "1|3|1"
+        assert sql("BEGIN; UPDATE credeals.cre_scrape_jobs SET errors_count=0 WHERE id='" + job + "'; " + readback + "; ROLLBACK;") == "0|3|0"
         sql("""
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,lat,lng,title,raw_data)
 SELECT id,'105','https://www.marcusmillichap.com/properties/105/source-name',
