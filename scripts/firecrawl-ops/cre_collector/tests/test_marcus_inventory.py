@@ -36,7 +36,7 @@ def test_inventory_preserves_unverified_observation_and_first_source_title():
     assert staged["detail_qualified"] is False
     assert staged["detail_error"] is True
     assert (staged["lat"], staged["lng"]) == (34.1, -118.2)
-    assert json.loads(base64.b64decode(staged["observation_base64"])) == source
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == {"listing": source, "brokers": []}
 
 
 @pytest.mark.parametrize("mutation", [
@@ -91,7 +91,7 @@ def test_settled_artifact_binds_attempt_bytes_and_preserves_coordinator_clock(tm
     row["inventoryObservedAt"] = (now - timedelta(minutes=1)).isoformat()
     data = {"runMeta": {"startedAt": attempt_start, "finishedAt": child_finish,
                        "freshness": {"generationId": GENERATION, "generationStartedAt": generation_start}},
-            "sources": [{"sourceKey": "marcus-millichap", "transaction": "sale", "listingsCollected": 1,
+            "brokers": [], "sources": [{"sourceKey": "marcus-millichap", "transaction": "sale", "listingsCollected": 1,
                          "freshness": {"detailErrors": 1}}], "listings": [row], "totalListings": 1}
     raw = json.dumps(data).encode()
     artifact = rejected / "marcus-millichap-attempt-1.json"
@@ -193,7 +193,7 @@ def test_candidate_exposes_inventory_without_claiming_detail_or_coverage():
     assert candidate["coverage"] == "partial_unknown"
     assert candidate["detailQualified"] == 0 and candidate["detailErrors"] == 1
     assert candidate["sources"][0]["truncated"] is True
-    assert candidate["listings"][0]["marcusInventoryRecord"] == listing()
+    assert candidate["listings"][0]["marcusInventoryRecord"] == {"listing": listing(), "brokers": []}
     assert "detailObservedAt" not in candidate["listings"][0]
 
 
@@ -212,3 +212,18 @@ def test_candidate_structure_rederives_identity_and_rejects_forged_wrapper():
     candidate["listings"][0]["id"] = "999"
     with pytest.raises(ValueError):
         candidate_structure(candidate)
+
+
+def test_referenced_brokers_are_retained_as_unverified_source_observations():
+    from cre_marcus_inventory import stage_envelope
+
+    source = listing()
+    source["brokerIds"] = [1, 1]
+    brokers = [{"name": "Other"}, {"name": "Source contact", "email": "test@example.invalid"}]
+    staged = stage_inventory(source, GENERATION, START, FINISH, brokers)
+    envelope = json.loads(base64.b64decode(staged["observation_base64"]))
+    assert envelope == {"listing": source, "brokers": [{"index": 1, "broker": brokers[1]}]}
+    assert stage_envelope(envelope, GENERATION, START, FINISH) == staged
+    envelope["brokers"] = []
+    with pytest.raises(ValueError):
+        stage_envelope(envelope, GENERATION, START, FINISH)

@@ -2,7 +2,7 @@
 import base64
 import json
 
-from cre_marcus_inventory import stage_inventory
+from cre_marcus_inventory import stage_envelope
 
 
 def validate_staged(staged, generation, started_at, finished_at):
@@ -13,7 +13,7 @@ def validate_staged(staged, generation, started_at, finished_at):
     for row in staged:
         try:
             original = json.loads(base64.b64decode(row["observation_base64"], validate=True))
-            derived = stage_inventory(original, generation, started_at, finished_at)
+            derived = stage_envelope(original, generation, started_at, finished_at)
         except (KeyError, TypeError, ValueError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("invalid Marcus inventory observation") from exc
         if (row != derived or row["external_id"] in identifiers or row["activity_id"] in activities

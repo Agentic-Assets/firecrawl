@@ -129,7 +129,7 @@ def verify_candidate_artifact(artifact_path, manifest, *, current_code_sha, curr
 def candidate_structure(data):
     """Check the candidate's own structure; source custody remains separate."""
     import re
-    from cre_marcus_inventory import stage_inventory
+    from cre_marcus_inventory import stage_envelope
     from cre_marcus_inventory_db import validate_staged
 
     if not isinstance(data, dict) or not isinstance(data.get("binding"), dict):
@@ -159,7 +159,7 @@ def candidate_structure(data):
     for listing in data["listings"]:
         if not isinstance(listing, dict) or set(listing) != {"sourceKey", "id", "url", "marcusInventoryRecord"}:
             raise ValueError("Marcus inventory candidate listing invalid")
-        staged.append(stage_inventory(listing["marcusInventoryRecord"], binding["generation"],
+        staged.append(stage_envelope(listing["marcusInventoryRecord"], binding["generation"],
                                       binding["startedAt"], binding["finishedAt"]))
     validate_staged(staged, binding["generation"], binding["startedAt"], binding["finishedAt"])
     generation_start = data["runMeta"]["freshness"]["generationStartedAt"]

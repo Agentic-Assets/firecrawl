@@ -81,7 +81,7 @@ def _source_url(value, native):
     return url
 
 
-def stage_inventory(listing, generation, started_at, finished_at):
+def stage_inventory(listing, generation, started_at, finished_at, brokers=None):
     """Re-derive map/tile identity without trusting fetched detail attribution."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != SOURCE:
         raise ValueError("Marcus source differs")
@@ -128,8 +128,25 @@ def stage_inventory(listing, generation, started_at, finished_at):
             raise ValueError("invalid coordinates")
     except (TypeError, ValueError, OverflowError):
         latitude, longitude = None, None
+    refs = listing.get("brokerIds") or []
+    if not isinstance(refs, list) or any(type(index) is not int or index < 0 for index in refs):
+        raise ValueError("Marcus broker references invalid")
+    if brokers is None:
+        brokers = []
+    if not isinstance(brokers, (list, dict)):
+        raise ValueError("Marcus broker table invalid")
+    attached = []
+    for index in sorted(set(refs)):
+        try:
+            broker = brokers[index]
+        except (IndexError, KeyError, TypeError) as exc:
+            raise ValueError("Marcus broker reference missing") from exc
+        if not isinstance(broker, dict):
+            raise ValueError("Marcus broker record invalid")
+        attached.append({"index": index, "broker": broker})
     try:
-        observation = json.dumps(listing, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+        observation = json.dumps({"listing": listing, "brokers": attached}, sort_keys=True,
+                                 separators=(",", ":"), ensure_ascii=True, allow_nan=False)
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("Marcus source observation cannot be retained") from exc
     return {"external_id": native, "activity_id": activity, "source_url": url,
@@ -139,7 +156,7 @@ def stage_inventory(listing, generation, started_at, finished_at):
             "observation_base64": base64.b64encode(observation.encode("ascii")).decode("ascii")}
 
 
-def partition_inventory(listings, generation, started_at, finished_at):
+def partition_inventory(listings, generation, started_at, finished_at, brokers=None):
     """Keep identifiable peers, holding all witnessed native-ID/URL collisions."""
     if not isinstance(listings, list):
         raise ValueError("Marcus inventory partition invalid")
@@ -173,7 +190,7 @@ def partition_inventory(listings, generation, started_at, finished_at):
                 for value in seen:
                     witnesses[kind][value] = witnesses[kind].get(value, 0) + 1
         try:
-            staged.append((index, stage_inventory(listing, generation, started_at, finished_at)))
+            staged.append((index, stage_inventory(listing, generation, started_at, finished_at, brokers)))
         except (TypeError, ValueError, KeyError, RecursionError):
             held.append({"index": index, "reason": "unqualified_inventory_identity"})
     accepted = []
@@ -258,7 +275,10 @@ def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sh
             or sale[0]["freshness"]["detailErrors"] < 1
             or sale[0]["freshness"]["detailErrors"] != sum(bool(row.get("detailError")) for row in rows if isinstance(row, dict))):
         raise ValueError("Marcus source outcome differs")
-    partition = partition_inventory(rows, run_dir.name, meta["startedAt"], meta["finishedAt"])
+    brokers = data.get("brokers")
+    if not isinstance(brokers, list):
+        raise ValueError("Marcus broker table missing")
+    partition = partition_inventory(rows, run_dir.name, meta["startedAt"], meta["finishedAt"], brokers)
     return {"schema": "marcus-inventory-custody/v1", "source": SOURCE, "generation": run_dir.name,
             "attempt": attempt_number, "generation_started_at": manifest["started_at"],
             "source_sha256": digest, "source_bytes": size,
@@ -299,3 +319,20 @@ def candidate_data(source):
                         {"sourceKey": SOURCE, "transaction": "lease", "supported": False,
                          "truncated": True, "listingsCollected": 0}],
             "listings": listings, "brokers": [], "totalListings": len(listings)}
+
+
+def stage_envelope(envelope, generation, started_at, finished_at):
+    """Recheck a listing and the exact source table members it referenced."""
+    if not isinstance(envelope, dict) or set(envelope) != {"listing", "brokers"}:
+        raise ValueError("Marcus observation envelope invalid")
+    attached = envelope["brokers"]
+    if (not isinstance(attached, list) or any(not isinstance(item, dict) or set(item) != {"index", "broker"}
+            or type(item["index"]) is not int or item["index"] < 0 or not isinstance(item["broker"], dict)
+            for item in attached)
+            or [item["index"] for item in attached] != sorted({item["index"] for item in attached})):
+        raise ValueError("Marcus observation broker custody invalid")
+    staged = stage_inventory(envelope["listing"], generation, started_at, finished_at,
+                             {item["index"]: item["broker"] for item in attached})
+    if json.loads(base64.b64decode(staged["observation_base64"], validate=True)) != envelope:
+        raise ValueError("Marcus observation broker references differ")
+    return staged
