@@ -720,6 +720,7 @@ export function mapDaumListing(
     daumObservedCanonicalUrl: detail.observedCanonicalUrl,
     daumSearchCard: inventory,
     daumTitleFallback: detail.titleFallback,
+    daumTitleFallbackDetail: detail.titleFallback ? detail : undefined,
     preserveChildCollections: detail.titleFallback ? true : undefined,
     detailObservedWithChildPreservation: detail.titleFallback ? true : undefined,
     detailFacts: detail.facts,

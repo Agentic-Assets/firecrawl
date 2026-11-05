@@ -2094,6 +2094,17 @@ def _pipeline_member_report_matches(
                 and binding.get("whole_source_coverage") is False)
     staged = artifact["staged_unique"]
     binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+    if source == "daum-commercial" and "target_held" in binding:
+        from cre_daum_fallback_partition import bound_held_count
+        try:
+            held = bound_held_count(binding, checkpoint)
+            emitted = binding["emitted_count"]
+            if (type(staged) is not int or staged != emitted + held
+                    or binding.get("artifact_sha256") != artifact.get("sha256")):
+                return False
+            staged = emitted
+        except (KeyError, TypeError, ValueError):
+            return False
     if source == "pyramid-brokerage" and binding.get("schema") == "pyramid-incomplete-v2":
         if not allow_pyramid_v2:
             return False

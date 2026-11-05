@@ -879,6 +879,26 @@ def _admit(
                 transaction_guard_sql(fallback_members, probe["partition"])
                 binding["title_fallback_observations_sha256"] = _sha(proof["titleFallbackObservations"])
                 binding["fallback_partition_sha256"] = _sha(probe["partition"])
+                target_held = [
+                    {"native_id": row["native_id"], "external_id": row["external_id"], "reason": row["hold_reason"]}
+                    for row in probe["partition"] if row["hold_reason"] is not None
+                ]
+                target_held_ids = {row["native_id"] for row in target_held}
+                target_held_keys = {row["external_id"] for row in target_held}
+                binding.update(
+                    source_emitted_count=emitted_total,
+                    source_held_count=len(held_ids),
+                    source_staged_identities_sha256=binding["staged_identities_sha256"],
+                    target_held=target_held,
+                    emitted_count=emitted_total - len(target_held_ids),
+                    flat_emitted_count=sum(1 for row in listings if row["daumPostId"] not in target_held_ids),
+                    staged_count=len(staged) - len(target_held_keys),
+                    staged_identities_sha256=_sha([row for row in staged_identities if row[0] not in target_held_keys]),
+                    held_count=len(held_ids) + len(target_held_ids),
+                    sale_count=len((expected["sale"] - retained_ids) - target_held_ids),
+                    lease_count=len(expected["lease"] - target_held_ids),
+                    whole_lease_coverage="unknown" if held or target_held_ids else "proved",
+                )
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")

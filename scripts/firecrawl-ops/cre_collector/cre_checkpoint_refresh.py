@@ -6861,6 +6861,10 @@ def verify_validation_readback(
             continue
         try:
             staged = int(artifact["staged_unique"])
+            if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+                binding = checkpoint["gate"]["current_inventory_proof"]
+                if "target_held" in binding:
+                    staged = int(binding["emitted_count"])
             if source == "pyramid-brokerage" and pyramid_subset_candidate(manifest, source):
                 binding = checkpoint["gate"]["current_inventory_proof"]
                 if binding.get("schema") == "pyramid-incomplete-v2":

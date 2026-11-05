@@ -72,8 +72,8 @@ def guard_sql(claims):
     require(
         urls == sorted(set(urls))
         and emitted >= 100
-        and emitted == binding.get("emitted_count")
-        and len(members) - emitted == binding.get("held_count")
+        and emitted == binding.get("source_emitted_count", binding.get("emitted_count"))
+        and len(members) - emitted == binding.get("source_held_count", binding.get("held_count"))
     )
     fallback_members = claims.get("fallbackMembers", [])
     fallback_partition = claims.get("fallbackPartition", [])
@@ -93,6 +93,7 @@ def guard_sql(claims):
         "WHERE h.brokerage_id=s.brokerage_id AND h.external_id=s.external_id)"
         if fallback_members else ""
     )
+    staged_filter = held_filter.replace("_daum_fallback_held", "_daum_fallback_skipped")
     payload = sql_lit(json.dumps(members, separators=(",", ":")))
     return f"""
 -- DAUM verified subset: exhaustive incoming identities, including held members.
@@ -110,9 +111,9 @@ BEGIN
   IF (SELECT count(*) FROM _daum_subset_members) <> {len(members)}
      OR EXISTS (
        (SELECT brokerage_id, external_id, source_url FROM _src
-        EXCEPT SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{held_filter})
+        EXCEPT SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{staged_filter})
        UNION ALL
-       (SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{held_filter}
+       (SELECT brokerage_id, external_id, source_url FROM _daum_subset_members s WHERE emitted{staged_filter}
         EXCEPT SELECT brokerage_id, external_id, source_url FROM _src)
      ) THEN
     RAISE EXCEPTION 'DAUM subset staging does not equal emitted identities';

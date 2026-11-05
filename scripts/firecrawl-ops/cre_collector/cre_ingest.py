@@ -1280,12 +1280,21 @@ def is_daum_title_fallback(listing):
     """Identify a source-corroborated sparse detail; admission still binds its proof."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != "daum-commercial":
         return False
+    if any(key in listing for key in ("daumTitleFallbackHistory", "latestDaumTitleFallbackObservation",
+                                      "daumFreshnessOwner")):
+        return False
     evidence, card = listing.get("daumTitleFallback"), listing.get("daumSearchCard")
-    if not isinstance(evidence, dict) or set(evidence) != {"cardTitle", "documentTitle"} or not isinstance(card, dict):
+    detail = listing.get("daumTitleFallbackDetail")
+    if not isinstance(evidence, dict) or set(evidence) != {"cardTitle", "documentTitle"} or not isinstance(card, dict) or not isinstance(detail, dict):
         return False
     title = evidence.get("cardTitle")
     return (isinstance(title, str) and bool(title.strip()) and title == title.strip()
             and evidence.get("documentTitle") == f"{title} – Daum Commercial"
+            and detail.get("titleFallback") == evidence
+            and str(detail.get("postId")) == listing.get("daumPostId")
+            and detail.get("observedCanonicalUrl") == listing.get("url")
+            and detail.get("availableSpaceObservations") == listing.get("daumAvailableSpaceObservations")
+            and detail.get("facts") == listing.get("detailFacts")
             and card.get("title") == listing.get("name") == listing.get("street") == title
             and card.get("url") == listing.get("url") == listing.get("canonicalUrl") == listing.get("daumObservedCanonicalUrl")
             and all(listing.get(key) is None for key in ("city", "state", "postalCode"))
@@ -4015,7 +4024,9 @@ def build_sql(
 ):
     # WIP: do not permit fallback rows to use the ordinary overwrite/revival
     # policy before their source-specific target partition is connected.
-    if any("daumTitleFallback" in json.dumps(row.get("raw_data") or {}) for row in rows):
+    if (any("daumTitleFallback" in json.dumps(row.get("raw_data") or {}) for row in rows)
+            and not (isinstance(daum_verified_subset_claims, dict)
+                     and daum_verified_subset_claims.get("fallbackMembers"))):
         raise ValueError("DAUM title fallback requires guarded partial persistence")
     from cre_essex_identity import (
         historical_claims_sql,
@@ -4061,6 +4072,50 @@ def build_sql(
         daum_fallback_guard = transaction_guard_sql(
             daum_verified_subset_claims["fallbackMembers"],
             daum_verified_subset_claims["fallbackPartition"], filter_src=True)
+    daum_fallback_update = ""
+    if daum_fallback_guard:
+        daum_fallback_update = """
+DO $$
+DECLARE updated_count bigint;
+BEGIN
+ IF EXISTS (
+   SELECT 1 FROM _daum_fallback_apply a JOIN credeals.cre_listings t
+     ON t.brokerage_id=a.brokerage_id AND t.external_id=a.external_id
+   WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object'
+      OR (t.raw_data ? 'daumTitleFallbackHistory'
+          AND jsonb_typeof(t.raw_data->'daumTitleFallbackHistory') IS DISTINCT FROM 'array')
+      OR jsonb_typeof(jsonb_path_query_first(a.raw_data, '$.**.freshnessProvenance')) IS DISTINCT FROM 'object'
+ ) THEN RAISE EXCEPTION 'DAUM fallback evidence parent or provenance invalid'; END IF;
+ UPDATE credeals.cre_listings t SET raw_data =
+   t.raw_data || jsonb_build_object(
+     'daumTitleFallbackHistory',
+       COALESCE(t.raw_data->'daumTitleFallbackHistory', '[]'::jsonb) ||
+       CASE WHEN EXISTS (
+         SELECT 1 FROM jsonb_array_elements(COALESCE(t.raw_data->'daumTitleFallbackHistory', '[]'::jsonb)) prior
+         WHERE prior->>'rawSha256' = encode(sha256(convert_to(a.raw_data::text, 'UTF8')), 'hex')
+           AND prior->>'rawBase64' = encode(convert_to(a.raw_data::text, 'UTF8'), 'base64')
+       ) THEN '[]'::jsonb ELSE jsonb_build_array(jsonb_build_object(
+         'inventoryObservedAt', a.fallback_inventory_at,
+         'detailObservedAt', a.fallback_detail_at,
+         'rawBase64', encode(convert_to(a.raw_data::text, 'UTF8'), 'base64'),
+         'rawSha256', encode(sha256(convert_to(a.raw_data::text, 'UTF8')), 'hex'))) END,
+     'latestDaumTitleFallbackObservation', jsonb_build_object(
+       'sourceKey', 'daum-commercial',
+       'inventoryObservedAt', a.fallback_inventory_at,
+       'detailObservedAt', a.fallback_detail_at,
+       'freshnessProvenance', jsonb_path_query_first(a.raw_data, '$.**.freshnessProvenance')),
+     'daumFreshnessOwner', 'title_fallback')
+ FROM _daum_fallback_apply a
+ WHERE t.brokerage_id=a.brokerage_id AND t.external_id=a.external_id;
+ GET DIAGNOSTICS updated_count = ROW_COUNT;
+ IF updated_count <> (SELECT count(*) FROM _daum_fallback_apply)
+ THEN RAISE EXCEPTION 'DAUM fallback evidence targets changed'; END IF;
+END $$;
+UPDATE credeals.cre_scrape_jobs j
+ SET status='partial', listings_saved=jm.saved-(SELECT count(*) FROM _daum_fallback_held)
+ FROM _jobmeta jm
+ WHERE jm.slug='daum-commercial' AND j.id=jm.job_id;
+"""
     pyramid_subset_guard = ""
     if pyramid_verified_subset_claims is not None:
         if targeted or daum_verified_subset_claims is not None or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
@@ -5131,6 +5186,22 @@ FROM _src s
 LEFT JOIN credeals.cre_source_index si
   ON si.brokerage_id = s.brokerage_id AND si.external_id = s.external_id;
 
+-- Preserve DAUM fallback native observations across later ordinary upserts.
+CREATE TEMP TABLE _daum_fallback_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'daumTitleFallbackHistory' AS evidence,
+       t.raw_data->'latestDaumTitleFallbackObservation' AS latest
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='daum-commercial' AND jsonb_typeof(t.raw_data)='object'
+ AND t.raw_data ? 'daumTitleFallbackHistory';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='daum-commercial'
+    AND (s.raw_data ? 'daumTitleFallbackHistory'
+         OR s.raw_data ? 'latestDaumTitleFallbackObservation'
+         OR s.raw_data ? 'daumFreshnessOwner'))
+ THEN RAISE EXCEPTION 'DAUM fallback evidence key collision'; END IF;
+END $$;
+
 -- Preserve source-native Colliers evidence across later full upserts. The
 -- source-specific bounded partial path reserves this member; any incoming
 -- collision is ambiguous and must roll back instead of overwriting either.
@@ -5460,6 +5531,9 @@ WITH ins AS (
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages db WHERE db.id=EXCLUDED.brokerage_id AND db.slug='daum-commercial')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
                                   'latestDaumUnknownTenureObservation', EXCLUDED.raw_data)
+                                  || CASE WHEN t.raw_data ? 'daumTitleFallbackHistory'
+                                     THEN jsonb_build_object('daumFreshnessOwner', 'unknown_tenure')
+                                     ELSE '{}'::jsonb END
                               WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
@@ -5604,6 +5678,18 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',p.evidence)
 FROM _colliers_native_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _daum_fallback_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'DAUM fallback evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object(
+   'daumTitleFallbackHistory', p.evidence,
+   'latestDaumTitleFallbackObservation', p.latest)
+FROM _daum_fallback_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+{daum_fallback_update}
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
@@ -5785,6 +5871,7 @@ END $$;
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
+        .replace("{daum_fallback_update}", daum_fallback_update)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
         .replace("{pyramid_guard_sql}", pyramid_guard_sql)
         .replace("{jll_partial_guard}", jll_partial_guard)

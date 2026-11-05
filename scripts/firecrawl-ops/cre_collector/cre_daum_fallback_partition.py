@@ -104,18 +104,35 @@ WITH candidate AS (
       ) THEN 'identity_conflict'
       WHEN own.id IS NOT NULL AND (
         own.deleted_at IS NOT NULL OR own.status::text IS DISTINCT FROM 'active'
-        OR own.canonical_url IS DISTINCT FROM c.source_url
+        OR (own.canonical_url IS NOT NULL AND own.canonical_url IS DISTINCT FROM c.source_url)
         OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
         OR NOT jsonb_path_exists(own.raw_data, '$.**.sourceKey ? (@ == "daum-commercial")')
         OR ARRAY(SELECT DISTINCT v #>> '{{}}' FROM jsonb_path_query(own.raw_data, '$.**.daumPostId') v)
            IS DISTINCT FROM ARRAY[c.native_id]
       ) THEN 'existing_parent_unqualified'
+      WHEN own.id IS NOT NULL AND (
+        (own.raw_data ? 'daumTitleFallbackHistory'
+         AND jsonb_typeof(own.raw_data->'daumTitleFallbackHistory') IS DISTINCT FROM 'array')
+        OR (own.raw_data ? 'latestDaumTitleFallbackObservation'
+            AND (jsonb_typeof(own.raw_data->'latestDaumTitleFallbackObservation') IS DISTINCT FROM 'object'
+                 OR own.raw_data#>>'{{latestDaumTitleFallbackObservation,sourceKey}}' IS DISTINCT FROM 'daum-commercial'
+                 OR NOT COALESCE(pg_input_is_valid(
+                   own.raw_data#>>'{{latestDaumTitleFallbackObservation,inventoryObservedAt}}',
+                   'timestamp with time zone'), false)
+                 OR NOT COALESCE(pg_input_is_valid(
+                   own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}',
+                   'timestamp with time zone'), false)))
+      ) THEN 'existing_evidence_unqualified'
       WHEN si.id IS NOT NULL AND (
         si.soft_deleted IS DISTINCT FROM false OR si.observation_present IS DISTINCT FROM true
         OR si.source_key IS DISTINCT FROM 'daum-commercial'
       ) THEN 'source_index_unqualified'
       WHEN own.id IS NULL AND si.id IS NOT NULL THEN 'orphan_source_index'
       WHEN own.scraped_at > c.detail_at OR si.last_enumerated_at > c.inventory_at
+        OR CASE WHEN own.raw_data ? 'latestDaumTitleFallbackObservation'
+          THEN (own.raw_data#>>'{{latestDaumTitleFallbackObservation,inventoryObservedAt}}')::timestamptz > c.inventory_at
+            OR (own.raw_data#>>'{{latestDaumTitleFallbackObservation,detailObservedAt}}')::timestamptz > c.detail_at
+          ELSE false END
         THEN 'newer_target_observation'
       ELSE NULL
     END AS hold_reason,
@@ -154,7 +171,7 @@ def transaction_guard_sql(members, partition, *, filter_src=False):
                 or any(item[k] != expected[key][k] for k in ("native_id", "external_id", "source_url"))
                 or item["hold_reason"] not in (None, "identity_conflict", "existing_parent_unqualified",
                                                "source_index_unqualified", "orphan_source_index",
-                                               "newer_target_observation")
+                                               "newer_target_observation", "existing_evidence_unqualified")
                 or not isinstance(item["preimage"], str)
                 or not re.fullmatch(r"[a-f0-9]{64}", item["preimage"])):
             raise ValueError("DAUM fallback partition entry differs")
@@ -199,6 +216,11 @@ DO $$
 BEGIN
  IF (SELECT count(*) FROM _daum_fallback_partition) <> {len(members)}
  OR EXISTS (
+   SELECT 1 FROM _src s WHERE jsonb_path_exists(s.raw_data, '$.**.daumTitleFallback')
+     AND NOT EXISTS (SELECT 1 FROM _daum_fallback_members m
+                     WHERE m.brokerage_id=s.brokerage_id AND m.external_id=s.external_id)
+ )
+ OR EXISTS (
    SELECT 1 FROM _daum_fallback_members m
    LEFT JOIN _src s ON s.brokerage_id=m.brokerage_id AND s.external_id=m.external_id
    WHERE s.external_id IS NULL OR s.source_url IS DISTINCT FROM m.source_url
@@ -213,7 +235,18 @@ SELECT m.brokerage_id, m.external_id, m.native_id, p.hold_reason
 FROM _daum_fallback_members m JOIN _daum_fallback_partition p
   ON p.external_id=m.external_id
 WHERE p.hold_reason IS NOT NULL;
-DELETE FROM _src s USING _daum_fallback_held h
+CREATE TEMP TABLE _daum_fallback_apply ON COMMIT DROP AS
+SELECT s.*, m.inventory_at AS fallback_inventory_at, m.detail_at AS fallback_detail_at,
+       t.id AS fallback_parent_id
+FROM _daum_fallback_members m JOIN _daum_fallback_partition p
+  ON p.external_id=m.external_id AND p.hold_reason IS NULL
+JOIN _src s ON s.brokerage_id=m.brokerage_id AND s.external_id=m.external_id
+LEFT JOIN credeals.cre_listings t ON t.brokerage_id=m.brokerage_id AND t.external_id=m.external_id;
+CREATE TEMP TABLE _daum_fallback_skipped ON COMMIT DROP AS
+SELECT brokerage_id, external_id FROM _daum_fallback_held
+UNION ALL
+SELECT brokerage_id, external_id FROM _daum_fallback_apply WHERE fallback_parent_id IS NOT NULL;
+DELETE FROM _src s USING _daum_fallback_skipped h
  WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
 """
     return sql
@@ -263,3 +296,46 @@ def run_identity_probe(artifact_path, artifact_sha256, generation, producer, tar
     return {"artifact_sha256": artifact_sha256, "generation_id": generation,
             "producer_sha": producer, "database_target_sha256": target_sha256,
             "members_sha256": member_hash, "partition": partition}
+
+def bound_held_count(binding, checkpoint):
+    """Recheck the published target-held partition against its saved probe."""
+    import re
+
+    from cre_daum_current_inventory import _path_key, _post, _sha
+
+    probe = checkpoint.get("daum_fallback_probe")
+    if not isinstance(binding, dict) or not isinstance(probe, dict):
+        raise ValueError("DAUM fallback publication binding missing")
+    partition = probe.get("partition")
+    if (not isinstance(partition, list) or _sha(partition) != binding.get("fallback_partition_sha256")
+            or probe.get("artifact_sha256") != binding.get("artifact_sha256")
+            or probe.get("generation_id") != binding.get("generation_id")
+            or probe.get("producer_sha") != binding.get("collector_git_sha")
+            or probe.get("database_target_sha256") != binding.get("database_target_sha256")):
+        raise ValueError("DAUM fallback publication binding differs")
+    held = []
+    seen, keys = set(), []
+    for item in partition:
+        if (not isinstance(item, dict) or set(item) != {"native_id", "external_id", "source_url", "hold_reason", "preimage"}
+                or not isinstance(item.get("native_id"), str) or not isinstance(item.get("external_id"), str)
+                or item["native_id"] in seen or item["external_id"] in keys
+                or item["hold_reason"] not in (None, "identity_conflict", "existing_parent_unqualified",
+                                               "source_index_unqualified", "orphan_source_index",
+                                               "newer_target_observation", "existing_evidence_unqualified")
+                or not isinstance(item.get("preimage"), str) or not re.fullmatch(r"[a-f0-9]{64}", item["preimage"])):
+            raise ValueError("DAUM fallback publication partition invalid")
+        _post(item["native_id"])
+        if _path_key(item["source_url"]) != item["external_id"]:
+            raise ValueError("DAUM fallback publication URL differs")
+        seen.add(item["native_id"])
+        keys.append(item["external_id"])
+        if item["hold_reason"] is not None:
+            held.append({"native_id": item["native_id"], "external_id": item["external_id"], "reason": item["hold_reason"]})
+    if keys != sorted(keys) or held != binding.get("target_held"):
+        raise ValueError("DAUM fallback held partition differs")
+    source_emitted, emitted = binding.get("source_emitted_count"), binding.get("emitted_count")
+    source_held, total_held = binding.get("source_held_count"), binding.get("held_count")
+    if (any(type(value) is not int or value < 0 for value in (source_emitted, emitted, source_held, total_held))
+            or emitted != source_emitted - len(held) or total_held != source_held + len(held)):
+        raise ValueError("DAUM fallback publication counts differ")
+    return len(held)

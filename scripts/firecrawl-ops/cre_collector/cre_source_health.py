@@ -413,6 +413,9 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
         scope = _mapping(child.get("scope"))
         source = _source_checkpoint(child, "daum-commercial")
         binding = _mapping(_mapping(source.get("gate")).get("current_inventory_proof"))
+        if "target_held" in binding:
+            from cre_daum_fallback_partition import bound_held_count
+            bound_held_count(binding, source)
         start, observed, finished = (_parse_timestamp(value) for value in
             (child.get("started_at"), observation, child.get("finished_at")))
         return (

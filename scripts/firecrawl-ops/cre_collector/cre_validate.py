@@ -325,9 +325,13 @@ def persisted_freshness_provenance(raw_data, *, source_key=None):
     if not isinstance(raw_data, dict):
         return empty
     paths = FRESHNESS_PAYLOAD_PATHS
+    fallback = _raw_payload_at(raw_data, ("latestDaumTitleFallbackObservation",))
+    if (source_key == "daum-commercial" and raw_data.get("daumFreshnessOwner") == "title_fallback"
+            and fallback is not None and fallback.get("sourceKey") == "daum-commercial"):
+        paths = (("latestDaumTitleFallbackObservation",), *paths)
     daum = _raw_payload_at(raw_data, ("latestDaumUnknownTenureObservation",))
-    if (source_key == "daum-commercial" and daum is not None
-            and daum.get("sourceKey") == "daum-commercial"
+    if (source_key == "daum-commercial" and raw_data.get("daumFreshnessOwner") != "title_fallback"
+            and daum is not None and daum.get("sourceKey") == "daum-commercial"
             and daum.get("daumUnknownTenure") is True):
         paths = (("latestDaumUnknownTenureObservation",), *paths)
     for path in paths:
@@ -374,6 +378,13 @@ def _raw_json_object(alias, path):
 def _freshness_payload_sql(alias, *, source_key_expr=None):
     branches = []
     if source_key_expr is not None:
+        fallback = _raw_json_object(alias, ("latestDaumTitleFallbackObservation",))
+        branches.append(
+            f"WHEN {source_key_expr} = 'daum-commercial' "
+            f"AND {alias}.raw_data->>'daumFreshnessOwner' = 'title_fallback' "
+            f"AND jsonb_typeof({fallback}) = 'object' "
+            f"AND {fallback}->>'sourceKey' = 'daum-commercial' THEN {fallback}"
+        )
         payload = _raw_json_object(alias, ("latestDaumUnknownTenureObservation",))
         values = [
             f"{payload}->'inventoryObservedAt'",

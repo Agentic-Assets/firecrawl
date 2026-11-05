@@ -95,6 +95,9 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
     listing = next(item for item in artifact["listings"] if item["daumPostId"] == "50100")
     assert listing["name"] == "Synthetic 100" and listing["daumSearchCard"]["title"] == listing["name"]
     assert all(not listing.get(key) for key in ("city", "state", "postalCode"))
+    assert listing["daumTitleFallbackDetail"]["city"] == "Phoenix"
+    assert listing["daumTitleFallbackDetail"]["state"] == "AZ"
+    assert listing["daumTitleFallbackDetail"]["availableSpaceObservations"] == listing["daumAvailableSpaceObservations"]
     assert "$6,600 per month" in listing["daumAvailableSpaceObservations"][0]["text"]
     from cre_daum_current_inventory import _sha
     from cre_daum_fallback_partition import staged_fallback_members
@@ -108,6 +111,14 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
         "partition": [{**{k: member[k] for k in ("native_id", "external_id", "source_url")},
                        "hold_reason": None, "preimage": "f" * 64} for member in members],
     }
+    import copy
+    held_prepared = copy.deepcopy(prepared)
+    held_prepared[3]["sources"]["daum-commercial"]["daum_fallback_probe"]["partition"][0]["hold_reason"] = "identity_conflict"
+    held_binding = admit(held_prepared)
+    assert held_binding["source_emitted_count"] == 101
+    assert held_binding["emitted_count"] == 100 and held_binding["held_count"] == 1
+    assert held_binding["target_held"] == [{"native_id": "50100", "external_id": listing["id"], "reason": "identity_conflict"}]
+    assert held_binding["whole_lease_coverage"] == "unknown"
     binding = admit(prepared)
     assert binding["emitted_count"] == 101 and binding["held_count"] == 0
     from cre_daum_fallback_partition import staged_fallback_members
@@ -124,9 +135,22 @@ def test_corroborated_empty_visible_title_is_bound_to_card_and_detail(tmp_path, 
         daum_verified_subset=True,
     )
     assert stats["staged_unique"] == 101
+    from test_daum_verified_subset import context, envelope
+    from cre_ingest import build_sql, merge_rows, to_row
+    claims = context(prepared, envelope(prepared))
+    assert claims["fallbackMembers"] == members
+    staged = {}
+    for source_listing in artifact["listings"]:
+        row = to_row(source_listing, {}, artifact["runMeta"]["finishedAt"])
+        key = row["external_id"]
+        staged[key] = merge_rows(staged[key], row) if key in staged else row
+    generated_sql = build_sql(list(staged.values()), [], manifest["started_at"], set(),
+                              daum_verified_subset_claims=claims)
+    assert generated_sql.index("DAUM fallback partition changed") < generated_sql.index("DAUM identity contradiction")
+    assert "DAUM fallback evidence targets changed" in generated_sql
 
 
-@pytest.mark.parametrize("fault", ["page_title", "card_title", "listing_title", "unexpected_city", "missing_witness", "duplicate_witness", "foreign_post"])
+@pytest.mark.parametrize("fault", ["page_title", "card_title", "listing_title", "unexpected_city", "missing_witness", "duplicate_witness", "foreign_post", "missing_detail", "detail_post"])
 def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
     import copy
     from test_daum_current_inventory import produce
@@ -149,6 +173,8 @@ def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
     if fault == "card_title": listing["daumSearchCard"]["title"] = "Different"
     elif fault == "listing_title": listing["name"] = "Different"
     elif fault == "unexpected_city": listing["city"] = "AL"
+    elif fault == "missing_detail": listing.pop("daumTitleFallbackDetail")
+    elif fault == "detail_post": listing["daumTitleFallbackDetail"]["postId"] = 59999
     helpers.refresh(prepared[1], artifact, prepared[3])
     with pytest.raises(ValueError):
         admit(prepared)
@@ -261,6 +287,50 @@ def test_v2_partial_summary_is_not_a_complete_source_result(tmp_path, monkeypatc
     assert result["partial"] is True
     assert result["whole_source_coverage"] is False
     assert result["whole_lease_coverage"] == "unknown"
+
+
+def test_target_held_fallback_summary_is_bound_and_keeps_verified_peers(tmp_path, monkeypatch):
+    import test_daum_subset_reporting as fixture
+    import test_notification_summary as summary
+    import cre_checkpoint_series as series
+    from cre_daum_current_inventory import _sha
+
+    evidence = fixture.evidence.__wrapped__(tmp_path, monkeypatch)
+    parent, child = evidence["values"]["parent"], evidence["values"]["child"]
+    parent["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+    child["config"] = series._expected_child_config("daum-commercial", parent["config"])
+    checkpoint = child["sources"]["daum-commercial"]
+    gate = checkpoint["gate"]
+    gate["admission_scope"] = "daum_verified_subset_v2"
+    partition = [{"native_id": "50100", "external_id": "property/example",
+                  "source_url": "https://daumcommercial.com/property/example/",
+                  "hold_reason": "identity_conflict", "preimage": "f" * 64}]
+    checkpoint["daum_fallback_probe"] = {
+        "artifact_sha256": checkpoint["artifact"]["sha256"], "generation_id": child["run_id"],
+        "producer_sha": child["collector_git_sha"],
+        "database_target_sha256": child["preflight"]["database_target"]["value"],
+        "members_sha256": "a" * 64, "partition": partition,
+    }
+    checkpoint["artifact"]["staged_unique"] = 101
+    binding = gate["current_inventory_proof"]
+    binding.update(schema="daum-verified-subset-v2", scope="daum_verified_subset_v2",
+                   subset_policy="tenure-and-empty-title-v2", title_observations_sha256="a" * 64,
+                   source_emitted_count=101, source_held_count=1, fallback_partition_sha256=_sha(partition),
+                   target_held=[{"native_id": "50100", "external_id": "property/example", "reason": "identity_conflict"}],
+                   sale_count=100, lease_count=0)
+    evidence["save"]()
+    result = summary.read(evidence)
+    assert result["partial"] is True and result["emitted_count"] == 100 and result["held_count"] == 2
+    assert result["transaction_breakdown"]["sale"] == 100
+    from cre_source_health import _qualified_subset_attempt
+    assert _qualified_subset_attempt(parent["sources"]["daum-commercial"], child, child["finished_at"],
+                                     computed_at=child["finished_at"], source_key="daum-commercial")
+    checkpoint["daum_fallback_probe"]["partition"][0]["hold_reason"] = None
+    assert not _qualified_subset_attempt(parent["sources"]["daum-commercial"], child, child["finished_at"],
+                                         computed_at=child["finished_at"], source_key="daum-commercial")
+    evidence["save"]()
+    with pytest.raises(summary.REFUSED):
+        summary.read(evidence)
 
 
 def test_actual_v2_sealed_gates_reach_exact_staging_sql(v2):
