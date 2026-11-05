@@ -45,6 +45,8 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
             or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o600):
         raise ValueError("NAI source artifact custody invalid")
+    if st.st_size > 128 * 1024 * 1024:
+        raise NaiSourceProbeRefusal("NAI source artifact exceeds the shared evidence reader bound")
     resolved_path = path.resolve()
     raw = read_file(resolved_path)
     digest = hashlib.sha256(raw).hexdigest()
