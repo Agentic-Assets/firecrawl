@@ -13,6 +13,7 @@ import cre_ingest as ingest  # noqa: E402
 from cre_lyon_partial import (  # noqa: E402
     build_partial_sql,
     identity_probe_sql,
+    new_missing_canonical_count,
     partial_readback_sql,
     stage_record,
 )
@@ -54,6 +55,50 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
+        # Reproduce the live quality boundary with source-backed old and new
+        # parents. The sole exception is the exact number inserted as new by
+        # this partial transaction, never an allowance for older-row damage.
+        import cre_checkpoint_refresh as refresh
+        from tests.test_cre_checkpoint_refresh import absolute_quality_report
+
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,raw_data)
+SELECT id,'quality-old','https://lyonstahl.com/properties/quality-old/',
+ 'https://lyonstahl.com/properties/quality-old/', '{"sourceKey":"lyon-stahl"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='lyon-stahl';
+""")
+        missing_sql = """
+SELECT count(*) FROM credeals.cre_listings l JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
+WHERE b.slug='lyon-stahl' AND l.deleted_at IS NULL AND (l.canonical_url IS NULL OR btrim(l.canonical_url)='')"""
+        quality_before_count = int(sql(missing_sql))
+        quality_rows = [stage_record(record(f"https://lyonstahl.com/properties/quality-{number}/",
+                                          "property_path", f"quality-{number}")) for number in range(159)]
+        quality_rows.append(stage_record(record("https://lyonstahl.com/properties/quality-old/",
+                                                "property_path", "quality-old")))
+        quality_probe = sql(identity_probe_sql(quality_rows)).split("|", 3)
+        assert quality_probe[:2] == ["160", "160"]
+        quality_held, quality_prior = json.loads(quality_probe[2]), json.loads(quality_probe[3])
+        assert quality_held == []
+        quality_job = str(uuid.uuid4())
+        quality_start, quality_finish = "2026-11-05T06:00:00Z", "2026-11-05T06:01:00Z"
+        sql(build_partial_sql(quality_rows, quality_held, quality_prior, quality_job, quality_start, quality_finish))
+        quality_readback = partial_readback_sql(quality_rows, quality_held, quality_prior, quality_job,
+                                                quality_start, quality_finish)
+        assert sql(quality_readback) == "1|160|0"
+        allowance = new_missing_canonical_count(quality_rows, quality_held, quality_prior)
+        assert allowance == 159
+        quality_after_count = int(sql(missing_sql))
+        assert quality_after_count - quality_before_count == 159
+        quality_before = absolute_quality_report(source="lyon-stahl", missing_canonical_url=str(quality_before_count))
+        quality_after = absolute_quality_report(source="lyon-stahl", missing_canonical_url=str(quality_after_count))
+        assert not refresh.compare_validation_quality(quality_before, quality_after)["ok"]
+        assert refresh.compare_validation_quality(quality_before, quality_after,
+                                                  lyon_new_missing_canonical=allowance)["ok"]
+        sql("UPDATE credeals.cre_listings SET canonical_url=NULL WHERE external_id='quality-old'")
+        assert sql(quality_readback) == "1|160|1"
+        deteriorated = absolute_quality_report(source="lyon-stahl", missing_canonical_url=sql(missing_sql))
+        assert not refresh.compare_validation_quality(quality_before, deteriorated,
+                                                       lyon_new_missing_canonical=allowance)["ok"]
         # Exercise source custody, gate claims, and the actual ingest CLI SQL on
         # this disposable schema rather than only calling the SQL builder.
         from tests.test_lyon_partial_checkpoint import LyonCheckpointTests

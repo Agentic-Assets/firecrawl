@@ -6909,10 +6909,15 @@ def verify_validation_readback(
                   and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
                   and observed.get("generation_id") == binding.get("generation_id")
                   and observed.get("database_target_sha256") == binding.get("database_target_sha256")
-                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
                   and observed.get("staged_sha256") == binding.get("staged_sha256")
                   and observed.get("held") == binding.get("held")
-                  and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count"))
+                  and observed.get("child_collections_verified") is True
+                  and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count")
+                  and type(observed.get("new_missing_canonical_count", 0)) is int
+                  and 0 <= observed.get("new_missing_canonical_count", 0) <= observed["expected"])
             checkpoint["readback"] = {"ok": ok, "kind": "lyon_partial_search",
                                       "whole_source_coverage": False, "observation": observed}
             if not ok:
@@ -7499,10 +7504,6 @@ def run_final_validation(
             ) from exc
     from cre_colliers_image_transition import verified_checkpoint
     transition = verified_checkpoint(run_dir, manifest)
-    quality = compare_validation_quality(
-        before, result, image_transition=transition,
-        transwestern_image_transition=tw_transition if tw_required else None,
-    )
     absolute_quality = verify_absolute_validation_quality(result)
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
@@ -7520,6 +7521,20 @@ def run_final_validation(
         verify_validation_readback(run_dir, manifest, result)
         if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources)
     )
+    # The exact source-bound post-write readback proves which Lyon parents were
+    # absent from its sealed preimage and inserted with an unknown canonical URL.
+    # Apply that count only after the readback succeeds; all other quality
+    # comparisons, including the absolute audit, remain unchanged. As with the
+    # existing aggregate comparison, unrelated changes by external writers can
+    # offset one another; the exact readback separately checks touched parents.
+    lyon_allowance = 0
+    if readback["ok"] and (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
+        lyon_allowance = result["lyon_partial_readback"].get("new_missing_canonical_count", 0)
+    quality = compare_validation_quality(
+        before, result, image_transition=transition,
+        transwestern_image_transition=tw_transition if tw_required else None,
+        lyon_new_missing_canonical=lyon_allowance,
+    )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
         "log": _relative_to_run(log, run_dir),
@@ -7527,6 +7542,7 @@ def run_final_validation(
         "query_execution_ok": result.get("ok") is True,
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
+        **({"lyon_new_missing_canonical_count": lyon_allowance} if lyon_allowance else {}),
         "image_transition": quality.get("image_transition"),
         **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
            if tw_required else {}),
@@ -7569,9 +7585,11 @@ def _rows_by(
 
 def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
-    transwestern_image_transition=None,
+    transwestern_image_transition=None, lyon_new_missing_canonical=0,
 ) -> dict[str, Any]:
-    """Reject newly introduced hard defects or severe child-data loss."""
+    """Reject hard regressions, accounting only for verified new Lyon partial parents."""
+    if type(lyon_new_missing_canonical) is not int or lyon_new_missing_canonical < 0:
+        raise ValueError("invalid Lyon new-parent quality allowance")
     try:
         if "validation_profile" in before or "audit_scope" in before:
             require_checkpoint_preflight_report(before)
@@ -7637,7 +7655,12 @@ def compare_validation_quality(
                     continue
                 old_value = _int_value(prior.get(metric_field))
                 new_value = _int_value(row.get(metric_field))
-                if new_value > old_value:
+                allowance = (
+                    lyon_new_missing_canonical
+                    if query == "quality_by_source" and identity == ("lyon-stahl",)
+                    and metric_field == "missing_canonical_url" else 0
+                )
+                if new_value > old_value + allowance:
                     failures.append(
                         f"{query}/{identity}/{metric_field} increased {old_value}->{new_value}"
                     )
