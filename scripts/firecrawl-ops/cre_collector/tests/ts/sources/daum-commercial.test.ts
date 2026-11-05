@@ -288,7 +288,8 @@ test("DAUM retains each available-space observation and conflicting source rents
   </div></div>`;
   const html = detailHtml.replace('<div data-bg-image="url(', `${spaces}<div data-bg-image="url(`);
   const detail = parseDaumDetail(html, "https://daumcommercial.com/property/main-street/");
-  const observations = (detail as any).availableSpaceObservations;
+  const observations = detail.availableSpaceObservations;
+  assert.ok(observations);
   assert.equal(observations.length, 2);
   assert.match(observations[0].html, /\$0\.00/);
   assert.match(observations[0].html, /\$6,600\.00 Per Month/);
@@ -301,7 +302,7 @@ test("DAUM retains each available-space observation and conflicting source rents
     html.replace('<div class="title-property">100 Main Street</div>', '<div class="title-property"></div>'),
     "https://daumcommercial.com/property/main-street/", true
   );
-  assert.deepEqual((emptyTitle as any).availableSpaceObservations, observations);
+  assert.deepEqual(emptyTitle.availableSpaceObservations, observations);
 });
 
 test("DAUM detail parser rejects missing shells, missing IDs, and canonical mismatches", () => {
