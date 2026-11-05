@@ -128,6 +128,16 @@ successful requests and a populated UI do not establish semantic completeness.
 Reported JLL or Marcus UI snapshots are investigation leads, not verified
 source facts or evidence that a particular field is missing from the source.
 
+Keep a source-identified listing when optional fields such as city, price, size
+or coordinates are missing; save the available values and leave the gaps
+unknown. Preserve raw source context and do not erase existing populated facts
+just because a new observation is sparse. A ZIP or other corroborating data may
+support a derived location when the mapping is unambiguous; retain provenance
+and distinguish derived values from source-reported values. Keep every feed in
+the Windows schedule even after a failure or count mismatch, and continue valid
+peers while reporting incomplete source coverage. Implement and test the
+relevant partial path before relying on it.
+
 Review descriptions and highlights; spaces, suites and availability; sale/lease
 tenure; asking prices, rent/rate terms, expenses and financial facts; building,
 land and available areas with units; unit counts; amenities; location/geo;
