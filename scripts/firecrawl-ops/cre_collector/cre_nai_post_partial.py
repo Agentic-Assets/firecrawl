@@ -62,6 +62,8 @@ def stage_post(listing, generation):
     if not match:
         raise ValueError("NAI native post ID invalid")
     post_id = match.group(1)
+    if int(post_id) > 9007199254740991:
+        raise ValueError("NAI native post ID exceeds exact source numeric precision")
     expected_url = f"https://infabode.com/services/listings/{post_id}"
     post_url = f"https://infabode.com/post/{post_id}"
     if listing.get("url") != expected_url:

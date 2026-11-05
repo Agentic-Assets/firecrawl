@@ -75,6 +75,7 @@ def test_alias_and_native_id_collisions_hold_only_affected_peers():
     lambda x: x["publicPost"]["contentType"].update(id=10),
     lambda x: x.update(url="https://example.test/1"),
     lambda x: x["freshnessProvenance"].update(generationId="other"),
+    lambda x: x.update(id="infabode:9007199254740992"),
 ])
 def test_unqualified_source_evidence_holds_without_discarding_valid_peer(change):
     bad = post(1)
