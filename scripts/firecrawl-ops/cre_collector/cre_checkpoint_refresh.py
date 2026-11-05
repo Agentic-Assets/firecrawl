@@ -5342,6 +5342,7 @@ def _admit_current_inventory(
             artifact,
             source,
             info.get("attempt_started_at") or info["started_at"],
+            require_strict_freshness=franklin_partial_candidate(manifest, source),
             expected_generation_id=manifest["run_id"],
             expected_generation_started_at=manifest["started_at"],
             expected_transactions=TRANSACTIONS,
