@@ -514,7 +514,18 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         raise refresh.GlobalStageError(
             f"pre-seal gate input identity changed: {source}"
         )
-    refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    try:
+        refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.LyonPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "lyon-stahl" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("Lyon held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     gate = checkpoint["gate"]
     path = run_dir / gate["path"]
     digest = refresh.sha256_file(path)
@@ -810,7 +821,9 @@ def run_database_unit(
             )
         # Repeat exact source/aggregate proof immediately before each write.
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
-                or refresh.colliers_partial_candidate(manifest, source)):
+                or refresh.colliers_partial_candidate(manifest, source)
+                or refresh.franklin_partial_candidate(manifest, source)
+                or refresh.lyon_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -1053,10 +1066,10 @@ def run_bounded_pipeline(
                 state["source_timings"][item.source]["collection_finished_at"] = (
                     getattr(item, "attempt", None) or {}
                 ).get("finished_at") or refresh.utc_now()
-            elif (item.source == "colliers" and not item.attempt.get("clock_order_refused")
+            elif (item.source in {"colliers", "lyon-stahl"} and not item.attempt.get("clock_order_refused")
                   and item.attempt.get("rc") == refresh.COHORT_SETTLED_FAILURE_EXIT
-                  and (item.attempt.get("colliers_partial") or {}).get("state") == "sealed_local"
-                  and item.attempt["colliers_partial"].get("outcome") == "source_error"
+                  and (item.attempt.get(f"{item.source}_partial") or {}).get("state") == "sealed_local"
+                  and item.attempt[f"{item.source}_partial"].get("outcome") == "source_error"
                   and not manifest["sources"][item.source].get("terminal_collection_failure")):
                 # Process only on the foreground lane. Finalization proved the
                 # child group settled and sealed the original failed artifact.
@@ -1156,13 +1169,17 @@ def run_bounded_pipeline(
                 # run only here, on the foreground coordinator's serial lane.
                 refresh.pump_source_evidence(run_dir, manifest)
                 if partial_ready:
-                    from cre_colliers_partial_checkpoint import run_window_worker
                     source = partial_ready.pop(0)
                     preparing = (source,)
                     require_pipeline_owner(manifest, _OWNER_LEASE.get())
                     owner = getattr(_OWNER_CHECK.get(), "__self__", None)
-                    candidate_path = run_window_worker(
-                        run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
+                    if source == "lyon-stahl":
+                        from cre_lyon_partial_checkpoint import run_replay_worker
+                        candidate_path = run_replay_worker(run_dir, manifest, owner, refresh.save_manifest)
+                    else:
+                        from cre_colliers_partial_checkpoint import run_window_worker
+                        candidate_path = run_window_worker(
+                            run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
                     require_pipeline_owner(manifest, _OWNER_LEASE.get())
                     preparing = ()
                     if candidate_path is not None:
@@ -1233,7 +1250,6 @@ def run_bounded_pipeline(
                                 )
                         except refresh.ArtifactValidationError as exc:
                             checkpoint = manifest["sources"][source]
-                            candidate = checkpoint["candidate"]
                             checkpoint["state"] = "artifact_rejected"
                             checkpoint["attempts"][-1]["error"] = str(exc)
                             archive_failed_candidate(run_dir, manifest, source)

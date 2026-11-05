@@ -1653,6 +1653,76 @@ def test_pipeline_colliers_partial_summary_preserves_verified_peer(evidence, tam
         assert source not in rows and source in result["unverifiable_source_keys"]
 
 
+@pytest.mark.parametrize("tamper", [None, "generation", "held", "worker", "target"])
+def test_pipeline_lyon_partial_summary_preserves_verified_peer(evidence, tamper):
+    setup = pipeline_evidence(evidence, primary_source="lyon-stahl")
+    parent, child = setup["parent"], setup["child"]
+    qualify_pipeline_second_source(evidence, setup)
+    source = "lyon-stahl"
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"] = target
+    artifact.update(lyon_partial=True, staged_unique=4, path="lyon-stahl-partial/candidate-1.json")
+    binding = {"schema": "lyon-search-partial-v1", "scope": "lyon_partial_search_v1", "source_key": source,
+        "artifact_sha256": artifact["sha256"], "generation_id": RUN, "generation_started_at": child["started_at"],
+        "producer_sha": SHA, "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64,
+        "source_sha256": "2" * 64, "source_main_sha256": "3" * 64, "preimage_sha256": "4" * 64,
+        "attempt": 1, "held": ["held"], "held_count": 2, "emitted_count": 3,
+        "original_source_outcome": "source_error", "whole_source_coverage": False}
+    observed = {"ok": True, "outcome": "exact_commit", "artifact_sha256": artifact["sha256"],
+        "generation_id": RUN, "attempt_id": "f" * 32, "database_target_sha256": "d" * 64,
+        "expected": 3, "held": binding["held"], "staged_sha256": "e" * 64, "child_collections_verified": True}
+    checkpoint.update(gate={"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+        "admission_scope": "lyon_partial_search_v1", "current_inventory_proof": binding},
+        subset_ingest_attempt_id="f" * 32,
+        lyon_partial_worker={"state": "settled", "attempt": 1, "sha256": artifact["sha256"]},
+        lyon_identity_probe={"artifact_sha256": artifact["sha256"], "generation_id": RUN,
+            "producer_sha": SHA, "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64,
+            "preimage_sha256": "4" * 64, "held": ["held"]},
+        readback={"ok": True, "kind": "lyon_partial_search", "whole_source_coverage": False, "observation": observed})
+    result = child["pipeline"]["source_results"][source]
+    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False,
+                  emitted_count=3, held_count=2)
+    parent["sources"][source]["state"] = "qualified_partial_subset"
+    validation_path = evidence["series"] / "runs" / RUN / "pipeline/unit-0001/validation.json"
+    validation = json.loads(validation_path.read_text())
+    validation["lyon_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(validation, separators=(",", ":")).encode()
+    validation_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    for key in (source, setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    if tamper == "generation": checkpoint["readback"]["observation"]["generation_id"] = "other"
+    elif tamper == "held": binding["held_count"] = 0
+    elif tamper == "worker": checkpoint["lyon_partial_worker"]["state"] = "publishing"
+    elif tamper == "target": binding["database_target_sha256"] = "0" * 64
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    assert result["complete"] is False
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert setup["source2"] in rows
+    if tamper is None:
+        assert rows[source]["partial"] is True and rows[source]["whole_source_coverage"] is False
+        assert rows[source]["verified_listings"] == 3 and rows[source]["held_count"] == 2
+        assert "transaction_breakdown" not in rows[source]
+        assert rows[source]["transaction_breakdown_status"]["reason"] == "source_membership_not_transaction_authority"
+    else:
+        assert source not in rows and source in result["unverifiable_source_keys"]
+
+
+def test_foreign_lyon_partial_marker_is_never_reported_as_complete(evidence):
+    setup = pipeline_evidence(evidence)
+    qualify_pipeline_second_source(evidence, setup)
+    setup["child"]["sources"][SOURCE]["artifact"]["lyon_partial"] = True
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, setup["source2"]])
+    assert SOURCE in result["unverifiable_source_keys"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [setup["source2"]]
+
+
 def test_foreign_colliers_partial_marker_is_never_reported_as_complete(evidence):
     setup = pipeline_evidence(evidence)
     qualify_pipeline_second_source(evidence, setup)
@@ -1830,3 +1900,61 @@ def test_jll_singleton_hold_notifies_verified_peer_without_whole_watermark(evide
     assert result["failed_source_keys"] == ["jll"]
     assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
     assert "verified_listings" not in result
+
+
+@pytest.mark.parametrize("tamper", [None, "attempt", "target", "pending", "identity_type", "binding_type", "ingest_type"])
+def test_pipeline_franklin_partial_summary_preserves_verified_peer(evidence, tamper):
+    setup = pipeline_evidence(evidence, primary_source="franklin-street")
+    parent, child = setup["parent"], setup["child"]
+    qualify_pipeline_second_source(evidence, setup)
+    source = "franklin-street"
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"] = target
+    artifact.update(franklin_partial=True, staged_unique=4, path="franklin-site.json")
+    binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1", "source_key": source,
+        "artifact_sha256": artifact["sha256"], "source_artifact_sha256": "1" * 64, "generation_id": RUN,
+        "collector_git_sha": SHA, "producer_sha": SHA, "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64,
+        "held": ["held"], "held_count": 1, "emitted_count": 3, "buildout_pending": 2,
+        "held_observations": 1, "identity_uncertainty": {"siteToBuildout": "unresolved"},
+        "whole_source_coverage": False}
+    observed = {"ok": True, "invalid": [], "expected": 3, "held": binding["held"],
+        "artifact_sha256": artifact["sha256"], "generation_id": RUN, "attempt_id": "f" * 32,
+        "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64, "matching_jobs": 1}
+    checkpoint.update(gate={"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+        "admission_scope": "franklin_site_partial_v1", "current_inventory_proof": binding},
+        franklin_original={"sha256": "1" * 64}, subset_ingest_attempt_id="f" * 32,
+        readback={"ok": True, "kind": "franklin_site_partial", "whole_source_coverage": False,
+                  "observation": observed})
+    result = child["pipeline"]["source_results"][source]
+    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False,
+                  emitted_count=3, held_count=1, buildout_pending=2, held_observations=1,
+                  identity_uncertainty={"siteToBuildout": "unresolved"})
+    parent["sources"][source]["state"] = "qualified_partial_subset"
+    validation_path = evidence["series"] / "runs" / RUN / "pipeline/unit-0001/validation.json"
+    validation = json.loads(validation_path.read_text())
+    validation["franklin_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(validation, separators=(",", ":")).encode()
+    validation_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    for key in (source, setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
+    if tamper == "attempt": checkpoint["subset_ingest_attempt_id"] = "0" * 32
+    elif tamper == "target": binding["database_target_sha256"] = "0" * 64
+    elif tamper == "pending": result["buildout_pending"] = 0
+    elif tamper == "identity_type": binding["identity_uncertainty"] = 1
+    elif tamper == "binding_type": checkpoint["gate"]["current_inventory_proof"] = 1
+    elif tamper == "ingest_type": checkpoint["ingest"] = 1
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert setup["source2"] in rows and result["complete"] is False
+    if tamper is None:
+        assert rows[source]["partial"] is True and rows[source]["whole_source_coverage"] is False
+        assert rows[source]["verified_listings"] == 3 and rows[source]["buildout_pending"] == 2
+        assert "transaction_breakdown" not in rows[source]
+    else:
+        assert source not in rows and source in result["unverifiable_source_keys"]

@@ -1,6 +1,9 @@
 """Deterministic scheduling probes for actual bounded pipeline control flow."""
 
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +56,7 @@ def run_schedule(
     jll_guard_refusal=False,
     colliers_partial=None,
     colliers_failure_nonzero=False,
+    lyon_partial=None,
     clock_deferrals=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
@@ -151,6 +155,15 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"], item.attempt_number))
+        if lyon_partial and item.source == "lyon-stahl":
+            checkpoint["state"] = "collect_failed"
+            item.attempt = checkpoint["attempts"][-1]
+            item.attempt.update(rc=(refresh.COHORT_SETTLED_INTERRUPT_EXIT if lyon_partial == "interrupted"
+                                   else refresh.COHORT_SETTLED_FAILURE_EXIT), finished_at=refresh.utc_now(),
+                **{"lyon-stahl_partial": {"state": "sealed_local", "outcome": "source_error"}})
+            if lyon_partial == "clock_refused":
+                item.attempt["clock_order_refused"] = True
+            return False
         if colliers_failure_nonzero and item.source == "colliers":
             checkpoint["state"] = "collect_failed"
             item.attempt = checkpoint["attempts"][-1]
@@ -179,9 +192,14 @@ def run_schedule(
             raise refresh.ArtifactValidationError("ordinary invalid artifact")
         checkpoint = owner["sources"][source]
         checkpoint["artifact"] = {"path": f"sources/{source}.tmp", "sha256": "b" * 64}
+        if lyon_partial in {"query_refusal", "timeout_refusal"} and source == "lyon-stahl":
+            checkpoint["artifact"]["sha256"] = refresh.sha256_file(root / checkpoint["artifact"]["path"])
         if colliers_partial and source == "colliers":
             checkpoint["artifact"]["colliers_partial"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 1}}
+        if lyon_partial and source == "lyon-stahl":
+            checkpoint["artifact"]["lyon_partial"] = True
+            checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 0}}
         if pyramid_partial and source == "pyramid-brokerage":
             checkpoint["artifact"]["pyramid_subset"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"inventory_count": 102, "emitted_count": 100, "held_count": 2}}
@@ -218,7 +236,8 @@ def run_schedule(
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", publish)
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
-    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
+    actual_preseal = pipeline.preseal_source_gate
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda _root, _owner, source, _env: not (lyon_partial == "probe_hold" and source == "lyon-stahl"))
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     if colliers_partial:
         import cre_colliers_partial_checkpoint as partial
@@ -237,6 +256,54 @@ def run_schedule(
 
         monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive)
         monkeypatch.setattr(partial, "run_window_worker", worker)
+    if lyon_partial:
+        import cre_lyon_partial_checkpoint as partial
+
+        def lyon_worker(root, owner, _lock, _save):
+            checkpoint = owner["sources"]["lyon-stahl"]
+            checkpoint["partial_attempted"] = True
+            if lyon_partial == "held":
+                checkpoint["state"] = "partial_held_no_write"
+                return None
+            return root / checkpoint["candidate"]["path"]
+
+        monkeypatch.setattr(partial, "run_replay_worker", lyon_worker)
+
+        if lyon_partial in {"query_refusal", "timeout_refusal"}:
+            import cre_ingest as ingest
+            import cre_validate
+            from cre_lyon_partial import stage_record
+            from tests.test_lyon_partial_stage import record
+
+            manifest["preflight"]["database_target"] = {"algorithm": "sha256", "value": "b" * 64}
+            monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+            monkeypatch.setattr(refresh, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+            monkeypatch.setattr(ingest, "load_db_url", lambda _: ("synthetic", None))
+            monkeypatch.setattr(ingest, "database_target_fingerprint_from_url", lambda _: {"value": "b" * 64})
+            monkeypatch.setattr(ingest, "find_psql", lambda: "synthetic")
+            staged = [stage_record(record("https://lyonstahl.com/properties/example/", "property_path", "example"))]
+            source_receipt = {"database_target_sha256": "b" * 64}
+            monkeypatch.setattr(partial, "verify_candidate_artifact", lambda *args, **kwargs: {
+                "source": source_receipt, "staged": staged})
+
+            def query(_psql, _url, sql, timeout):
+                if "SELECT 1 AS healthy" in sql:
+                    events.append(("probe_health", "lyon-stahl", clock["now"]))
+                    return SimpleNamespace(returncode=0, stdout="healthy" + chr(10) + "1" + chr(10))
+                events.append(("probe_failure", "lyon-stahl", clock["now"]))
+                if lyon_partial == "timeout_refusal":
+                    raise subprocess.TimeoutExpired(cmd="psql", timeout=timeout)
+                return SimpleNamespace(returncode=3, stderr="ERROR:  22023: invalid source input")
+
+            def gate_command(argv, _log, env=None):
+                from pathlib import Path
+                Path(argv[argv.index("--out") + 1]).write_text(json.dumps({"per_source": {"lyon-stahl": {}}}))
+                return 0
+
+            monkeypatch.setattr(cre_validate, "_run_psql_script", query)
+            monkeypatch.setattr(refresh, "run_command", gate_command)
+            monkeypatch.setattr(pipeline, "preseal_source_gate", lambda root, owner, source, env:
+                actual_preseal(root, owner, source, env) if source == "lyon-stahl" else True)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
@@ -332,6 +399,26 @@ def test_pipeline_interrupted_colliers_attempt_never_dispatches_partial(tmp_path
     assert failures == ["colliers"]
     assert not manifest["sources"]["colliers"].get("partial_attempted")
     assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "held", "interrupted", "clock_refused", "probe_hold", "query_refusal", "timeout_refusal"])
+def test_pipeline_lyon_partial_keeps_peer_running(tmp_path, monkeypatch, outcome):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("lyon-stahl", "savills"), lyon_partial=outcome)
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["status"] == "partial"
+    if outcome in {"query_refusal", "timeout_refusal"}:
+        assert any(event[0] == "probe_failure" for event in events)
+        assert any(event[0] == "probe_health" for event in events)
+    if outcome == "accepted":
+        assert failures == []
+        assert manifest["pipeline"]["source_results"]["lyon-stahl"]["partial"] is True
+        assert any(event[0] == "db_start" and "lyon-stahl" in event[1] for event in events)
+    else:
+        assert failures == ["lyon-stahl"]
+        assert not any(event[0] == "db_start" and "lyon-stahl" in event[1] for event in events)
+        if outcome in {"interrupted", "clock_refused"}:
+            assert not manifest["sources"]["lyon-stahl"].get("partial_attempted")
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])

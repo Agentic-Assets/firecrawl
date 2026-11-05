@@ -38,6 +38,7 @@ import { preserveJllSubleaseFact, srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
 import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
+import { srcLyonSearchPartial } from "./sources/lyon-search-observation.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
@@ -221,6 +222,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
     case "foundry-commercial":
       return srcFoundryCommercial(tx, max, monitor);
     case "lyon-stahl":
+      if (!monitor && tx === "sale" && spools["lyon-stahl"]) return srcLyonSearchPartial(spools["lyon-stahl"]);
       return srcLyonStahl(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
