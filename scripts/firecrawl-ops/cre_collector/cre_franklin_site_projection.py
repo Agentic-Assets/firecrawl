@@ -49,13 +49,31 @@ def project(raw, generation_id, env):
             transactions.append({"transaction": entry["transaction"], "listingsCollected": count})
     result = {"coverage": "partial_unknown", "generationId": generation_id,
               "listings": [], "held": [], "pages": []}
+    def hold_page(entry, reason):
+        observations = entry.get("retainedObservations")
+        observations = observations if isinstance(observations, list) else []
+        found = [item for item in observations if isinstance(item, dict)
+                 and item.get("schema") == "franklin-street-page-observation-v1"]
+        cards = [card for item in found if isinstance(item.get("cards"), list) for card in item["cards"]]
+        # A malformed or cardless page is still an identifiable held source
+        # observation. Its exact bytes remain in the bound original artifact.
+        if not cards:
+            cards = [None]
+        result["held"].extend({"transaction": entry["transaction"],
+            "card": {"ordinal": ordinal, "reason": reason, "card": card}}
+            for ordinal, card in enumerate(cards))
+
     for entry in sources:
-        if not entry.get("error") or not isinstance(entry.get("retainedObservations"), list):
+        if not entry.get("error"):
+            continue
+        if not isinstance(entry.get("retainedObservations"), list):
+            hold_page(entry, "page_observation_invalid")
             continue
         observations = [item for item in entry["retainedObservations"]
                         if isinstance(item, dict) and item.get("schema") == "franklin-street-page-observation-v1"]
         if len(observations) != 1:
-            raise ValueError("Franklin page count invalid")
+            hold_page(entry, "page_observation_invalid")
+            continue
         # Send only one failed transaction and no unrelated Buildout peers.
         # The exact original remains in private custody and is rebound below.
         page_input = json.dumps({"runMeta": original.get("runMeta"), "sources": [entry],
@@ -67,25 +85,25 @@ def project(raw, generation_id, env):
             output = run([node, "--import", loader.as_uri(), str(bridge), generation_id],
                          page_input, env, max_results_bytes=MAX_PROJECTION_BYTES)
         except OverflowError:
-            # Do not turn a bounded transport refusal into whole-source loss.
-            # Keep every original card private and allow the other page through.
-            result["held"].extend({"transaction": entry["transaction"],
-                "card": {"ordinal": ordinal, "reason": "projection_input_bound", "card": card}}
-                for ordinal, card in enumerate(observations[0].get("cards") or []))
+            hold_page(entry, "projection_input_bound")
             continue
         except RuntimeError as exc:
-            if str(exc) != "psql outcome unknown: stdout_limit":
+            reasons = {"psql outcome unknown: stdout_limit": "projection_output_bound",
+                       "psql outcome unknown: nonzero_exit": "page_validation_refused"}
+            if str(exc) not in reasons:
                 raise
-            result["held"].extend({"transaction": entry["transaction"],
-                "card": {"ordinal": ordinal, "reason": "projection_output_bound", "card": card}}
-                for ordinal, card in enumerate(observations[0].get("cards") or []))
+            hold_page(entry, reasons[str(exc)])
             continue
-        partial = json.loads(output)
-        if (not isinstance(partial, dict) or partial.get("coverage") != "partial_unknown"
-                or partial.get("generationId") != generation_id
-                or not isinstance(partial.get("listings"), list)
-                or not isinstance(partial.get("held"), list) or not isinstance(partial.get("pages"), list)):
-            raise ValueError("Franklin projection response invalid")
+        try:
+            partial = json.loads(output)
+            if (not isinstance(partial, dict) or partial.get("coverage") != "partial_unknown"
+                    or partial.get("generationId") != generation_id
+                    or not isinstance(partial.get("listings"), list)
+                    or not isinstance(partial.get("held"), list) or not isinstance(partial.get("pages"), list)):
+                raise ValueError("Franklin projection response invalid")
+        except (ValueError, TypeError):
+            hold_page(entry, "projection_response_invalid")
+            continue
         for key in ("listings", "held", "pages"):
             result[key].extend(partial[key])
     by_id = {}
@@ -95,10 +113,11 @@ def project(raw, generation_id, env):
         "reusedSiteIds": [{"id": key, "transactions": sorted(value)} for key, value in by_id.items() if len(value) > 1]}
     result["buildout"] = {"transactions": transactions}
     cards = {}
+    projected_transactions = {page["transaction"] for page in result["pages"]}
     for source in original["sources"]:
-        if not isinstance(source, dict) or source.get("sourceKey") != "franklin-street":
-            raise ValueError("Franklin original source invalid")
         tx = source.get("transaction")
+        if tx not in projected_transactions:
+            continue
         for observation in source.get("retainedObservations") or []:
             if isinstance(observation, dict) and observation.get("schema") == "franklin-street-page-observation-v1":
                 if tx in cards or not isinstance(observation.get("cards"), list):

@@ -32,8 +32,8 @@ def test_projection_bridges_exact_private_bytes():
 def test_projection_rejects_changed_hash_and_invalid_generation():
     value = artifact()
     value["sources"][0]["retainedObservations"][0]["decodedHtmlSha256"] = "0" * 64
-    with pytest.raises(RuntimeError):
-        project(json.dumps(value).encode(), "run-1", {"PATH": os.environ["PATH"]})
+    result = project(json.dumps(value).encode(), "run-1", {"PATH": os.environ["PATH"]})["projection"]
+    assert result["listings"] == [] and result["held"][0]["card"]["reason"] == "page_validation_refused"
     with pytest.raises(ValueError):
         project(b"{}", "../bad", {"PATH": os.environ["PATH"]})
 
@@ -105,3 +105,38 @@ def test_oversized_transaction_holds_its_cards_and_keeps_valid_peer(monkeypatch)
     assert result["held"][0]["transaction"] == "sale"
     assert result["held"][0]["card"]["reason"] == "projection_input_bound"
     assert result["held"][0]["card"]["card"] == page["cards"][0]
+
+
+
+def test_invalid_page_holds_raw_cards_while_valid_transaction_continues():
+    value = artifact()
+    bad = value["sources"][0]["retainedObservations"][0]
+    other = json.loads(json.dumps(bad))
+    other["transaction"] = "lease"
+    other["sourceUrl"] = "https://franklinst.com/properties/for-lease/"
+    other["decodedHtml"] = other["decodedHtml"].replace("FOR_SALE", "FOR_LEASE").replace("/for-sale/", "/for-lease/")
+    other["decodedHtmlSha256"] = hashlib.sha256(other["decodedHtml"].encode()).hexdigest()
+    other["cards"][0]["html"] = other["decodedHtml"]
+    other["cards"][0]["attributes"]["data-offer-type"] = "FOR_LEASE"
+    bad["decodedHtmlSha256"] = "0" * 64
+    value["sources"].append({"sourceKey": "franklin-street", "transaction": "lease", "error": "failed",
+                             "retainedObservations": [other]})
+    raw = json.dumps(value).encode()
+    result = project(raw, "run-1", {"PATH": os.environ["PATH"]})
+    assert result["artifact_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert [row["transactionMode"] for row in result["projection"]["listings"]] == ["lease"]
+    held = result["projection"]["held"]
+    assert held[0]["transaction"] == "sale" and held[0]["card"]["reason"] == "page_validation_refused"
+    assert held[0]["card"]["card"] == bad["cards"][0]
+
+
+def test_unknown_worker_settlement_fences_all_pages(monkeypatch):
+    import cre_franklin_site_projection as projection
+    from source_evidence.document_process import DocumentProcessCleanupUnknown
+
+    def refuse(*args, **kwargs):
+        raise DocumentProcessCleanupUnknown("synthetic unknown settlement")
+
+    monkeypatch.setattr(projection, "run", refuse)
+    with pytest.raises(DocumentProcessCleanupUnknown):
+        project(json.dumps(artifact()).encode(), "run-1", {"PATH": os.environ["PATH"]})
