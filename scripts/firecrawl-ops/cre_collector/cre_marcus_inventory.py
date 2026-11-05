@@ -167,7 +167,7 @@ def partition_inventory(listings, generation, started_at, finished_at):
                     if not isinstance(value, str) or not value:
                         continue
                     try:
-                        seen.add(urljoin(BASE, value) if kind == "url" else value)
+                        seen.add(urljoin(BASE, value).rstrip("/") if kind == "url" else value)
                     except ValueError:
                         continue
                 for value in seen:
@@ -178,9 +178,91 @@ def partition_inventory(listings, generation, started_at, finished_at):
             held.append({"index": index, "reason": "unqualified_inventory_identity"})
     accepted = []
     for index, row in staged:
-        if any(witnesses[kind].get(row[key], 0) > 1 for kind, key in
+        if any(witnesses[kind].get(row[key].rstrip("/") if kind == "url" else row[key], 0) > 1 for kind, key in
                (("id", "external_id"), ("activity", "activity_id"), ("url", "source_url"))):
             held.append({"index": index, "reason": "conflicting_inventory_identity"})
         else:
             accepted.append(row)
     return {"staged": accepted, "held": sorted(held, key=lambda value: value["index"])}
+
+
+def rederive_settled_artifact(run_dir, manifest, attempt_number, current_code_sha, current_git_dirty):
+    """Read one exact rejected artifact; caller owns the manifest, lock and settlement.
+
+    This is source custody and rederivation only. It grants neither DB admission
+    nor permission to treat the source or any detail response as complete.
+    """
+    import hashlib
+    from datetime import UTC, timedelta
+    from pathlib import Path
+
+    from cre_colliers_partial_checkpoint import _read_private_file
+
+    run_dir = Path(run_dir)
+    if (not isinstance(manifest, dict) or manifest.get("run_id") != run_dir.name
+            or not isinstance(current_code_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", current_code_sha)
+            or current_git_dirty is not False or manifest.get("collector_git_dirty") is not False
+            or manifest.get("collector_git_sha") != current_code_sha
+            or type(attempt_number) is not int or attempt_number < 1):
+        raise ValueError("Marcus source owner changed")
+    target = (manifest.get("preflight") or {}).get("database_target")
+    if (not isinstance(target, dict) or target.get("algorithm") != "sha256"
+            or not isinstance(target.get("value"), str) or not re.fullmatch(r"[a-f0-9]{64}", target["value"])):
+        raise ValueError("Marcus source target invalid")
+    checkpoint = (manifest.get("sources") or {}).get(SOURCE) or {}
+    attempts = checkpoint.get("attempts")
+    if not isinstance(attempts, list) or not attempts or any(
+            not isinstance(item, dict) or type(item.get("number")) is not int for item in attempts):
+        raise ValueError("Marcus source attempts invalid")
+    matched = [item for item in attempts if item["number"] == attempt_number]
+    if len(matched) != 1 or attempt_number != max(item["number"] for item in attempts):
+        raise ValueError("Marcus source attempt differs")
+    attempt = matched[0]
+    relative = f"rejected/{SOURCE}-attempt-{attempt_number}.json"
+    digest = attempt.get("rejected_artifact_sha256")
+    started, finished = _time(attempt.get("started_at")), _time(attempt.get("finished_at"))
+    if (type(attempt.get("rc")) is not int or attempt["rc"] != 0
+            or attempt.get("error") != f"{SOURCE}/sale freshness metric detailErrors must be zero"
+            or attempt.get("rejected_artifact") != relative
+            or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or started < _time(manifest.get("started_at")) or finished < started
+            or finished > datetime.now(UTC) + timedelta(minutes=5)):
+        raise ValueError("Marcus source attempt unsettled or ineligible")
+    path = run_dir / relative
+    size = path.lstat().st_size
+    raw = _read_private_file(path, size)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("Marcus source artifact changed")
+    data = json.loads(raw)
+    meta = data.get("runMeta") if isinstance(data, dict) else None
+    if not isinstance(meta, dict) or not isinstance(meta.get("freshness"), dict):
+        raise ValueError("Marcus source run metadata missing")
+    child_started, child_finished = _time(meta.get("startedAt")), _time(meta.get("finishedAt"))
+    if (meta["freshness"].get("generationId") != run_dir.name
+            or _time(meta["freshness"].get("generationStartedAt")) != _time(manifest["started_at"])
+            or child_started < started or child_finished < child_started
+            or child_finished - finished > timedelta(minutes=5)
+            or child_finished > datetime.now(UTC) + timedelta(minutes=5)):
+        raise ValueError("Marcus source clock discrepancy exceeds bound")
+    rows, sources = data.get("listings"), data.get("sources")
+    if (not isinstance(rows, list) or not isinstance(sources, list)
+            or type(data.get("totalListings")) is not int or data["totalListings"] != len(rows)):
+        raise ValueError("Marcus source artifact shape invalid")
+    sale = [item for item in sources if isinstance(item, dict)
+            and item.get("sourceKey") == SOURCE and item.get("transaction") == "sale"]
+    if (len(sale) != 1 or any(not isinstance(item, dict) or item.get("sourceKey") != SOURCE for item in sources)
+            or type(sale[0].get("listingsCollected")) is not int
+            or sale[0]["listingsCollected"] != len(rows)
+            or not isinstance(sale[0].get("freshness"), dict)
+            or type(sale[0]["freshness"].get("detailErrors")) is not int
+            or sale[0]["freshness"]["detailErrors"] < 1
+            or sale[0]["freshness"]["detailErrors"] != sum(bool(row.get("detailError")) for row in rows if isinstance(row, dict))):
+        raise ValueError("Marcus source outcome differs")
+    partition = partition_inventory(rows, run_dir.name, meta["startedAt"], meta["finishedAt"])
+    return {"schema": "marcus-inventory-custody/v1", "source": SOURCE, "generation": run_dir.name,
+            "attempt": attempt_number, "source_sha256": digest, "source_bytes": size,
+            "producer_sha": current_code_sha, "target_sha256": target["value"],
+            "started_at": meta["startedAt"], "finished_at": meta["finishedAt"],
+            "coordinator_finished_at": attempt["finished_at"], "detail_qualified": 0,
+            "detail_errors": sale[0]["freshness"]["detailErrors"], "coverage": "partial",
+            "partition": partition}

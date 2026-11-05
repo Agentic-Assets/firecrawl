@@ -72,3 +72,56 @@ def test_missing_title_and_invalid_coordinates_do_not_discard_identity():
     staged = stage(row)
     assert staged["title"] is None
     assert staged["lat"] is None and staged["lng"] is None
+
+
+def test_settled_artifact_binds_attempt_bytes_and_preserves_coordinator_clock(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    import hashlib
+    from cre_marcus_inventory import rederive_settled_artifact
+
+    run = tmp_path / GENERATION
+    rejected = run / "rejected"
+    rejected.mkdir(parents=True, mode=0o700)
+    now = datetime.now(UTC)
+    generation_start = (now - timedelta(minutes=3)).isoformat()
+    attempt_start = (now - timedelta(minutes=2)).isoformat()
+    parent_finish = (now - timedelta(seconds=2)).isoformat()
+    child_finish = (now - timedelta(seconds=1)).isoformat()
+    row = listing()
+    row["inventoryObservedAt"] = (now - timedelta(minutes=1)).isoformat()
+    data = {"runMeta": {"startedAt": attempt_start, "finishedAt": child_finish,
+                       "freshness": {"generationId": GENERATION, "generationStartedAt": generation_start}},
+            "sources": [{"sourceKey": "marcus-millichap", "transaction": "sale", "listingsCollected": 1,
+                         "freshness": {"detailErrors": 1}}], "listings": [row], "totalListings": 1}
+    raw = json.dumps(data).encode()
+    artifact = rejected / "marcus-millichap-attempt-1.json"
+    artifact.write_bytes(raw)
+    artifact.chmod(0o600)
+    digest = hashlib.sha256(raw).hexdigest()
+    attempt = {"number": 1, "rc": 0, "started_at": attempt_start, "finished_at": parent_finish,
+               "error": "marcus-millichap/sale freshness metric detailErrors must be zero",
+               "rejected_artifact": "rejected/marcus-millichap-attempt-1.json", "rejected_artifact_sha256": digest}
+    manifest = {"run_id": GENERATION, "started_at": generation_start, "collector_git_sha": "a" * 40,
+                "collector_git_dirty": False, "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
+                "sources": {"marcus-millichap": {"attempts": [attempt]}}}
+    result = rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
+    assert result["finished_at"] == child_finish
+    assert result["coordinator_finished_at"] == parent_finish
+    assert result["detail_qualified"] == 0 and result["detail_errors"] == 1
+    assert len(result["partition"]["staged"]) == 1
+    attempt["rejected_artifact_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="artifact changed"):
+        rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
+    attempt["rejected_artifact_sha256"] = digest
+    attempt["rc"] = 1
+    with pytest.raises(ValueError, match="unsettled"):
+        rederive_settled_artifact(run, manifest, 1, "a" * 40, False)
+
+
+def test_trailing_slash_alias_is_a_conflicting_identity_witness():
+    first = listing()
+    conflicting = listing("123", "activity-2")
+    conflicting["url"] = first["url"] + "/"
+    result = partition_inventory([first, conflicting], GENERATION, START, FINISH)
+    assert not result["staged"]
+    assert {item["index"] for item in result["held"]} == {0, 1}
