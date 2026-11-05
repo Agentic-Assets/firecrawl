@@ -1,0 +1,63 @@
+import base64
+import json
+
+import pytest
+
+from cre_nai_post_partial import partition_posts, stage_post
+
+
+def post(number=1, alias=None, tx="sale"):
+    post_id = str(number)
+    alias = alias or f"https://www.naiglobal.com/listings/?propertyId=post-{post_id}"
+    raw = {"id": number, "url": f"https://infabode.com/post/{post_id}",
+           "urlOriginal": alias, "contentType": {"id": 4 if tx == "sale" else 10},
+           "listingStatus": ["FOR_SALE_ON_MARKET"], "unusedSourceField": {"x": [1, None]}}
+    return {"sourceKey": "nai-global", "id": f"infabode:{post_id}",
+            "url": f"https://infabode.com/services/listings/{post_id}",
+            "canonicalUrl": alias, "transactionMode": tx, "transactionType": tx.title(),
+            "name": "Fixture post", "feedRow": raw, "publicPost": dict(raw),
+            "inventoryObservedAt": "2026-11-05T10:00:00Z",
+            "detailObservedAt": "2026-11-05T10:00:01Z",
+            "freshnessProvenance": {"generationId": "gen-1", "detailScope": "detail_page"}}
+
+
+def test_source_post_retains_full_input_without_fabricating_status_or_location():
+    source = post()
+    row = stage_post(source, "gen-1")
+    assert row["external_id"] == "infabode:1"
+    assert row["source_url"] == "https://infabode.com/services/listings/1"
+    assert row["lat"] is None and row["lng"] is None
+    assert "status" not in row
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
+def test_alias_and_native_id_collisions_hold_only_affected_peers():
+    alias = "https://www.naiglobal.com/listings/?propertyId=collision"
+    records = [post(1, alias), post(2, alias), post(3), post(3), post(4)]
+    part = partition_posts(records, "gen-1")
+    assert [x["external_id"] for x in part["staged"]] == ["infabode:4"]
+    assert [x["reason"] for x in part["held"]] == [
+        "conflicting_source_alias", "conflicting_source_alias", "duplicate_post_id", "duplicate_post_id"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda x: x["publicPost"].update(id=123),
+    lambda x: x["feedRow"].update(url="https://infabode.com/post/other"),
+    lambda x: x["publicPost"]["contentType"].update(id=10),
+    lambda x: x.update(url="https://example.test/1"),
+    lambda x: x["freshnessProvenance"].update(generationId="other"),
+])
+def test_unqualified_source_evidence_holds_without_discarding_valid_peer(change):
+    bad = post(1)
+    change(bad)
+    result = partition_posts([bad, post(2)], "gen-1")
+    assert [x["external_id"] for x in result["staged"]] == ["infabode:2"]
+    assert result["held"] == [{"index": 0, "reason": "unqualified_source_post"}]
+
+def test_invalid_peer_still_conflicts_with_valid_source_identity():
+    bad = post(1)
+    bad["publicPost"]["id"] = 99
+    result = partition_posts([bad, post(1), post(2)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:2"]
+    assert [row["reason"] for row in result["held"]] == [
+        "unqualified_source_post", "duplicate_post_id"]
