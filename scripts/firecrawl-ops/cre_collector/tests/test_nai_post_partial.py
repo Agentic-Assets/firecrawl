@@ -85,3 +85,13 @@ def test_incomplete_peer_still_witnesses_its_raw_source_alias():
     assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
     assert [row["reason"] for row in result["held"]] == [
         "conflicting_source_alias", "conflicting_source_alias"]
+
+
+def test_unqualified_post_source_url_still_witnesses_an_alias_conflict():
+    bad = post(1)
+    bad["publicPost"]["id"] = 99
+    candidate = post(2, bad["url"])
+    result = partition_posts([bad, candidate, post(3)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
+    assert [row["reason"] for row in result["held"]] == [
+        "unqualified_source_post", "conflicting_source_alias"]

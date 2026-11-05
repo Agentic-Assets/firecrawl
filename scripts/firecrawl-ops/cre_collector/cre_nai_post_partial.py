@@ -166,11 +166,13 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
             native = listing.get("id")
             if isinstance(native, str) and _POST_ID.fullmatch(native):
                 id_counts[native] = id_counts.get(native, 0) + 1
-            observed_aliases = [listing.get("canonicalUrl")]
+            observed_aliases = [listing.get("canonicalUrl"), listing.get("url")]
             for key in ("feedRow", "publicPost"):
                 raw = listing.get(key)
                 if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str):
                     observed_aliases.append(raw["urlOriginal"])
+                if isinstance(raw, dict) and isinstance(raw.get("url"), str):
+                    observed_aliases.append(raw["url"])
             normalized_aliases = set()
             for alias in observed_aliases:
                 try:
@@ -194,7 +196,8 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
     for index, row in staged:
         if id_counts[row["external_id"]] > 1:
             held.append({"index": index, "reason": "duplicate_post_id"})
-        elif row["alias_key"] is not None and alias_counts[row["alias_key"]] > 1:
+        elif (alias_counts.get(_canonical_alias(row["source_url"]), 0) > 1
+              or (row["alias_key"] is not None and alias_counts.get(row["alias_key"], 0) > 1)):
             held.append({"index": index, "reason": "conflicting_source_alias"})
         else:
             accepted.append(row)
