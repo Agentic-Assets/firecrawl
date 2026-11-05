@@ -25,6 +25,12 @@ Durable reference docs stay under `docs/`; workflow/example artifacts stay besid
 the relevant script or example. Existing runtime-owned receipt/state paths keep
 their current owner contracts; this process change does not migrate them.
 
+Remove temporary clones and worktrees promptly when their work is finished so
+old Firecrawl folders do not accumulate. Before removal, verify their owner,
+processes, branch and dirty or ignored files; merge or preserve useful work and
+proof first. Keep active development, launcher and runtime checkouts and any
+checkout still needed by another agent. Follow the [checkout cleanup procedure](docs/firecrawl-ops/references/development-and-runtime-checkouts.md#checkout-cleanup).
+
 ## Linear tracking
 
 - **Team:** `AGENTIC` (`da8832b3-3dde-416f-be01-98c76a5806c7`)
