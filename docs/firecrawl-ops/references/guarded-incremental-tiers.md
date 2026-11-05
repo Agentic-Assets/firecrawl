@@ -536,6 +536,17 @@ commit and verified readback; later attempts resume from that cursor. Other
 cards remain outside that window, so the outcome remains partial and does not
 establish inventory coverage. Detail requests retain the existing serial pacing.
 
+A separate optional task named `Colliers Partial Refresh` can select
+`Tier = 'series'`, `Source = 'colliers'` and `Pipeline = $true` with the
+installer's explicit work budget and deployed SHA. The reviewed fleet updater
+discovers this exact singleton task and includes it in hold, pin and restore.
+Choose its existing daily triggers around the rest of the CRE fleet. It shares
+the same writer lock: a conflicting task is refused, not queued, and a missed
+or refused start does not count as progress. Each successful partial attempt
+uses a newly observed source; rotating positions across changed source results
+do not prove exhaustive coverage. Creating or enabling a task remains a
+separate operator action; preview does not register it.
+
 The installer accepts explicit series-only `Concurrency = 1..6` and forwards
 it through the fixed action. If omitted, action bytes are unchanged and inherit
 concurrency **1**. An explicit positive `AttemptsPerSource` is forwarded for a
