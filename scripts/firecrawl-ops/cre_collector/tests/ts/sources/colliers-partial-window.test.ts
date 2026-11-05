@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { withColliersPartialSpool } from "../../../sources/colliers-partial-custody.js";
 import { ColliersWindowEvidence } from "../../../sources/colliers-partial-window-evidence.js";
 import { reverifyColliersWindow } from "../../../sources/colliers-partial-window-reverify.js";
@@ -140,7 +141,7 @@ test("replay refuses evidence after a source-wide stop", async t => {
   const replay = await withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
     withColliersPartialSpool(path, receipt.bytes, receipt.sha256, (openEvidence, verifyEvidence) =>
       reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
-        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 1, result.proposedCursor, async () => {}, 2)));
+        { ...binding, detailFinishedAt: observationNow() }, 1, 1, result.proposedCursor, async () => {}, 2)));
   assert.equal(replay.emitted, 0); assert.equal(replay.held, 1);
   const records = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
   records.push({ ...records[1], candidate: { ...records[1].candidate, mapProjectId: "b" } });
@@ -149,7 +150,7 @@ test("replay refuses evidence after a source-wide stop", async t => {
   await assert.rejects(withColliersPartialSpool(sourcePath, sourceBytes.length, sourceHash, (openSource, verifySource) =>
     withColliersPartialSpool(forgedPath, forged.length, createHash("sha256").update(forged).digest("hex"), (openEvidence, verifyEvidence) =>
       reverifyColliersWindow(openSource, verifySource, openEvidence, verifyEvidence,
-        { ...binding, detailFinishedAt: new Date().toISOString() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
+        { ...binding, detailFinishedAt: observationNow() }, 1, 2, 3, async () => {}, 2))), /continues after source stop/);
 });
 
 test("unsupported control-character token does not block a supported peer", async () => {
@@ -238,4 +239,65 @@ test("worker entry refuses a request without its canonical owned lock", async t 
     { cwd: process.cwd(), env: { ...process.env, COLLIERS_PARTIAL_WORKER_REQUEST: path }, encoding: "utf8", timeout: 10000 });
   assert.notEqual(child.status, 0);
   assert.match(child.stderr, /Colliers partial worker failed/);
+});
+
+test("default rotating windows admit bounded peers and resume from cursor", async () => {
+  const ids = Array.from({length: 120}, (_, i) => "id" + (i + 1));
+  const payload = { success: true, total: 121, totalAvail: 121, numProjects: 120,
+    html: ids.map(id => `<li class="item"><span class="headline">Example</span><a href="/handler/modern.aspx?pv=${id}">View</a></li>`).join("") };
+  const locations = { success: true, total: 121, totalAvail: 121, projectLocations: ids.map(ProjectId => ({ ProjectId })) };
+  const paired = { ...pair, pageSize: 120, documents: [{ list: JSON.stringify(payload), map: JSON.stringify(locations) }] };
+  const parsed = { ...page, documents: ids.map(id => ({ mapProjectId: id, detailPv: id,
+    detailUrl: `https://my.rcm1.com/handler/modern.aspx?pv=${id}` })) };
+  const missing = { ...hole, start: 121 };
+  const open = source([header, paired, parsed, missing]);
+  const first = await selectColliersWindow(open, async () => {}, binding, 1);
+  assert.equal(first.selected, 100);
+  assert.equal(first.eligible.length, 100);
+  assert.equal(first.heldOther, 20);
+  const next = await selectColliersWindow(open, async () => {}, binding, 101);
+  assert.equal(next.selected, 100);
+  assert.equal(next.window[0].candidate.start + next.window[0].candidate.offset, 101);
+  assert.equal(next.window[19].candidate.start + next.window[19].candidate.offset, 120);
+});
+
+test("worker accepts honest independent source and detail clocks", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-cross-clock-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([header,pair,page,hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"), artifactPath = join(dir, "artifact");
+  writeFileSync(sourcePath, bytes, { mode: 0o600 });
+  const sourceFinish = new Date(Date.now() + 30_000).toISOString();
+  const result = await buildColliersWindowArtifact({ ...binding, finishedAt: sourceFinish,
+    sourcePath, sourceBytes: bytes.length, sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+    evidencePath: join(dir, "evidence"), artifactPath, cursor: 1, limit: 1,
+    generationStartedAt: "2026-11-04T14:00:00Z", producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+    originalSourceMainSha256: "c".repeat(64) },
+    async token => { const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+      return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) }; });
+  assert.equal(result.admitted, 1);
+  const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+  assert.equal(artifact.binding.finishedAt, sourceFinish);
+  assert.ok(Date.parse(artifact.listings[0].detailObservedAt) < Date.parse(sourceFinish));
+});
+
+test("source observation beyond the capture interval has an actionable safe category", async () => {
+  await assert.rejects(
+    selectColliersWindow(source([header,pair,page,hole]), async () => {},
+      { ...binding, finishedAt: "2026-11-04T15:29:59Z" }, 1),
+    /partial source observation clock outside capture interval/,
+  );
+});
+
+test("source-shaped clock step binds pages to genuine child finish", async () => {
+  const rows = [header,
+    { ...pair, observedAt: "2026-11-04T16:00:00.800Z" },
+    { ...page, observedAt: "2026-11-04T16:00:00.801Z" },
+    { ...hole, observedAt: "2026-11-04T16:00:00.802Z" }];
+  await assert.rejects(selectColliersWindow(source(rows), async () => {}, binding, 1),
+    /source observation clock outside capture interval/);
+  const result = await selectColliersWindow(source(rows), async () => {},
+    { ...binding, finishedAt: "2026-11-04T16:00:01.000Z" }, 1);
+  assert.equal(result.selected, 2);
+  assert.equal(result.eligible.length, 2);
 });

@@ -73,3 +73,50 @@ def test_rejects_symlinked_receipt_directory(tmp_path):
     source_dir.symlink_to(run / "actual-pages", target_is_directory=True)
     with pytest.raises(ValueError, match="directory invalid"):
         revalidate_source_receipt(run, manifest, 1, "a" * 40, False)
+
+@pytest.mark.parametrize("evidence_only", [True, False])
+def test_child_capture_clock_preserved_separately_from_coordinator(tmp_path, evidence_only):
+    run, manifest = fixture(tmp_path)
+    attempt = manifest["sources"]["colliers"]["attempts"][0]
+    main = run / attempt["rejected_artifact"]
+    data = json.loads(main.read_text())
+    data["runMeta"] = {"startedAt": "2026-11-04T15:00:00.608Z",
+                       "finishedAt": "2026-11-04T16:00:00.806Z",
+                       "freshness": {"generationId": run.name,
+                                     "generationStartedAt": manifest["started_at"]}}
+    if evidence_only:
+        data["runMeta"]["evidenceOnly"] = True
+    main.write_text(json.dumps(data))
+    attempt["rejected_artifact_sha256"] = hashlib.sha256(main.read_bytes()).hexdigest()
+    attempt["colliers_partial"] = {"path": "colliers-partial/attempt-1.jsonl", "state": "pending"}
+    settle(run, attempt, main, "colliers")
+    receipt = revalidate_source_receipt(run, manifest, 1, "a" * 40, False)
+    assert receipt["finished_at"] == "2026-11-04T16:00:00.806Z"
+    assert receipt["coordinator_finished_at"] == "2026-11-04T16:00:00Z"
+    assert attempt["finished_at"] == "2026-11-04T16:00:00Z"
+
+
+@pytest.mark.parametrize("change", ["large_skew", "foreign_generation", "before_start", "tampered"])
+def test_child_capture_clock_requires_bound_evidence(tmp_path, change):
+    run, manifest = fixture(tmp_path)
+    attempt = manifest["sources"]["colliers"]["attempts"][0]
+    main = run / attempt["rejected_artifact"]
+    data = json.loads(main.read_text())
+    data["runMeta"] = {"evidenceOnly": True, "startedAt": "2026-11-04T15:00:00.608Z",
+                       "finishedAt": "2026-11-04T16:00:00.806Z",
+                       "freshness": {"generationId": run.name,
+                                     "generationStartedAt": manifest["started_at"]}}
+    if change == "large_skew":
+        data["runMeta"]["finishedAt"] = "2026-11-04T16:05:01Z"
+    if change == "foreign_generation":
+        data["runMeta"]["freshness"]["generationId"] = "foreign"
+    if change == "before_start":
+        data["runMeta"]["startedAt"] = "2026-11-04T14:59:59Z"
+    main.write_text(json.dumps(data))
+    attempt["rejected_artifact_sha256"] = hashlib.sha256(main.read_bytes()).hexdigest()
+    attempt["colliers_partial"] = {"path": "colliers-partial/attempt-1.jsonl", "state": "pending"}
+    settle(run, attempt, main, "colliers")
+    if change == "tampered":
+        main.write_text(main.read_text() + " ")
+    with pytest.raises(ValueError):
+        revalidate_source_receipt(run, manifest, 1, "a" * 40, False)
