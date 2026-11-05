@@ -769,9 +769,8 @@ def run_database_unit(
                 f"sealed artifact changed or expired: {source}"
             )
         # Repeat exact source/aggregate proof immediately before each write.
-        if refresh.current_inventory.admission_configuration(
-            manifest["config"], source
-        ):
+        if (refresh.current_inventory.admission_configuration(manifest["config"], source)
+                or refresh.colliers_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
