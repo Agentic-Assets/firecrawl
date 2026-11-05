@@ -1,6 +1,7 @@
 import { PARTIAL_PAGE_SOURCES, PartialPageSpool, partialPageEnvName, type PartialPageSource } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
+import { preservesJsonValue } from "./lib/json-value.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
@@ -194,7 +195,20 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
         tx,
         max,
         monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS[key]
+        key === "svn" && spools.svn ? { ...BUILDOUT_SOURCE_INVENTORY_OPTS[key],
+          onPartialPage: (page) => {
+            try {
+              if (!preservesJsonValue(page.data)) { spools.svn!.markFailure(); return; }
+              spools.svn!.recordStreamed({ transaction: tx, page: page.page + 1, pass: 1,
+                kind: "buildout_inventory", observedAt: observationNow(), documents: [{ ...page,
+                  representation: "collector_parsed_json_not_response_bytes" }] });
+            } catch { spools.svn!.markFailure(); }
+          },
+          onPartialSummary: (summary) => {
+            try { spools.svn!.record({ transaction: tx, page: 1, pass: 1, kind: "buildout_summary",
+              observedAt: observationNow(), documents: [summary] }); }
+            catch { spools.svn!.markFailure(); }
+          } } : BUILDOUT_SOURCE_INVENTORY_OPTS[key]
       );
     }
     case "nai-global":
