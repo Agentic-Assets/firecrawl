@@ -3985,6 +3985,7 @@ def build_sql(
     pyramid_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
     pyramid_guard_binding=None,
+    jll_guard_binding=None,
     svn_enrichment_ids=(),
     inventory_preserve_enrichment_ids=(),
     jll_partial_ids=(),
@@ -4070,6 +4071,25 @@ def build_sql(
             raise ValueError("invalid Transwestern image transition scope")
         from cre_transwestern_image_sql import build_parts
         tw_parts = build_parts(rows, transwestern_image_transition_binding)
+    jll_guard_sql = ""
+    if jll_guard_binding is not None:
+        if (jll_guard_binding.get("artifact_run_key") != artifact_run_key
+                or transwestern_image_transition_binding is not None
+                or pyramid_guard_binding is not None or image_transition_binding is not None
+                or targeted or daum_verified_subset_claims is not None
+                or pyramid_verified_subset_claims is not None or jll_partial_claims is not None
+                or mark_missing_slugs or inventory_only_rows or inventory_only_scopes):
+            raise ValueError("invalid JLL guard scope")
+        from cre_jll_guard_result import result_sql
+        jll_guard_sql = (
+            "SELECT EXISTS (SELECT 1 FROM _child_counts_before b "
+            "LEFT JOIN _child_counts_after a USING (source_key, child_type) "
+            "WHERE b.source_key = 'jll' AND b.child_type = 'images' "
+            f"AND b.child_count >= {CHILD_COUNT_MIN_BASE} "
+            f"AND COALESCE(a.child_count, 0) < b.child_count * {CHILD_COUNT_RETAIN_NUMERATOR} / {CHILD_COUNT_RETAIN_DENOMINATOR}) AS jll_image_refused \\gset\n"
+            "\\if :jll_image_refused\nROLLBACK;\n"
+            + result_sql(jll_guard_binding, "image_loss_refused") + "\\quit\n\\endif\n"
+        )
     tw_verify_sql = tw_parts["verify"] if tw_parts else ""
     tw_retention_sql = (
         "    AND NOT (prior_counts.source_key = 'transwestern' AND prior_counts.child_type = 'images')\n"
@@ -6734,7 +6754,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-{tw_verify_sql}DO $$
+{jll_guard_sql}{tw_verify_sql}DO $$
 DECLARE
   regressions text;
   colliers_coveo_image_transition boolean := {colliers_transition_sql};
@@ -6827,6 +6847,9 @@ END $$;
 
 COMMIT;
 """)
+    if jll_guard_binding is not None:
+        from cre_jll_guard_result import result_sql
+        w(result_sql(jll_guard_binding, "committed"))
     if newmark_page_attempt:
         from cre_newmark_page_guard import commit_sql
         w(commit_sql(newmark_page_attempt))
@@ -7384,6 +7407,45 @@ def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key
         raise ValueError("invalid Transwestern image transition binding")
     return binding
 
+def jll_checkpoint_binding(args, data, original_bytes, artifact_run_key):
+    """Bind only the complete fresh source input to its actual clean collector."""
+    from pathlib import Path
+    from cre_checkpoint_refresh import git_identity
+    from cre_image_transition_log import valid_binding
+
+    if (len(args.inputs) != 1 or not args.checkpoint_ingest_attempt
+            or not args.expected_db_target_sha256 or not args.require_strict_freshness
+            or args.mark_missing or _status_activation_enabled(args.activate_status)
+            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
+            or args.checkpoint_pyramid_code_sha or args.checkpoint_collector_git_sha
+            or getattr(args, "jll_partial_claims", None) or args.matthews_targeted_claims):
+        raise ValueError("unbound JLL image transition")
+    validate_strict_artifact_freshness(data, require_strict_freshness=True)
+    scope = strict_full_source_scope(data, "jll", required_transactions=tuple(args.checkpoint_jll_transactions.split(",")))
+    if (len(scope["entries"]) != len(data["sources"])
+            or len(scope["listings"]) != len(data["listings"])):
+        raise ValueError("mixed JLL image transition scope")
+    code_sha, dirty = git_identity()
+    if dirty or code_sha != args.checkpoint_jll_code_sha:
+        raise ValueError("JLL collector code changed")
+    input_bytes = Path(args.inputs[0]).read_bytes()
+    digest = hashlib.sha256(input_bytes).hexdigest()
+    if (input_bytes != original_bytes
+            or artifact_run_key != artifact_run_identity_from_digests([digest])[0]):
+        raise ValueError("JLL transition input changed")
+    generation = data["runMeta"]["freshness"]
+    binding = {
+        "artifact_sha256": digest, "artifact_bytes": len(input_bytes),
+        "artifact_run_key": artifact_run_key,
+        "generation_id": generation["generationId"],
+        "generation_started_at": generation["generationStartedAt"],
+        "database_target_sha256": args.expected_db_target_sha256,
+        "attempt_id": args.checkpoint_ingest_attempt, "collector_git_sha": code_sha,
+    }
+    if not valid_binding(binding, require_collector_git_sha=True):
+        raise ValueError("invalid JLL image transition binding")
+    return binding
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -7406,6 +7468,8 @@ def main():
     ap.add_argument("--newmark-page-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-jll-code-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-jll-transactions", choices=("sale", "lease", "sale,lease"), default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -7450,8 +7514,11 @@ def main():
         ),
     )
     args = ap.parse_args()
-    if args.checkpoint_collector_git_sha is not None and not args.checkpoint_ingest_attempt:
+    if (args.checkpoint_collector_git_sha is not None or args.checkpoint_jll_code_sha is not None) and not args.checkpoint_ingest_attempt:
         ap.error("collector code binding requires a checkpoint ingest attempt")
+
+    if (args.checkpoint_jll_code_sha is None) != (args.checkpoint_jll_transactions is None):
+        ap.error("JLL checkpoint code and transaction scope must be bound together")
 
     merged = {}  # (slug, external_id) -> row
     inventory_only_merged = {}  # (slug, external_id) -> source-index row
@@ -7470,7 +7537,7 @@ def main():
     if args.jll_partial_claims:
         if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
                 or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
-                or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha
+                or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha
                 or _status_activation_enabled(args.activate_status) or not args.require_strict_freshness
                 or not args.expected_db_target_sha256 or not args.checkpoint_ingest_attempt):
             sys.exit("refusing unbound JLL partial ingest")
@@ -7962,6 +8029,12 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Transwestern image transition: {exc}")
+    jll_guard_binding = None
+    if args.checkpoint_jll_code_sha is not None:
+        try:
+            jll_guard_binding = jll_checkpoint_binding(args, data, image_transition_input, artifact_run_key)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            sys.exit(f"refusing JLL guard binding: {exc}")
     pyramid_guard_binding = None
     if args.checkpoint_pyramid_code_sha is not None:
         from cre_pyramid_rollback_result import bind_input
@@ -7992,6 +8065,7 @@ def main():
         jll_partial_claims=jll_partial_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
+        jll_guard_binding=jll_guard_binding,
         inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
         newmark_page_attempt=args.newmark_page_attempt,
         newmark_page_claim=newmark_page_claim,
@@ -8029,7 +8103,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
-            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None or args.newmark_page_attempt else []),
+            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None or jll_guard_binding is not None or args.newmark_page_attempt else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -8041,7 +8115,7 @@ def main():
         stderr=sys.stderr,
     )
     if not args.keep_artifacts:
-        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None)
+        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None and jll_guard_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
     print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None
