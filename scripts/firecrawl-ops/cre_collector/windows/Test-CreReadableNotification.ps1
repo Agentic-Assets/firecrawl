@@ -446,7 +446,7 @@ $mixedSources['selected_source_keys'] = $selectedSourceKeys
 $mixedSources['per_source_summaries'] = @(
     [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
     [ordered]@{source_key='lyon-stahl';verified_listings=3;emitted_count=3;held_count=4;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
-    [ordered]@{source_key='franklin-street';verified_listings=0;emitted_count=0;held_count=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='franklin-street';verified_listings=0;emitted_count=0;held_count=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;buildout_pending=5;held_observations=2;identity_uncertainty=[ordered]@{siteToBuildout='unresolved';possibleDuplicateProperties=$true;reusedSiteIds=@()}},
     [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
 $mixedSources['qualified_subset_source_keys'] = @('colliers','lyon-stahl','franklin-street')
 $mixedSources['failed_source_keys'] = @('savills'); $mixedSources['pending_source_keys'] = @(); $mixedSources['complete'] = $false
@@ -458,6 +458,7 @@ Assert-Cre ($sourceText.Contains('*Colliers:* Verified subset refreshed; 7 emitt
     $sourceText.Contains('*For sale:* 7 | *For lease:* 0 | *Both:* 0') -and
     $sourceText.Contains('*Lyon-Stahl:* Verified subset refreshed; 3 emitted; 4 held') -and
     $sourceText.Contains('*Franklin Street:* Verified subset refreshed; 0 emitted; 1 held') -and
+    $sourceText.Contains('*Buildout pending:* 5 | *Source observations held:* 2') -and $sourceText.Contains('properties may overlap') -and
     $sourceText.Contains('*For sale / lease / both:* unavailable') -and
     $sourceText.Contains('*Newmark:* 100 listings verified') -and $sourceText.Contains('*Savills:* Failed')) 'Partial counts and known zero remain distinct from unavailable transaction counts.'
 $invalidBreakdown = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
@@ -467,7 +468,7 @@ $invalidBreakdownRead = Get-CreVerifiedSummary (New-Record) 'mixed-source-invali
 $invalidBreakdownText = Get-CreNotificationText (New-Record) 'Terminal' 1 $invalidBreakdownRead
 Assert-Cre ($null -ne $invalidBreakdownRead -and $null -eq $invalidBreakdownRead.per_source_summaries[0].transaction_breakdown -and $invalidBreakdownText.Contains('*Colliers:* Verified subset refreshed; 7 emitted') -and
     -not $invalidBreakdownText.Contains('*For sale:* 6 | *For lease:* 0 | *Both:* 0')) 'An invalid transaction breakdown does not invent or discard the independently verified total.'
-foreach ($mutation in @('coverage','partial','emitted','fractional','held','qualification','foreign','declared','duplicate')) {
+foreach ($mutation in @('coverage','partial','emitted','fractional','held','qualification','franklin-pending','franklin-identity','foreign','declared','duplicate')) {
     $value = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     switch ($mutation) {
         'coverage' { $value.per_source_summaries[1].whole_source_coverage = $true }
@@ -476,6 +477,8 @@ foreach ($mutation in @('coverage','partial','emitted','fractional','held','qual
         'fractional' { $value.per_source_summaries[1].emitted_count = 3.5 }
         'held' { $value.per_source_summaries[1].held_count = -1 }
         'qualification' { $value.per_source_summaries[1].qualification = 'complete' }
+        'franklin-pending' { $value.per_source_summaries[2].buildout_pending = -1 }
+        'franklin-identity' { $value.per_source_summaries[2].identity_uncertainty.siteToBuildout = 'resolved' }
         'foreign' { $value.per_source_summaries[1].source_key = 'savills' }
         'declared' { $value.qualified_subset_source_keys = @('colliers','franklin-street') }
         'duplicate' { $value.failed_source_keys = @('savills','savills') }

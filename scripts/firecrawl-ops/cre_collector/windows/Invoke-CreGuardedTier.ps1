@@ -371,15 +371,23 @@ function Test-CreJllSubsetSummary {
 }
 
 function Test-CreSourceSubsetSummary {
-    param($Summary)
+    param($Summary, [string]$SourceKey)
     try {
         if ($Summary.measurement -cne 'generation_exact_verified_subset' -or
             $Summary.qualification -cne 'qualified_partial_subset' -or
             $Summary.partial -isnot [bool] -or -not $Summary.partial -or
             $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage) { return $false }
         foreach ($field in @('emitted_count','held_count','verified_listings')) {
+            $limit = if ($field -ceq 'held_count') { [long]::MaxValue } else { 500000 }
             if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
-                $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
+                $Summary.$field -lt 0 -or $Summary.$field -gt $limit) { return $false }
+        }
+        if ($SourceKey -ceq 'franklin-street') {
+            foreach ($field in @('buildout_pending','held_observations')) {
+                if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
+                    $Summary.$field -lt 0) { return $false }
+            }
+            if ($Summary.identity_uncertainty.siteToBuildout -cne 'unresolved') { return $false }
         }
         return $Summary.emitted_count -eq $Summary.verified_listings
     } catch { return $false }
@@ -487,7 +495,7 @@ function Get-CreVerifiedSummary {
                     if ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
                     } elseif (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
-                        if (-not (Test-CreSourceSubsetSummary $entry)) { return $null }
+                        if (-not (Test-CreSourceSubsetSummary $entry $entry.source_key)) { return $null }
                     } elseif (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
                 }
@@ -633,6 +641,11 @@ function Get-CreNotificationText {
                 }
                 if (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
+                    if ($entry.source_key -ceq 'franklin-street') {
+                        $pendingBuildout = ([long]$entry.buildout_pending).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                        $heldObservations = ([long]$entry.held_observations).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                        $lines += "    *Buildout pending:* $pendingBuildout | *Source observations held:* $heldObservations; site and Buildout identities are unresolved and properties may overlap."
+                    }
                     $property = $entry.PSObject.Properties['transaction_breakdown']
                     if ($null -ne $property -and $null -ne $property.Value) {
                         $sale = ([long]$property.Value.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
