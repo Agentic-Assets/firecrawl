@@ -112,3 +112,28 @@ for (const sibling of ['interra-realty', 'svn'] as const) test(`mixed ${sibling}
     rmSync(match[1].trim().substring(0,match[1].trim().lastIndexOf('/')),{recursive:true,force:true});
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('both failed transaction passes preserve separate private site observations', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'franklin-dual-'));
+  const preload = join(dir, 'preload.mjs'), output = join(dir, 'artifact.json');
+  const saleHtml = '<article data-listing-card="true" data-listing-id="sale-1">PRIVATE_SALE</article>';
+  const leaseHtml = '<article data-listing-card="true" data-listing-id="lease-1">PRIVATE_LEASE</article>';
+  writeFileSync(preload, `globalThis.fetch=async input=>{const u=String(input); if(u==='https://franklinst.com/properties/for-sale/') return new Response(${JSON.stringify(saleHtml)},{headers:{'content-type':'text/html'}}); if(u==='https://franklinst.com/properties/for-lease/') return new Response(${JSON.stringify(leaseHtml)},{headers:{'content-type':'text/html'}}); if(u.includes('a234450b432b2b2bebc1ace7e6f692e4489bde70')||u.includes('2f82fcd26667c4b0126d0084938ffa265f05fa4a')) return new Response('{}'); throw Error('unexpected request '+u);};`);
+  try {
+    const result=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source','franklin-street','--transaction','both','--max-items','0','--out',output],{cwd:process.cwd(),encoding:'utf8',timeout:60000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
+    assert.equal(result.status,1,result.stderr);
+    const data=JSON.parse(readFileSync(output,'utf8'));
+    assert.equal(data.runMeta.evidenceOnly,true);
+    assert.equal(data.listings.length,0);
+    assert.deepEqual(data.sources.map((s: any)=>s.transaction),['sale','lease']);
+    for (const [i, tx, html] of [[0,'sale',saleHtml],[1,'lease',leaseHtml]] as const) {
+      assert.match(data.sources[i].error,/Buildout/);
+      const obs=data.sources[i].retainedObservations[0];
+      assert.equal(obs.transaction,tx);
+      assert.equal(obs.sourceUrl,`https://franklinst.com/properties/for-${tx}/`);
+      assert.equal(obs.decodedHtml,html);
+      assert.equal(obs.coverage,'partial_unknown');
+    }
+    if (process.platform !== 'win32') assert.equal(statSync(output).mode & 0o077,0);
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
