@@ -71,6 +71,9 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_APPROVAL_REF AGENTIC-5225",
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
+        # The full audit counts this externally owned view; this isolated
+        # schema has no market data, matching the Franklin e2e fixture.
+        schema += "\nCREATE VIEW credeals.v_cre_market_summary AS SELECT 1 WHERE false;\n"
         sql(schema)
         from tests.marcus_cli_postgres_contract import run_cli_contract
         run_cli_contract(sql, name)
