@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -57,6 +58,47 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
+        # Exercise the actual native replay, source/aggregate claims and CLI SQL
+        # generator before applying its output to this disposable real schema.
+        from tests.test_colliers_partial_record import (
+            test_source_bytes_through_node_replay_into_python_staging,
+        )
+        with tempfile.TemporaryDirectory(prefix="colliers-e2e-") as temporary:
+            root = Path(temporary)
+            test_source_bytes_through_node_replay_into_python_staging(root)
+            artifact = json.loads((root / "artifact").read_text())
+            records = partial.unpack_window_records(artifact)
+            stage = [stage_detail_record(record, "gen", 1, "2026-11-04T15:00:00Z",
+                     "2026-11-04T16:00:00Z", artifact["detailFinishedAt"]) for record in records]
+            preimage = [{"external_id": "native-e2e", "listing": None, "source_index": None}]
+            readback, held = partial.partial_readback_sql(records, stage, [], preimage, "gen", 1,
+                "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z", artifact["detailFinishedAt"], "e" * 32)
+            assert not held
+            sql((root / "dry" / "ingest.sql").read_text())
+            assert sql(readback) == "1|1|0"
+            assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='native-e2e' AND status IS NULL") == "1"
+            import cre_checkpoint_refresh as refresh
+            import cre_validate
+            import pytest
+
+            claims = json.loads((root / "gen" / "colliers-partial" / "claims.json").read_text())
+            source = artifact["source"]
+            receipt = {"generation": "gen", "generation_started_at": "2026-11-04T14:00:00Z", "attempt": 1,
+                       "started_at": "2026-11-04T15:00:00Z", "finished_at": "2026-11-04T16:00:00Z",
+                       "bytes": source["bytes"], "sha256": source["sha256"], "main_sha256": "c" * 64,
+                       "producer_sha": "a" * 40, "database_target_sha256": "b" * 64}
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(partial, "revalidate_source_receipt", lambda *_: receipt)
+                patch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+                patch.setattr(ingest, "load_db_url", lambda _: ("synthetic", None))
+                patch.setattr(ingest, "database_target_fingerprint_from_url", lambda _: {"value": "b" * 64})
+                patch.setattr(ingest, "find_psql", lambda: "synthetic")
+                patch.setattr(cre_validate, "_run_psql_script", lambda _psql, _url, script, timeout:
+                    command("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-A",
+                            "-F", "\t", "-P", "footer=off", "-v", "ON_ERROR_STOP=1", text=script, check=False))
+                actual = partial.run_partial_readback(root / "gen" / "colliers-partial" / "window-1-artifact.json",
+                    claims, code_sha="a" * 40, target="b" * 64, attempt_id="e" * 32, env_file=None)
+            assert actual["ok"] is True and actual["outcome"] == "exact_commit" and actual["expected"] == 1
         first = sample()
         url = first["listing"]["url"]
         old = {"sourceKey": "colliers", "transactionMode": "sale", "id": "42",
