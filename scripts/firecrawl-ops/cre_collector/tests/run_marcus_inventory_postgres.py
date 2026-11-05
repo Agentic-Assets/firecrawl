@@ -68,6 +68,8 @@ def main():
         sql(schema)
         from tests.marcus_cli_postgres_contract import run_cli_contract
         run_cli_contract(sql, name)
+        from tests.marcus_mixed_postgres_contract import run_mixed_contract
+        run_mixed_contract(sql, name)
         sql("""
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,sale_price_usd,raw_data)
 SELECT id,'101','https://www.marcusmillichap.com/properties/101/source-name',
