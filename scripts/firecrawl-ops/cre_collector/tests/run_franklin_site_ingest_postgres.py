@@ -11,11 +11,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from run_franklin_site_lifecycle_postgres import run
-from test_franklin_site_partial import mixed
-
 import cre_franklin_site_sql as partial
 from cre_franklin_site_partial import derive
+from run_franklin_site_lifecycle_postgres import run
+from test_franklin_site_partial import mixed
 
 
 def item(identity, slug, stamp, text):
@@ -240,6 +239,32 @@ def main():
         large_size = sql("SELECT pg_column_size(raw_data) || '/' || octet_length(raw_data::text) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(larger["id"]))
         print("Synthetic raw_data sizes (stored/uncompressed JSON bytes): 131 observations", sizes, "; 70k repetitive card", large_size)
         assert sql("SELECT count(*) FROM credeals.cre_source_index;") == "0"
+
+        # The target's JSON float serialization can lose enough digits to
+        # change a coordinate when the JSON is converted back to float8.
+        precise = item("99999999-4444-5444-8444-444444444444", "precise",
+                       "2026-11-04T12:00:10Z", "first precise card")
+        precise["latitude"], precise["longitude"] = "30.588361399089605", "-96.31404800858494"
+        sql(write_sql([precise], []))
+        bits_query = ("SELECT encode(float8send(lat),'hex') || '/' || encode(float8send(lng),'hex') "
+                      "FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(precise["id"]))
+        before_bits = sql(bits_query)
+        assert sql("SET extra_float_digits=0; SELECT lat IS DISTINCT FROM "
+                   "(jsonb_populate_record(NULL::credeals.cre_listings,to_jsonb(l))).lat "
+                   "OR lng IS DISTINCT FROM (jsonb_populate_record(NULL::credeals.cre_listings,to_jsonb(l))).lng "
+                   "FROM credeals.cre_listings l WHERE external_id=" + partial.sql_lit(precise["id"])) == "t"
+        precise_next = item("99999999-4444-5444-8444-444444444444", "precise",
+                            "2026-11-04T12:00:11Z", "second precise card")
+        precise_next["latitude"], precise_next["longitude"] = precise["latitude"], precise["longitude"]
+        sql("SET extra_float_digits=0;\n" + write_sql([precise_next], []))
+        assert sql(bits_query) == before_bits
+        assert json.loads(sql(readback_sql([precise_next], []))) == {"expected": 1, "invalid": [], "matching_jobs": 1}
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings "
+                   "WHERE external_id=" + partial.sql_lit(precise["id"])) == "2"
+        tampered = json.loads(sql("SET extra_float_digits=0; BEGIN; UPDATE credeals.cre_listings "
+                                  "SET lat=30.5883613990896 WHERE external_id=" + partial.sql_lit(precise["id"]) + ";" +
+                                  readback_sql([precise_next], []) + "ROLLBACK;").splitlines()[-1])
+        assert tampered["matching_jobs"] == 0
 
         raw, original_binding = mixed()
         original = json.loads(raw)

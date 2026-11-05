@@ -187,6 +187,8 @@ def build_sql(listings, held, binding):
 BEGIN;
 SET LOCAL statement_timeout='600s';
 SET LOCAL TIME ZONE 'UTC';
+-- Stable, round-trip float JSON is required for the postimage digest.
+SET LOCAL extra_float_digits=3;
 {lifecycle_transaction_lock_sql()}
 CREATE TEMP TABLE _franklin_site ON COMMIT DROP AS
 {_site_query(payload)};
@@ -206,7 +208,7 @@ ORDER BY l.id FOR UPDATE OF l;
 CREATE TEMP TABLE _franklin_site_held ON COMMIT DROP AS
 {_held_query()};
 CREATE TEMP TABLE _franklin_site_before ON COMMIT DROP AS
-SELECT s.external_id, to_jsonb(l) AS prior FROM _franklin_site s
+SELECT s.external_id, l AS prior_row, to_jsonb(l) AS prior FROM _franklin_site s
 JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
 WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id);
 DO $$ BEGIN
@@ -280,7 +282,9 @@ DO $$ BEGIN
  IF EXISTS (
    SELECT 1 FROM _franklin_site s
    LEFT JOIN _franklin_site_before b ON b.external_id=s.external_id
-   LEFT JOIN LATERAL jsonb_populate_record(NULL::credeals.cre_listings, b.prior) p ON true
+   -- Keep typed floats: JSON serialization can round coordinates and make
+   -- unchanged stored values fail this exact comparison.
+   LEFT JOIN LATERAL (SELECT (b.prior_row).*) p ON true
    LEFT JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
    WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)
    AND (l.id IS NULL
@@ -324,6 +328,7 @@ def readback_sql(listings, held, binding):
     payload = sql_lit(json.dumps(accepted, ensure_ascii=False, separators=(",", ":")))
     return f"""
 SET TIME ZONE 'UTC';
+SET extra_float_digits=3;
 WITH expected AS (
  SELECT * FROM jsonb_to_recordset({payload}::jsonb) AS x(
   external_id text, source_url text, canonical_url text, title text, address text, state text,
