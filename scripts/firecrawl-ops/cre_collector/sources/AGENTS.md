@@ -103,6 +103,17 @@ claim. Missing, invalid or ambiguous maps do not block the listing. It does not
 combine axes or authorize reconciliation of conflicting observations. Current
 raw-data replacement does not establish a historical observation archive.
 
+## Avison attempt evidence
+
+The existing private partial-page spool records selected feed IDs and their
+post-drain detail outcomes after a fresh transaction reaches detail processing:
+validated, typed terminal
+404, failed for another reason, or not attempted. This records only selected
+rows, not a complete inventory or a database-admission proof. Other failures
+include denial and uncertain cleanup; they are not reclassified as missing.
+The source still fails normally, and a crash before spool settlement does not
+establish a complete outcome record.
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,
