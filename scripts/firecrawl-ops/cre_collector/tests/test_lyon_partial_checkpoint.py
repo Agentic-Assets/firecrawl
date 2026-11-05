@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,49 @@ class LyonCheckpointTests(unittest.TestCase):
                         run_identity_probe(path, manifest, None)
                     with patch.object(cre_validate, "_run_psql_script", return_value=SimpleNamespace(returncode=1)), self.assertRaises(RuntimeError):
                         run_identity_probe(path, manifest, None)
+                    healthy = SimpleNamespace(returncode=0, stdout="healthy" + chr(10) + "1" + chr(10))
+                    local_sql_error = SimpleNamespace(returncode=3, stderr="ERROR:  22023: invalid source input")
+                    with patch.object(cre_validate, "_run_psql_script", side_effect=[local_sql_error, healthy]), self.assertRaises(LyonSourceProbeRefusal):
+                        run_identity_probe(path, manifest, None)
+                    timeout = subprocess.TimeoutExpired(cmd="psql", timeout=60)
+                    with patch.object(cre_validate, "_run_psql_script", side_effect=[timeout, healthy]), self.assertRaises(LyonSourceProbeRefusal):
+                        run_identity_probe(path, manifest, None)
+                    with patch.object(cre_validate, "_run_psql_script", side_effect=[timeout, SimpleNamespace(returncode=1)]), self.assertRaises(RuntimeError):
+                        run_identity_probe(path, manifest, None)
+                    shared_permission = SimpleNamespace(returncode=3, stderr="ERROR:  42501: permission denied")
+                    with patch.object(cre_validate, "_run_psql_script", return_value=shared_permission), self.assertRaises(RuntimeError):
+                        run_identity_probe(path, manifest, None)
+                # Exercise the actual subprocess runner: query failure and
+                # timeout both settle their child before a successful health
+                # probe, and cannot leave an unowned local psql process.
+                fake_psql = root / "fake-psql"
+                pid_path = root / "probe-pid"
+                mode_path = root / "probe-mode"
+                program = ("#!/usr/bin/python3" + chr(10)
+                    + "import os,sys,time" + chr(10)
+                    + "from pathlib import Path" + chr(10)
+                    + "query=Path(sys.argv[-1]).read_text()" + chr(10)
+                    + "if 'SELECT 1 AS healthy' in query:" + chr(10)
+                    + " print('healthy'); print('1'); sys.exit(0)" + chr(10)
+                    + "Path(" + repr(str(pid_path)) + ").write_text(str(os.getpid()))" + chr(10)
+                    + "if Path(" + repr(str(mode_path)) + ").read_text() == 'timeout': time.sleep(5)" + chr(10)
+                    + "print('ERROR:  22023: invalid source', file=sys.stderr); sys.exit(3)" + chr(10))
+                fake_psql.write_text(program)
+                fake_psql.chmod(0o700)
+                real_query = cre_validate._run_psql_script
+                def bounded_query(psql, url, query, timeout):
+                    return real_query(psql, url, query, timeout=0.25 if timeout == 60 else timeout)
+                with patch.object(ingest, "load_db_url", return_value=("postgresql://synthetic@localhost/test", None)), \
+                     patch.object(ingest, "database_target_fingerprint_from_url", return_value={"value": "b" * 64}), \
+                     patch.object(ingest, "find_psql", return_value=str(fake_psql)), \
+                     patch.object(cre_validate, "_run_psql_script", side_effect=bounded_query):
+                    for mode in ("error", "timeout"):
+                        mode_path.write_text(mode)
+                        with self.assertRaises(LyonSourceProbeRefusal):
+                            run_identity_probe(path, manifest, None)
+                        pid = int(pid_path.read_text())
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(pid, 0)
                 self.assertEqual(load_probe_preimage(root, 1, probe), preimage)
                 checkpoint["lyon_identity_probe"] = probe
                 manifest["scope"] = {}

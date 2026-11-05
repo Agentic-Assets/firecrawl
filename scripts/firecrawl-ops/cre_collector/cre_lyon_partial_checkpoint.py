@@ -354,16 +354,46 @@ def run_identity_probe(artifact_path, manifest, env_file):
     db_url, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(db_url).get("value") != target:
         raise ValueError("Lyon probe target changed")
-    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS
-           + "\n" + identity_probe_sql(staged) + ";\nROLLBACK;\n")
-    result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
+    import subprocess
+
+    def recheck():
+        current_url, _ = load_db_url(env_file)
+        after = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
+        if (database_target_fingerprint_from_url(current_url).get("value") != target
+                or git_identity() != (producer, False) or after["source"] != source or after["staged"] != staged):
+            raise ValueError("Lyon probe input or target changed")
+
+    def source_refusal(cause):
+        # subprocess.run has killed and reaped its direct psql child on timeout.
+        # A separate read-only health query must also succeed on the same bound
+        # target before a settled source-specific refusal can spare peers.
+        recheck()
+        try:
+            health = _run_psql_script(find_psql(), db_url,
+                "BEGIN TRANSACTION READ ONLY;\nSELECT 1 AS healthy;\nROLLBACK;\n", timeout=10)
+            healthy = health.returncode == 0 and parse_tsv(health.stdout) == [{"healthy": "1"}]
+        except (OSError, RuntimeError, ValueError, TypeError, SystemExit, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Lyon probe target health is unknown") from exc
+        recheck()
+        if not healthy:
+            raise RuntimeError("Lyon probe target health is unknown") from cause
+        raise LyonSourceProbeRefusal("Lyon read-only identity query was refused") from cause
+
+    # Verbose PostgreSQL errors expose SQLSTATE without copying provider data
+    # into logs. Only data/query-local states are eligible for a source hold.
+    sql = ("\\set VERBOSITY verbose\nBEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+           + PIN_STRING_LITERALS + "\n" + identity_probe_sql(staged) + ";\nROLLBACK;\n")
+    try:
+        result = _run_psql_script(find_psql(), db_url, sql, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        source_refusal(exc)
     if result.returncode:
-        raise RuntimeError("Lyon identity probe failed")
-    current_url, _ = load_db_url(env_file)
-    after = verify_candidate_artifact(artifact_path, manifest, current_code_sha=producer, current_git_dirty=False)
-    if (database_target_fingerprint_from_url(current_url).get("value") != target
-            or git_identity() != (producer, False) or after["source"] != source or after["staged"] != staged):
-        raise ValueError("Lyon probe input or target changed")
+        state = re.search(r"ERROR:\s+([0-9A-Z]{5}):", getattr(result, "stderr", "") or "")
+        if (result.returncode == 3 and state
+                and (state.group(1).startswith("22") or state.group(1) in {"42601", "57014"})):
+            source_refusal(RuntimeError("Lyon source query was refused"))
+        raise RuntimeError("Lyon identity probe target or query failed")
+    recheck()
     parsed = parse_tsv(result.stdout)
     if (len(parsed) != 1 or set(parsed[0]) != {"staged", "joined", "held", "preimage"}
             or parsed[0]["staged"] != str(len(staged)) or parsed[0]["joined"] != str(len(staged))):

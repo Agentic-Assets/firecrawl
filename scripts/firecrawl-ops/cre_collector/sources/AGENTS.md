@@ -215,11 +215,12 @@ gate also passed to any other Lyon requests in that invocation. It makes at
 most one attempt per filter, retains settled local failures and continues
 eligible filters, and stops on access denial, rate limiting or unsettled
 cleanup. It retains decoded JSON, clocks, hashes and card occurrence references,
-including typed query-form WordPress IDs. Earlier snapshots accompany an
-unsettled terminal error, whose global-stop classification is unchanged. Search observations are
-partial evidence only: filter membership does not prove current status,
-exclusive tenure, a complete inventory, a crosswalk or numeric price semantics.
-The helper is not wired to the collector, scheduler, admission or database.
+including typed query-form WordPress IDs. An unsettled terminal outcome keeps
+earlier private snapshots and cannot be admitted. The guarded cohort path
+replays source-bound observations and admits eligible records additively after
+identity and readback checks. Search observations are partial evidence only:
+filter membership does not prove current status, exclusive tenure, a complete
+inventory, a crosswalk or numeric price semantics, and never authorizes retirement.
 
 Lyon-Stahl may publish availability on a same-page `Product` Offer instead of
 the `RealEstateListing`. When listing offers are absent, require one listing and
