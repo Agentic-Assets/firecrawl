@@ -151,6 +151,24 @@ def main():
                 raise
             assert checkpoint["state"] == "ingested"
             assert checkpoint["ingest_recovery"]["readback_ok"] is True
+            def dbsql(statement):
+                return subprocess.run(["psql", "-X", "-q", "-tA", "-v", "ON_ERROR_STOP=1", "-c", statement],
+                                      env=psql_connection_env(uri), capture_output=True, text=True,
+                                      check=True, timeout=30).stdout.strip()
+            assert dbsql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='buildout-1';") == "0"
+            assert dbsql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id LIKE 'franklin-site:%';") == "0"
+            assert dbsql("SELECT raw_data->'franklinSiteObservations'->0->'card'->>'html' FROM credeals.cre_listings;") == data["sources"][0]["retainedObservations"][0]["cards"][0]["html"]
+            dbsql("""UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,
+                    '{franklinSiteObservations,0,card,html}', to_jsonb('synthetic mismatch'::text));""")
+            checkpoint["state"] = "ingesting"
+            try:
+                refresh.recover_interrupted_ingest(run, manifest, "franklin-street", str(env_file))
+            except refresh.GlobalStageError as error:
+                assert "partial ingest outcome is not exact" in str(error)
+            else:
+                raise AssertionError("mismatched card was accepted during recovery")
+            assert checkpoint["state"] == "ingest_recovery_required"
+            assert checkpoint["ingest_recovery"]["readback_ok"] is False
             print("Owned no-TCP Franklin partial end-to-end and recovery proof passed")
         finally:
             refresh.save_manifest = old_save
