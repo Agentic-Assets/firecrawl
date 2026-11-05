@@ -5,8 +5,7 @@ import os
 import stat
 from pathlib import Path
 
-
-PARTIAL_PAGE_SOURCES = ("cbre", "colliers", "avison-young", "lyon-stahl")
+PARTIAL_PAGE_SOURCES = ("cbre", "colliers", "avison-young", "lyon-stahl", "svn")
 
 
 def partial_env_name(source: str, field: str) -> str:

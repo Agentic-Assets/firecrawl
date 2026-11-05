@@ -56,6 +56,10 @@ export type BuildoutInventoryOpts = {
   maxRecoveryPages?: number;
   jsonAttempts?: number;
   jsonBackoffMs?: number;
+  onPartialPage?: (page: { page: number; data: unknown; sourceObservedAt: string | null;
+    cacheDisposition: "generation_cache" | "live"; transport: "direct_json" | "firecrawl_json" | null }) => void;
+  onPartialSummary?: (summary: { total: number | null; limit: number; declaredPages: number;
+    attempted: number[]; accepted: number[]; failed: number[]; unattempted: number[] }) => void;
 };
 
 // Buildout's implicit order can shift or repeat rows at page boundaries while
@@ -538,6 +542,7 @@ function captureBuildoutParsedPage(pluginKey: string, page: number, opts: Buildo
     : liveTransport;
   publishBuildoutParsedPage({ pluginKey, cacheSlug: opts.cacheSlug, page, inventorySort: opts.inventorySort,
     data, sourceObservedAt, cacheDisposition: disposition, transport });
+  opts.onPartialPage?.({ page, data, sourceObservedAt, cacheDisposition: disposition, transport });
 }
 
 export async function buildoutInventory(
@@ -726,6 +731,12 @@ export async function buildoutInventory(
       }
     }
 
+    opts.onPartialSummary?.({ total, limit, declaredPages,
+      attempted: [...attemptedPages].sort((a, b) => a - b),
+      accepted: [...observedPages.keys()].sort((a, b) => a - b),
+      failed: [...failedPages].sort((a, b) => a - b),
+      unattempted: [...unattemptedPages].sort((a, b) => a - b) });
+
     // A few rate-limited pages are tolerable (gap fills on the next run);
     // a large gap means the feed is unusable and must not be cached or
     // ingested (mark-missing on a gappy run would soft-delete live rows).
@@ -741,6 +752,8 @@ export async function buildoutInventory(
       throw abortError;
     }
   }
+  if (!(total && total > limit)) opts.onPartialSummary?.({ total, limit, declaredPages,
+    attempted: [0], accepted: [0], failed: [], unattempted: [] });
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
   assertBuildoutInventoryReconciled(items, total, requireComplete);
