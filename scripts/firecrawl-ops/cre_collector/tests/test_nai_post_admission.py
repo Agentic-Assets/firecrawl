@@ -42,6 +42,25 @@ def test_bound_artifact_partition(tmp_path):
     assert partition["staged"][0]["external_id"] == "infabode:1"
 
 
+def test_trusted_ancestor_symlink_does_not_break_platform_paths(tmp_path):
+    path, manifest, sha = fixture(tmp_path)
+    alias = tmp_path / "host-alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    alternate = alias / "gen-1" / "sources" / path.name
+    binding, _ = candidate(alternate, manifest, code_sha=sha, dirty=False)
+    assert binding["artifact_sha256"] == manifest["sources"]["nai-global"]["artifact"]["sha256"]
+
+
+def test_symlinked_sources_directory_is_refused(tmp_path):
+    path, manifest, sha = fixture(tmp_path)
+    directory = path.parent
+    relocated = directory.with_name("relocated")
+    directory.rename(relocated)
+    directory.symlink_to(relocated, target_is_directory=True)
+    with pytest.raises(ValueError, match="path invalid"):
+        candidate(path, manifest, code_sha=sha, dirty=False)
+
+
 def test_clock_unqualified_post_is_held_while_peer_proceeds(tmp_path):
     path, manifest, sha = fixture(tmp_path)
     data = json.loads(path.read_bytes())

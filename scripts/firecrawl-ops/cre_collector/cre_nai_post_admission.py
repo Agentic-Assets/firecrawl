@@ -30,7 +30,8 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     path = Path(artifact_path)
     root = path.parent.parent
     if (path.name != "nai-global.json" or path.parent.name != "sources"
-            or root.name != manifest.get("run_id") or path.resolve() != path.absolute()):
+            or root.name != manifest.get("run_id") or root.is_symlink() or path.parent.is_symlink()
+            or path.resolve() != root.resolve() / "sources" / "nai-global.json"):
         raise ValueError("NAI partial source path invalid")
     checkpoint = manifest["sources"][SOURCE]
     info = checkpoint["artifact"]
@@ -44,7 +45,8 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
             or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o600):
         raise ValueError("NAI source artifact custody invalid")
-    raw = read_file(path)
+    resolved_path = path.resolve()
+    raw = read_file(resolved_path)
     digest = hashlib.sha256(raw).hexdigest()
     if digest != info.get("sha256") or len(raw) != info.get("bytes"):
         raise ValueError("NAI source artifact differs")
@@ -71,7 +73,10 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     if target.get("algorithm") != "sha256" or not re.fullmatch(r"[0-9a-f]{64}", target.get("value") or ""):
         raise ValueError("NAI partial target invalid")
     partition_raw = json.dumps(partition, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-    if read_file(path) != raw:
+    after = path.lstat()
+    if (path.resolve() != resolved_path or read_file(resolved_path) != raw
+            or any(getattr(st, key) != getattr(after, key)
+                   for key in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))):
         raise ValueError("NAI source artifact changed during validation")
     return {"artifact_sha256": digest, "producer_sha": code_sha, "generation_id": manifest["run_id"],
             "database_target_sha256": target["value"], "partition_sha256": hashlib.sha256(partition_raw).hexdigest(),
