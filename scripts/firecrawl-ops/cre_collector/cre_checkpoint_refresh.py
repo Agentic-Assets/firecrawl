@@ -263,6 +263,9 @@ class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
 
 
+class MarcusInventoryProbeHold(SourceGuardRefusal):
+    """Settled Marcus inventory identity output cannot be qualified."""
+
 class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
 
@@ -2890,14 +2893,20 @@ def lyon_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("lyon_partial") is True)
 
 
+def marcus_inventory_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "marcus-millichap"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("marcus_inventory_partial") is True)
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
             or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-            or lyon_partial_candidate(manifest, source))
+            or lyon_partial_candidate(manifest, source) or marcus_inventory_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if marcus_inventory_partial_candidate(manifest, source):
+        return "marcus_inventory_claims"
     if lyon_partial_candidate(manifest, source):
         return "lyon_partial_claims"
     if colliers_partial_candidate(manifest, source):
@@ -5564,6 +5573,10 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if marcus_inventory_partial_candidate(manifest, source):
+            from cre_marcus_inventory_checkpoint import admit_inventory
+            return admit_inventory(artifact, manifest, report, current_code_sha=git_sha,
+                                   current_git_dirty=git_dirty, phase=phase)
         if lyon_partial_candidate(manifest, source):
             from cre_lyon_partial_checkpoint import admit_search
             return admit_search(artifact, manifest, report, current_code_sha=git_sha,
@@ -5629,7 +5642,16 @@ def gate_source(
         per_source = result["per_source"][source]
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or marcus_inventory_partial_candidate(manifest, source)):
+            if marcus_inventory_partial_candidate(manifest, source):
+                from cre_marcus_inventory_checkpoint import MarcusInventoryProbeRefusal, run_identity_probe
+                try:
+                    checkpoint["marcus_inventory_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except MarcusInventoryProbeRefusal as exc:
+                    raise MarcusInventoryProbeHold("Marcus source identity could not be qualified") from exc
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Marcus partial identity classification failed") from exc
             if lyon_partial_candidate(manifest, source):
                 from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
                 try:
@@ -5792,7 +5814,8 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    flag = ("--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
+    flag = ("--marcus-inventory-claims" if marcus_inventory_partial_candidate(manifest, source)
+            else "--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
             else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
@@ -6298,7 +6321,8 @@ def run_aggregate_gate(
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or marcus_inventory_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6507,6 +6531,11 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if marcus_inventory_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_marcus_inventory_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Marcus inventory ingest requires exact readback")
     if lyon_partial_candidate(manifest, source):
         checkpoint["state"] = "ingest_recovery_required"
         checkpoint["ingest_recovery"] = {"reason": "interrupted_lyon_partial_ingest", "readback_ok": False}
@@ -6836,6 +6865,22 @@ def lyon_partial_readback(run_dir, manifest, env_file):
     return result
 
 
+def marcus_inventory_readback(run_dir, manifest, env_file):
+    from cre_marcus_inventory_checkpoint import run_partial_readback
+
+    checkpoint = manifest["sources"]["marcus-millichap"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "marcus-millichap")
+    if len(arguments) < 2:
+        raise GlobalStageError("Marcus inventory readback claims are missing")
+    code_sha, dirty = git_identity()
+    if dirty:
+        raise GlobalStageError("Marcus inventory readback code is dirty")
+    result = run_partial_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+        code_sha=code_sha, target=manifest_database_target_sha256(manifest),
+        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    subset_ingest_arguments(run_dir, manifest, "marcus-millichap")
+    return result
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6946,6 +6991,29 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if marcus_inventory_partial_candidate(manifest, source):
+            observed = validation.get("marcus_inventory_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("outcome") == "exact_commit"
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and type(observed.get("detail_qualified")) is int and observed["detail_qualified"] == 0
+                  and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count")
+                  and type(observed.get("new_missing_canonical_count")) is int
+                  and 0 <= observed["new_missing_canonical_count"] <= observed["expected"]
+                  and observed.get("whole_source_coverage") is False)
+            checkpoint["readback"] = {"ok": ok, "kind": "marcus_inventory_partial",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if lyon_partial_candidate(manifest, source):
             observed = validation.get("lyon_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7553,6 +7621,9 @@ def run_final_validation(
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
+    if (sources is None or "marcus-millichap" in sources) and marcus_inventory_partial_candidate(manifest, "marcus-millichap"):
+        result["marcus_inventory_readback"] = marcus_inventory_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
     if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
@@ -7575,10 +7646,14 @@ def run_final_validation(
     lyon_allowance = 0
     if readback["ok"] and (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         lyon_allowance = result["lyon_partial_readback"].get("new_missing_canonical_count", 0)
+    marcus_allowance = 0
+    if (readback["ok"] and (sources is None or "marcus-millichap" in sources)
+            and marcus_inventory_partial_candidate(manifest, "marcus-millichap")):
+        marcus_allowance = result["marcus_inventory_readback"].get("new_missing_canonical_count", 0)
     quality = compare_validation_quality(
         before, result, image_transition=transition,
         transwestern_image_transition=tw_transition if tw_required else None,
-        lyon_new_missing_canonical=lyon_allowance,
+        lyon_new_missing_canonical=lyon_allowance, marcus_new_missing_canonical=marcus_allowance,
     )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
@@ -7588,6 +7663,7 @@ def run_final_validation(
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
         **({"lyon_new_missing_canonical_count": lyon_allowance} if lyon_allowance else {}),
+        **({"marcus_new_missing_canonical_count": marcus_allowance} if marcus_allowance else {}),
         "image_transition": quality.get("image_transition"),
         **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
            if tw_required else {}),
@@ -7630,11 +7706,13 @@ def _rows_by(
 
 def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
-    transwestern_image_transition=None, lyon_new_missing_canonical=0,
+    transwestern_image_transition=None, lyon_new_missing_canonical=0, marcus_new_missing_canonical=0,
 ) -> dict[str, Any]:
-    """Reject hard regressions, accounting only for verified new Lyon partial parents."""
+    """Reject hard regressions, accounting for source-bound verified partial parents."""
     if type(lyon_new_missing_canonical) is not int or lyon_new_missing_canonical < 0:
         raise ValueError("invalid Lyon new-parent quality allowance")
+    if type(marcus_new_missing_canonical) is not int or marcus_new_missing_canonical < 0:
+        raise ValueError("invalid Marcus new-parent quality allowance")
     try:
         if "validation_profile" in before or "audit_scope" in before:
             require_checkpoint_preflight_report(before)
@@ -7701,9 +7779,9 @@ def compare_validation_quality(
                 old_value = _int_value(prior.get(metric_field))
                 new_value = _int_value(row.get(metric_field))
                 allowance = (
-                    lyon_new_missing_canonical
-                    if query == "quality_by_source" and identity == ("lyon-stahl",)
-                    and metric_field == "missing_canonical_url" else 0
+                    (lyon_new_missing_canonical if identity == ("lyon-stahl",) else
+                     marcus_new_missing_canonical if identity == ("marcus-millichap",) else 0)
+                    if query == "quality_by_source" and metric_field == "missing_canonical_url" else 0
                 )
                 if new_value > old_value + allowance:
                     failures.append(
