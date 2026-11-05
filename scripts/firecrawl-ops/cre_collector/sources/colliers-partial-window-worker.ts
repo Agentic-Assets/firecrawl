@@ -11,7 +11,8 @@ import { reverifyColliersWindow } from "./colliers-partial-window-reverify.js";
 type Native = { detail: any; decodedText: string; nativeBytes: Uint8Array };
 type Input = { sourcePath: string; sourceBytes: number; sourceSha256: string; evidencePath: string; artifactPath: string;
   generation: string; generationStartedAt: string; attempt: number; startedAt: string; finishedAt: string; cursor: number;
-  producerSha: string; targetSha256: string; originalSourceMainSha256: string; softBytes?: number; limit?: number };
+  producerSha: string; targetSha256: string; originalSourceMainSha256: string; softBytes?: number; limit?: number;
+  stopBeforePosition?: number };
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
 
 /** Stream a new private artifact; a failed file is never a sealed receipt. */
@@ -67,7 +68,7 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
     let result: Awaited<ReturnType<typeof produceColliersWindow>>;
     try {
       result = await produceColliersWindow(openSource, verifySource, binding, input.cursor,
-        async item => evidence.detail(item), async item => evidence.hold(item), fetchDetail, input.limit);
+        async item => evidence.detail(item), async item => evidence.hold(item), fetchDetail, input.limit, input.stopBeforePosition);
     } catch (error) { evidence.abort(); throw error; }
     const receipt = evidence.finish(), detailFinishedAt = observationNow();
     const artifact = new PrivateArtifact(input.artifactPath);
@@ -91,8 +92,10 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
             const { listing, ...record } = item;
             artifact.write((emitted ? "," : "") + JSON.stringify({ ...listing, colliersPartialRecord: record }));
             emitted++;
-          }, input.limit));
-      if (replay.emitted !== emitted) throw new Error("partial emitted partition differs");
+          }, input.limit, input.stopBeforePosition));
+      if (replay.emitted !== emitted || replay.sourceStopped !== result.sourceStopped ||
+          replay.rotationComplete !== result.rotationComplete || replay.firstPosition !== result.firstPosition)
+        throw new Error("partial emitted partition differs");
       const sources = [
         { sourceKey: "colliers", transaction: "sale", supported: true, truncated: true,
           listingsCollected: emitted, error: "original source pass failed" },
@@ -104,6 +107,7 @@ export async function buildColliersWindowArtifact(input: Input, fetchDetail?: (t
     const sealed = artifact.finish();
     await withColliersPartialSpool(input.artifactPath, sealed.bytes, sealed.sha256, async () => {});
     return { artifact: sealed, evidence: receipt, detailFinishedAt, proposedCursor: result.proposedCursor,
-      admitted: replay.emitted, held: replay.held, heldOther: result.selection.heldOther, unattempted: result.unattempted };
+      admitted: replay.emitted, held: replay.held, heldOther: result.selection.heldOther, unattempted: result.unattempted,
+      sourceStopped: replay.sourceStopped, rotationComplete: replay.rotationComplete, firstPosition: replay.firstPosition };
   });
 }

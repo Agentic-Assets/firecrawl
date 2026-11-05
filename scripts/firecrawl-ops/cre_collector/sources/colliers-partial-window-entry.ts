@@ -42,11 +42,14 @@ async function main() {
   const request = JSON.parse(privateText(requestPath, 16384));
   const expected = ["attempt", "authorityToken", "cursor", "finishedAt", "generation", "generationStartedAt", "lockLease",
     "originalSourceMainSha256", "ownerPid", "producerSha", "runDir", "sourceBytes", "sourceSha256",
-    "startedAt", "targetSha256", ...(request?.windowIndex === undefined ? [] : ["windowIndex"])].sort().join(",");
+    "startedAt", "targetSha256", ...(request?.windowIndex === undefined ? [] : ["windowIndex"]),
+    ...(request?.stopBeforePosition === undefined ? [] : ["stopBeforePosition"])].sort().join(",");
   if (!request || typeof request !== "object" || Array.isArray(request) || Object.keys(request).sort().join(",") !== expected ||
       !Number.isSafeInteger(request.ownerPid) || request.ownerPid !== process.ppid ||
       !Number.isSafeInteger(request.attempt) || request.attempt < 1 ||
-      (request.windowIndex !== undefined && (!Number.isSafeInteger(request.windowIndex) || request.windowIndex < 2)) || !request.runDir.startsWith("/") ||
+      (request.windowIndex !== undefined && (!Number.isSafeInteger(request.windowIndex) || request.windowIndex < 2)) ||
+      (request.stopBeforePosition !== undefined && (!Number.isSafeInteger(request.stopBeforePosition) ||
+        request.stopBeforePosition < 1 || request.windowIndex === undefined)) || !request.runDir.startsWith("/") ||
       basename(request.runDir) !== request.generation || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.generation) ||
       !/^(?:operator-recovery-required:)?[A-Za-z0-9_-]{43}$/.test(request.lockLease) ||
       !/^[A-Za-z0-9_-]{43}$/.test(request.authorityToken))
@@ -90,7 +93,8 @@ async function main() {
   writeReceipt(join(partialDir, `${windowName}-receipt.json`),
     { schema: "colliers-window-worker-receipt/v1", generation: request.generation, attempt: request.attempt,
       producerSha: request.producerSha, targetSha256: request.targetSha256,
-      ...(request.windowIndex === undefined ? {} : { windowIndex: request.windowIndex }), ...result });
+      ...(request.windowIndex === undefined ? {} : { windowIndex: request.windowIndex }),
+      ...(request.stopBeforePosition === undefined ? {} : { stopBeforePosition: request.stopBeforePosition }), ...result });
 }
 
 main().catch(error => {

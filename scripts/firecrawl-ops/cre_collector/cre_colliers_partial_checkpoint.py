@@ -164,7 +164,7 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
         raise ValueError("partial worker owner binding differs")
     if (not isinstance(evidence_receipt, dict) or set(evidence_receipt) != {"bytes", "records", "sha256"}
             or type(evidence_receipt["bytes"]) is not int or evidence_receipt["bytes"] < 1
-            or type(evidence_receipt["records"]) is not int or evidence_receipt["records"] < 1
+            or type(evidence_receipt["records"]) is not int or evidence_receipt["records"] < 0
             or not isinstance(evidence_receipt["sha256"], str) or not _HASH.fullmatch(evidence_receipt["sha256"])):
         raise ValueError("partial worker evidence receipt invalid")
     numeric = ("cursor", "proposedCursor", "selected", "total", "heldOther", "unattempted", "held")
@@ -259,12 +259,21 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
         raise ValueError("partial worker receipt changed")
     receipt = json.loads(receipt_raw)
     receipt_keys = {"schema", "generation", "attempt", "producerSha", "targetSha256", "artifact", "evidence",
-                    "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted"}
+                    "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted",
+                    "sourceStopped", "rotationComplete", "firstPosition"}
     if window_index != 1:
         receipt_keys.add("windowIndex")
+    stop_before = worker.get("stop_before_position")
+    if stop_before is not None:
+        receipt_keys.add("stopBeforePosition")
     if (not isinstance(receipt, dict) or set(receipt) != receipt_keys
             or receipt["schema"] != "colliers-window-worker-receipt/v1"
             or (window_index != 1 and receipt.get("windowIndex") != window_index)
+            or (stop_before is not None and receipt.get("stopBeforePosition") != stop_before)
+            or type(receipt.get("sourceStopped")) is not bool
+            or type(receipt.get("rotationComplete")) is not bool
+            or type(receipt.get("firstPosition")) is not int or receipt["firstPosition"] < 1
+            or (receipt["rotationComplete"] and stop_before is None)
             or receipt["generation"] != manifest["run_id"] or receipt["attempt"] != attempt
             or receipt["producerSha"] != current_code_sha
             or receipt["targetSha256"] != source_receipt["database_target_sha256"]):
@@ -280,6 +289,8 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
         raise ValueError("partial worker bytes changed")
     data = json.loads(artifact_raw)
     staged = validate_window_artifact(data, source_receipt, receipt["evidence"])
+    if receipt["evidence"]["records"] == 0 and not receipt["rotationComplete"]:
+        raise ValueError("empty partial worker evidence is unverified")
     if ((not staged and not allow_empty) or receipt["admitted"] != len(staged) or receipt["held"] != data["held"]
             or receipt["heldOther"] != data["heldOther"] or receipt["unattempted"] != data["unattempted"]
             or receipt["proposedCursor"] != data["proposedCursor"] or receipt["detailFinishedAt"] != data["detailFinishedAt"]):
@@ -533,7 +544,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
             "child_collections_verified": False}
 
 
-def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1):
+def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1, stop_before_position=None):
     """Run one source-specific child under the existing canonical checkpoint owner."""
     import os
     import secrets
@@ -573,12 +584,15 @@ def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1)
     target = source["database_target_sha256"]
     cursor, _ = read_cursor(owner.path, "colliers", target)
     base = _window_base(attempt, window_index)
+    if stop_before_position is not None and (window_index == 1 or type(stop_before_position) is not int or stop_before_position < 1):
+        raise ValueError("partial rotation boundary invalid")
     request_path, receipt_path = run_dir / f"{base}-request.json", run_dir / f"{base}-receipt.json"
     evidence_path, artifact_path = run_dir / f"{base}-evidence.jsonl", run_dir / f"{base}-artifact.json"
     for path in (request_path, receipt_path, evidence_path, artifact_path):
         if path.exists() or path.is_symlink():
             raise ValueError("partial worker output already exists")
     request = {**({"windowIndex": window_index} if window_index != 1 else {}),
+               **({"stopBeforePosition": stop_before_position} if stop_before_position is not None else {}),
                "generation": source["generation"], "generationStartedAt": source["generation_started_at"],
                "attempt": attempt, "startedAt": source["started_at"], "finishedAt": source["finished_at"],
                "runDir": str(run_dir), "sourceBytes": source["bytes"], "sourceSha256": source["sha256"],
@@ -587,6 +601,7 @@ def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1)
                "lockLease": owner.lease_token, "authorityToken": owner.authority_token}
     checkpoint["colliers_partial_worker"] = {"state": "dispatching", "attempt": attempt, "rc": None,
         **({"window_index": window_index} if window_index != 1 else {}),
+        **({"stop_before_position": stop_before_position} if stop_before_position is not None else {}),
         "receipt_path": str(receipt_path.relative_to(run_dir)), "evidence_path": str(evidence_path.relative_to(run_dir)),
         "artifact_path": str(artifact_path.relative_to(run_dir)), "cursor": cursor}
     save(run_dir, manifest)

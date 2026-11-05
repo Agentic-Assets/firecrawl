@@ -24,8 +24,10 @@ export async function produceColliersWindow(
   sink: (item: { listing: any; source: any; decodedDetail: string; nativeBytes: Uint8Array }) => Promise<"continue" | "stop">,
   hold: (item: Hold) => Promise<"continue" | "stop" | void>,
   fetchDetail: (token: string) => Promise<Native> = fetchColliersPartialDetail,
-  limit?: number,
+  limit?: number, stopBeforePosition?: number,
 ) {
+  if (stopBeforePosition !== undefined && (!Number.isSafeInteger(stopBeforePosition) || stopBeforePosition < 1))
+    throw new Error("invalid rotation boundary");
   await verify();
   const selection = await selectColliersWindow(open, verify, binding, cursor, limit);
   const byPosition = new Map<number, WindowMember>();
@@ -35,12 +37,14 @@ export async function produceColliersWindow(
     byPosition.set(p, member);
   }
   const processed = new Set<number>(), unadmitted = new Set<number>();
-  let stopped = false, sourceStopPosition: number | undefined;
+  let stopped = false, rotationComplete = false, sourceStopPosition: number | undefined;
   const drainHeldPrefix = async () => {
     while (!stopped) {
       const member = selection.window.find(item => !processed.has(item.candidate.start + item.candidate.offset));
-      if (!member || member.eligible) return;
+      if (!member) return;
       const p = member.candidate.start + member.candidate.offset;
+      if (p === stopBeforePosition) { stopped = true; rotationComplete = true; return; }
+      if (member.eligible) return;
       const decision = await hold({ candidate: member.candidate, reason: "identity_conflict" });
       processed.add(p); unadmitted.add(p);
       if (decision === "stop") stopped = true;
@@ -61,6 +65,7 @@ export async function produceColliersWindow(
         if (!member?.eligible || processed.has(p) || stopped) continue;
         const next = selection.window.find(item => !processed.has(item.candidate.start + item.candidate.offset));
         if (next !== member) continue;
+        if (p === stopBeforePosition) { stopped = true; rotationComplete = true; continue; }
         const candidate = member.candidate;
         if (candidate.page !== page.page || candidate.pageSize !== page.pageSize || candidate.observedAt !== page.observedAt ||
             candidate.mapProjectId !== card.mapProjectId || candidate.detailPv !== card.detailPv || candidate.detailUrl !== card.detailUrl)
@@ -127,6 +132,11 @@ export async function produceColliersWindow(
     if (!processed.has(p) || p === sourceStopPosition) break;
     nextCursor = (p % selection.total) + 1;
   }
+  const nextMember = selection.window.find(item => !processed.has(item.candidate.start + item.candidate.offset));
+  rotationComplete ||= stopBeforePosition !== undefined && !!nextMember &&
+    nextMember.candidate.start + nextMember.candidate.offset === stopBeforePosition;
   return { selection, processed: processed.size, held: unadmitted.size,
-    unattempted: selection.window.length - processed.size, proposedCursor: nextCursor, stopped };
+    unattempted: selection.window.length - processed.size, proposedCursor: nextCursor, stopped,
+    rotationComplete, sourceStopped: sourceStopPosition !== undefined,
+    firstPosition: selection.window.length ? selection.window[0].candidate.start + selection.window[0].candidate.offset : null };
 }

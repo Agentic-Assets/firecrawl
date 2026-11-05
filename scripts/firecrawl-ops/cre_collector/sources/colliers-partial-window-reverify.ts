@@ -20,8 +20,10 @@ export async function reverifyColliersWindow(
   openEvidence: () => Readable, verifyEvidence: () => Promise<void>,
   binding: Binding, cursor: number, expectedRecords: number, expectedCursor: number,
   sink: (item: { listing: any; source: any; decodedDetail: string; nativeBase64: string }) => Promise<void>, limit?: number,
+  stopBeforePosition?: number,
 ) {
-  if (!Number.isSafeInteger(expectedRecords) || expectedRecords < 1 || expectedRecords > 2048)
+  if (!Number.isSafeInteger(expectedRecords) || expectedRecords < 0 || expectedRecords > 2048 ||
+      (stopBeforePosition !== undefined && (!Number.isSafeInteger(stopBeforePosition) || stopBeforePosition < 1)))
     throw new Error("invalid partial evidence count");
   const detailFinish = Date.parse(binding.detailFinishedAt), sourceStart = Date.parse(binding.startedAt);
   if (!Number.isFinite(detailFinish) || !Number.isFinite(sourceStart) || detailFinish < sourceStart ||
@@ -29,6 +31,14 @@ export async function reverifyColliersWindow(
   await verifySource(); await verifyEvidence();
   const selection = await selectColliersWindow(openSource, verifySource, binding, cursor, limit);
   if (selection.available === null) throw new Error("partial source total missing");
+  if (stopBeforePosition !== undefined && stopBeforePosition > selection.total)
+    throw new Error("partial rotation boundary outside source");
+  const first = selection.window[0]?.candidate;
+  const next = selection.window[expectedRecords]?.candidate;
+  const firstPosition = first ? first.start + first.offset : null;
+  const rotationComplete = stopBeforePosition !== undefined && !!next &&
+    next.start + next.offset === stopBeforePosition;
+  if (expectedRecords === 0 && !rotationComplete) throw new Error("empty partial evidence is unverified");
   const details = new Map<number, { source: any; decodedDetail: string; nativeBase64: string }>();
   const identityHolds = new Map<number, { decoded: string; native: Buffer; observedAt: string }>();
   let lineNo = 0, buffered: Buffer[] = [], size = 0, sourceStopped = false;
@@ -163,5 +173,6 @@ export async function reverifyColliersWindow(
   await verifySource(); await verifyEvidence();
   if (replay.heldPages || replay.stopped || replay.total !== selection.total || replay.holes !== selection.holes || details.size || identityHolds.size)
     throw new Error("partial replay partition changed");
-  return { emitted, held: expectedRecords - emitted, proposedCursor: computedCursor };
+  return { emitted, held: expectedRecords - emitted, proposedCursor: computedCursor,
+    sourceStopped, rotationComplete, firstPosition };
 }

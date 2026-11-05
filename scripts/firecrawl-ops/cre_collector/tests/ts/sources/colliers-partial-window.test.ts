@@ -392,3 +392,31 @@ test("source-shaped clock step binds pages to genuine child finish", async () =>
   assert.equal(result.selected, 2);
   assert.equal(result.eligible.length, 2);
 });
+
+test("verified rotation stops before re-fetching the first witnessed candidate", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-rotation-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([header, pair, page, hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"); writeFileSync(sourcePath, bytes, { mode: 0o600 });
+  const calls: string[] = [];
+  const fetchDetail = async (token: string) => {
+    calls.push(token);
+    const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+    return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) };
+  };
+  const common = { ...binding, generationStartedAt: binding.startedAt, sourcePath, sourceBytes: bytes.length,
+    sourceSha256: createHash("sha256").update(bytes).digest("hex"), originalSourceMainSha256: "c".repeat(64),
+    producerSha: "a".repeat(40), targetSha256: "b".repeat(64) };
+  const first = await buildColliersWindowArtifact({ ...common, cursor: 1, limit: 1,
+    evidencePath: join(dir, "e1"), artifactPath: join(dir, "a1") }, fetchDetail);
+  assert.equal(first.firstPosition, 1); assert.equal(first.rotationComplete, false);
+  const second = await buildColliersWindowArtifact({ ...common, cursor: first.proposedCursor, limit: 2,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e2"), artifactPath: join(dir, "a2") }, fetchDetail);
+  assert.deepEqual(calls, ["a", "b"]);
+  assert.equal(second.rotationComplete, true); assert.equal(second.admitted, 1);
+  assert.equal(second.unattempted, 1); assert.equal(second.sourceStopped, false);
+  const empty = await buildColliersWindowArtifact({ ...common, cursor: second.proposedCursor, limit: 1,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e3"), artifactPath: join(dir, "a3") }, fetchDetail);
+  assert.equal(empty.rotationComplete, true); assert.equal(empty.admitted, 0);
+  assert.equal(empty.evidence.records, 0); assert.deepEqual(calls, ["a", "b"]);
+});
