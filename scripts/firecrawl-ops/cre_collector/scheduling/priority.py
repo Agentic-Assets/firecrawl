@@ -14,7 +14,7 @@ def after_deadline(sources: Sequence[str], parent: Mapping, child: Mapping) -> l
         raise ValueError("source scope must be nonempty and unique")
     records = parent["sources"]
     child_records = child["sources"]
-    if set(records) != set(selected) or set(child_records) != set(selected):
+    if set(records) != set(child_records) or not set(selected) <= set(records):
         raise ValueError("source scope differs")
 
     def rank(source):

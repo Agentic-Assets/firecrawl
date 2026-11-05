@@ -1999,9 +1999,22 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
             raw = _read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024)
             prior = json.loads(raw)
             if (not isinstance(prior, dict) or prior.get("series_id") != prior_dir.name
-                    or prior.get("collector_git_sha") != manifest["collector_git_sha"]
-                    or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))
-                    or not _exact_json_equal(prior.get("config"), manifest.get("config"))):
+                    or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))):
+                continue
+            prior_sha = prior.get("collector_git_sha")
+            current_sha = manifest.get("collector_git_sha")
+            prior_config = prior.get("config") or {}
+            prior_sources = prior_config.get("sources")
+            current_sources = manifest["config"]["sources"]
+            if (not isinstance(prior_sources, list) or len(set(prior_sources)) != len(prior_sources)
+                    or not set(current_sources) <= set(prior_sources)
+                    or not prior_config.get("pipeline")
+                    or not isinstance(prior_sha, str) or not isinstance(current_sha, str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", prior_sha)
+                    or not re.fullmatch(r"[0-9a-f]{40}", current_sha)):
+                continue
+            if prior_sha != current_sha and local_git_output(
+                    ["merge-base", prior_sha, current_sha]).strip() != prior_sha:
                 continue
             # Never fall back to an older matching run if the latest cannot be
             # qualified: the full default scope remains eligible as usual.
@@ -2029,11 +2042,14 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
                     or (source_dir / "manifest.json").is_symlink()):
                 return None
             sources = prior["config"]["sources"]
-            _, child = _load_child_manifest(
+            child_path, child = _load_child_manifest(
                 prior_dir / "runs", before=set(), source=",".join(sources),
                 git_sha=prior["collector_git_sha"], expected_path=prior_dir / ref / "manifest.json",
                 expected_config=_expected_child_config(",".join(sources), prior["config"]),
             )
+            child_raw = _read_regular_file(child_path, limit=4 * 1024 * 1024)
+            if not _exact_json_equal(json.loads(child_raw), child):
+                return None
             pipeline = child.get("pipeline") or {}
             if (pipeline.get("commit_outcome_unknown") is not False
                     or _pipeline_has_unresolved(child, prior["config"])
@@ -2048,9 +2064,15 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
                 for source, row in child["sources"].items()
             ):
                 return None
-            order = after_deadline(sources, reconciled, child)
+            order = after_deadline(current_sources, reconciled, child)
+            if (_read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024) != raw
+                    or _read_regular_file(child_path, limit=4 * 1024 * 1024) != child_raw
+                    or read_receipt(prior_dir, invocation) != receipt):
+                return None
             return {"order": order, "previous_series": prior_dir.name,
                     "previous_manifest_sha256": hashlib.sha256(raw).hexdigest()}
+    except ProcessCleanupUnknown:
+        raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
         return None
     return None

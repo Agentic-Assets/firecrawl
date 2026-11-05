@@ -29,6 +29,7 @@ def case(tmp_path, monkeypatch):
         row["attempts"] = [{"number": 1}]
     child["sources"]["savills"] = {"state": "pending", "attempts": []}
     child["pipeline"]["source_results"]["savills"] = {"state": "failed"}
+    (run / "manifest.json").write_text(json.dumps(child))
     for source in sources:
         prior["sources"][source].update(state="interrupted", checkpoint_run=f"runs/{RUN_ID}",
             attempts=[{"started_at": child["started_at"], "series_control_child_id": "2" * 32}])
@@ -77,6 +78,19 @@ def test_uncertain_or_tampered_prior_does_not_reorder(tmp_path, monkeypatch, tam
     assert result is None
 
 
+def test_changed_prior_custody_during_qualification_falls_back(tmp_path, monkeypatch):
+    prior_dir, current_dir, current, _prior, _child, _receipt = case(tmp_path, monkeypatch)
+    real_reconcile = series.reconcile_pipeline_series
+
+    def change_after_qualification(*args, **kwargs):
+        real_reconcile(*args, **kwargs)
+        path = prior_dir / "runs" / RUN_ID / "manifest.json"
+        path.write_bytes(path.read_bytes() + b" ")
+
+    monkeypatch.setattr(series, "reconcile_pipeline_series", change_after_qualification)
+    assert series.scheduled_deadline_priority(tmp_path, current_dir, current) is None
+
+
 def test_exclusive_source_that_consumes_deadline_moves_behind_unstarted_peers():
     sources = ["colliers-main", "cbre", "savills"]
     parent = {"sources": {source: {"state": "interrupted"} for source in sources}}
@@ -118,3 +132,36 @@ def test_invalid_order_rejected_before_credentials_or_write(monkeypatch, order):
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda *_: pytest.fail("credentials accessed"))
     with pytest.raises(SystemExit):
         refresh.main(["--pipeline", "--sources", "cbre,savills", "--pipeline-dispatch-order", order])
+
+
+def test_prior_superset_and_reviewed_ancestor_prioritize_current_subset(tmp_path, monkeypatch):
+    _prior_dir, current_dir, current, _prior, _child, _receipt = case(tmp_path, monkeypatch)
+    current["config"]["sources"] = ["cbre", "savills"]
+    current["collector_git_sha"] = "b" * 40
+    calls = []
+    monkeypatch.setattr(series, "local_git_output", lambda argv: calls.append(argv) or "a" * 40)
+    result = series.scheduled_deadline_priority(tmp_path, current_dir, current)
+    assert result["order"] == ["savills", "cbre"]
+    assert calls == [["merge-base", "a" * 40, "b" * 40]]
+
+
+def test_unrelated_code_or_incomplete_prior_scope_cannot_prioritize(tmp_path, monkeypatch):
+    _prior_dir, current_dir, current, _prior, _child, _receipt = case(tmp_path, monkeypatch)
+    current["collector_git_sha"] = "b" * 40
+    monkeypatch.setattr(series, "local_git_output", lambda _: "c" * 40)
+    assert series.scheduled_deadline_priority(tmp_path, current_dir, current) is None
+    current["collector_git_sha"] = "a" * 40
+    current["config"]["sources"].append("jll")
+    assert series.scheduled_deadline_priority(tmp_path, current_dir, current) is None
+
+
+def test_git_cleanup_unknown_is_not_hidden(tmp_path, monkeypatch):
+    _prior_dir, current_dir, current, _prior, _child, _receipt = case(tmp_path, monkeypatch)
+    current["collector_git_sha"] = "b" * 40
+
+    def unknown(_):
+        raise series.ProcessCleanupUnknown("synthetic unknown")
+
+    monkeypatch.setattr(series, "local_git_output", unknown)
+    with pytest.raises(series.ProcessCleanupUnknown):
+        series.scheduled_deadline_priority(tmp_path, current_dir, current)
