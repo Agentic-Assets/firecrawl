@@ -374,7 +374,8 @@ def admit_window(artifact_path, manifest, report, *, current_code_sha, current_g
             value = source_gate.get("verdict")
             counts[value] = counts.get(value, 0) + 1
         summary["verdict_counts"] = counts
-    report["scope"] = {"kind": "colliers_partial_window_v1", "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    report["scope"] = {"kind": ("colliers_partial_window_v1" if phase == "source" else "collector_registry_verified_subset"),
+                       "transactions": ["sale", "lease"], "whole_source_coverage": False}
     manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
     return copy.deepcopy(binding)
 

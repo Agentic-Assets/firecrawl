@@ -255,6 +255,10 @@ class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
 
+class LyonPartialProbeHold(SourceGuardRefusal):
+    """Settled Lyon source identity output cannot be qualified."""
+
+
 class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
 
@@ -2626,6 +2630,7 @@ def fresh_source_env(
     collector_concurrency: int | None = None,
     daum_verified_subset: bool = False,
     daum_subset_policy: str = "tenure-only-v1",
+    lyon_bounded_search: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -2654,7 +2659,7 @@ def fresh_source_env(
             name = partial_env_name(partial_source, partial_field)
             if name in env:
                 clear(name)
-    if source in PARTIAL_PAGE_SOURCES:
+    if source in PARTIAL_PAGE_SOURCES and (source != "lyon-stahl" or lyon_bounded_search):
         from cre_partial_page_custody import expected_path
         partial = expected_path(run_dir, attempt_number, source)
         try:
@@ -2876,13 +2881,21 @@ def colliers_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("colliers_partial") is True)
 
 
+def lyon_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "lyon-stahl"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("lyon_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
-            or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source))
+            or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
+            or lyon_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if lyon_partial_candidate(manifest, source):
+        return "lyon_partial_claims"
     if colliers_partial_candidate(manifest, source):
         return "colliers_partial_claims"
     if jll_partial_candidate(manifest, source):
@@ -2952,6 +2965,48 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "lyon-search-partial/v1":
+        # Structure only: source custody and database identity are independently
+        # rechecked at the source-specific subset gate before any write.
+        from cre_lyon_partial_checkpoint import candidate_structure
+
+        try:
+            if expected_source != "lyon-stahl" or tuple(expected_transactions) != TRANSACTIONS:
+                raise ValueError("Lyon partial source scope differs")
+            source = candidate_structure(data)
+            started = parse_iso8601(source["started_at"], field="lyon.startedAt")
+            finished = parse_iso8601(source["finished_at"], field="lyon.finishedAt")
+            generation_start = parse_iso8601(data["runMeta"]["freshness"]["generationStartedAt"],
+                                             field="lyon.generationStartedAt")
+            expected_attempt = (attempt_started_at if isinstance(attempt_started_at, datetime)
+                                else parse_iso8601(attempt_started_at, field="attempt_started_at"))
+            expected_generation = (expected_generation_started_at if isinstance(expected_generation_started_at, datetime)
+                                   else parse_iso8601(expected_generation_started_at, field="expected_generation_started_at"))
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            cutoff = current - timedelta(hours=max_observation_age_hours)
+            if (source["generation"] != expected_generation_id or started != expected_attempt
+                    or generation_start != expected_generation or started < generation_start or finished < started
+                    or finished > current + timedelta(minutes=5)):
+                raise ValueError("Lyon partial time binding differs")
+            for record in source["records"]:
+                for occurrence in record["occurrences"]:
+                    observed = parse_iso8601(occurrence["observedAt"], field="lyon.observedAt")
+                    if observed < cutoff or not started <= observed <= finished:
+                        raise ValueError("Lyon source observation is stale or outside its attempt")
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["detail_errors"] or stats["staged_unique"] != len(source["staged"]):
+                raise ValueError("Lyon partial staging count differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("Lyon partial artifact invalid") from exc
+        artifact_sha256, artifact_bytes = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes, "generation_id": source["generation"]}
+        return {**stats, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
+                "max_observation_age_hours": max_observation_age_hours, "observation_cutoff_at": cutoff.isoformat(),
+                "strict_freshness": False, "property_detail_freshness": False, "lyon_partial": True,
+                "freshness_generation_id": source["generation"], "freshness_generation_started_at": generation_start.isoformat(),
+                "sha256": artifact_sha256, "bytes": artifact_bytes}
     meta = data.get("runMeta") if isinstance(data, dict) else None
     if isinstance(meta, dict) and meta.get("franklinSitePartial") is not None:
         if (expected_source != "franklin-street" or not require_strict_freshness
@@ -3750,7 +3805,12 @@ def run_cohort_collection_worker(
         collector_concurrency=concurrency,
         daum_verified_subset=daum_verified_subset,
         daum_subset_policy=daum_subset_policy,
+        lyon_bounded_search=source == "lyon-stahl",
     )
+    if source == "lyon-stahl" and not env.get(partial_env_name(source, "PATH")):
+        attempt_log.parent.mkdir(parents=True, exist_ok=True)
+        attempt_log.write_text("Lyon bounded search custody unavailable; no source request dispatched.\n", encoding="utf-8")
+        return 1
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
             run_dir,
@@ -3981,6 +4041,7 @@ def _cohort_attempt(
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
                 collector_concurrency=collector_concurrency,
+                lyon_bounded_search=source == "lyon-stahl",
                 daum_verified_subset=current_inventory.is_verified_subset(
                     manifest["config"], source
                 ),
@@ -5180,7 +5241,7 @@ def collect_source(
         else:
             tmp_artifact.unlink(missing_ok=True)
         partial_state = None
-        if source in PARTIAL_PAGE_SOURCES:
+        if source in PARTIAL_PAGE_SOURCES and source != "lyon-stahl":
             from cre_partial_page_custody import prepare
             partial_state = prepare(run_dir, attempt_number, source)
         env, overrides = fresh_source_env(
@@ -5450,6 +5511,10 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if lyon_partial_candidate(manifest, source):
+            from cre_lyon_partial_checkpoint import admit_search
+            return admit_search(artifact, manifest, report, current_code_sha=git_sha,
+                                current_git_dirty=git_dirty, phase=phase)
         if colliers_partial_candidate(manifest, source):
             from cre_colliers_partial_checkpoint import admit_window
             return admit_window(artifact, manifest, report, current_code_sha=git_sha,
@@ -5511,7 +5576,15 @@ def gate_source(
         per_source = result["per_source"][source]
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+            if lyon_partial_candidate(manifest, source):
+                from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
+                try:
+                    checkpoint["lyon_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except LyonSourceProbeRefusal as exc:
+                    raise LyonPartialProbeHold("Lyon source identity could not be qualified") from exc
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Lyon partial identity classification failed") from exc
             if colliers_partial_candidate(manifest, source):
                 from cre_colliers_partial_checkpoint import run_identity_probe
                 try:
@@ -5653,7 +5726,8 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    flag = ("--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
+    flag = ("--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
+            else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
@@ -6158,7 +6232,7 @@ def run_aggregate_gate(
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6367,6 +6441,11 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if lyon_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_lyon_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Lyon partial ingest requires exact readback")
     if (franklin_partial_candidate(manifest, source)
             and not (checkpoint.get("ingest") or {}).get("finished_at")):
         checkpoint["state"] = "ingest_recovery_required"
@@ -6674,6 +6753,23 @@ def colliers_partial_readback(run_dir, manifest, env_file):
     return result
 
 
+def lyon_partial_readback(run_dir, manifest, env_file):
+    from cre_lyon_partial_checkpoint import run_partial_readback
+
+    checkpoint = manifest["sources"]["lyon-stahl"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "lyon-stahl")
+    if len(arguments) < 2:
+        raise GlobalStageError("Lyon partial readback claims are missing")
+    code_sha, dirty = git_identity()
+    if dirty:
+        raise GlobalStageError("Lyon partial readback code is dirty")
+    result = run_partial_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+        code_sha=code_sha, target=manifest_database_target_sha256(manifest),
+        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    subset_ingest_arguments(run_dir, manifest, "lyon-stahl")
+    return result
+
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6784,13 +6880,35 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if lyon_partial_candidate(manifest, source):
+            observed = validation.get("lyon_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("outcome") == "exact_commit"
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "lyon_partial_search",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if franklin_partial_candidate(manifest, source):
             observed = validation.get("franklin_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
             ok = (isinstance(observed, dict) and observed.get("ok") is True
-                  and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
+                  and observed.get("invalid") == []
+                  and type(observed.get("matching_jobs")) is int and observed["matching_jobs"] == 1
                   and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
                   and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
                   and observed.get("staged_sha256") == binding.get("staged_sha256")
                   and observed.get("held") == binding.get("held")
                   and type(observed.get("expected")) is int
@@ -7363,6 +7481,9 @@ def run_final_validation(
     absolute_quality = verify_absolute_validation_quality(result)
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
+        result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     if (sources is None or "franklin-street" in sources) and franklin_partial_candidate(manifest, "franklin-street"):
         result["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)

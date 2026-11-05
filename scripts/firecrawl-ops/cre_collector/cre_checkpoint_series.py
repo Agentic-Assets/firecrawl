@@ -314,16 +314,26 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
         source = child["sources"]["franklin-street"]
         artifact, gate = source["artifact"], source["gate"]
         binding = gate["current_inventory_proof"]
-        return (artifact.get("franklin_partial") is True
+        if not isinstance(binding, Mapping) or not isinstance(binding.get("identity_uncertainty"), Mapping):
+            return False
+        return (isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", child["collector_git_sha"]) is not None
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", binding[key]) is not None
+                        for key in ("artifact_sha256", "source_artifact_sha256", "database_target_sha256", "staged_sha256"))
+                and artifact.get("franklin_partial") is True
                 and gate.get("verdict") == "ok_additive_verified_subset"
                 and gate.get("mark_missing_safe") is False
+                and gate.get("admission_scope") == "franklin_site_partial_v1"
                 and binding.get("schema") == "franklin-site-partial-v1"
                 and binding.get("scope") == "franklin_site_partial_v1"
+                and binding.get("source_key") == "franklin-street"
                 and binding.get("whole_source_coverage") is False
                 and binding.get("artifact_sha256") == artifact.get("sha256")
                 and binding.get("source_artifact_sha256") == source["franklin_original"]["sha256"]
                 and binding.get("generation_id") == child.get("run_id")
                 and binding.get("collector_git_sha") == child.get("collector_git_sha")
+                and binding.get("producer_sha") == child.get("collector_git_sha")
                 and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
                 and type(binding.get("held_count")) is int and binding["held_count"] >= 0
                 and isinstance(binding.get("held"), list) and len(binding["held"]) == binding["held_count"]
@@ -331,8 +341,9 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and type(binding.get("buildout_pending")) is int and binding["buildout_pending"] >= 0
                 and type(binding.get("held_observations")) is int and binding["held_observations"] >= 0
                 and binding.get("identity_uncertainty", {}).get("siteToBuildout") == "unresolved"
-                and artifact.get("staged_unique") == binding["emitted_count"] + binding["held_count"])
-    except (KeyError, TypeError, ValueError):
+                and type(artifact.get("staged_unique")) is int
+                and artifact["staged_unique"] == binding["emitted_count"] + binding["held_count"])
+    except (AttributeError, KeyError, TypeError, ValueError):
         return False
 
 
@@ -382,6 +393,46 @@ def colliers_partial_child(child: Mapping[str, Any]) -> bool:
                 and settlement.get("state") == "settled" and settlement.get("attempt_id") == attempt
                 and settlement.get("artifact_sha256") == artifact.get("sha256")
                 and settlement.get("cursor") == binding["cursor"] and settlement.get("next_cursor") == binding["next_cursor"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def lyon_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only the source-bound Lyon search partial and its DB partition."""
+    try:
+        checkpoint = child["sources"]["lyon-stahl"]
+        artifact, gate = checkpoint["artifact"], checkpoint["gate"]
+        binding, worker, probe = gate["current_inventory_proof"], checkpoint["lyon_partial_worker"], checkpoint["lyon_identity_probe"]
+        held, attempt = binding["held"], checkpoint["subset_ingest_attempt_id"]
+        return (child["config"].get("pipeline") is True
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and isinstance(child.get("started_at"), str) and bool(child["started_at"])
+                and isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[a-f0-9]{40}", child["collector_git_sha"])
+                and artifact.get("lyon_partial") is True and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False and gate.get("admission_scope") == "lyon_partial_search_v1"
+                and binding.get("schema") == "lyon-search-partial-v1" and binding.get("scope") == "lyon_partial_search_v1"
+                and binding.get("source_key") == "lyon-stahl" and binding.get("original_source_outcome") == "source_error"
+                and binding.get("whole_source_coverage") is False
+                and binding.get("artifact_sha256") == artifact.get("sha256") == worker.get("sha256") == probe.get("artifact_sha256")
+                and binding.get("generation_id") == child.get("run_id") == probe.get("generation_id")
+                and binding.get("generation_started_at") == child.get("started_at")
+                and binding.get("producer_sha") == child.get("collector_git_sha") == probe.get("producer_sha")
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"] == probe.get("database_target_sha256")
+                and binding.get("staged_sha256") == probe.get("staged_sha256")
+                and binding.get("preimage_sha256") == probe.get("preimage_sha256")
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                        for key in ("artifact_sha256", "database_target_sha256", "staged_sha256", "source_sha256", "source_main_sha256", "preimage_sha256"))
+                and type(binding.get("attempt")) is int and binding["attempt"] > 0
+                and artifact.get("path") == f"lyon-stahl-partial/candidate-{binding['attempt']}.json"
+                and worker.get("state") == "settled" and worker.get("attempt") == binding["attempt"]
+                and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
+                and isinstance(held, list) and all(isinstance(value, str) and value for value in held)
+                and held == sorted(set(held)) and _exact_json_equal(held, probe.get("held"))
+                and type(binding.get("held_count")) is int and binding["held_count"] >= len(held)
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 0
+                and type(artifact.get("staged_unique")) is int and artifact["staged_unique"] > 0
+                and artifact["staged_unique"] == binding["emitted_count"] + len(held))
     except (KeyError, TypeError, ValueError, AttributeError):
         return False
 
@@ -1999,7 +2050,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -2061,6 +2112,38 @@ def _pipeline_member_report_matches(
     """Cross-bind saved exact readback fields to the hashed full query output."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "franklin-street" and artifact.get("franklin_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("franklin_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "franklin_site_partial"
+                and readback.get("whole_source_coverage") is False
+                and observed.get("ok") is True and observed.get("invalid") == []
+                and type(observed.get("matching_jobs")) is int and observed["matching_jobs"] == 1
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                and observed.get("attempt_id") == checkpoint["subset_ingest_attempt_id"]
+                and observed.get("staged_sha256") == binding.get("staged_sha256")
+                and _exact_json_equal(observed.get("held"), binding.get("held"))
+                and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count"))
+    if source == "lyon-stahl" and artifact.get("lyon_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("lyon_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "lyon_partial_search"
+                and readback.get("whole_source_coverage") is False
+                and observed.get("ok") is True and observed.get("outcome") == "exact_commit"
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                and observed.get("staged_sha256") == binding.get("staged_sha256")
+                and _exact_json_equal(observed.get("held"), binding.get("held"))
+                and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count")
+                and observed.get("child_collections_verified") is True)
     if source == "colliers" and artifact.get("colliers_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("colliers_partial_readback")
@@ -2359,7 +2442,14 @@ def pipeline_source_qualified(
             jll_partial = key == "jll-investor" and jll_partial_child(child)
             franklin_partial = key == "franklin-street" and franklin_partial_child(child)
             colliers_partial = key == "colliers" and colliers_partial_child(child)
-            if key == "franklin-street" and (checkpoint.get("artifact") or {}).get("franklin_partial") is True and not franklin_partial:
+            lyon_partial = key == "lyon-stahl" and lyon_partial_child(child)
+            if ((checkpoint.get("artifact") or {}).get("lyon_partial") is True
+                    or binding.get("schema") == "lyon-search-partial-v1"
+                    or binding.get("scope") == "lyon_partial_search_v1") and not lyon_partial:
+                return False
+            if ((checkpoint.get("artifact") or {}).get("franklin_partial") is True
+                    or binding.get("schema") == "franklin-site-partial-v1"
+                    or binding.get("scope") == "franklin_site_partial_v1") and not franklin_partial:
                 return False
             if ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
                     or binding.get("schema") == "colliers-partial-window-v1"
@@ -2372,13 +2462,13 @@ def pipeline_source_qualified(
                          or binding.get("scope") == "pyramid_incomplete_v2")
                     and not pyramid_partial):
                 return False
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial:
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial or lyon_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
                     or (key == "daum-commercial" and child.get("scope", {}).get("kind") != "collector_registry_verified_subset")):
                     return False
-                if (jll_partial or franklin_partial or colliers_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
+                if (jll_partial or franklin_partial or colliers_partial or lyon_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
                     return False
                 if franklin_partial and any(not _exact_json_equal(proof.get(name), binding.get(name))
@@ -2619,7 +2709,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
