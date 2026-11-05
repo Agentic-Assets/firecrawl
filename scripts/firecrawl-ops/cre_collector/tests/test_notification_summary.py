@@ -1915,7 +1915,7 @@ def test_pipeline_franklin_partial_summary_preserves_verified_peer(evidence, tam
     artifact.update(franklin_partial=True, staged_unique=4, path="franklin-site.json")
     binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1", "source_key": source,
         "artifact_sha256": artifact["sha256"], "source_artifact_sha256": "1" * 64, "generation_id": RUN,
-        "collector_git_sha": SHA, "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64,
+        "collector_git_sha": SHA, "producer_sha": SHA, "database_target_sha256": "d" * 64, "staged_sha256": "e" * 64,
         "held": ["held"], "held_count": 1, "emitted_count": 3, "buildout_pending": 2,
         "held_observations": 1, "identity_uncertainty": {"siteToBuildout": "unresolved"},
         "whole_source_coverage": False}

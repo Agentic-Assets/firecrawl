@@ -156,7 +156,7 @@ def add_franklin(child, run):
     binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1",
         "source_key": "franklin-street", "artifact_sha256": "f" * 64,
         "source_artifact_sha256": "1" * 64, "generation_id": RUN_ID, "collector_git_sha": "a" * 40,
-        "database_target_sha256": "c" * 64, "staged_sha256": "2" * 64,
+        "producer_sha": "a" * 40, "database_target_sha256": "c" * 64, "staged_sha256": "2" * 64,
         "held": ["held-franklin"], "held_count": 1, "emitted_count": 2,
         "buildout_pending": 3, "held_observations": 1,
         "identity_uncertainty": {"siteToBuildout": "unresolved"}, "whole_source_coverage": False}
@@ -261,12 +261,20 @@ def test_franklin_missing_or_malformed_attempt_never_qualifies(tmp_path, attempt
     assert child["sources"]["franklin-street"]["readback"]["ok"] is False
 
 
-@pytest.mark.parametrize("foreign", ["binding_source", "artifact_marker", "binding_marker"])
+@pytest.mark.parametrize("foreign", ["binding_source", "producer", "missing_code", "bad_digest", "artifact_marker", "binding_marker"])
 def test_franklin_partial_source_binding_is_not_transferred(tmp_path, foreign):
     run = tmp_path / RUN_ID
     child = add_franklin(mixed_child(run), run)
     if foreign == "binding_source":
         child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["source_key"] = "cbre"
+    elif foreign == "producer":
+        child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["producer_sha"] = "0" * 40
+    elif foreign == "missing_code":
+        child.pop("collector_git_sha")
+        child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["collector_git_sha"] = None
+        child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["producer_sha"] = None
+    elif foreign == "bad_digest":
+        child["sources"]["franklin-street"]["gate"]["current_inventory_proof"]["staged_sha256"] = "invalid"
     elif foreign == "artifact_marker":
         child["sources"]["cbre"]["artifact"]["franklin_partial"] = True
     else:

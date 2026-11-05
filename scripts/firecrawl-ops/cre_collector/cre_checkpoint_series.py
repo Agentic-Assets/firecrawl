@@ -314,7 +314,12 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
         source = child["sources"]["franklin-street"]
         artifact, gate = source["artifact"], source["gate"]
         binding = gate["current_inventory_proof"]
-        return (artifact.get("franklin_partial") is True
+        return (isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", child["collector_git_sha"]) is not None
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", binding[key]) is not None
+                        for key in ("artifact_sha256", "source_artifact_sha256", "database_target_sha256", "staged_sha256"))
+                and artifact.get("franklin_partial") is True
                 and gate.get("verdict") == "ok_additive_verified_subset"
                 and gate.get("mark_missing_safe") is False
                 and binding.get("schema") == "franklin-site-partial-v1"
@@ -325,6 +330,7 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and binding.get("source_artifact_sha256") == source["franklin_original"]["sha256"]
                 and binding.get("generation_id") == child.get("run_id")
                 and binding.get("collector_git_sha") == child.get("collector_git_sha")
+                and binding.get("producer_sha") == child.get("collector_git_sha")
                 and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
                 and type(binding.get("held_count")) is int and binding["held_count"] >= 0
                 and isinstance(binding.get("held"), list) and len(binding["held"]) == binding["held_count"]
@@ -332,7 +338,8 @@ def franklin_partial_child(child: Mapping[str, Any]) -> bool:
                 and type(binding.get("buildout_pending")) is int and binding["buildout_pending"] >= 0
                 and type(binding.get("held_observations")) is int and binding["held_observations"] >= 0
                 and binding.get("identity_uncertainty", {}).get("siteToBuildout") == "unresolved"
-                and artifact.get("staged_unique") == binding["emitted_count"] + binding["held_count"])
+                and type(artifact.get("staged_unique")) is int
+                and artifact["staged_unique"] == binding["emitted_count"] + binding["held_count"])
     except (KeyError, TypeError, ValueError):
         return False
 
