@@ -600,3 +600,22 @@ def test_settled_partial_stop_requires_durable_completion_evidence(fake_owner, t
     del terminal[field]
     rc, result = invoke_stop(tmp_path)
     assert rc == 2 and result["outcome"] == "stop_outcome_unverified"
+
+
+@pytest.mark.parametrize(("status", "worker_rc"), [("partial", 20), ("replayed", 22)])
+def test_settled_svn_monitor_racing_stop_is_not_unknown_or_fenced(fake_owner, tmp_path, monkeypatch, status, worker_rc):
+    _owner, _running, terminal, _state = fake_owner
+    terminal.update(tier="monitor", source="svn", status=status, recovery_clear_eligible=True,
+                    canonical_monitor={"state": status, "returncode": worker_rc})
+    monkeypatch.setattr(stop, "_authority", lambda _: pytest.fail("settled outcome has no retained fence"))
+    rc, result = invoke_stop(tmp_path)
+    assert rc == 0
+    assert result["outcome"] == status
+
+
+def test_replayed_monitor_stop_requires_exact_source_and_receipt(fake_owner, tmp_path):
+    _owner, _running, terminal, _state = fake_owner
+    terminal.update(tier="monitor", source="lee-associates", status="replayed", recovery_clear_eligible=True,
+                    canonical_monitor={"state":"replayed", "returncode":22})
+    rc, result = invoke_stop(tmp_path)
+    assert rc == 2 and result["outcome"] == "stop_outcome_unverified"

@@ -393,6 +393,7 @@ def stop_run(run_id, wait_seconds=45, *, _out_root=None, _lock_path=None):
             not in {
                 "complete",
                 "partial",
+                "replayed",
                 "failed",
                 "interrupted",
                 "resource_guard_interrupted",
@@ -413,12 +414,19 @@ def stop_run(run_id, wait_seconds=45, *, _out_root=None, _lock_path=None):
         if terminal["status"] == "complete":
             result["outcome"] = "completed"
             return 0, result
-        if terminal["status"] in {"partial", "failed"}:
-            expected_rc = {"partial": 20, "failed": 21}[terminal["status"]]
+        if terminal["status"] in {"partial", "replayed", "failed"}:
+            expected_rc = {"partial": 20, "failed": 21, "replayed": 22}[terminal["status"]]
+            enrichment = (terminal["status"] in {"partial", "failed"}
+                          and terminal.get("canonical_enrichment") == {
+                              "state": terminal["status"], "returncode": expected_rc,
+                          })
+            monitor = (terminal.get("tier") == "monitor" and terminal.get("source") == "svn"
+                       and terminal["status"] in {"partial", "replayed"}
+                       and terminal.get("canonical_monitor") == {
+                           "state": terminal["status"], "returncode": expected_rc,
+                       })
             if (terminal.get("recovery_clear_eligible") is not True
-                    or terminal.get("canonical_enrichment") != {
-                        "state": terminal["status"], "returncode": expected_rc,
-                    } or local["state"] != "confirmed"):
+                    or not (enrichment or monitor) or local["state"] != "confirmed"):
                 result["outcome"] = "stop_outcome_unverified"
                 return 2, result
             result["outcome"] = terminal["status"]

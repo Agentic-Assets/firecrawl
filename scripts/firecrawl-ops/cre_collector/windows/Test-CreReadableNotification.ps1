@@ -471,5 +471,12 @@ Assert-Cre ($text.Contains('No items completed') -and $text -notmatch 'verified 
 $record.status='windows_terminal_audit_failed_linux_settlement_unverified'
 $text=Get-CreNotificationText $record 'Terminal' 20 $null
 Assert-Cre ($text.Contains('completion is unverified') -and $text -notmatch 'Partially completed') 'Missing terminal audit must not claim a settled outcome.'
+$Tier='monitor'; $Source='svn'
+$record=New-Record; $record.nativeExitCode=20
+$text=Get-CreNotificationText $record 'Terminal' 20 $null
+Assert-Cre ($text.Contains('Partially completed') -and $text.Contains('deferred')) 'Settled partial SVN monitor must report deferral.'
+$record.nativeExitCode=22
+$text=Get-CreNotificationText $record 'Terminal' 22 $null
+Assert-Cre ($text.Contains('Already processed') -and $text.Contains('no new writes')) 'Settled SVN replay must not claim a new completion.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"

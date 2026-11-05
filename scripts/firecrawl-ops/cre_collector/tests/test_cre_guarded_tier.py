@@ -738,3 +738,45 @@ def test_unrecognized_enrichment_failure_still_requires_recovery(tmp_path, monke
     assert execute(options(apply=True), tmp_path, _runner=lambda *_a, **_kw: 2) == 1
     assert receipt(tmp_path)["status"] == "failed_recovery_required"
     assert_fenced(tmp_path)
+
+
+@pytest.mark.parametrize(("worker_rc", "state"), [(0, "complete"), (20, "partial"), (22, "replayed")])
+def test_svn_monitor_settled_outcomes_release_owner(tmp_path, monkeypatch, worker_rc, state):
+    monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
+    data = monitor_artifact()
+    for entry in data["sources"]:
+        entry["sourceKey"] = "svn"
+    for row in data["listings"]:
+        row["sourceKey"] = "svn"
+    def runner(_argv, log, *, env):
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(json.dumps(data))
+            return 0
+        return worker_rc
+    assert execute(options(tier="monitor", source="svn", apply=True), tmp_path, _runner=runner) == worker_rc
+    doc = receipt(tmp_path)
+    assert doc["status"] == state
+    assert doc["canonical_monitor"] == {"state": "completed" if worker_rc == 0 else state, "returncode": worker_rc}
+    assert doc["local_settlement"]["state"] == "confirmed"
+    assert_released(tmp_path)
+
+
+@pytest.mark.parametrize(("source", "apply", "worker_rc"), [
+    ("svn", True, 1), ("interra-realty", True, 20), ("svn", False, 20),
+    ("svn", True, 21),
+])
+def test_unqualified_monitor_outcome_retains_recovery_fence(tmp_path, monkeypatch, source, apply, worker_rc):
+    monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
+    data = monitor_artifact()
+    for entry in data["sources"]:
+        entry["sourceKey"] = source
+    for row in data["listings"]:
+        row["sourceKey"] = source
+    def runner(_argv, log, *, env):
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(json.dumps(data))
+            return 0
+        return worker_rc
+    assert execute(options(tier="monitor", source=source, apply=apply), tmp_path, _runner=runner) == 1
+    assert receipt(tmp_path)["status"] == "failed_recovery_required"
+    assert_fenced(tmp_path)

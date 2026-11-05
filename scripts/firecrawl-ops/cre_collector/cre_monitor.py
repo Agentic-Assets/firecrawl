@@ -70,6 +70,7 @@ from cre_ingest import (  # noqa: E402
     find_psql,
     group_source_lastmod,
     load_db_url,
+    lifecycle_transaction_lock_sql,
     merge_rows,
     norm_status,
     parse_source_lastmod,  # noqa: F401  re-exported for tests / other modules
@@ -568,7 +569,7 @@ def _sql_uuid(v):
 
 def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
                     disappear_marks, run_uuid, started_at, notes, slugs,
-                    artifact_run_key=None):
+                    artifact_run_key=None, prior_index=None, prior_listings=None, brokerage_by_slug=None):
     """Generate the full observe-only write transaction.
 
     Order matters for the FKs: the per-run cre_scrape_jobs row is inserted FIRST
@@ -587,6 +588,48 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     # inlined via _sql_text -> sql_lit (quote-doubling), which is injection-safe
     # only when this GUC is ON. Self-enforce it rather than trust the default.
     w("SET LOCAL standard_conforming_strings = on;")
+    svn_current = {g["external_id"]: g for g in finalized if g["source_key"] == "svn"}
+    svn_expected = []
+    svn_disappeared = {key for key in disappear_marks
+                       if isinstance(prior_index, dict)
+                       and prior_index.get(key, {}).get("source_key") == "svn"}
+    if isinstance(prior_index, dict) and (svn_current or svn_disappeared):
+        svn_bid = (brokerage_by_slug or {}).get("svn")
+        if not svn_bid:
+            raise ValueError("SVN brokerage identity is unavailable")
+        affected = set(svn_current) | {eid for bid, eid in disappear_marks if bid == svn_bid}
+        for eid in affected:
+            prior = prior_index.get((svn_bid, eid))
+            if prior is None:
+                continue
+            if (type(prior.get("observation_present")) is not bool
+                    or type(prior.get("presence_generation")) is not int):
+                raise ValueError("SVN prior index identity is unavailable")
+            svn_expected.append((svn_bid, eid, prior["fingerprint"], prior.get("url"),
+                                 prior.get("observed_status"), prior.get("source_key"),
+                                 prior["observation_present"], prior["presence_generation"]))
+    svn_changed = bool((svn_current or svn_disappeared) and isinstance(prior_index, dict))
+    if svn_changed:
+        # Acquire before source-index/listing locks to match other queue writers.
+        w("SELECT pg_advisory_xact_lock(1687068469);")
+        w(lifecycle_transaction_lock_sql())
+        # A committed artifact-derived job is immutable. Replaying it could
+        # observe a different suppression set and must not rewrite its report.
+        w("SELECT EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs WHERE id="
+          + _sql_uuid(run_uuid) + " AND artifact_run_key=" + _sql_text(artifact_run_key)
+          + " AND status IN ('completed','partial')) AS svn_monitor_replay,")
+        w("EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs WHERE id="
+          + _sql_uuid(run_uuid) + " OR artifact_run_key=" + _sql_text(artifact_run_key)
+          + ") AS svn_monitor_conflict \\gset")
+        w("\\if :svn_monitor_replay")
+        w("ROLLBACK;")
+        w("\\echo CRE_MONITOR_SVN_REPLAY_V1")
+        w("\\quit")
+        w("\\elif :svn_monitor_conflict")
+        w("ROLLBACK;")
+        w("\\echo CRE_MONITOR_SVN_CONFLICT_V1")
+        w("\\quit")
+        w("\\endif")
 
     # (1) per-run monitor job row FIRST (events.scrape_job_id FK target).
     if len(slugs) == 1:
@@ -596,23 +639,6 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         )
     else:
         brokerage_expr = "NULL"
-    w("")
-    w("-- (1) per-run monitor job row, inserted FIRST so cre_listing_events.scrape_job_id resolves.")
-    w("INSERT INTO credeals.cre_scrape_jobs")
-    w("    (id, brokerage_id, status, started_at, completed_at,")
-    w("     listings_discovered, listings_scraped, listings_saved, errors_count, notes,")
-    w("     artifact_run_key)")
-    w("VALUES (")
-    w(f"    {sql_lit(run_uuid)}::uuid,")
-    w(f"    {brokerage_expr},")
-    w("    'completed',")
-    w(f"    {sql_lit(started_at)}::timestamptz,")
-    w("    now(),")
-    w(f"    {len(finalized)}, 0, 0, 0,")
-    w(f"    {sql_lit(notes)},")
-    w(f"    {sql_lit(artifact_run_key)}")
-    w(") ON CONFLICT DO NOTHING;")
-
     # Current enumeration staged by slug; brokerage resolved by join (so the
     # generated SQL is identical in dry-run and apply mode).
     w("")
@@ -687,12 +713,55 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("WHERE EXISTS (SELECT 1 FROM _enum_b e WHERE e.brokerage_id=si.brokerage_id AND e.external_id=si.external_id)")
     w("   OR EXISTS (SELECT 1 FROM _disappear d WHERE d.brokerage_id=si.brokerage_id AND d.external_id=si.external_id)")
     w("FOR UPDATE;")
+    # Partition stale SVN observations and in-flight claims before either
+    # events or index updates; unrelated rows still commit.
+    w("CREATE TEMP TABLE _svn_expected (brokerage_id uuid, external_id text, fingerprint text,")
+    w("  url text, observed_status text, source_key text, observation_present boolean, presence_generation bigint) ON COMMIT DROP;")
+    w("COPY _svn_expected (brokerage_id, external_id, fingerprint, url, observed_status, source_key, observation_present, presence_generation) FROM stdin;")
+    for expected in svn_expected:
+        w("\t".join(copy_field(value) for value in expected))
+    w("\\.")
+    w("CREATE TEMP TABLE _svn_scope ON COMMIT DROP AS")
+    w("SELECT brokerage_id, external_id FROM _enum_b WHERE source_key='svn'")
+    w("UNION SELECT d.brokerage_id, d.external_id FROM _disappear d")
+    w("JOIN _svn_expected p USING (brokerage_id, external_id) WHERE p.source_key='svn';")
+    w("CREATE TEMP TABLE _svn_stale ON COMMIT DROP AS")
+    w("SELECT e.brokerage_id, e.external_id FROM _svn_scope e")
+    w("LEFT JOIN _svn_expected p USING (brokerage_id, external_id)")
+    w("LEFT JOIN credeals.cre_source_index si USING (brokerage_id, external_id)")
+    w("WHERE (")
+    w("  (p.brokerage_id IS NULL AND si.id IS NOT NULL)")
+    w("  OR (p.brokerage_id IS NOT NULL AND (si.id IS NULL")
+    w("    OR NULLIF(si.fingerprint, '') IS DISTINCT FROM p.fingerprint")
+    w("    OR NULLIF(si.url, '') IS DISTINCT FROM p.url")
+    w("    OR NULLIF(si.observed_status, '') IS DISTINCT FROM p.observed_status")
+    w("    OR NULLIF(si.source_key, '') IS DISTINCT FROM p.source_key")
+    w("    OR p.source_key IS DISTINCT FROM 'svn'")
+    w("    OR si.observation_present IS DISTINCT FROM p.observation_present")
+    w("    OR si.presence_generation IS DISTINCT FROM p.presence_generation)));")
+    w("CREATE TEMP TABLE _svn_fresh_changes ON COMMIT DROP AS")
+    w("SELECT e.brokerage_id, e.external_id FROM _enum_b e")
+    w("JOIN _svn_expected p USING (brokerage_id, external_id)")
+    w("WHERE e.source_key='svn' AND NOT EXISTS (SELECT 1 FROM _svn_stale x")
+    w("  WHERE x.brokerage_id=e.brokerage_id AND x.external_id=e.external_id)")
+    w("  AND (NOT p.observation_present OR p.fingerprint IS DISTINCT FROM e.fingerprint")
+    w("       OR p.url IS DISTINCT FROM e.url);")
+    w("CREATE TEMP TABLE _svn_deferred ON COMMIT DROP AS")
+    w("SELECT DISTINCT f.brokerage_id, f.external_id FROM _svn_fresh_changes f")
+    w("JOIN credeals.cre_enrichment_queue q USING (brokerage_id, external_id)")
+    w("WHERE q.source_key='svn' AND q.done_at IS NULL AND q.claimed_at IS NOT NULL;")
+    w("CREATE TEMP TABLE _svn_suppressed ON COMMIT DROP AS")
+    w("SELECT * FROM _svn_stale UNION SELECT * FROM _svn_deferred;")
+    w("DO $$ DECLARE n bigint; BEGIN SELECT count(*) INTO n FROM _svn_suppressed;")
+    w("IF n > 0 THEN RAISE NOTICE 'SVN source rows deferred due to changed snapshot or active claim: %', n; END IF; END $$;")
+
     w("DO $$ BEGIN")
     w("  IF EXISTS (")
     w("    SELECT 1 FROM _lifecycle_events ev")
     w("    JOIN credeals.cre_listings l ON l.id=ev.listing_id")
     w("    JOIN credeals.cre_source_index si ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id")
-    w("    WHERE NOT (")
+    w("    WHERE NOT EXISTS (SELECT 1 FROM _svn_suppressed x WHERE x.brokerage_id=l.brokerage_id AND x.external_id=l.external_id)")
+    w("      AND NOT (")
     w("      (ev.event_type='reappeared' AND ((NOT si.observation_present AND ev.presence_generation=si.presence_generation+1) OR (si.observation_present AND ev.presence_generation=si.presence_generation)))")
     w("      OR (ev.event_type='disappeared' AND ((si.observation_present AND ev.presence_generation=si.presence_generation+1) OR (NOT si.observation_present AND ev.presence_generation=si.presence_generation)))")
     w("    )")
@@ -700,10 +769,25 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("  IF EXISTS (")
     w("    SELECT 1 FROM _enum_b e JOIN credeals.cre_source_index si USING (brokerage_id, external_id)")
     w("    JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
-    w("    WHERE NOT si.observation_present AND NOT EXISTS (")
+    w("    WHERE NOT si.observation_present AND NOT EXISTS (SELECT 1 FROM _svn_suppressed x WHERE x.brokerage_id=e.brokerage_id AND x.external_id=e.external_id)")
+    w("      AND NOT EXISTS (")
     w("      SELECT 1 FROM _lifecycle_events ev WHERE ev.listing_id=l.id AND ev.event_type='reappeared' AND ev.presence_generation=si.presence_generation+1)")
     w("  ) THEN RAISE EXCEPTION 'unplanned reappearance after monitor diff; rerun'; END IF;")
     w("END $$;")
+
+    # Create the job after the per-row partition but before event FKs. A replay
+    # never rewrites the original job's status.
+    w("INSERT INTO credeals.cre_scrape_jobs")
+    w("    (id, brokerage_id, status, started_at, completed_at,")
+    w("     listings_discovered, listings_scraped, listings_saved, errors_count, notes, artifact_run_key)")
+    w("VALUES (")
+    w(f"    {sql_lit(run_uuid)}::uuid,")
+    w(f"    {brokerage_expr},")
+    w("    CASE WHEN EXISTS (SELECT 1 FROM _svn_suppressed) THEN 'partial' ELSE 'completed' END,")
+    w(f"    {sql_lit(started_at)}::timestamptz, now(),")
+    w(f"    {len(finalized)}, 0, 0, 0,")
+    w(f"    {sql_lit(notes)}, {sql_lit(artifact_run_key)}")
+    w(") ON CONFLICT DO NOTHING;")
 
     # (2) append-only events (idempotent within the run).
     if events:
@@ -713,7 +797,9 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w("    (listing_id, brokerage_id, scrape_job_id, event_type, field, old_value,")
         w("     new_value, source_value, source_status_value, sale_price_text,")
         w("     lease_rate_text, source_url, content_hash, presence_generation)")
-        w("VALUES")
+        w("SELECT v.listing_id, v.brokerage_id, v.scrape_job_id, v.event_type, v.field, v.old_value,")
+        w("  v.new_value, v.source_value, v.source_status_value, v.sale_price_text, v.lease_rate_text,")
+        w("  v.source_url, v.content_hash, v.presence_generation::bigint FROM (VALUES")
         value_rows = []
         for e in events:
             value_rows.append(
@@ -737,6 +823,10 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
                 + ")"
             )
         w(",\n".join(value_rows))
+        w(") AS v(listing_id, brokerage_id, scrape_job_id, event_type, field, old_value, new_value,")
+        w("  source_value, source_status_value, sale_price_text, lease_rate_text, source_url, content_hash, presence_generation)")
+        w("WHERE NOT EXISTS (SELECT 1 FROM _svn_suppressed x JOIN credeals.cre_listings l")
+        w("  ON l.brokerage_id=x.brokerage_id AND l.external_id=x.external_id WHERE l.id=v.listing_id)")
         w("ON CONFLICT DO NOTHING;")
 
     # (3) refresh cre_source_index from the enumeration (present rows).
@@ -762,7 +852,8 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("SELECT brokerage_id, external_id, source_key, url, source_lastmod, fingerprint,")
     w("       observed_status, true, 0, now(), now(), now(), now(),")
     w("       cur_sale_price, cur_lease_rate, observed_status")
-    w("FROM _enum_b")
+    w("FROM _enum_b e")
+    w("WHERE NOT EXISTS (SELECT 1 FROM _svn_suppressed x WHERE x.brokerage_id=e.brokerage_id AND x.external_id=e.external_id)")
     w("ON CONFLICT (brokerage_id, external_id) DO UPDATE SET")
     w("    last_seen          = now(),")
     w("    last_enumerated_at = now(),")
@@ -780,7 +871,9 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("    observation_present = true,")
     w("    prior_sale_price   = EXCLUDED.prior_sale_price,")
     w("    prior_lease_rate   = EXCLUDED.prior_lease_rate,")
-    w("    prior_status       = EXCLUDED.prior_status;")
+    w("    prior_status       = EXCLUDED.prior_status")
+    w("WHERE NOT EXISTS (SELECT 1 FROM _svn_deferred d")
+    w("                  WHERE d.brokerage_id=si.brokerage_id AND d.external_id=si.external_id);")
 
     # (3b) mark coverage-gated disappeared ids gone in the MONITOR index only.
     if disappear_marks:
@@ -793,6 +886,7 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w("    last_enumerated_at = " + sql_lit(started_at) + "::timestamptz")
         w("FROM _disappear d")
         w("WHERE si.brokerage_id = d.brokerage_id AND si.external_id = d.external_id")
+        w("  AND NOT EXISTS (SELECT 1 FROM _svn_suppressed x WHERE x.brokerage_id=d.brokerage_id AND x.external_id=d.external_id)")
         w("  AND si.observation_present = true;")
 
     # (4) neutral cre_listings columns ONLY (never status, never deleted_at).
@@ -813,6 +907,7 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("    canonical_key  = COALESCE(e.canonical_key, l.canonical_key)")
     w("FROM _enum_b e")
     w("WHERE l.brokerage_id = e.brokerage_id AND l.external_id = e.external_id")
+    w("  AND NOT EXISTS (SELECT 1 FROM _svn_suppressed x WHERE x.brokerage_id=e.brokerage_id AND x.external_id=e.external_id)")
     w("  AND (l.source_lastmod IS DISTINCT FROM COALESCE(e.source_lastmod, l.source_lastmod)")
     w("       OR l.canonical_key  IS DISTINCT FROM COALESCE(e.canonical_key, l.canonical_key));")
 
@@ -822,13 +917,55 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         queue_rows.append((bid, sk, eid, url, "new"))
     changed_only = {k: v for k, v in enqueue_changed.items() if k not in enqueue_new}
     for (bid, sk, eid), url in sorted(changed_only.items()):
-        queue_rows.append((bid, sk, eid, url, "changed"))
+        if sk != "svn":
+            queue_rows.append((bid, sk, eid, url, "changed"))
+    if svn_changed:
+        w("UPDATE credeals.cre_enrichment_queue q SET url=e.url")
+        w("FROM _enum_b e JOIN _svn_fresh_changes f USING (brokerage_id, external_id)")
+        w("JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
+        w("WHERE q.brokerage_id=e.brokerage_id AND q.external_id=e.external_id")
+        w("  AND l.status='active' AND l.deleted_at IS NULL")
+        w("  AND q.source_key='svn' AND e.source_key='svn' AND q.done_at IS NULL")
+        w("  AND q.claimed_at IS NULL AND q.attempts<5")
+        w("  AND NOT EXISTS (SELECT 1 FROM _svn_deferred d WHERE d.brokerage_id=e.brokerage_id AND d.external_id=e.external_id);")
+        # The queue's last error remains intact as the only retained failure.
+        w("UPDATE credeals.cre_enrichment_queue q SET attempts=0, url=e.url, enqueued_at=now()")
+        w("FROM _enum_b e JOIN _svn_fresh_changes f USING (brokerage_id, external_id)")
+        w("JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
+        w("WHERE q.brokerage_id=e.brokerage_id AND q.external_id=e.external_id")
+        w("  AND q.source_key='svn' AND e.source_key='svn' AND q.reason IN ('new','changed')")
+        w("  AND q.attempts>=5 AND q.claimed_at IS NULL AND q.done_at IS NULL")
+        w("  AND NOT EXISTS (SELECT 1 FROM credeals.cre_enrichment_queue other")
+        w("    WHERE other.brokerage_id=q.brokerage_id AND other.external_id=q.external_id")
+        w("      AND other.source_key='svn' AND other.id<>q.id AND other.done_at IS NULL")
+        w("      AND (other.claimed_at IS NOT NULL OR other.attempts<5))")
+        w("  AND q.id=(SELECT candidate.id FROM credeals.cre_enrichment_queue candidate")
+        w("    WHERE candidate.brokerage_id=q.brokerage_id AND candidate.external_id=q.external_id")
+        w("      AND candidate.source_key='svn' AND candidate.reason IN ('new','changed')")
+        w("      AND candidate.done_at IS NULL AND candidate.claimed_at IS NULL AND candidate.attempts>=5")
+        w("    ORDER BY (candidate.reason='changed') DESC, candidate.id LIMIT 1)")
+        w("  AND l.status='active' AND l.deleted_at IS NULL")
+        w("  AND NOT EXISTS (SELECT 1 FROM _svn_deferred d WHERE d.brokerage_id=e.brokerage_id AND d.external_id=e.external_id)")
+        w(";")
+        # A newly observed change or reappearance with no existing work gets
+        # one queue row; this does not alter lifecycle or source-absence state.
+        w("INSERT INTO credeals.cre_enrichment_queue (brokerage_id, source_key, external_id, url, reason)")
+        w("SELECT e.brokerage_id, 'svn', e.external_id, e.url, 'changed'")
+        w("FROM _enum_b e JOIN _svn_fresh_changes f USING (brokerage_id, external_id)")
+        w("JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
+        w("WHERE e.source_key='svn' AND l.status='active' AND l.deleted_at IS NULL")
+        w("  AND NOT EXISTS (SELECT 1 FROM _svn_deferred d WHERE d.brokerage_id=e.brokerage_id AND d.external_id=e.external_id)")
+
+        w("  AND NOT EXISTS (SELECT 1 FROM credeals.cre_enrichment_queue q")
+        w("                  WHERE q.brokerage_id=e.brokerage_id AND q.external_id=e.external_id")
+        w("                    AND q.source_key='svn' AND q.done_at IS NULL)")
+        w("ON CONFLICT (brokerage_id, external_id, reason) DO NOTHING;")
     if queue_rows:
         w("")
         w("-- (5) durable enrichment queue for new + changed listings.")
         w("INSERT INTO credeals.cre_enrichment_queue")
         w("    (brokerage_id, source_key, external_id, url, reason)")
-        w("VALUES")
+        w("SELECT v.brokerage_id, v.source_key, v.external_id, v.url, v.reason FROM (VALUES")
         rows = []
         for bid, sk, eid, url, reason in queue_rows:
             rows.append(
@@ -840,10 +977,19 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
                 + ")"
             )
         w(",\n".join(rows))
+        w(") AS v(brokerage_id, source_key, external_id, url, reason)")
+        w("WHERE NOT EXISTS (SELECT 1 FROM _svn_suppressed x")
+        w("  WHERE x.brokerage_id=v.brokerage_id AND x.external_id=v.external_id)")
         w("ON CONFLICT (brokerage_id, external_id, reason) DO NOTHING;")
 
+    if svn_changed:
+        w("SELECT 'CRE_MONITOR_SVN_SUPPRESSED_V1 ' || COALESCE(")
+        w("  json_agg(json_build_array(brokerage_id::text, external_id) ORDER BY brokerage_id, external_id)::text, '[]')")
+        w("AS svn_monitor_receipt FROM _svn_suppressed \\gset")
     w("")
     w("COMMIT;")
+    if svn_changed:
+        w("\\echo :svn_monitor_receipt")
     return "\n".join(lines)
 
 
@@ -1219,34 +1365,54 @@ def main():
     sql = build_write_sql(
         finalized, events, enqueue_new, enqueue_changed,
         disappear_marks, run_uuid, started_at, notes, slugs,
-        artifact_run_key=artifact_run_key,
+        artifact_run_key=artifact_run_key, prior_index=prior_index if apply_mode else None,
+        prior_listings=prior_listings if apply_mode else None,
+        brokerage_by_slug=brokerage_by_slug if apply_mode else None,
     )
 
-    summary = build_summary(
-        finalized, per_source_flat, baseline_source_keys,
-        coverage_ok_by_source, event_counts, skipped_no_url,
-    )
-    print_summary(summary, mode, args.quiet)
-
-    if args.out:
-        out_doc = {
-            "mode": mode,
-            "run_id": run_uuid,
-            "artifacts": [os.path.basename(p) for p in args.inputs],
-            "started_at": started_at,
-            "baseline_source_keys": sorted(baseline_source_keys),
-            "summary": summary,
-            "enqueue": {"new": len(enqueue_new),
-                        "changed": len({k for k in enqueue_changed if k not in enqueue_new})},
-            "disappear_marks": len(disappear_marks),
-            "events": events if apply_mode else [],
-        }
-        with open(args.out, "w") as f:
-            json.dump(out_doc, f, indent=2, default=str)
-        if not args.quiet:
-            print(f"wrote summary/events JSON: {args.out}", file=sys.stderr)
+    def report(suppressed):
+        suppressed_ids = {prior_listings[key]["id"] for key in suppressed
+                          if apply_mode and key in prior_listings}
+        visible_events = [event for event in events if event["listing_id"] not in suppressed_ids]
+        visible_counts = {key: dict(value) for key, value in event_counts.items()}
+        for event in events:
+            if event["listing_id"] in suppressed_ids:
+                counts = visible_counts.get(event["source_key"], {})
+                kind = event["event_type"]
+                if kind in counts:
+                    counts[kind] -= 1
+                    if counts[kind] == 0:
+                        del counts[kind]
+        summary = build_summary(
+            finalized, per_source_flat, baseline_source_keys,
+            coverage_ok_by_source, visible_counts, skipped_no_url,
+        )
+        print_summary(summary, mode, args.quiet)
+        visible_new = {key: value for key, value in enqueue_new.items() if (key[0], key[2]) not in suppressed}
+        visible_changed = {key: value for key, value in enqueue_changed.items()
+                           if key not in visible_new and (key[0], key[2]) not in suppressed}
+        visible_disappear = [key for key in disappear_marks if key not in suppressed]
+        if args.out:
+            out_doc = {
+                "mode": mode, "run_id": run_uuid,
+                "artifacts": [os.path.basename(p) for p in args.inputs],
+                "started_at": started_at, "baseline_source_keys": sorted(baseline_source_keys),
+                "summary": summary,
+                "enqueue": {"new": len(visible_new), "changed": len(visible_changed)},
+                "enqueue_counts_are_candidates": True,
+                "status": "partial" if suppressed else "complete",
+                "svn_deferred_count": len(suppressed),
+                "disappear_marks": len(visible_disappear),
+                "events": visible_events if apply_mode else [],
+            }
+            with open(args.out, "w") as f:
+                json.dump(out_doc, f, indent=2, default=str)
+            if not args.quiet:
+                print(f"wrote summary/events JSON: {args.out}", file=sys.stderr)
+        return len(visible_events), len(visible_new), len(visible_changed), len(visible_disappear)
 
     if not apply_mode:
+        report(set())
         if not args.quiet:
             print("\n----- generated SQL (sample, COPY data elided) -----", file=sys.stderr)
             print(sql_sample(sql), file=sys.stderr)
@@ -1260,21 +1426,51 @@ def main():
         f.write(sql)
     psql = find_psql()
     assert_expected_database_target(db_url, args.expected_db_target_sha256)
+    has_svn = "svn" in run_source_keys
     proc = subprocess.run(
         [psql, *psql_connection_args(db_url), "-q", "-v", "ON_ERROR_STOP=1",
          "-f", sql_path],
-        stdout=sys.stdout, stderr=sys.stderr,
-        env=psql_connection_env(db_url),
+        stdout=subprocess.PIPE if has_svn else sys.stdout, stderr=sys.stderr,
+        text=has_svn, env=psql_connection_env(db_url),
     )
     if proc.returncode != 0:
+        if has_svn:
+            sys.exit("SVN monitor database outcome is unproven; reconcile its job before replay")
         sys.exit(f"psql exited {proc.returncode}")
+    suppressed = set()
+    if has_svn:
+        if "CRE_MONITOR_SVN_REPLAY_V1" in proc.stdout.splitlines():
+            print("SVN monitor artifact already committed; no new writes; retain its original report", file=sys.stderr)
+            return 22
+        prefix = "CRE_MONITOR_SVN_SUPPRESSED_V1 "
+        records = [line[len(prefix):] for line in proc.stdout.splitlines() if line.startswith(prefix)]
+        if len(records) != 1:
+            sys.exit("SVN monitor outcome or report is unproven; reconcile its job before replay")
+        try:
+            values = json.loads(records[0])
+            if (not isinstance(values, list) or any(not isinstance(item, list) or len(item) != 2
+                    or not all(isinstance(value, str) for value in item) for item in values)):
+                raise ValueError("invalid suppressed-row receipt")
+            suppressed = {tuple(item) for item in values}
+            if len(suppressed) != len(values):
+                raise ValueError("duplicate suppressed-row receipt")
+        except (ValueError, TypeError):
+            sys.exit("SVN monitor outcome or report is unproven; reconcile its job before replay")
+        for line in proc.stdout.splitlines():
+            if not line.startswith(prefix):
+                print(line)
+    try:
+        event_count, new_count, changed_count, disappear_count = report(suppressed)
+    except OSError as exc:
+        raise SystemExit("monitor committed but its report could not be saved; reconcile its job before replay") from exc
     print(
-        f"monitor complete: {len(events)} events, "
-        f"{len(enqueue_new)} new + {len({k for k in enqueue_changed if k not in enqueue_new})} changed enqueued, "
-        f"{len(disappear_marks)} disappeared marks",
+        f"monitor {'partial' if suppressed else 'complete'}: {event_count} event candidates, "
+        f"{new_count} new + {changed_count} changed queue candidates, "
+        f"{disappear_count} disappeared marks, {len(suppressed)} SVN rows deferred",
         file=sys.stderr,
     )
+    return 20 if suppressed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
