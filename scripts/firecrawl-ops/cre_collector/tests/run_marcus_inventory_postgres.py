@@ -128,6 +128,21 @@ FROM credeals.cre_brokerages WHERE slug='marcus-millichap';
         assert writer.returncode != 0 and "Marcus identity partition changed" in err
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='104'") == "0"
         assert sql("SELECT status FROM credeals.cre_listings WHERE external_id='101'") == "inactive"
+        # Approximate the observed 3,261-record candidate and add unrelated
+        # parents so the source-URL collision query cannot pass by testing an
+        # empty target. The result measures only this disposable target.
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
+SELECT b.id,'unrelated-' || n,'https://unrelated.example/properties/' || n,'active','{}'::jsonb
+FROM credeals.cre_brokerages b CROSS JOIN generate_series(1,10000) n WHERE b.slug='marcus-millichap';
+""")
+        scale = [stage_inventory(listing(str(i), "activity-" + str(i)), GENERATION, START, FINISH)
+                 for i in range(200000, 203261)]
+        started = time.monotonic()
+        scale_probe = sql(identity_probe_sql(scale, GENERATION, START, FINISH)).split("|", 3)
+        elapsed = time.monotonic() - started
+        assert scale_probe[:2] == ["3261", "3261"] and json.loads(scale_probe[2]) == []
+        print(f"Marcus disposable 3261-row/10000-peer read-only probe: {elapsed:.3f}s")
         print("Marcus real-schema new/existing/held/children/readback/full-refresh/cooperating-race PASS")
     finally:
         run("docker", "rm", "-f", name, check=False)

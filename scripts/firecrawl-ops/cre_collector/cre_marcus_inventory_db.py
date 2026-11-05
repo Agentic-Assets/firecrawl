@@ -48,6 +48,14 @@ def identity_probe_sql(staged, generation, started_at, finished_at, *, _transact
 WITH candidate AS ({candidate}),
 scoped AS (SELECT b.id brokerage_id,c.r FROM candidate c
            JOIN credeals.cre_brokerages b ON b.slug='marcus-millichap'),
+listing_url_keys AS MATERIALIZED (
+ SELECT id,{_url_deal_id('source_url')} AS deal_id FROM credeals.cre_listings WHERE {_url_deal_id('source_url')} IS NOT NULL
+ UNION ALL
+ SELECT id,{_url_deal_id('canonical_url')} AS deal_id FROM credeals.cre_listings WHERE {_url_deal_id('canonical_url')} IS NOT NULL
+),
+index_url_keys AS MATERIALIZED (
+ SELECT id,{_url_deal_id('url')} AS deal_id FROM credeals.cre_source_index WHERE {_url_deal_id('url')} IS NOT NULL
+),
 conflicts AS (
  SELECT s.r->>'external_id' external_id FROM scoped s
  LEFT JOIN credeals.cre_listings own ON own.brokerage_id=s.brokerage_id AND own.external_id=s.r->>'external_id'
@@ -61,12 +69,10 @@ conflicts AS (
        AND jsonb_typeof(own.raw_data#>'{{marcusInventoryObservations,entries}}')='array',false))))
  OR (si.id IS NOT NULL AND (si.source_key IS DISTINCT FROM 'marcus-millichap'
        OR (si.url IS NOT NULL AND {_url_deal_id('si.url')} IS DISTINCT FROM s.r->>'external_id')))
- OR EXISTS (SELECT 1 FROM credeals.cre_listings other
-   WHERE (own.id IS NULL OR other.id<>own.id)
-   AND ({_url_deal_id('other.source_url')}=s.r->>'external_id'
-     OR {_url_deal_id('other.canonical_url')}=s.r->>'external_id'))
- OR EXISTS (SELECT 1 FROM credeals.cre_source_index other
-   WHERE (si.id IS NULL OR other.id<>si.id) AND {_url_deal_id('other.url')}=s.r->>'external_id')
+ OR EXISTS (SELECT 1 FROM listing_url_keys other
+   WHERE (own.id IS NULL OR other.id<>own.id) AND other.deal_id=s.r->>'external_id')
+ OR EXISTS (SELECT 1 FROM index_url_keys other
+   WHERE (si.id IS NULL OR other.id<>si.id) AND other.deal_id=s.r->>'external_id')
 )
 SELECT (SELECT count(*) FROM candidate) AS staged,(SELECT count(*) FROM scoped) AS joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text AS held,
@@ -134,17 +140,20 @@ BEGIN;
 CREATE TEMP TABLE _marcus_input ON COMMIT DROP AS
  SELECT value AS r FROM jsonb_array_elements({payload}::jsonb);
 DO $$ BEGIN
- PERFORM si.id FROM credeals.cre_source_index si WHERE EXISTS
-  (SELECT 1 FROM _marcus_input c
-   WHERE (si.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
-          AND si.external_id=c.r->>'external_id') OR {_url_deal_id('si.url')}=c.r->>'external_id')
- ORDER BY si.id FOR UPDATE;
- PERFORM t.id FROM credeals.cre_listings t WHERE EXISTS
-  (SELECT 1 FROM _marcus_input c
-   WHERE (t.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
-          AND t.external_id=c.r->>'external_id') OR {_url_deal_id('t.source_url')}=c.r->>'external_id'
-          OR {_url_deal_id('t.canonical_url')}=c.r->>'external_id')
- ORDER BY t.id FOR UPDATE;
+ PERFORM si.id FROM credeals.cre_source_index si WHERE si.id IN (
+  SELECT ix.id FROM credeals.cre_source_index ix JOIN _marcus_input c
+   ON ix.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
+   AND ix.external_id=c.r->>'external_id'
+  UNION SELECT ix.id FROM credeals.cre_source_index ix JOIN _marcus_input c
+   ON {_url_deal_id('ix.url')}=c.r->>'external_id') ORDER BY si.id FOR UPDATE;
+ PERFORM t.id FROM credeals.cre_listings t WHERE t.id IN (
+  SELECT x.id FROM credeals.cre_listings x JOIN _marcus_input c
+   ON x.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='marcus-millichap')
+   AND x.external_id=c.r->>'external_id'
+  UNION SELECT x.id FROM credeals.cre_listings x JOIN _marcus_input c
+   ON {_url_deal_id('x.source_url')}=c.r->>'external_id'
+  UNION SELECT x.id FROM credeals.cre_listings x JOIN _marcus_input c
+   ON {_url_deal_id('x.canonical_url')}=c.r->>'external_id') ORDER BY t.id FOR UPDATE;
 END $$;
 CREATE TEMP TABLE _marcus_probe ON COMMIT DROP AS {probe};
 DO $$ BEGIN
