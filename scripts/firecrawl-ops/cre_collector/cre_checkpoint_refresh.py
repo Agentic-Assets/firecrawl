@@ -243,6 +243,10 @@ class GlobalStageError(RefreshError):
     """A shared infrastructure or live-write stage failed."""
 
 
+class ClockOrderingPending(RefreshError):
+    """A real wall timestamp is temporarily earlier than its prior event."""
+
+
 class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
@@ -3909,6 +3913,8 @@ def _cohort_attempt(
             return None
     attempt_number = len(checkpoint["attempts"]) + 1
     attempt_started = utc_now()
+    if parse_iso8601(attempt_started, field="attempt start") < parse_iso8601(manifest["started_at"], field="generation start"):
+        raise ClockOrderingPending("wall clock precedes generation start")
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
     tmp_artifact = run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -4065,15 +4071,17 @@ def _finalize_cohort_collection(
     item: CohortCollectionProcess,
     *,
     candidate_only: bool = False,
+    clock_expired: bool = False,
 ) -> bool:
     """Validate and publish a completed source worker's artifact centrally."""
     checkpoint = manifest["sources"][item.source]
     rc = item.process.poll()
     if rc is None:
         raise RuntimeError("cannot finalize a running cohort source worker")
-    _require_completed_group_settlement(
-        item.owned_group or OwnedProcessGroup.from_spawn(item.process)
-    )
+    if item.owned_group is None:
+        item.owned_group = OwnedProcessGroup.from_spawn(item.process)
+    if not getattr(item.owned_group, "gone", False):
+        _require_completed_group_settlement(item.owned_group)
     if rc not in COHORT_SETTLED_EXIT_CODES:
         raise ProcessCleanupUnknown(
             f"cohort worker exit {rc} does not prove nested command settlement"
@@ -4098,10 +4106,20 @@ def _finalize_cohort_collection(
             "cohort completion does not own the current source attempt: "
             f"{item.source} attempt {item.attempt.get('number')}"
         )
-    item.log_handle.write(f"[{utc_now()}] coordinator observed rc={rc}\n")
+    finished_at = utc_now()
+    if parse_iso8601(finished_at, field="attempt finish") < parse_iso8601(item.attempt_started_at, field="attempt start"):
+        if not clock_expired:
+            raise ClockOrderingPending("wall clock precedes attempt start")
+        item.log_handle.write(f"[{finished_at}] coordinator refused reversed attempt clock\n")
+        item.log_handle.close()
+        item.attempt.update(rc=rc, finished_at=finished_at, error="wall clock did not reach attempt start")
+        checkpoint["state"] = "collect_infrastructure_failed"
+        save_manifest(run_dir, manifest)
+        return False
+    item.log_handle.write(f"[{finished_at}] coordinator observed rc={rc}\n")
     item.log_handle.close()
     item.attempt["rc"] = rc
-    item.attempt["finished_at"] = utc_now()
+    item.attempt["finished_at"] = finished_at
     mark_source_document_settlement(manifest, item.attempt)
     if item.attempt.get("native_source_evidence"):
         from source_evidence import native_pages
