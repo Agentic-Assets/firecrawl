@@ -14,6 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import cre_colliers_partial as partial
+import cre_colliers_partial_checkpoint as checkpoint
 import cre_ingest as ingest
 from cre_colliers_partial import (
     build_partial_sql,
@@ -67,7 +68,7 @@ def main():
             root = Path(temporary)
             test_source_bytes_through_node_replay_into_python_staging(root)
             artifact = json.loads((root / "artifact").read_text())
-            records = partial.unpack_window_records(artifact)
+            records = checkpoint.unpack_window_records(artifact)
             stage = [stage_detail_record(record, "gen", 1, "2026-11-04T15:00:00Z",
                      "2026-11-04T16:00:00Z", artifact["detailFinishedAt"]) for record in records]
             preimage = [{"external_id": "native-e2e", "listing": None, "source_index": None}]
@@ -88,7 +89,7 @@ def main():
                        "bytes": source["bytes"], "sha256": source["sha256"], "main_sha256": "c" * 64,
                        "producer_sha": "a" * 40, "database_target_sha256": "b" * 64}
             with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(partial, "revalidate_source_receipt", lambda *_: receipt)
+                patch.setattr(checkpoint, "revalidate_source_receipt", lambda *_: receipt)
                 patch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
                 patch.setattr(ingest, "load_db_url", lambda _: ("synthetic", None))
                 patch.setattr(ingest, "database_target_fingerprint_from_url", lambda _: {"value": "b" * 64})
@@ -96,7 +97,7 @@ def main():
                 patch.setattr(cre_validate, "_run_psql_script", lambda _psql, _url, script, timeout:
                     command("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-A",
                             "-F", "\t", "-P", "footer=off", "-v", "ON_ERROR_STOP=1", text=script, check=False))
-                actual = partial.run_partial_readback(root / "gen" / "colliers-partial" / "window-1-artifact.json",
+                actual = checkpoint.run_partial_readback(root / "gen" / "colliers-partial" / "window-1-artifact.json",
                     claims, code_sha="a" * 40, target="b" * 64, attempt_id="e" * 32, env_file=None)
             assert actual["ok"] is True and actual["outcome"] == "exact_commit" and actual["expected"] == 1
         first = sample()

@@ -7568,7 +7568,7 @@ def main():
         from pathlib import Path
 
         from cre_checkpoint_refresh import git_identity
-        from cre_colliers_partial import ingest_subset_context
+        from cre_colliers_partial_checkpoint import ingest_subset_context
         from cre_stop_guarded_tier import _read_at, _safe_stat
 
         claim_path = Path(args.colliers_partial_claims)

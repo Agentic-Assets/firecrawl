@@ -1089,7 +1089,7 @@ def run_bounded_pipeline(
                 # run only here, on the foreground coordinator's serial lane.
                 refresh.pump_source_evidence(run_dir, manifest)
                 if partial_ready:
-                    from cre_colliers_partial import run_window_worker
+                    from cre_colliers_partial_checkpoint import run_window_worker
                     source = partial_ready.pop(0)
                     preparing = (source,)
                     require_pipeline_owner(manifest, _OWNER_LEASE.get())
@@ -1184,7 +1184,7 @@ def run_bounded_pipeline(
                             partial = checkpoint["attempts"][-1].get("colliers_partial") or {}
                             if (source == "colliers" and partial.get("state") == "sealed_local"
                                     and partial.get("outcome") == "source_error"):
-                                from cre_colliers_partial import run_window_worker
+                                from cre_colliers_partial_checkpoint import run_window_worker
                                 owner = getattr(_OWNER_CHECK.get(), "__self__", None)
                                 require_pipeline_owner(manifest, _OWNER_LEASE.get())
                                 candidate_path = run_window_worker(

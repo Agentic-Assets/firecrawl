@@ -2941,7 +2941,7 @@ def _validate_source_artifact_local(
         # This validates structure and freshness only. The shared subset gate
         # separately authenticates the original source, worker, target and DB
         # identity partition before any write can be admitted.
-        from cre_colliers_partial import validate_window_artifact
+        from cre_colliers_partial_checkpoint import validate_window_artifact
         from cre_ingest import validate_strict_artifact_freshness
 
         if expected_source != "colliers" or tuple(expected_transactions) != TRANSACTIONS:
@@ -5325,7 +5325,7 @@ def _admit_current_inventory(
         )
         git_sha, git_dirty = git_identity()
         if colliers_partial_candidate(manifest, source):
-            from cre_colliers_partial import admit_window
+            from cre_colliers_partial_checkpoint import admit_window
             return admit_window(artifact, manifest, report, current_code_sha=git_sha,
                                 current_git_dirty=git_dirty, phase=phase)
         if jll_partial_candidate(manifest, source):
@@ -5382,7 +5382,7 @@ def gate_source(
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)):
             if colliers_partial_candidate(manifest, source):
-                from cre_colliers_partial import run_identity_probe
+                from cre_colliers_partial_checkpoint import run_identity_probe
                 try:
                     checkpoint["colliers_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
@@ -6485,7 +6485,7 @@ def jll_partial_readback(run_dir, manifest, env_file):
 
 
 def colliers_partial_readback(run_dir, manifest, env_file):
-    from cre_colliers_partial import run_partial_readback
+    from cre_colliers_partial_checkpoint import run_partial_readback
 
     checkpoint = manifest["sources"]["colliers"]
     arguments = subset_ingest_arguments(run_dir, manifest, "colliers")

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
 import cre_partial_page_custody as custody
-from cre_colliers_partial import revalidate_source_receipt
+from cre_colliers_partial_checkpoint import revalidate_source_receipt
 from cre_owned_processes import OwnedProcessGroup
 
 

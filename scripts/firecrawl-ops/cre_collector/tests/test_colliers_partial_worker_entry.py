@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
-import cre_colliers_partial as partial
+import cre_colliers_partial_checkpoint as partial
 import pytest
 from cre_checkpoint_refresh import SharedLock
 from cre_partial_cursor import read_cursor

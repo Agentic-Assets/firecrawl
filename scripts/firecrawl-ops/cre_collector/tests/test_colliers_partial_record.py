@@ -149,7 +149,7 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     assert fixture["rows"][0]["listing"]["city"] == "Native City"
     assert fixture["rows"][0]["listing"]["units"] == 10
 
-    from cre_colliers_partial import (
+    from cre_colliers_partial_checkpoint import (
         cursor_after_database_holds,
         validate_window_artifact,
     )
@@ -180,7 +180,7 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
 
     # The shared source and aggregate gate adapter binds the exact source,
     # worker receipt, bytes, target and DB preimage. Files remain synthetic.
-    import cre_colliers_partial as partial
+    import cre_colliers_partial_checkpoint as partial
 
     run = tmp_path / "gen"
     private = run / "colliers-partial"
@@ -246,7 +246,7 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
         claims_path.write_text(json.dumps(envelope))
         claims_path.chmod(0o600)
         dry_dir = tmp_path / "dry"
-        shim = ("import cre_colliers_partial as p; import cre_checkpoint_refresh as c; "
+        shim = ("import cre_colliers_partial_checkpoint as p; import cre_checkpoint_refresh as c; "
                 "c.git_identity=lambda: ('" + "a" * 40 + "',False); "
                 "p.revalidate_source_receipt=lambda *_: " + repr(receipt) + "; "
                 "import cre_ingest; cre_ingest.main()")

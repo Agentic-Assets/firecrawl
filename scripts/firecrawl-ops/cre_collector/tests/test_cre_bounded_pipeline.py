@@ -206,7 +206,7 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     if colliers_partial:
-        import cre_colliers_partial as partial
+        import cre_colliers_partial_checkpoint as partial
 
         def archive(_path, _root, _manifest, _source, attempt):
             attempt["colliers_partial"] = {"state": "sealed_local", "outcome": "source_error"}

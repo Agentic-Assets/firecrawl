@@ -3,8 +3,7 @@ import hashlib
 import json
 
 import pytest
-
-from cre_colliers_partial import revalidate_source_receipt
+from cre_colliers_partial_checkpoint import revalidate_source_receipt
 from cre_partial_page_custody import settle
 
 
