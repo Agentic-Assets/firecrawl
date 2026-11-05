@@ -10,7 +10,7 @@ from cre_nai_post_partial import partition_posts, stage_post
 def post(number=1, alias=None, tx="sale"):
     post_id = str(number)
     alias = alias or f"https://www.naiglobal.com/listings/?propertyId=post-{post_id}"
-    raw = {"id": number, "url": f"https://infabode.com/post/{post_id}",
+    raw = {"id": number, "title": "Fixture post", "url": f"https://infabode.com/post/{post_id}",
            "urlOriginal": alias, "contentType": {"id": 4 if tx == "sale" else 10},
            "listingStatus": ["FOR_SALE_ON_MARKET"], "unusedSourceField": {"x": [1, None]}}
     return {"sourceKey": "nai-global", "id": f"infabode:{post_id}",
@@ -58,7 +58,7 @@ def test_identified_inventory_post_survives_missing_detail_and_category():
     row = stage_post(source, "gen-1")
     assert row["external_id"] == "infabode:1"
     assert row["transaction_type"] is None and row["alias_key"] == "https://www.naiglobal.com/listings?propertyId=post-1"
-    assert row["title"] is None and row["lat"] is None and row["lng"] is None
+    assert row["title"] == "Fixture post" and row["lat"] is None and row["lng"] is None
     assert json.loads(base64.b64decode(row["observation_base64"])) == source
 
 
@@ -67,6 +67,19 @@ def test_inventory_only_cannot_claim_verified_detail_observation():
     source["freshnessProvenance"]["detailScope"] = "inventory_only"
     assert partition_posts([source, post(2)], "gen-1")["held"] == [
         {"index": 0, "reason": "unqualified_source_post"}]
+
+
+def test_title_and_coordinate_projection_require_matching_source_witnesses():
+    source = post()
+    source.update(latitude=45.123456789012345, longitude=-117.98765432109876)
+    source["publicPost"]["locations"] = [{"geometry": {"coordinates": [source["longitude"], source["latitude"]]}}]
+    observed = stage_post(source, "gen-1")
+    assert observed["title"] == "Fixture post"
+    assert (observed["lat"], observed["lng"]) == (source["latitude"], source["longitude"])
+    source["publicPost"]["title"] = "Different source title"
+    source["publicPost"]["locations"][0]["geometry"]["coordinates"][0] = -117.0
+    observed = stage_post(source, "gen-1")
+    assert observed["title"] is None and observed["lat"] is None and observed["lng"] is None
 
 
 def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis():

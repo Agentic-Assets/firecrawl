@@ -95,6 +95,10 @@ def stage_post(listing, generation, *, exact_observation=None):
             and (listing.get("detailObservedAt") is not None
                  or (listing.get("publicPost") is not None and not listing.get("detailError")))):
         raise ValueError("NAI inventory-only detail claim differs")
+    if (provenance["detailScope"] == "source_native_public_record"
+            and (not isinstance(listing.get("publicPost"), dict)
+                 or not listing.get("detailObservedAt") or listing.get("detailError"))):
+        raise ValueError("NAI native detail observation missing")
     inventory = _timestamp(listing.get("inventoryObservedAt"))
     detail = _timestamp(listing.get("detailObservedAt")) if listing.get("detailObservedAt") else inventory
     if detail < inventory:
@@ -125,6 +129,13 @@ def stage_post(listing, generation, *, exact_observation=None):
               "max_divisible_sf", "lot_size_sf", "year_built", "sale_price_usd",
               "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights", "building_class")
     projected = {key: row.get(key) for key in fields}
+    # Only lift the title when the actual source record witnesses it. A mapped
+    # display name or address-shaped slug alone is not evidence of a title.
+    title_record = listing.get("publicPost") if provenance["detailScope"] == "source_native_public_record" else listing["feedRow"]
+    source_title = title_record.get("title") if isinstance(title_record, dict) else None
+    source_title = source_title.strip() if isinstance(source_title, str) else None
+    if not source_title or projected["title"] != source_title:
+        projected["title"] = None
     if tx is None or not categories:
         projected["transaction_type"] = None
     # The native price has a currency label but no lease-rate unit/basis. Do
@@ -173,7 +184,15 @@ def stage_post(listing, generation, *, exact_observation=None):
     else:
         projected["year_built"] = int(year)
     lat, lng = row.get("lat"), row.get("lng")
-    if (type(lat) in {int, float} and type(lng) in {int, float}
+    locations = title_record.get("locations") if isinstance(title_record, dict) else None
+    geometry = locations[0].get("geometry") if isinstance(locations, list) and locations and isinstance(locations[0], dict) else None
+    coordinates = geometry.get("coordinates") if isinstance(geometry, dict) else None
+    witnessed_pair = (provenance["detailScope"] == "source_native_public_record"
+                      and isinstance(coordinates, list) and len(coordinates) >= 2
+                      and type(coordinates[0]) in {int, float} and type(coordinates[1]) in {int, float}
+                      and lng == coordinates[0] and lat == coordinates[1]
+                      and (lat != 0 or lng != 0))
+    if (witnessed_pair and type(lat) in {int, float} and type(lng) in {int, float}
             and math.isfinite(lat) and math.isfinite(lng)
             and -90 <= lat <= 90 and -180 <= lng <= 180):
         projected.update(lat=lat, lng=lng)
@@ -183,7 +202,9 @@ def stage_post(listing, generation, *, exact_observation=None):
         # Preserve the identified post and its complete source observation,
         # but do not promote mapped facts that could have come from a failed
         # detail response. Later verified observations may fill these gaps.
+        witnessed_title = projected["title"]
         projected = {key: None for key in projected}
+        projected["title"] = witnessed_title
     try:
         payload = _encode_json(listing if exact_observation is None else exact_observation).encode("ascii")
     except (TypeError, ValueError, RecursionError) as exc:
@@ -308,6 +329,7 @@ def identity_probe_sql(staged):
     source = _url_key("s.r->>'source_url'")
     other_source = _url_key("other.source_url")
     other_canonical = _url_key("other.canonical_url")
+    own_canonical = _url_key("own.canonical_url")
     index_url = _url_key("other.url")
     peer_alias = _url_key("peer.r->>'alias_key'")
     peer_source = _url_key("peer.r->>'source_url'")
@@ -327,6 +349,7 @@ conflicts AS (
  WHERE (own.id IS NOT NULL AND (
    own.deleted_at IS NOT NULL OR (own.status IS NOT NULL AND own.status <> 'active')
    OR own.source_url IS DISTINCT FROM s.r->>'source_url'
+   OR (own.canonical_url IS NOT NULL AND NOT COALESCE(({own_canonical}) IN ({source},{alias}), false))
    OR (own.scraped_at IS NOT NULL AND own.scraped_at > (s.r->>'observed_at')::timestamptz)
    OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
    OR NOT COALESCE((own.raw_data->>'sourceKey'='nai-global'
@@ -456,7 +479,13 @@ INSERT INTO credeals.cre_scrape_jobs
 SELECT {sql_lit(job)}::uuid,id,'partial',{sql_lit(started_at)}::timestamptz,{sql_lit(finished_at)}::timestamptz,
  {len(staged)},{len(staged)},{len(staged)-len(held)},0,'NAI source posts; identity scope publication; coverage unknown'
 FROM credeals.cre_brokerages WHERE slug='nai-global';
-UPDATE credeals.cre_listings l SET raw_data=jsonb_set(l.raw_data,'{{naiPublicPostHistory}}',
+UPDATE credeals.cre_listings l SET
+ title=COALESCE(l.title,r->>'title'),
+ lat=CASE WHEN l.lat IS NULL AND l.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lat')::double precision ELSE l.lat END,
+ lng=CASE WHEN l.lat IS NULL AND l.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lng')::double precision ELSE l.lng END,
+ raw_data=jsonb_set(l.raw_data,'{{naiPublicPostHistory}}',
  CASE WHEN l.raw_data ? 'naiPublicPostHistory'
    THEN jsonb_set(l.raw_data->'naiPublicPostHistory','{{entries}}',
       (l.raw_data#>'{{naiPublicPostHistory,entries}}') ||
@@ -538,6 +567,7 @@ WITH expected AS (
  FROM jsonb_array_elements({payload}::jsonb)
 ), observed AS (
  SELECT e.*,to_jsonb(l) listing,to_jsonb(si) source_index,
+ encode(float8send(l.lat),'hex') lat_bits,encode(float8send(l.lng),'hex') lng_bits,
  jsonb_build_object(
   'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=l.id),'[]'::jsonb),
   'documents',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_documents x WHERE x.listing_id=l.id),'[]'::jsonb),
@@ -557,9 +587,16 @@ WITH expected AS (
        listing->>'status' IS NOT NULL OR listing->>'canonical_url' IS NOT NULL
        OR listing->>'country' IS DISTINCT FROM r->>'country'
        OR listing->>'scraped_at' IS NOT NULL OR {projected}))
-   OR (p->'listing'<>'null'::jsonb AND
-      (listing - ARRAY['updated_at','raw_data']) IS DISTINCT FROM
-      ((p->'listing') - ARRAY['updated_at','raw_data']))))
+   OR (p->'listing'<>'null'::jsonb AND (
+      (listing - ARRAY['updated_at','raw_data','title','lat','lng']) IS DISTINCT FROM
+      ((p->'listing') - ARRAY['updated_at','raw_data','title','lat','lng'])
+      OR listing->'title' IS DISTINCT FROM COALESCE(NULLIF(p->'listing'->'title','null'::jsonb),r->'title')
+      OR CASE WHEN p->'listing'->>'lat' IS NULL AND p->'listing'->>'lng' IS NULL
+                    AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+         THEN lat_bits IS DISTINCT FROM encode(float8send((r->>'lat')::double precision),'hex')
+           OR lng_bits IS DISTINCT FROM encode(float8send((r->>'lng')::double precision),'hex')
+         ELSE listing->'lat' IS DISTINCT FROM p->'listing'->'lat'
+           OR listing->'lng' IS DISTINCT FROM p->'listing'->'lng' END))))
 )
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
  WHERE b.slug='nai-global' AND j.id={sql_lit(job)}::uuid AND j.status='partial'

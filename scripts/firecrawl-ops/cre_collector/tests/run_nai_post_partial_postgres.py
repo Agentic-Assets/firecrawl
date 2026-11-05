@@ -71,6 +71,7 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         incomplete = post(3)
         incomplete.pop("publicPost")
         incomplete.pop("detailObservedAt")
+        incomplete["freshnessProvenance"]["detailScope"] = "inventory_only"
         incomplete.pop("transactionMode")
         incomplete["feedRow"].pop("contentType")
         incomplete.update(latitude=45.123456789012345, longitude=-117.98765432109876)
@@ -143,7 +144,7 @@ SELECT json_build_object(
  'held_untouched',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:2'),
  'new_rows',(SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:3'
     AND status IS NULL AND transaction_type IS NULL AND canonical_url IS NULL AND scraped_at IS NULL
-    AND highlights=ARRAY['BuildingClassA']::text[] AND building_class='A'
+    AND highlights IS NULL AND building_class IS NULL AND title='Fixture post'
     AND raw_data->>'identityScope'='infabode_public_post'),
  'index_rows',(SELECT count(*) FROM credeals.cre_source_index si
     JOIN credeals.cre_brokerages b ON b.id=si.brokerage_id WHERE b.slug='nai-global'))::text;
@@ -153,6 +154,39 @@ SELECT json_build_object(
                           "new_rows": 1, "index_rows": 0}, result
         assert sql("BEGIN; UPDATE credeals.cre_listings SET status='active' WHERE external_id='infabode:3'; "
                    + readback + "; ROLLBACK;") == "1|3|1"
+        # An exact owned identity may fill a NULL title and a NULL coordinate
+        # pair, but never overwrite a populated field or incomplete pair.
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
+SELECT id,'infabode:5','https://infabode.com/services/listings/5','active',NULL,
+ '{"sourceKey":"nai-global","id":"infabode:5"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        gap = post(5)
+        gap.update(latitude=45.123456789012345, longitude=-117.98765432109876)
+        gap["publicPost"]["locations"] = [{"geometry": {"coordinates": [gap["longitude"], gap["latitude"]]}}]
+        gap_staged = [stage_post(gap, "gen-1")]
+        gap_probe = sql(identity_probe_sql(gap_staged)).split("|", 3)
+        gap_held, gap_before = json.loads(gap_probe[2]), json.loads(gap_probe[3], parse_float=Decimal)
+        assert gap_held == []
+        gap_job = str(uuid.uuid4())
+        sql(build_partial_sql(gap_staged, gap_held, gap_before, gap_job,
+                              "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z"))
+        gap_readback = partial_readback_sql(gap_staged, gap_held, gap_before, gap_job,
+                                            "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z")
+        assert sql(gap_readback) == "1|1|0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:5' AND title='Fixture post' AND lat=45.123456789012345 AND lng=-117.98765432109876") == "1"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:1' AND title='Existing title' AND lat=45.123456789012345 AND lng IS NULL") == "1"
+        assert sql("BEGIN; UPDATE credeals.cre_listings SET lat=0 WHERE external_id='infabode:5'; " + gap_readback + "; ROLLBACK;") == "1|1|1"
+        sql("""
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,raw_data)
+SELECT id,'infabode:88','https://infabode.com/services/listings/88',
+ 'https://www.naiglobal.com/listings/?propertyId=post-89','active',
+ '{"sourceKey":"nai-global","id":"infabode:88"}'::jsonb
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+""")
+        conflict_probe = sql(identity_probe_sql([stage_post(post(88), "gen-1")])).split("|", 3)
+        assert json.loads(conflict_probe[2]) == ["infabode:88"]
         retained = json.loads(sql("SELECT raw_data->'naiPublicPostHistory' FROM credeals.cre_listings "
                                   "WHERE external_id='infabode:1'"))
         full = post(1)
