@@ -533,7 +533,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
     """Check post-write state against the same source-bound gate claims."""
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
-    from cre_lyon_partial import partial_readback_sql
+    from cre_lyon_partial import new_missing_canonical_count, partial_readback_sql
     from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
 
     def context():
@@ -563,6 +563,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
     return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
             "generation_id": source["generation"], "attempt_id": attempt_id, "database_target_sha256": target,
             "expected": before["binding"]["emitted_count"], "held": before["held"],
+            "new_missing_canonical_count": new_missing_canonical_count(before["staged"], before["held"], before["preimage"]),
             "staged_sha256": before["binding"]["staged_sha256"],
             "checked": ["partial_job", "projected_scalars", "source_history", "parent_lifecycle", "source_index", "children", "held_parents"],
             "child_collections_verified": True}
