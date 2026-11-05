@@ -7485,6 +7485,7 @@ def main():
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
@@ -7555,6 +7556,33 @@ def main():
     colliers_transition_inputs = []
     inventory_enrichment_ids = set()
     inventory_non_enrichment_ids = set()
+
+    colliers_partial_claims = None
+    if args.colliers_partial_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
+                or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims or args.jll_partial_claims
+                or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha or args.checkpoint_jll_code_sha
+                or args.newmark_page_attempt or args.newmark_page_claims or _status_activation_enabled(args.activate_status)
+                or not args.require_strict_freshness or not args.expected_db_target_sha256 or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound Colliers partial ingest")
+        from pathlib import Path
+
+        from cre_checkpoint_refresh import git_identity
+        from cre_colliers_partial import ingest_subset_context
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+
+        claim_path = Path(args.colliers_partial_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        colliers_partial_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256, attempt_id=args.checkpoint_ingest_attempt)
 
     jll_partial_claims = None
     if args.jll_partial_claims:
@@ -7678,8 +7706,12 @@ def main():
             require_canonical_artifact(data)
         except ValueError as exc:
             sys.exit(str(exc))
-        if data.get("schema") == "colliers-partial-window/v1":
+        is_colliers_partial = data.get("schema") == "colliers-partial-window/v1"
+        if is_colliers_partial != (colliers_partial_claims is not None):
             sys.exit("refusing Colliers partial artifact without guarded checkpoint admission")
+        if (colliers_partial_claims is not None and
+                hashlib.sha256(image_transition_input).hexdigest() != colliers_partial_claims["binding"]["artifact_sha256"]):
+            sys.exit("Colliers partial artifact changed after gate revalidation")
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
@@ -7723,8 +7755,17 @@ def main():
             except (ValueError, TypeError, KeyError):
                 sys.exit("refusing caller-unbound targeted Matthews artifact")
         try:
+            # The guarded Colliers transaction deliberately preserves every
+            # existing child. Validate all other freshness fields with the
+            # generic validator after suppressing only that already-proven flag.
+            freshness_data = data
+            if colliers_partial_claims is not None:
+                freshness_data = {**data, "listings": [
+                    {key: value for key, value in listing.items() if key != "preserveChildCollections"}
+                    for listing in data["listings"]
+                ]}
             validate_strict_artifact_freshness(
-                data,
+                freshness_data,
                 require_strict_freshness=args.require_strict_freshness,
                 pyramid_incomplete_ids=frozenset(
                     m["native_id"] for m in (pyramid_subset_claims or {}).get("members", [])
@@ -7764,7 +7805,7 @@ def main():
                     or listings[0].get("url") != newmark_page_claim.get("url")
                     or not args.expected_db_target_sha256 or args.mark_missing or _status_activation_enabled(args.activate_status)):
                 sys.exit("refusing unbound or mixed Newmark page ingest")
-        if not args.dry_run and mode not in {"full", "enrich"}:
+        if not args.dry_run and mode not in {"full", "enrich"} and not (mode == "partial" and colliers_partial_claims):
             sys.exit(
                 f"refusing live ingest for artifact mode {mode!r}: "
                 "expected runMeta.mode to be 'full' or 'enrich'"
@@ -8070,32 +8111,44 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Pyramid guard outcome: {exc}")
-    sql = build_sql(
-        rows,
-        job_meta,
-        started_at,
-        mark_missing_slugs,
-        history_guard=not args.dry_run,
-        inventory_only_rows=inventory_only_rows,
-        inventory_only_scopes=inventory_only_scopes,
-        artifact_run_key=artifact_run_key,
-        finished_at=finished_at,
-        colliers_first_party_transition=colliers_first_party_transition,
-        skip_post_commit_summary=args.skip_post_commit_summary,
-        matthews_targeted_targets=targeted_targets,
-        image_transition_binding=image_transition_binding,
-        daum_verified_subset_claims=daum_subset_claims,
-        pyramid_verified_subset_claims=pyramid_subset_claims,
-        jll_partial_ids=tuple(row["external_id"] for row in jll_partial_claims["staged"]) if jll_partial_claims else (),
-        jll_partial_claims=jll_partial_claims,
-        transwestern_image_transition_binding=transwestern_image_transition_binding,
-        pyramid_guard_binding=pyramid_guard_binding,
-        jll_guard_binding=jll_guard_binding,
-        inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
-        newmark_page_attempt=args.newmark_page_attempt,
-        newmark_page_claim=newmark_page_claim,
-        newmark_page_requires_witness=bool(page_rows),
-    )
+    if colliers_partial_claims is not None:
+        from cre_colliers_partial import build_partial_sql
+
+        context = colliers_partial_claims
+        source = context["source_receipt"]
+        sql, history_holds = build_partial_sql(
+            context["records"], context["staged"], context["held"], context["preimage"],
+            source["generation"], source["attempt"], source["started_at"], source["finished_at"],
+            context["artifact_finished_at"], context["job_id"])
+        if history_holds != context["history_holds"]:
+            sys.exit("Colliers partial history partition changed")
+    else:
+        sql = build_sql(
+            rows,
+            job_meta,
+            started_at,
+            mark_missing_slugs,
+            history_guard=not args.dry_run,
+            inventory_only_rows=inventory_only_rows,
+            inventory_only_scopes=inventory_only_scopes,
+            artifact_run_key=artifact_run_key,
+            finished_at=finished_at,
+            colliers_first_party_transition=colliers_first_party_transition,
+            skip_post_commit_summary=args.skip_post_commit_summary,
+            matthews_targeted_targets=targeted_targets,
+            image_transition_binding=image_transition_binding,
+            daum_verified_subset_claims=daum_subset_claims,
+            pyramid_verified_subset_claims=pyramid_subset_claims,
+            jll_partial_ids=tuple(row["external_id"] for row in jll_partial_claims["staged"]) if jll_partial_claims else (),
+            jll_partial_claims=jll_partial_claims,
+            transwestern_image_transition_binding=transwestern_image_transition_binding,
+            pyramid_guard_binding=pyramid_guard_binding,
+            jll_guard_binding=jll_guard_binding,
+            inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
+            newmark_page_attempt=args.newmark_page_attempt,
+            newmark_page_claim=newmark_page_claim,
+            newmark_page_requires_witness=bool(page_rows),
+        )
 
     print(
         f"staged listings: {len(rows)}; inventory-only index rows: "
@@ -8110,8 +8163,13 @@ def main():
     out_dir = args.keep_artifacts or tempfile.mkdtemp(prefix="cre_ingest_")
     os.makedirs(out_dir, exist_ok=True)
     sql_path = os.path.join(out_dir, "ingest.sql")
-    with open(sql_path, "w") as f:
-        f.write(sql)
+    if colliers_partial_claims is not None:
+        descriptor = os.open(sql_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as f:
+            f.write(sql)
+    else:
+        with open(sql_path, "w") as f:
+            f.write(sql)
     print(
         f"sql: {sql_path} ({os.path.getsize(sql_path) / 1e6:.1f} MB)", file=sys.stderr
     )

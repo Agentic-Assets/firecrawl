@@ -2929,6 +2929,60 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "colliers-partial-window/v1":
+        # This validates structure and freshness only. The shared subset gate
+        # separately authenticates the original source, worker, target and DB
+        # identity partition before any write can be admitted.
+        from cre_colliers_partial import validate_window_artifact
+        from cre_ingest import validate_strict_artifact_freshness
+
+        if expected_source != "colliers" or tuple(expected_transactions) != TRANSACTIONS:
+            raise ArtifactValidationError("Colliers partial source scope differs")
+        try:
+            binding = data["binding"]
+            source = data["source"]
+            receipt = {"generation": binding["generation"],
+                       "generation_started_at": data["runMeta"]["freshness"]["generationStartedAt"],
+                       "attempt": binding["attempt"], "started_at": binding["startedAt"],
+                       "finished_at": binding["finishedAt"], "bytes": source["bytes"], "sha256": source["sha256"],
+                       "main_sha256": source["mainSha256"], "producer_sha": data["producerSha"],
+                       "database_target_sha256": data["targetSha256"]}
+            staged = validate_window_artifact(data, receipt, data["evidence"])
+            if not staged or binding["generation"] != expected_generation_id:
+                raise ValueError("partial generation or rows differ")
+            started = parse_iso8601(binding["startedAt"], field="partial.startedAt")
+            expected_attempt = (attempt_started_at if isinstance(attempt_started_at, datetime)
+                                else parse_iso8601(attempt_started_at, field="attempt_started_at"))
+            generation_start = parse_iso8601(receipt["generation_started_at"], field="partial.generationStartedAt")
+            expected_generation = (expected_generation_started_at if isinstance(expected_generation_started_at, datetime)
+                                   else parse_iso8601(expected_generation_started_at, field="expected_generation_started_at"))
+            if started != expected_attempt or generation_start != expected_generation:
+                raise ValueError("partial time binding differs")
+            clean = {**data, "listings": [
+                {key: value for key, value in listing.items() if key != "preserveChildCollections"}
+                for listing in data["listings"]
+            ]}
+            validate_strict_artifact_freshness(clean, require_strict_freshness=True, now=now)
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            cutoff = current - timedelta(hours=max_observation_age_hours)
+            for item in data["listings"]:
+                if (parse_iso8601(item["inventoryObservedAt"], field="partial.inventoryObservedAt") < cutoff
+                        or parse_iso8601(item["detailObservedAt"], field="partial.detailObservedAt") < cutoff):
+                    raise ValueError("partial observation exceeds freshness SLO")
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["detail_errors"] or stats["staged_unique"] != len(staged):
+                raise ValueError("partial staging count differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("Colliers partial artifact invalid") from exc
+        artifact_sha256, artifact_bytes = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes, "generation_id": binding["generation"]}
+        return {**stats, "started_at": started.isoformat(), "finished_at": parse_iso8601(data["detailFinishedAt"], field="partial.detailFinishedAt").isoformat(),
+                "max_observation_age_hours": max_observation_age_hours, "observation_cutoff_at": cutoff.isoformat(),
+                "strict_freshness": True, "property_detail_freshness": False, "colliers_partial": True,
+                "freshness_generation_id": binding["generation"], "freshness_generation_started_at": generation_start.isoformat(),
+                "sha256": artifact_sha256, "bytes": artifact_bytes}
     if type(daum_verified_subset) is not bool:
         raise ArtifactValidationError("invalid DAUM subset option")
     daum_retained_unknown_ids = frozenset()

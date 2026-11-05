@@ -168,6 +168,12 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     counts, errors, observed, _, rejected = count_artifacts([str(tmp_path / "artifact")], True)
     assert counts == {"colliers": 1} and observed == {"colliers"} and rejected == 0
     assert errors["colliers"] == "original source pass failed"
+    from cre_checkpoint_refresh import _validate_source_artifact_local
+
+    partial_stats = _validate_source_artifact_local(tmp_path / "artifact", "colliers", "2026-11-04T15:00:00Z",
+        expected_generation_id="gen", expected_generation_started_at="2026-11-04T14:00:00Z",
+        expected_transactions=("sale", "lease"), require_strict_freshness=True)
+    assert partial_stats["colliers_partial"] is True and partial_stats["staged_unique"] == 1
     unguarded = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(tmp_path / "artifact"), "--dry-run"],
                                cwd=collector, capture_output=True, text=True, timeout=30, check=False)
     assert unguarded.returncode != 0
@@ -199,15 +205,21 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
     worker_path.chmod(0o600)
     receipt_sha = hashlib.sha256(worker_path.read_bytes()).hexdigest()
     staged_sha = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    preimage_path = private / ("window-1-preimage-" + "f" * 16 + ".json")
+    preimage_path.write_text(json.dumps([{"external_id": "native-e2e", "listing": None, "source_index": None}]))
+    preimage_path.chmod(0o600)
+    preimage_sha = hashlib.sha256(preimage_path.read_bytes()).hexdigest()
     checkpoint = {"artifact": {"path": "colliers-partial/window-1-artifact.json", "bytes": len(artifact_bytes), "sha256": artifact_sha},
                   "colliers_partial_worker": {"state": "settled", "rc": 0, "attempt": 1,
                       "receipt_path": "colliers-partial/window-1-receipt.json", "receipt_sha256": receipt_sha,
                       "evidence_path": "colliers-partial/window-1-evidence.jsonl"},
                   "colliers_identity_probe": {"artifact_sha256": artifact_sha, "generation_id": "gen",
                       "producer_sha": "a" * 40, "database_target_sha256": "b" * 64, "staged_sha256": staged_sha,
-                      "held": [], "preimage": [{"external_id": "native-e2e", "listing": None, "source_index": None}], "history_holds": {}}}
+                      "held": [], "preimage_path": "colliers-partial/window-1-preimage-" + "f" * 16 + ".json",
+                      "preimage_sha256": preimage_sha, "history_holds": {}}}
     manifest = {"run_id": "gen", "started_at": "2026-11-04T14:00:00Z", "collector_git_sha": "a" * 40,
-                "collector_git_dirty": False, "config": {"additive": True, "mark_missing": False,
+                "collector_git_dirty": False, "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
+                "config": {"additive": True, "mark_missing": False,
                 "status_activation": False, "transactions": ["sale", "lease"], "max_items": 0,
                 "sources": ["colliers"], "pipeline": False}, "scope": {}, "sources": {"colliers": checkpoint}}
     report = {"generated_for_artifact": str(artifact_path), "summary": {"mode": "live", "torow_errors": 0,
@@ -226,6 +238,33 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
         checkpoint["gate"] = {"current_inventory_proof": proof}
         assert partial.admit_window(artifact_path, manifest, aggregate, current_code_sha="a" * 40,
                                     current_git_dirty=False, phase="aggregate") == proof
+        envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
+                    "binding": proof, "attempt_id": "e" * 32}
+        context = partial.ingest_subset_context(artifact_path, envelope, current_code_sha="a" * 40,
+            current_git_dirty=False, expected_database_target_sha256="b" * 64, attempt_id="e" * 32)
+        assert context["staged"] == result and context["history_holds"] == {}
+        claims_path = private / "claims.json"
+        claims_path.write_text(json.dumps(envelope))
+        claims_path.chmod(0o600)
+        dry_dir = tmp_path / "dry"
+        shim = ("import cre_colliers_partial as p; import cre_checkpoint_refresh as c; "
+                "c.git_identity=lambda: ('" + "a" * 40 + "',False); "
+                "p.revalidate_source_receipt=lambda *_: " + repr(receipt) + "; "
+                "import cre_ingest; cre_ingest.main()")
+        dry = subprocess.run([sys.executable, "-c", shim, "--in", str(artifact_path), "--dry-run",
+                              "--colliers-partial-claims", str(claims_path), "--require-strict-freshness",
+                              "--expected-db-target-sha256", "b" * 64, "--checkpoint-ingest-attempt", "e" * 32,
+                              "--keep-artifacts", str(dry_dir)],
+                             cwd=collector, capture_output=True, text=True, timeout=30, check=False)
+        assert dry.returncode == 0, dry.stderr
+        sql_path = dry_dir / "ingest.sql"
+        assert sql_path.stat().st_mode & 0o077 == 0
+        assert "colliersNativeObservations" in sql_path.read_text()
+        changed_claim = copy.deepcopy(envelope)
+        changed_claim["aggregate_report"]["per_source"]["colliers"]["current_inventory_proof"]["artifact_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="gate claim"):
+            partial.ingest_subset_context(artifact_path, changed_claim, current_code_sha="a" * 40,
+                current_git_dirty=False, expected_database_target_sha256="b" * 64, attempt_id="e" * 32)
         changed = copy.deepcopy(manifest)
         changed["sources"]["colliers"]["colliers_partial_worker"]["state"] = "dispatching"
         with pytest.raises(ValueError, match="settlement"):

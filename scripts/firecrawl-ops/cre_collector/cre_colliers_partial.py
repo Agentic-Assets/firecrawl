@@ -418,7 +418,7 @@ def transaction_guard_sql(staged, held, preimage, extra_held=()):
         raise ValueError("partial extra held partition invalid")
     all_held = sorted(set(held) | extra_held)
     if not isinstance(preimage, list) or len(preimage) != len(staged):
-        raise ValueError("partial preimage invalid")
+        raise TypeError("partial preimage invalid")
     payload = sql_lit(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
     held_payload = sql_lit(json.dumps(held, separators=(",", ":")))
     preimage_payload = sql_lit(json.dumps(preimage, sort_keys=True, separators=(",", ":")))
@@ -777,6 +777,22 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
             "info": info, "data": data, "staged": staged}
 
 
+def load_probe_preimage(run_dir, attempt, probe):
+    from pathlib import Path
+
+    relative = probe.get("preimage_path") if isinstance(probe, dict) else None
+    pattern = rf"colliers-partial/window-{attempt}-preimage-[a-f0-9]{{16}}\.json"
+    if not isinstance(relative, str) or not re.fullmatch(pattern, relative):
+        raise ValueError("partial preimage path invalid")
+    raw = _read_private_file(Path(run_dir) / relative, 32 * 1024 * 1024)
+    if hashlib.sha256(raw).hexdigest() != probe.get("preimage_sha256"):
+        raise ValueError("partial preimage changed")
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise TypeError("partial preimage invalid")
+    return value
+
+
 def admit_window(artifact_path, manifest, report, *, current_code_sha, current_git_dirty, phase):
     """Qualify one source-specific window through the shared subset gate."""
     import copy
@@ -806,7 +822,7 @@ def admit_window(artifact_path, manifest, report, *, current_code_sha, current_g
             or probe.get("database_target_sha256") != source_receipt["database_target_sha256"]
             or probe.get("staged_sha256") != staged_sha):
         raise ValueError("partial identity probe differs")
-    held, preimage = probe.get("held"), probe.get("preimage")
+    held, preimage = probe.get("held"), load_probe_preimage(verified["run_dir"], attempt, probe)
     records = unpack_window_records(data)
     _, history_holds = prepare_partial_rows(records, staged, held, preimage, manifest["run_id"], attempt,
                                             source_receipt["started_at"], source_receipt["finished_at"], data["detailFinishedAt"])
@@ -829,7 +845,7 @@ def admit_window(artifact_path, manifest, report, *, current_code_sha, current_g
                 else (gate.get("verdict"), gate.get("reason")))
     if raw_pair not in reasons:
         raise ValueError("partial gate reason differs")
-    digest = hashlib.sha256(json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    digest = probe["preimage_sha256"]
     binding = {"schema": "colliers-partial-window-v1", "scope": "colliers_partial_window_v1", "source_key": source,
                "artifact_sha256": info["sha256"], "evidence_sha256": receipt["evidence"]["sha256"],
                "source_sha256": source_receipt["sha256"], "source_main_sha256": source_receipt["main_sha256"],
@@ -900,7 +916,62 @@ def run_identity_probe(artifact_path, manifest, env_file):
             or git_identity() != (producer, False) or after["source_receipt"] != source
             or after["receipt"] != receipt or after["staged"] != staged):
         raise ValueError("partial probe input or target changed")
+    import os
+    import secrets
+
     staged_sha = hashlib.sha256(json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    if len(encoded) > 32 * 1024 * 1024:
+        raise ValueError("partial preimage exceeds bound")
+    name = f"window-{source['attempt']}-preimage-{secrets.token_hex(8)}.json"
+    directory = os.open(verified["run_dir"] / "colliers-partial", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        from cre_stop_guarded_tier import _safe_stat
+        _safe_stat(directory, directory=True, private=True)
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            os.fsync(directory)
+    finally:
+        os.close(directory)
     return {"artifact_sha256": verified["info"]["sha256"], "generation_id": manifest["run_id"],
             "producer_sha": producer, "database_target_sha256": target, "staged_sha256": staged_sha,
-            "held": held, "preimage": preimage, "history_holds": history_holds}
+            "held": held, "preimage_path": f"colliers-partial/{name}",
+            "preimage_sha256": hashlib.sha256(encoded).hexdigest(), "history_holds": history_holds}
+
+
+def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_git_dirty,
+                          expected_database_target_sha256, attempt_id):
+    """Reprove both shared gates and the exact target before partial ingest."""
+    import copy
+    import uuid
+
+    if (not isinstance(envelope, dict)
+            or set(envelope) != {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"}
+            or not isinstance(attempt_id, str) or not re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+            or envelope["attempt_id"] != attempt_id):
+        raise ValueError("partial claims envelope invalid")
+    manifest = copy.deepcopy(envelope["manifest"])
+    if manifest["preflight"]["database_target"] != {"algorithm": "sha256", "value": expected_database_target_sha256}:
+        raise ValueError("partial target changed")
+    binding = envelope["binding"]
+    for phase, name in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = copy.deepcopy(envelope[name])
+        if (report["per_source"]["colliers"].get("current_inventory_proof") != binding
+                or admit_window(artifact_path, manifest, report, current_code_sha=current_code_sha,
+                                current_git_dirty=current_git_dirty, phase=phase) != binding):
+            raise ValueError("partial gate claim changed")
+    verified = verify_worker_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                      current_git_dirty=current_git_dirty)
+    checkpoint = verified["checkpoint"]
+    probe = checkpoint["colliers_identity_probe"]
+    preimage = load_probe_preimage(verified["run_dir"], verified["attempt"], probe)
+    return {"binding": binding, "staged": verified["staged"], "held": probe["held"],
+            "preimage": preimage, "history_holds": probe["history_holds"],
+            "records": unpack_window_records(verified["data"]), "source_receipt": verified["source_receipt"],
+            "artifact_finished_at": verified["data"]["detailFinishedAt"],
+            "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
