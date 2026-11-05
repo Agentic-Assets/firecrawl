@@ -90,6 +90,45 @@ def main():
         active_row = json.loads(sql("SELECT json_build_object('status', status, 'address', address, 'city', city, 'zip', zip) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(active["id"])))
         assert active_row == {"status": "active", "address": "12921 Camino Real, Niederwald, TX, Kyle, TX 78640", "city": None, "zip": None}
         assert sql("SELECT count(*) FROM credeals.v_cre_active_for_sale WHERE external_id=" + partial.sql_lit(active["id"])) == "1"
+        # A later source-proven ACTIVE fills unknown status; readback detects
+        # lost scalar materialization while preserving populated terminal status.
+        late = item("ffffffff-5555-5555-8555-555555555555", "late", "2026-11-04T12:00:01Z", "unknown")
+        late["latitude"] = late["longitude"] = None
+        late["state"] = None
+        sql(write_sql([late], []))
+        assert sql("SELECT status IS NULL FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(late["id"])) == "t"
+        late_active = item("ffffffff-5555-5555-8555-555555555555", "late", "2026-11-04T12:00:02Z", "now active")
+        late_active["franklinSiteObservation"]["card"]["attributes"].update(
+            {"data-status": "ACTIVE", "data-listing-address": "Source address"})
+        sql(write_sql([late_active], []))
+        assert sql("SELECT status FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(late["id"])) == "active"
+        assert sql("SELECT count(*) FROM credeals.v_cre_active_for_sale WHERE external_id=" + partial.sql_lit(late["id"])) == "1"
+        assert json.loads(sql(readback_sql([late_active], [])))["invalid"] == []
+        sql("UPDATE credeals.cre_listings SET status=NULL WHERE external_id=" + partial.sql_lit(late["id"]))
+        assert json.loads(sql(readback_sql([late_active], [])))["invalid"] == [late["id"]]
+        sql("UPDATE credeals.cre_listings SET status='active', address=NULL WHERE external_id=" + partial.sql_lit(late["id"]))
+        assert json.loads(sql(readback_sql([late_active], [])))["invalid"] == [late["id"]]
+
+        # Contradictory address or state does not populate other location
+        # gaps from that observation, while its original card remains saved.
+        for index, conflict_field in enumerate(("address", "state"), start=1):
+            uid = f"eeeeeeee-6666-5666-8666-{index:012d}"
+            before = item(uid, f"location-{index}", "2026-11-04T12:00:01Z", "before")
+            before["latitude"] = before["longitude"] = None
+            before["state"] = "TX"
+            if conflict_field == "address":
+                before["franklinSiteObservation"]["card"]["attributes"]["data-listing-address"] = "Original address"
+            sql(write_sql([before], []))
+            after = item(uid, f"location-{index}", "2026-11-04T12:00:02Z", "conflicting location")
+            after["franklinSiteObservation"]["card"]["attributes"]["data-listing-address"] = "Different address"
+            after["state"] = "FL" if conflict_field == "state" else "TX"
+            sql(write_sql([after], []))
+            stored = json.loads(sql("SELECT json_build_object('address', address, 'state', state, 'lat', lat, 'lng', lng, 'raw', raw_data) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(before["id"])))
+            assert stored["address"] == ("Original address" if conflict_field == "address" else None)
+            assert stored["state"] == "TX" and stored["lat"] is None and stored["lng"] is None
+            assert stored["raw"]["franklinSiteObservations"][-1]["card"]["html"] == "conflicting location"
+            assert json.loads(sql(readback_sql([after], [])))["invalid"] == []
+
         changed_attempt = {**binding([first]), "attempt_id": "f" * 32}
         try:
             sql(partial.build_sql([first], [], changed_attempt))
@@ -97,7 +136,7 @@ def main():
             assert "Franklin partial job binding differs" in str(error)
         else:
             raise AssertionError("same artifact with different attempt was accepted")
-        assert sql("SELECT count(*) FROM credeals.cre_scrape_jobs WHERE status='partial';") == "2"
+        assert sql("SELECT count(*) FROM credeals.cre_scrape_jobs WHERE status='partial';") == "8"
         sql("""UPDATE credeals.cre_listings SET status='sold', title='Prior title', address='Prior address'
                WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';
                INSERT INTO credeals.cre_listing_contacts (listing_id,name)
@@ -117,7 +156,10 @@ def main():
         repeat = item(identity, "a", "2026-11-04T12:00:04Z", "Visible new field")
         repeat["franklinSiteObservation"]["card"]["attributes"].update(
             {"data-status": "ACTIVE", "data-listing-address": "New literal address"})
+        repeat["franklinSiteObservation"]["decodedHtmlSha256"] = "b" * 64
         assert json.loads(sql(write_sql([repeat], [])).splitlines()[-1])["held"] == []
+        assert sql("SELECT raw_data->'franklinSiteObservations'->-1->>'decodedHtmlSha256' FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "b" * 64
+        assert json.loads(sql(readback_sql([repeat], [])))["invalid"] == []
         intermediate = item(identity, "a", "2026-11-04T12:00:03Z", "stale new text")
         assert json.loads(sql(write_sql([intermediate], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
         stale = {**first, "fixtureArtifact": "different"}
@@ -127,7 +169,8 @@ def main():
         assert json.loads(sql(write_sql([changed_url], [first["id"]])).splitlines()[-1])["held"] == [first["id"]]
         cycle = item(identity, "a", "2026-11-04T12:00:05Z", "Subject to Offer")
         assert json.loads(sql(write_sql([cycle], [])).splitlines()[-1])["held"] == []
-        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';") == "3"
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id='franklin-site:sale:12345678-1234-5123-8123-123456789abc';") == "4"
+        assert json.loads(sql(readback_sql([cycle], [])))["invalid"] == []
         conflict_id = "87654321-4321-5432-8432-abcdefabcdef"
         clean_id = "aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee"
         conflict = item(conflict_id, "legacy", "2026-11-04T12:00:06Z", "conflict")
@@ -181,13 +224,13 @@ def main():
         assert json.loads(sql(write_sql([same_at_limit], [])).splitlines()[-1])["held"] == []
         next_change = item(identity, "a", "2026-11-04T12:00:09Z", "130th distinct card")
         assert json.loads(sql(write_sql([next_change], [])).splitlines()[-1])["held"] == []
-        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "130"
+        assert sql("SELECT jsonb_array_length(raw_data->'franklinSiteObservations') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"])) == "131"
         larger = item("eeeeeeee-4444-5444-8444-444444444444", "large", "2026-11-04T12:00:09Z", "A" * 70000)
         assert json.loads(sql(write_sql([larger], [])).splitlines()[-1])["held"] == []
         assert sql("SELECT length(raw_data->'franklinSiteObservations'->0->'card'->>'html') FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(larger["id"])) == "70000"
         sizes = sql("SELECT pg_column_size(raw_data) || '/' || octet_length(raw_data::text) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(first["id"]))
         large_size = sql("SELECT pg_column_size(raw_data) || '/' || octet_length(raw_data::text) FROM credeals.cre_listings WHERE external_id=" + partial.sql_lit(larger["id"]))
-        print("Synthetic raw_data sizes (stored/uncompressed JSON bytes): 130 distinct observations", sizes, "; 70k repetitive card", large_size)
+        print("Synthetic raw_data sizes (stored/uncompressed JSON bytes): 131 observations", sizes, "; 70k repetitive card", large_size)
         assert sql("SELECT count(*) FROM credeals.cre_source_index;") == "0"
 
         raw, original_binding = mixed()

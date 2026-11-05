@@ -5,7 +5,7 @@ binds code, generation and target, and fences uncertain commits before calling
 this module. New rows use source-explicit ACTIVE status only; unknown status
 is stored as NULL and excluded from active views.
 
-Each distinct changed card is retained in raw_data. Source page and artifact
+Each distinct card observation and its provenance is retained in raw_data. Source page and artifact
 limits still bound each attempt; accumulating history grows the listing row.
 Durable long-term evidence custody and growth monitoring remain follow-up work.
 """
@@ -168,6 +168,14 @@ SELECT json_build_object('staged', {len(staged)}, 'joined', (SELECT count(*) FRO
 """
 
 
+def _location_compatible(left, right):
+    """Do not combine nonmatching evidence into one normalized location."""
+    return " AND ".join(
+        f"({left}.{field} IS NULL OR {right}.{field} IS NULL OR {left}.{field} = {right}.{field})"
+        for field in ("address", "state", "lat", "lng")
+    )
+
+
 def build_sql(listings, held, binding):
     """Create a transaction rechecking its prebound identity partition."""
     staged = stage(listings)
@@ -230,12 +238,13 @@ FROM _franklin_site s
 WHERE NOT EXISTS (SELECT 1 FROM _franklin_site_held h WHERE h.external_id=s.external_id)
 ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL DO UPDATE SET
  title=COALESCE(target.title, EXCLUDED.title),
- address=COALESCE(target.address, EXCLUDED.address),
- state=COALESCE(target.state, EXCLUDED.state),
- lat=CASE WHEN target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lat ELSE target.lat END,
- lng=CASE WHEN target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lng ELSE target.lng END,
+ status=COALESCE(target.status, EXCLUDED.status),
+ address=CASE WHEN {_location_compatible("target", "EXCLUDED")} THEN COALESCE(target.address, EXCLUDED.address) ELSE target.address END,
+ state=CASE WHEN {_location_compatible("target", "EXCLUDED")} THEN COALESCE(target.state, EXCLUDED.state) ELSE target.state END,
+ lat=CASE WHEN {_location_compatible("target", "EXCLUDED")} AND target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lat ELSE target.lat END,
+ lng=CASE WHEN {_location_compatible("target", "EXCLUDED")} AND target.lat IS NULL AND target.lng IS NULL THEN EXCLUDED.lng ELSE target.lng END,
  raw_data=jsonb_set(jsonb_set(CASE WHEN
-   target.raw_data->'franklinSiteObservations'->-1->'card' = EXCLUDED.raw_data->'franklinSiteObservations'->0->'card'
+   target.raw_data->'franklinSiteObservations'->-1 = EXCLUDED.raw_data->'franklinSiteObservations'->0
  THEN target.raw_data ELSE jsonb_set(target.raw_data, '{{franklinSiteObservations}}',
    (target.raw_data->'franklinSiteObservations') || (EXCLUDED.raw_data->'franklinSiteObservations')) END,
    '{{franklinSiteLastObservedAt}}', EXCLUDED.raw_data->'franklinSiteLastObservedAt'),
@@ -257,16 +266,24 @@ def readback_sql(listings, held, binding):
     return f"""
 WITH expected AS (
  SELECT * FROM jsonb_to_recordset({payload}::jsonb) AS x(
-  external_id text, source_url text, observation jsonb)
+  external_id text, source_url text, canonical_url text, title text, address text, state text,
+  lat double precision, lng double precision, status text, observation jsonb)
 ), invalid AS (
  SELECT e.external_id FROM expected e
  LEFT JOIN credeals.cre_brokerages b ON b.slug='franklin-street'
  LEFT JOIN credeals.cre_listings l ON l.brokerage_id=b.id AND l.external_id=e.external_id
  WHERE l.id IS NULL OR l.deleted_at IS NOT NULL OR l.source_url IS DISTINCT FROM e.source_url
+    OR l.canonical_url IS DISTINCT FROM e.canonical_url
+    OR (e.status IS NOT NULL AND l.status IS NULL)
+    OR (e.title IS NOT NULL AND l.title IS NULL)
+    OR (({_location_compatible("l", "e")}) AND
+        ((e.address IS NOT NULL AND l.address IS NULL)
+         OR (e.state IS NOT NULL AND l.state IS NULL)
+         OR (e.lat IS NOT NULL AND e.lng IS NOT NULL AND l.lat IS NULL AND l.lng IS NULL)))
     OR l.raw_data->>'franklinSitePartialVersion' IS DISTINCT FROM '1'
     OR l.raw_data->>'franklinSiteLastObservedAt' IS DISTINCT FROM e.observation->>'observedAt'
     OR l.raw_data->>'franklinSiteLastGenerationId' IS DISTINCT FROM e.observation->>'generationId'
-    OR l.raw_data->'franklinSiteObservations'->-1->'card' IS DISTINCT FROM e.observation->'card'
+    OR l.raw_data->'franklinSiteObservations'->-1 IS DISTINCT FROM e.observation
 )
 SELECT json_build_object('expected', (SELECT count(*) FROM expected),
  'invalid', COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM invalid), '[]'::json),
