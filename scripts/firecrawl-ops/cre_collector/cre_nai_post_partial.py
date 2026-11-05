@@ -89,8 +89,12 @@ def stage_post(listing, generation, *, exact_observation=None):
     if (not isinstance(provenance, dict) or provenance.get("generationId") != generation
             or provenance.get("method") != "infabode_public_posts_graphql"
             or provenance.get("cacheDisposition") != "live"
-            or provenance.get("detailScope") != "source_native_public_record"):
+            or provenance.get("detailScope") not in {"source_native_public_record", "inventory_only"}):
         raise ValueError("NAI source generation differs")
+    if (provenance["detailScope"] == "inventory_only"
+            and (listing.get("detailObservedAt") is not None
+                 or (listing.get("publicPost") is not None and not listing.get("detailError")))):
+        raise ValueError("NAI inventory-only detail claim differs")
     inventory = _timestamp(listing.get("inventoryObservedAt"))
     detail = _timestamp(listing.get("detailObservedAt")) if listing.get("detailObservedAt") else inventory
     if detail < inventory:
@@ -175,6 +179,11 @@ def stage_post(listing, generation, *, exact_observation=None):
         projected.update(lat=lat, lng=lng)
     else:
         projected.update(lat=None, lng=None)
+    if provenance["detailScope"] == "inventory_only":
+        # Preserve the identified post and its complete source observation,
+        # but do not promote mapped facts that could have come from a failed
+        # detail response. Later verified observations may fill these gaps.
+        projected = {key: None for key in projected}
     try:
         payload = _encode_json(listing if exact_observation is None else exact_observation).encode("ascii")
     except (TypeError, ValueError, RecursionError) as exc:

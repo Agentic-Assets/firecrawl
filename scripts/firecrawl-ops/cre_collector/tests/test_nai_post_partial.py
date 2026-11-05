@@ -51,13 +51,22 @@ def test_identified_inventory_post_survives_missing_detail_and_category():
     source = post()
     source.pop("publicPost")
     source.pop("detailObservedAt")
+    source["freshnessProvenance"]["detailScope"] = "inventory_only"
     source.pop("canonicalUrl")
     source.pop("transactionMode")
     source["feedRow"].pop("contentType")
     row = stage_post(source, "gen-1")
     assert row["external_id"] == "infabode:1"
     assert row["transaction_type"] is None and row["alias_key"] == "https://www.naiglobal.com/listings?propertyId=post-1"
+    assert row["title"] is None and row["lat"] is None and row["lng"] is None
     assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
+def test_inventory_only_cannot_claim_verified_detail_observation():
+    source = post()
+    source["freshnessProvenance"]["detailScope"] = "inventory_only"
+    assert partition_posts([source, post(2)], "gen-1")["held"] == [
+        {"index": 0, "reason": "unqualified_source_post"}]
 
 
 def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis():
