@@ -992,6 +992,7 @@ def run_bounded_pipeline(
     sealed = ()
     preparing = ()
     dispatch_pending = False
+    clock_deadlines = {}
     budget = PipelineBudget()
     prior_attempts = {
         source: len(manifest["sources"][source]["attempts"]) for source in selected
@@ -1049,16 +1050,23 @@ def run_bounded_pipeline(
         for item in list(active):
             if item.process.poll() is None:
                 continue
-            admitted = refresh._finalize_cohort_collection(
-                run_dir, manifest, item, candidate_only=True
-            )
+            clock_key = ("finish", item.source)
+            try:
+                admitted = refresh._finalize_cohort_collection(
+                    run_dir, manifest, item, candidate_only=True,
+                    clock_expired=clock_key in clock_deadlines and time.monotonic() >= clock_deadlines[clock_key],
+                )
+            except refresh.ClockOrderingPending:
+                clock_deadlines.setdefault(clock_key, time.monotonic() + 1.0)
+                continue
+            clock_deadlines.pop(clock_key, None)
             active.remove(item)
             if admitted:
                 ready.append(item.source)
                 state["source_timings"][item.source]["collection_finished_at"] = (
                     getattr(item, "attempt", None) or {}
                 ).get("finished_at") or refresh.utc_now()
-            elif (item.source in {"colliers", "lyon-stahl"}
+            elif (item.source in {"colliers", "lyon-stahl"} and not item.attempt.get("clock_order_refused")
                   and item.attempt.get("rc") == refresh.COHORT_SETTLED_FAILURE_EXIT
                   and (item.attempt.get(f"{item.source}_partial") or {}).get("state") == "sealed_local"
                   and item.attempt[f"{item.source}_partial"].get("outcome") == "source_error"
@@ -1120,11 +1128,28 @@ def run_bounded_pipeline(
                 free_bytes=free,
             ):
                 break
-            pending.remove(source)
             dispatch_pending = True
-            started = refresh._start_cohort_collection(
-                run_dir, manifest, source, page_cap=page_cap, concurrency=concurrency
-            )
+            try:
+                started = refresh._start_cohort_collection(
+                    run_dir, manifest, source, page_cap=page_cap, concurrency=concurrency
+                )
+            except refresh.ClockOrderingPending:
+                dispatch_pending = False
+                clock_key = ("start", source)
+                deadline = clock_deadlines.setdefault(clock_key, time.monotonic() + 1.0)
+                if time.monotonic() >= deadline:
+                    clock_deadlines.pop(clock_key, None)
+                    pending.remove(source)
+                    manifest["sources"][source]["state"] = "collect_infrastructure_failed"
+                    manifest["sources"][source]["clock_hold"] = {"phase": "start", "generation_id": manifest["run_id"],
+                        "attempt_count": len(manifest["sources"][source]["attempts"])}
+                    retry_or_fail(source, "wall clock did not reach generation start")
+                else:
+                    pending.remove(source)
+                    pending.append(source)
+                continue
+            clock_deadlines.pop(("start", source), None)
+            pending.remove(source)
             if started is not None:
                 active.append(started)
                 state["source_timings"][source].setdefault(
@@ -1354,6 +1379,9 @@ def run_bounded_pipeline(
                 elif active:
                     time.sleep(0.05)
                 elif pending:
+                    if any(key[0] == "start" for key in clock_deadlines):
+                        time.sleep(0.05)
+                        continue
                     raise refresh.GlobalStageError(
                         "pipeline disk/output admission cannot make progress"
                     )
