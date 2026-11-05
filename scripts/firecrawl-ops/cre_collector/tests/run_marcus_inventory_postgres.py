@@ -43,7 +43,7 @@ def main():
         return result.stdout.strip() if check else result
 
     try:
-        run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--network=none", "--cpus=0.5",
+        run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--label", "codex.marcus-proof=" + name, "--network=none", "--cpus=0.5",
             *cpu_args, "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
             "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
         for _ in range(100):
