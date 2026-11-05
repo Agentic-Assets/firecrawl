@@ -43,10 +43,12 @@ def main():
             raise RuntimeError(result.stderr)
         return result.stdout.strip() if check else result
 
+    owned = False
     try:
         run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--label", "codex.marcus-proof=" + name, "--network=none", "--cpus=0.5",
             *cpu_args, "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
             "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
+        owned = True
         for _ in range(100):
             logs = run("docker", "logs", name, check=False)
             if (run("docker", "exec", name, "pg_isready", "-U", "postgres", check=False).returncode == 0
@@ -188,7 +190,8 @@ FROM credeals.cre_brokerages b CROSS JOIN generate_series(1,10000) n WHERE b.slu
         print(f"Marcus disposable 3261-row/10000-peer read-only probe: {elapsed:.3f}s")
         print("Marcus real-schema new/existing/held/children/readback/full-refresh/cooperating-race PASS")
     finally:
-        run("docker", "rm", "-f", name, check=False)
+        if owned:
+            run("docker", "rm", "-f", name, check=False)
 
 
 if __name__ == "__main__":
