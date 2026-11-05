@@ -64,3 +64,20 @@ test('mixed source retains every successful Buildout peer alongside fallback car
   (input.sources[1] as any).listingsCollected = 3;
   assert.throws(() => projectFranklinFailureArtifact(input, 'run-1'));
 });
+
+
+test('same UUID across transaction pages remains separate and is reported unresolved', () => {
+  const input = fixture();
+  const observedAt = '2026-11-04T12:00:01Z';
+  const decodedHtml = '<article data-listing-card="true" data-listing-id="12345678-1234-5123-8123-123456789abc" data-offer-type="FOR_LEASE"><a href="/properties/for-lease/a">A</a></article>';
+  input.sources.push({sourceKey:'franklin-street', transaction:'lease', error:'feed failed',
+    retainedObservations:[{...parseFranklinPage(decodedHtml, observedAt, 'lease'), decodedHtml,
+      httpStatus:200, contentType:'text/html; charset=utf-8'}]});
+  const result = projectFranklinFailureArtifact(input, 'run-1');
+  assert.deepEqual(result.listings.map((row: any) => row.id).sort(),
+    ['franklin-site:lease:12345678-1234-5123-8123-123456789abc',
+     'franklin-site:sale:12345678-1234-5123-8123-123456789abc']);
+  assert.deepEqual(result.identityUncertainty.reusedSiteIds,
+    [{id:'12345678-1234-5123-8123-123456789abc', transactions:['lease','sale']}]);
+  assert.equal(result.identityUncertainty.siteToBuildout, 'unresolved');
+});

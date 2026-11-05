@@ -36,3 +36,47 @@ def test_projection_rejects_changed_hash_and_invalid_generation():
         project(json.dumps(value).encode(), "run-1", {"PATH": os.environ["PATH"]})
     with pytest.raises(ValueError):
         project(b"{}", "../bad", {"PATH": os.environ["PATH"]})
+
+def test_two_maximum_pages_survive_aggregate_artifact_limit():
+    value = artifact()
+    first = value["sources"][0]["retainedObservations"][0]
+    suffix = "x" * (8 * 1024 * 1024 - len(first["decodedHtml"].encode()))
+    first["decodedHtml"] += suffix
+    first["decodedHtmlSha256"] = hashlib.sha256(first["decodedHtml"].encode()).hexdigest()
+    second = json.loads(json.dumps(first))
+    old_html = second["cards"][0]["html"]
+    new_html = old_html.replace('data-offer-type="FOR_SALE"', 'data-offer-type="FOR_LEASE"').replace(
+        "/properties/for-sale/a", "/properties/for-lease/a")
+    second["decodedHtml"] = new_html + "x" * (8 * 1024 * 1024 - len(new_html.encode()))
+    second["decodedHtmlSha256"] = hashlib.sha256(second["decodedHtml"].encode()).hexdigest()
+    second["transaction"] = "lease"
+    second["sourceUrl"] = "https://franklinst.com/properties/for-lease/"
+    second["cards"][0]["html"] = new_html
+    second["cards"][0]["attributes"]["data-offer-type"] = "FOR_LEASE"
+    value["sources"].append({"sourceKey": "franklin-street", "transaction": "lease", "error": "failed",
+                             "retainedObservations": [second]})
+    raw = json.dumps(value).encode()
+    assert len(raw) > 16 * 1024 * 1024
+    output = project(raw, "run-1", {"PATH": os.environ["PATH"]})["projection"]
+    assert len(output["listings"]) == 2
+    assert len(output["identityUncertainty"]["reusedSiteIds"]) == 1
+    assert output["listings"][0]["franklinSiteObservation"]["card"] == first["cards"][0]
+
+
+def test_maximum_page_and_large_buildout_peer_remain_in_mixed_projection():
+    value = artifact()
+    page = value["sources"][0]["retainedObservations"][0]
+    page["decodedHtml"] += "x" * (8 * 1024 * 1024 - len(page["decodedHtml"].encode()))
+    page["decodedHtmlSha256"] = hashlib.sha256(page["decodedHtml"].encode()).hexdigest()
+    peer = {"sourceKey": "franklin-street", "transactionMode": "lease", "id": "123", "rawBuildout": "y" * (9 * 1024 * 1024)}
+    value["sources"].append({"sourceKey": "franklin-street", "transaction": "lease", "supported": True,
+                             "truncated": False, "listingsCollected": 1})
+    value["listings"] = [peer]
+    value["totalListings"] = 1
+    raw = json.dumps(value).encode()
+    assert len(raw) > 16 * 1024 * 1024
+    output = project(raw, "run-1", {"PATH": os.environ["PATH"]})["projection"]
+    assert output["buildout"]["listings"] == [peer]
+    assert output["buildout"]["pendingListings"] == 1
+    assert output["buildout"]["disposition"] == "private_pending_admission"
+    assert len(output["listings"]) == 1

@@ -3,6 +3,11 @@
 This is not a writer or an admission gate. A future refresh owner must rederive
 and seal the projection from the retained artifact, bind code/generation/target,
 and reconcile uncertain commits before invoking this plan.
+
+At the observation limit, changed cards are held, not truncated. The caller must
+retain the exact source artifact as durable private evidence and report the
+held IDs; an append-only evidence store with reviewed access is the intended
+overflow path. Until that custody is proven, this planner must not be enabled.
 """
 import hashlib
 import json

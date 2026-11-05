@@ -72,6 +72,17 @@ export function projectFranklinFailureArtifact(value: unknown, generationId: str
     if (row.sourceKey !== 'franklin-street' || !successfulTransactions.has(String(row.transactionMode)))
       throw new Error('unaccounted Franklin Buildout row');
   }
+  const byNativeId = new Map<string, Set<string>>();
+  for (const value of listings) {
+    const row = object(value);
+    const nativeId = String(row.id).split(':').at(-1)!;
+    const transactions = byNativeId.get(nativeId) ?? new Set<string>();
+    transactions.add(String(row.transactionMode));
+    byNativeId.set(nativeId, transactions);
+  }
+  const reusedSiteIds = [...byNativeId.entries()].filter(([, transactions]) => transactions.size > 1)
+    .map(([id, transactions]) => ({ id, transactions: [...transactions].sort() }));
   return { coverage: 'partial_unknown' as const, generationId, pages, listings, held,
+    identityUncertainty: { siteToBuildout: 'unresolved', possibleDuplicateProperties: true, reusedSiteIds },
     buildout: { transactions: buildoutTransactions, listings: artifact.listings, brokers: artifact.brokers } };
 }
