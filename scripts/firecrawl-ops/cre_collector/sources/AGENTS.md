@@ -11,6 +11,12 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+DAUM detail captures available-space blocks as source text and serialized DOM
+HTML in `daumAvailableSpaceObservations`, including conflicting values. These
+observations do not establish tenure or full-source coverage. The optional
+field also appears in held-detail evidence; older proofs without it remain
+valid. Current raw listing data is not an append-only observation history.
+
 Transwestern's contact, document and photo extractors share the enrichment
 call's listing-local Cheerio instance and must remain read-only. Preserve the
 original document's links and harvest inputs; do not share a DOM across listings.
