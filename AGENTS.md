@@ -94,11 +94,19 @@ source while eligible sources continue, preserving local writer exclusion, data
 ownership and unresolved-write protections.
 
 Design for the pipeline to keep making useful progress with the simplest
-maintainable supported path. When individual records are incomplete or invalid,
-isolate them and process valid peers when the source has enough evidence to do
-so safely; report the result as partial and leave held records unchanged. Do
-not invent missing data, treat a partial result as complete, or retire records
-based on absence from a partial result. Avoid adding manual approvals,
+maintainable supported path. Schedule every registered brokerage feed on Windows;
+past failures or count mismatches are reasons to retry and fix a source, not to
+leave it out. Let an individual failure leave eligible peers running and report
+the outcome honestly.
+
+Keep identifiable listings and every available field even when optional data is
+missing. Preserve the original source evidence and existing populated values;
+fill gaps later. Derive a missing value when the available evidence supports it,
+recording its source and derivation rather than presenting a guess as fact.
+When only part of a source can be processed, retain valid peers and identify the
+held records and incomplete coverage; preserve unidentifiable source observations
+for later resolution without changing existing records. Do not treat a partial
+result as complete or retire records based on absence from it. Avoid adding manual approvals,
 historical prerequisites or operator switches to routine operation without a
 concrete need. Implement and verify any missing partial path before relying on
 it; guidance alone does not change runtime behavior.
