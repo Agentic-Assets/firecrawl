@@ -140,7 +140,8 @@ def run_schedule(
         if colliers_failure_nonzero and item.source == "colliers":
             checkpoint["state"] = "collect_failed"
             item.attempt = checkpoint["attempts"][-1]
-            item.attempt.update(rc=refresh.COHORT_SETTLED_FAILURE_EXIT, finished_at=refresh.utc_now(),
+            item.attempt.update(rc=(refresh.COHORT_SETTLED_INTERRUPT_EXIT if colliers_failure_nonzero == "interrupted"
+                                   else refresh.COHORT_SETTLED_FAILURE_EXIT), finished_at=refresh.utc_now(),
                 colliers_partial={"state": "sealed_local", "outcome": "source_error"})
             return False
         if item.source == failure or (
@@ -272,6 +273,14 @@ def test_pipeline_settled_nonzero_colliers_evidence_reaches_foreground(tmp_path,
     else:
         assert failures == ["colliers"]
         assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+def test_pipeline_interrupted_colliers_attempt_never_dispatches_partial(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("colliers", "savills"), colliers_partial="accepted", colliers_failure_nonzero="interrupted")
+    assert failures == ["colliers"]
+    assert not manifest["sources"]["colliers"].get("partial_attempted")
+    assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])
