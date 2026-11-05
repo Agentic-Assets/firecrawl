@@ -111,6 +111,14 @@ historical prerequisites or operator switches to routine operation without a
 concrete need. Implement and verify any missing partial path before relying on
 it; guidance alone does not change runtime behavior.
 
+For failed, stale or incomplete brokerage feeds, use the
+[`cre-source-investigation`](.agents/skills/cre-source-investigation/SKILL.md)
+skill. Check current official navigation and source URLs as well as the adapter;
+use browser, Firecrawl and direct/API evidence where useful. Report attempted
+methods, observed results, database readback when available, and remaining
+fixes on the owning Linear issue. A failed old feed is not a reason to stop
+looking for the brokerage's current public listings.
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.
@@ -171,6 +179,7 @@ corrects the clone's default without changing remotes or another computer.
 **Agent skills** (canonical in `.agents/skills/`):
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
+- `cre-source-investigation` — diagnose failed or incomplete brokerage feeds and trace source data to stored listings
 - `slack-docs`, `slack-api`, `block-kit` — official Slack documentation, API contracts and readable notification layouts
 
 **Every repository skill has one canonical copy in `.agents/skills/<name>/`.**
