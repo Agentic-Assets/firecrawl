@@ -279,6 +279,32 @@ test("DAUM detail parser extracts stable shortlink ID and deterministic detail f
   assert.equal(detail.brochures[0].url, "https://daumcommercial.com/wp-content/uploads/brochure.pdf");
 });
 
+test("DAUM retains each available-space observation and conflicting source rents", () => {
+  const spaces = `<div class="units-info"><div class="right-side">
+    <div class="unit-item"><ul><li>Unit #: 7101-B</li><li>Mo. Rent PSF: $0.00</li>
+      <li>Unit/Suite Comments: <p>$6,600.00 Per Month</p></li></ul></div>
+    <div class="unit-item"><ul><li>Unit #: 7105</li><li>Space Available: 2 SF</li>
+      <li>Unit/Suite Comments: <p>$5,645.25 per month</p></li></ul></div>
+  </div></div>`;
+  const html = detailHtml.replace('<div data-bg-image="url(', `${spaces}<div data-bg-image="url(`);
+  const detail = parseDaumDetail(html, "https://daumcommercial.com/property/main-street/");
+  const observations = detail.availableSpaceObservations;
+  assert.ok(observations);
+  assert.equal(observations.length, 2);
+  assert.match(observations[0].html, /\$0\.00/);
+  assert.match(observations[0].html, /\$6,600\.00 Per Month/);
+  assert.match(observations[1].text, /2 SF/);
+  assert.match(observations[1].text, /\$5,645\.25 per month/);
+  const listing = mapDaumListing(inventory(), detail, "sale", "2026-07-30T18:00:00.000Z", "2026-07-30T18:01:00.000Z");
+  assert.deepEqual(listing.daumAvailableSpaceObservations, observations);
+
+  const emptyTitle = parseDaumDetail(
+    html.replace('<div class="title-property">100 Main Street</div>', '<div class="title-property"></div>'),
+    "https://daumcommercial.com/property/main-street/", true
+  );
+  assert.deepEqual(emptyTitle.availableSpaceObservations, observations);
+});
+
 test("DAUM detail parser rejects missing shells, missing IDs, and canonical mismatches", () => {
   assert.throws(() => parseDaumDetail("<html>Page not found</html>"), /shell/);
   assert.throws(

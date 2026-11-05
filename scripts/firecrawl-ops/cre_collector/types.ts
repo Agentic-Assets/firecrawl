@@ -357,6 +357,7 @@ export type DaumDetail = {
   sizeText: string | null;
   description: string | null;
   highlights: string[];
+  availableSpaceObservations?: Array<{ html: string; text: string }>;
   brochures: Array<{ name: string | null; url: string }>;
   photos: string[];
   contacts: Array<{
@@ -370,7 +371,7 @@ export type DaumDetail = {
   }>;
 };
 
-export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
+export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText" | "availableSpaceObservations"> & { emptyRequiredTitle: true };
 
 export type DaumInventoryPass = {
   index: number;

@@ -85,6 +85,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
         unknown_inventory=True,
         unknown_detail=True,
         subset_policy=policy,
+        with_spaces=True,
     )
     monkeypatch.setattr(helpers, "SOURCE", daum.SOURCE)
     prepared = helpers.setup(tmp_path, generated)
@@ -239,6 +240,13 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
         row for row in prepared[2]["listings"] if row["daumPostId"] in unknown_ids
     ]
     assert len(unknown_rows) == len(unknown_ids)
+    source_space = next(row for row in unknown_rows if row["daumPostId"] == "50000")
+    observations = source_space["daumAvailableSpaceObservations"]
+    assert len(observations) == 1
+    assert "$0 PSF" in observations[0]["html"]
+    assert "$6,600 per month" in observations[0]["html"]
+    staged_space = to_row(source_space, {}, prepared[2]["runMeta"]["finishedAt"])
+    assert staged_space["raw_data"]["daumAvailableSpaceObservations"] == observations
     assert all(row["transactionMode"] == "sale" for row in unknown_rows)
     assert all(
         to_row(row, {}, prepared[2]["runMeta"]["finishedAt"])["transaction_type"]
