@@ -14,7 +14,7 @@ from pathlib import Path
 
 from cre_colliers_partial_checkpoint import _read_private_file
 from cre_lyon_partial import _validate_staged, stage_record
-from cre_lyon_search_replay import replay_search, validate_source_artifact
+from cre_lyon_search_replay import replay_search_lines, validate_source_artifact
 from cre_partial_page_custody import expected_path, settle
 
 
@@ -71,18 +71,50 @@ def replay_settled_source(run_dir, manifest, attempt_number, current_code_sha, c
     if directories() != before or any(probe["lyon-stahl_partial"].get(key) != state.get(key) for key in keys):
         raise ValueError("Lyon source receipt changed")
     main_raw = _read_private_file(run_dir / main_rel, 32 * 1024 * 1024)
-    source_raw = _read_private_file(run_dir / relative, 128 * 1024 * 1024)
-    if (hashlib.sha256(main_raw).hexdigest() != state["main_sha256"]
-            or hashlib.sha256(source_raw).hexdigest() != state["sha256"]
-            or len(source_raw) != state["bytes"]):
-        raise ValueError("Lyon source bytes changed")
-    for line in source_raw.splitlines()[1:]:
-        page = json.loads(line)
-        observed = _time(page.get("observedAt"))
-        if not (_time(attempt["started_at"]) <= observed <= _time(attempt["finished_at"])):
-            raise ValueError("Lyon observation is outside its source attempt")
+    if hashlib.sha256(main_raw).hexdigest() != state["main_sha256"]:
+        raise ValueError("Lyon source main artifact changed")
     summary = validate_source_artifact(json.loads(main_raw))
-    records, held = replay_search(source_raw, run_dir.name, attempt_number, summary=summary)
+
+    # A response is acquired with the existing 32 MiB bound. Stream the three
+    # JSONL snapshots so JSON escaping cannot create an arbitrary whole-spool
+    # admission ceiling. The sealed digest and file identity remain authoritative.
+    from cre_stop_guarded_tier import _identity, _safe_stat
+    path = run_dir / relative
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(directory, directory=True, private=True)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            original = _safe_stat(descriptor, private=True)
+            digest, size, count = hashlib.sha256(), 0, 0
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                def lines():
+                    nonlocal size, count
+                    for raw_line in source:
+                        if not raw_line.endswith(b"\n"):
+                            raise ValueError("Lyon source line is incomplete")
+                        digest.update(raw_line)
+                        size += len(raw_line)
+                        if count:
+                            page = json.loads(raw_line)
+                            observed = _time(page.get("observedAt"))
+                            del page
+                            if not (_time(attempt["started_at"]) <= observed <= _time(attempt["finished_at"])):
+                                raise ValueError("Lyon observation is outside its source attempt")
+                        count += 1
+                        yield raw_line
+
+                records, held = replay_search_lines(lines(), run_dir.name, attempt_number, summary=summary)
+            current = os.fstat(descriptor)
+            named = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            if (_identity(original) != _identity(current) or _identity(current) != _identity(named)
+                    or size != state["bytes"] or digest.hexdigest() != state["sha256"]
+                    or count != state["observationRecords"] + 1):
+                raise ValueError("Lyon source bytes changed")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
     staged = [stage_record(record) for record in records]
     if staged:
         _validate_staged(staged)

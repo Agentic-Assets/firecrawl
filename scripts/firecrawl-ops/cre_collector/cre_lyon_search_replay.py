@@ -34,21 +34,31 @@ def _identity(url):
 
 
 def replay_search(raw, generation, attempt, *, summary=None):
-    """Build records only from settled private spool bytes authenticated by caller.
+    """Replay in-memory fixture bytes; custody callers should stream lines."""
+    if not isinstance(raw, bytes) or not raw.endswith(b"\n"):
+        raise ValueError("invalid Lyon spool")
+    return replay_search_lines(iter(raw.splitlines()), generation, attempt, summary=summary)
+
+
+def replay_search_lines(lines, generation, attempt, *, summary=None):
+    """Build records from settled private spool lines authenticated by caller.
 
     Malformed page bodies and nonidentifiable cards stay held in the original
     spool. Neither page coverage nor source completion is implied.
     """
-    if not isinstance(raw, bytes) or len(raw) > 128 * 1024 * 1024 or not raw.endswith(b"\n"):
-        raise ValueError("invalid Lyon spool")
     def bad_constant(_value):
         raise ValueError("invalid JSON constant")
-    lines = [json.loads(line, parse_constant=bad_constant) for line in raw.splitlines()]
-    if not lines or lines[0] != {"schema": "lyon-stahl-partial-pages/v1", "sourceKey": "lyon-stahl",
-                                  "generation": generation, "attempt": attempt}:
+    lines = iter(lines)
+    try:
+        header = json.loads(next(lines), parse_constant=bad_constant)
+    except StopIteration as exc:
+        raise ValueError("empty Lyon spool") from exc
+    if header != {"schema": "lyon-stahl-partial-pages/v1", "sourceKey": "lyon-stahl",
+                  "generation": generation, "attempt": attempt}:
         raise ValueError("Lyon spool binding differs")
     records, held, seen_filters = {}, [], set()
-    for line in lines[1:]:
+    for raw_line in lines:
+        line = json.loads(raw_line, parse_constant=bad_constant)
         if not isinstance(line, dict) or set(line) != {"kind", "transaction", "pass", "page", "observedAt", "documents"}:
             raise ValueError("invalid Lyon spool record")
         docs = line["documents"]
