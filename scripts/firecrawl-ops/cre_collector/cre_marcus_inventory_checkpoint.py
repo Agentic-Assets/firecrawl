@@ -429,7 +429,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
             "staged_sha256": before["binding"]["staged_sha256"], "detail_qualified": 0,
             "checked": ["partial_job", "projected_scalars", "source_history", "parent_lifecycle",
                         "source_index", "contacts", "documents", "images", "media", "links", "held_parents"],
-            "whole_source_coverage": False}
+            "child_collections_verified": True, "whole_source_coverage": False}
 
 
 def run_ingest(args):

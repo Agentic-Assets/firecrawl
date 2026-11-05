@@ -7008,7 +7008,8 @@ def verify_validation_readback(
                   and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count")
                   and type(observed.get("new_missing_canonical_count")) is int
                   and 0 <= observed["new_missing_canonical_count"] <= observed["expected"]
-                  and observed.get("whole_source_coverage") is False)
+                  and observed.get("whole_source_coverage") is False
+                  and observed.get("child_collections_verified") is True)
             checkpoint["readback"] = {"ok": ok, "kind": "marcus_inventory_partial",
                                       "whole_source_coverage": False, "observation": observed}
             if not ok:
