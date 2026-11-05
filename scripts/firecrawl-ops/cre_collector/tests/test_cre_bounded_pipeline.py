@@ -51,6 +51,8 @@ def run_schedule(
     pyramid_guard_valid=True,
     transwestern_guard_refusal=False,
     jll_guard_refusal=False,
+    colliers_partial=None,
+    colliers_failure_nonzero=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -135,6 +137,13 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"], item.attempt_number))
+        if colliers_failure_nonzero and item.source == "colliers":
+            checkpoint["state"] = "collect_failed"
+            item.attempt = checkpoint["attempts"][-1]
+            item.attempt.update(rc=(refresh.COHORT_SETTLED_INTERRUPT_EXIT if colliers_failure_nonzero == "interrupted"
+                                   else refresh.COHORT_SETTLED_FAILURE_EXIT), finished_at=refresh.utc_now(),
+                colliers_partial={"state": "sealed_local", "outcome": "source_error"})
+            return False
         if item.source == failure or (
             item.source == failure_once and item.attempt_number == 1
         ):
@@ -152,10 +161,13 @@ def run_schedule(
         pipeline.wait_with_poll_hook(
             SimpleNamespace(poll=lambda: 0 if clock["now"] >= until else None)
         )
-        if source == artifact_failure:
+        if source == artifact_failure and not (colliers_partial and owner["sources"][source].get("partial_attempted")):
             raise refresh.ArtifactValidationError("ordinary invalid artifact")
         checkpoint = owner["sources"][source]
         checkpoint["artifact"] = {"path": f"sources/{source}.tmp", "sha256": "b" * 64}
+        if colliers_partial and source == "colliers":
+            checkpoint["artifact"]["colliers_partial"] = True
+            checkpoint["gate"] = {"current_inventory_proof": {"emitted_count": 1, "held_count": 1}}
         if pyramid_partial and source == "pyramid-brokerage":
             checkpoint["artifact"]["pyramid_subset"] = True
             checkpoint["gate"] = {"current_inventory_proof": {"inventory_count": 102, "emitted_count": 100, "held_count": 2}}
@@ -194,6 +206,23 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
+    if colliers_partial:
+        import cre_colliers_partial_checkpoint as partial
+
+        def archive(_path, _root, _manifest, _source, attempt):
+            attempt["colliers_partial"] = {"state": "sealed_local", "outcome": "source_error"}
+            return "rejected/colliers.json", "d" * 64
+
+        def worker(root, owner, _lock, _runner, _save):
+            checkpoint = owner["sources"]["colliers"]
+            checkpoint["partial_attempted"] = True
+            if colliers_partial == "held":
+                checkpoint["state"] = "partial_held_no_write"
+                return None
+            return root / checkpoint["candidate"]["path"]
+
+        monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive)
+        monkeypatch.setattr(partial, "run_window_worker", worker)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
@@ -214,6 +243,44 @@ def run_schedule(
         source_workers=workers,
     )
     return manifest, events, failures
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "held"])
+def test_pipeline_colliers_partial_preserves_other_sources(tmp_path, monkeypatch, outcome):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("colliers", "savills"), artifact_failure="colliers", colliers_partial=outcome)
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    if outcome == "accepted":
+        assert failures == []
+        assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
+        assert any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+    else:
+        assert failures == ["colliers"]
+        assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "held"])
+def test_pipeline_settled_nonzero_colliers_evidence_reaches_foreground(tmp_path, monkeypatch, outcome):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("colliers", "savills"), colliers_partial=outcome, colliers_failure_nonzero=True)
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["status"] == "partial"
+    if outcome == "accepted":
+        assert failures == []
+        assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
+        assert any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+    else:
+        assert failures == ["colliers"]
+        assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
+
+
+def test_pipeline_interrupted_colliers_attempt_never_dispatches_partial(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 1,
+        sources=("colliers", "savills"), colliers_partial="accepted", colliers_failure_nonzero="interrupted")
+    assert failures == ["colliers"]
+    assert not manifest["sources"]["colliers"].get("partial_attempted")
+    assert not any(event[0] == "db_start" and "colliers" in event[1] for event in events)
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])
