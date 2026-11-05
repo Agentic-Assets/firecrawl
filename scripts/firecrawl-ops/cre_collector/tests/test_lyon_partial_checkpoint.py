@@ -1,4 +1,5 @@
 """Sealed source replay refuses changed or terminal evidence."""
+import copy
 import hashlib
 import json
 import tempfile
@@ -8,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact, run_identity_probe, load_probe_preimage
+from cre_lyon_partial_checkpoint import candidate_data, candidate_structure, replay_settled_source, run_replay_worker, validate_candidate, verify_candidate_artifact, run_identity_probe, load_probe_preimage, admit_search, ingest_subset_context, run_partial_readback
 from cre_partial_page_custody import prepare, settle
 from cre_stop_guarded_tier import StopRefused
 from tests.test_lyon_search_replay import spool
@@ -118,6 +119,39 @@ class LyonCheckpointTests(unittest.TestCase):
                 with patch.object(ingest, "load_db_url", return_value=("synthetic", None)),                      patch.object(ingest, "database_target_fingerprint_from_url", return_value={"value": "b" * 64}),                      patch.object(ingest, "find_psql", return_value="synthetic"),                      patch.object(cre_validate, "_run_psql_script", return_value=result):
                     probe = run_identity_probe(path, manifest, None)
                 self.assertEqual(load_probe_preimage(root, 1, probe), preimage)
+                checkpoint["lyon_identity_probe"] = probe
+                manifest["scope"] = {}
+                report = {"generated_for_artifact": str(path), "summary": {"mode": "live", "torow_errors": 0,
+                    "baseline_updated": False, "baseline_update_sources": [], "hold_sources": ["lyon-stahl"],
+                    "mark_missing_safe_sources": [], "mark_missing_safe_brokerages": [], "verdict_counts": {}},
+                    "per_source": {"lyon-stahl": {"verdict": "first_seen",
+                    "reason": "no baseline row; cannot gate (first sight); a source pass also errored this run",
+                    "mark_missing_safe": False, "current_active": 1}}}
+                aggregate = copy.deepcopy(report)
+                binding = admit_search(path, manifest, report, current_code_sha="a" * 40,
+                                       current_git_dirty=False, phase="source")
+                self.assertIs(binding["whole_source_coverage"], False)
+                self.assertEqual(binding["emitted_count"], 1)
+                checkpoint["gate"] = {"current_inventory_proof": binding}
+                self.assertEqual(admit_search(path, manifest, aggregate, current_code_sha="a" * 40,
+                                              current_git_dirty=False, phase="aggregate"), binding)
+                envelope = {"manifest": manifest, "source_report": report, "aggregate_report": aggregate,
+                            "binding": binding, "attempt_id": "e" * 32}
+                context = ingest_subset_context(path, envelope, current_code_sha="a" * 40, current_git_dirty=False,
+                                                expected_database_target_sha256="b" * 64, attempt_id="e" * 32)
+                self.assertEqual(context["staged"], verified["staged"])
+                result = SimpleNamespace(returncode=0, stdout=chr(9).join(["jobs", "observed", "mismatches"]) + chr(10)
+                                         + chr(9).join(["1", "1", "0"]) + chr(10))
+                with patch.object(ingest, "load_db_url", return_value=("synthetic", None)),                      patch.object(ingest, "database_target_fingerprint_from_url", return_value={"value": "b" * 64}),                      patch.object(ingest, "find_psql", return_value="synthetic"),                      patch.object(cre_validate, "_run_psql_script", return_value=result):
+                    readback = run_partial_readback(path, envelope, code_sha="a" * 40, target="b" * 64,
+                                                    attempt_id="e" * 32, env_file=None)
+                self.assertTrue(readback["ok"])
+                self.assertTrue(readback["child_collections_verified"])
+                changed = copy.deepcopy(aggregate)
+                changed["per_source"]["lyon-stahl"]["mark_missing_safe"] = True
+                with self.assertRaises(ValueError):
+                    admit_search(path, manifest, changed, current_code_sha="a" * 40,
+                                 current_git_dirty=False, phase="aggregate")
                 probe_path = root / probe["preimage_path"]
                 probe_path.write_bytes(probe_path.read_bytes() + b" ")
                 with self.assertRaises(StopRefused):

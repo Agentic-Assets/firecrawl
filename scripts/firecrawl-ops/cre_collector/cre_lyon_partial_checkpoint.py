@@ -373,3 +373,143 @@ def run_identity_probe(artifact_path, manifest, env_file):
             "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(), "held": held,
             "preimage_path": f"lyon-stahl-partial/{name}", "preimage_bytes": len(encoded),
             "preimage_sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def admit_search(artifact_path, manifest, report, *, current_code_sha, current_git_dirty, phase):
+    """Admit the authenticated partial search through the shared additive gate."""
+    from cre_current_inventory_admission import validate_report_scope
+    from cre_gate import count_artifacts
+    from cre_lyon_partial import _validate_partition
+
+    config = manifest["config"]
+    if (phase not in ("source", "aggregate") or config.get("additive") is not True
+            or config.get("mark_missing") is not False or config.get("status_activation") is not False
+            or config.get("transactions") != ["sale", "lease"] or config.get("max_items") != 0
+            or "lyon-stahl" not in config.get("sources", [])):
+        raise ValueError("Lyon partial gate scope invalid")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                         current_git_dirty=current_git_dirty)
+    source, staged, info = verified["source"], verified["staged"], verified["info"]
+    checkpoint, path = verified["checkpoint"], verified["path"]
+    probe = checkpoint.get("lyon_identity_probe")
+    staged_bytes = json.dumps(staged, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    staged_sha = hashlib.sha256(staged_bytes).hexdigest()
+    if (not isinstance(probe, dict) or probe.get("artifact_sha256") != info["sha256"]
+            or probe.get("generation_id") != manifest["run_id"] or probe.get("producer_sha") != current_code_sha
+            or probe.get("database_target_sha256") != source["database_target_sha256"]
+            or probe.get("staged_sha256") != staged_sha):
+        raise ValueError("Lyon identity probe differs")
+    held = probe.get("held")
+    preimage = load_probe_preimage(verified["run_dir"], verified["attempt"], probe)
+    _validate_partition(staged, held, preimage)
+    current, errors, sources, _, rejects = count_artifacts([str(path)], True)
+    if (sources != {"lyon-stahl"} or errors.get("lyon-stahl") != "original source pass was partial"
+            or rejects != 0 or current.get("lyon-stahl") != len(staged)):
+        raise ValueError("Lyon gate evidence differs")
+    validate_report_scope(report, manifest, "lyon-stahl", path)
+    summary, gate = report["summary"], report["per_source"]["lyon-stahl"]
+    if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
+            or summary.get("baseline_updated") is not False or summary.get("baseline_update_sources") != []
+            or gate.get("current_active") != len(staged) or gate.get("mark_missing_safe") is not False):
+        raise ValueError("Lyon coverage gate differs")
+    verdict = "ok_additive_verified_subset"
+    reasons = {("first_seen", "no baseline row; cannot gate (first sight); a source pass also errored this run"),
+               ("hold", "source pass error: original source pass was partial")}
+    pair = ((gate.get("raw_verdict"), gate.get("raw_reason")) if gate.get("verdict") == verdict
+            else (gate.get("verdict"), gate.get("reason")))
+    if pair not in reasons:
+        raise ValueError("Lyon coverage gate reason differs")
+    binding = {"schema": "lyon-search-partial-v1", "scope": "lyon_partial_search_v1", "source_key": "lyon-stahl",
+               "artifact_sha256": info["sha256"], "source_sha256": source["source_sha256"],
+               "source_main_sha256": source["main_sha256"], "producer_sha": current_code_sha,
+               "database_target_sha256": source["database_target_sha256"], "generation_id": manifest["run_id"],
+               "generation_started_at": manifest["started_at"], "attempt": source["attempt"],
+               "staged_sha256": staged_sha, "preimage_sha256": probe["preimage_sha256"], "held": held,
+               "held_count": len(held) + len(source["held"]), "emitted_count": len(staged) - len(held),
+               "original_source_outcome": "source_error", "whole_source_coverage": False}
+    if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
+        raise ValueError("Lyon source gate changed")
+    gate.update(raw_verdict=pair[0], raw_reason=pair[1], verdict=verdict,
+                reason="verified Lyon search observations admitted additively", mark_missing_safe=False,
+                admission_scope="lyon_partial_search_v1", current_inventory_proof=binding)
+    for key in ("hold_sources", "mark_missing_safe_sources", "mark_missing_safe_brokerages"):
+        if isinstance(summary.get(key), list):
+            summary[key] = [value for value in summary[key] if value != "lyon-stahl"]
+    if isinstance(report.get("per_brokerage"), dict) and isinstance(report["per_brokerage"].get("lyon-stahl"), dict):
+        report["per_brokerage"]["lyon-stahl"]["mark_missing_safe"] = False
+    if isinstance(summary.get("verdict_counts"), dict):
+        counts = {}
+        for item in report["per_source"].values():
+            value = item.get("verdict")
+            counts[value] = counts.get(value, 0) + 1
+        summary["verdict_counts"] = counts
+    report["scope"] = {"kind": "lyon_partial_search_v1", "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
+    return deepcopy(binding)
+
+
+def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_git_dirty,
+                          expected_database_target_sha256, attempt_id):
+    """Reprove source and both subset gates immediately before the SQL write."""
+    import uuid
+
+    if (not isinstance(envelope, dict)
+            or set(envelope) != {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"}
+            or not isinstance(attempt_id, str) or not re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+            or envelope["attempt_id"] != attempt_id):
+        raise ValueError("Lyon partial claims invalid")
+    manifest = deepcopy(envelope["manifest"])
+    if manifest["preflight"]["database_target"] != {"algorithm": "sha256", "value": expected_database_target_sha256}:
+        raise ValueError("Lyon target changed")
+    binding = envelope["binding"]
+    for phase, name in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = deepcopy(envelope[name])
+        if (report["per_source"]["lyon-stahl"].get("current_inventory_proof") != binding
+                or admit_search(artifact_path, manifest, report, current_code_sha=current_code_sha,
+                                current_git_dirty=current_git_dirty, phase=phase) != binding):
+            raise ValueError("Lyon gate proof changed")
+    verified = verify_candidate_artifact(artifact_path, manifest, current_code_sha=current_code_sha,
+                                         current_git_dirty=current_git_dirty)
+    probe = verified["checkpoint"]["lyon_identity_probe"]
+    preimage = load_probe_preimage(verified["run_dir"], verified["attempt"], probe)
+    return {"binding": binding, "staged": verified["staged"], "held": probe["held"], "preimage": preimage,
+            "source": verified["source"], "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
+
+
+def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file):
+    """Check post-write state against the same source-bound gate claims."""
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_lyon_partial import partial_readback_sql
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    def context():
+        producer, dirty = git_identity()
+        if producer != code_sha or dirty is not False:
+            raise ValueError("Lyon readback code changed")
+        return ingest_subset_context(artifact_path, envelope, current_code_sha=producer, current_git_dirty=dirty,
+            expected_database_target_sha256=target, attempt_id=attempt_id)
+
+    before = context()
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("Lyon readback target changed")
+    source = before["source"]
+    sql = partial_readback_sql(before["staged"], before["held"], before["preimage"], before["job_id"],
+                               source["started_at"], source["finished_at"])
+    result = _run_psql_script(find_psql(), db_url, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+        + PIN_STRING_LITERALS + "\n" + sql + ";\nROLLBACK;\n", timeout=60)
+    if result.returncode:
+        raise RuntimeError("Lyon readback query failed")
+    parsed = parse_tsv(result.stdout)
+    current_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(current_url).get("value") != target or context() != before:
+        raise ValueError("Lyon readback input or target changed")
+    if parsed != [{"jobs": "1", "observed": str(len(before["staged"])), "mismatches": "0"}]:
+        raise ValueError("Lyon readback postconditions differ")
+    return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
+            "generation_id": source["generation"], "attempt_id": attempt_id, "database_target_sha256": target,
+            "expected": before["binding"]["emitted_count"], "held": before["held"],
+            "staged_sha256": before["binding"]["staged_sha256"],
+            "checked": ["partial_job", "projected_scalars", "source_history", "parent_lifecycle", "source_index", "children", "held_parents"],
+            "child_collections_verified": True}
