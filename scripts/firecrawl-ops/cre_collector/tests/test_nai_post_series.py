@@ -4,6 +4,7 @@ import hashlib
 import pytest
 
 from cre_checkpoint_series import _pipeline_member_report_matches, nai_post_partial_child
+from cre_checkpoint_refresh import compare_validation_quality
 
 
 def child_fixture():
@@ -50,3 +51,15 @@ def test_foreign_attempt_does_not_match_saved_readback():
     changed = copy.deepcopy(report)
     changed["nai_post_partial_readback"]["attempt_id"] = "f" * 32
     assert not _pipeline_member_report_matches(changed, child["sources"]["nai-global"], "nai-global", "gen-1")
+
+
+def test_canonical_allowance_is_source_specific_and_bounded():
+    before = {"queries": {"quality_by_source": [{"source_key": "nai-global", "missing_canonical_url": "1"},
+                                                 {"source_key": "lyon-stahl", "missing_canonical_url": "1"}]}}
+    after = {"queries": {"quality_by_source": [{"source_key": "nai-global", "missing_canonical_url": "3"},
+                                                {"source_key": "lyon-stahl", "missing_canonical_url": "2"}]}}
+    result = compare_validation_quality(before, after, nai_new_missing_canonical=2)
+    assert any("lyon-stahl" in failure for failure in result["failures"])
+    assert not any("nai-global" in failure for failure in result["failures"])
+    with pytest.raises(ValueError):
+        compare_validation_quality(before, after, nai_new_missing_canonical=True)

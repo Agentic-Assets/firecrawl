@@ -261,6 +261,7 @@ def identity_probe_sql(staged):
     index_url = _url_key("other.url")
     peer_alias = _url_key("peer.r->>'alias_key'")
     peer_source = _url_key("peer.r->>'source_url'")
+    history_alias = _url_key("entry.value->>'aliasKey'")
     return f"""
 WITH candidate AS (SELECT value AS r FROM jsonb_array_elements({payload}::jsonb)),
 scoped AS (
@@ -308,6 +309,12 @@ conflicts AS (
  OR EXISTS (SELECT 1 FROM credeals.cre_source_index other
    WHERE other.brokerage_id=s.brokerage_id AND other.external_id IS DISTINCT FROM s.r->>'external_id'
    AND ({index_url}) IN ({source},{alias}))
+ OR EXISTS (SELECT 1 FROM credeals.cre_listings other
+   CROSS JOIN LATERAL jsonb_array_elements(
+     CASE WHEN jsonb_typeof(other.raw_data#>'{{naiPublicPostHistory,entries}}')='array'
+          THEN other.raw_data#>'{{naiPublicPostHistory,entries}}' ELSE '[]'::jsonb END) entry(value)
+   WHERE other.brokerage_id=s.brokerage_id AND (own.id IS NULL OR other.id<>own.id)
+     AND ({history_alias}) IN ({source},{alias}))
 )
 SELECT (SELECT count(*) FROM candidate) staged, (SELECT count(*) FROM scoped) joined,
  COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text held,
@@ -398,11 +405,11 @@ UPDATE credeals.cre_listings l SET raw_data=jsonb_set(l.raw_data,'{{naiPublicPos
    THEN jsonb_set(l.raw_data->'naiPublicPostHistory','{{entries}}',
       (l.raw_data#>'{{naiPublicPostHistory,entries}}') ||
       jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
-          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64')))
+          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key')))
    ELSE jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
       'externalId',r->>'external_id','entries',
       jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
-          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64'))) END)
+          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key'))) END)
 FROM _nai_partial_rows s WHERE l.brokerage_id=s.brokerage_id AND l.external_id=r->>'external_id';
 INSERT INTO credeals.cre_listings
  (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,property_type,
@@ -420,7 +427,7 @@ SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transactio
  jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
    'externalId',r->>'external_id','entries',
    jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
-     'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64'))))
+     'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key'))))
 FROM _nai_partial_rows s WHERE NOT EXISTS (
  SELECT 1 FROM credeals.cre_listings l
  WHERE l.brokerage_id=s.brokerage_id AND l.external_id=s.r->>'external_id');
@@ -441,7 +448,7 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
     for row in staged:
         previous = prior[row["external_id"]]
         entry = {"schema": "nai-public-post-entry/v1", "observedAt": row["observed_at"],
-                 "recordBase64": row["observation_base64"]}
+                 "recordBase64": row["observation_base64"], "aliasKey": row["alias_key"]}
         listing = previous["listing"]
         if row["external_id"] in held:
             raw = None
@@ -460,11 +467,13 @@ def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at
             history["entries"].append(entry)
         expected.append({"r": row, "p": previous, "held": row["external_id"] in held, "raw": raw})
     payload = _payload(expected)
-    fields = ("transaction_type", "property_type", "title", "city", "state", "lat", "lng",
+    fields = ("transaction_type", "property_type", "title", "city", "state",
               "description", "size_sf", "available_sf", "min_divisible_sf", "max_divisible_sf",
               "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
               "lease_rate_min", "lease_rate_max", "lease_rate_type")
     projected = " OR ".join(f"listing->'{key}' IS DISTINCT FROM r->'{key}'" for key in fields)
+    projected += (" OR (listing->>'lat')::double precision IS DISTINCT FROM (r->>'lat')::double precision"
+                  " OR (listing->>'lng')::double precision IS DISTINCT FROM (r->>'lng')::double precision")
     return f"""
 WITH expected AS (
  SELECT value->'r' r,value->'p' p,(value->>'held')::boolean held,value->'raw' raw

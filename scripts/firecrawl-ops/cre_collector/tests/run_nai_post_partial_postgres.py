@@ -13,7 +13,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import cre_ingest as ingest  # noqa: E402
 from cre_nai_post_admission import admit, candidate, ingest_subset_context  # noqa: E402
-from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql  # noqa: E402
+from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
 from tests.test_nai_post_partial import post  # noqa: E402
 
 
@@ -70,6 +70,7 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         incomplete.pop("detailObservedAt")
         incomplete.pop("transactionMode")
         incomplete["feedRow"].pop("contentType")
+        incomplete.update(latitude=45.123456789012345, longitude=-117.98765432109876)
         root = Path(tmp.name) / "gen-1"
         (root / "sources").mkdir(parents=True)
         artifact = root / "sources" / "nai-global.json"
@@ -121,6 +122,11 @@ SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1
         readback = partial_readback_sql(staged, held, before, job_id,
                                         "2026-11-05T09:59:00Z", "2026-11-05T10:01:00Z")
         assert sql(readback) == "1|3|0"
+        # The previous partial deliberately leaves canonical_url NULL. Its
+        # retained alias must still fence a different post on a later run.
+        alias_peer = stage_post(post(4, post(3)["canonicalUrl"]), "gen-1")
+        later = sql(identity_probe_sql([alias_peer])).split("|", 3)
+        assert json.loads(later[2]) == ["infabode:4"]
         result = json.loads(sql("""
 SELECT json_build_object(
  'existing_title',(SELECT title FROM credeals.cre_listings WHERE external_id='infabode:1'),
