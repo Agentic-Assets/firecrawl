@@ -5248,6 +5248,19 @@ DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='lyon-stahl' AND s.raw_data ? 'lyonSearchObservations')
  THEN RAISE EXCEPTION 'Lyon search evidence key collision'; END IF;
 END $$;
+-- Retain source-post observations when a later complete NAI ingest refreshes
+-- the parent. An incoming reserved key is ambiguous and cannot replace them.
+CREATE TEMP TABLE _nai_post_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'naiPublicPostHistory' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='nai-global' AND t.external_id LIKE 'infabode:%'
+ AND jsonb_typeof(t.raw_data)='object' AND t.raw_data ? 'naiPublicPostHistory';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='nai-global'
+    AND s.external_id LIKE 'infabode:%' AND s.raw_data ? 'naiPublicPostHistory')
+ THEN RAISE EXCEPTION 'NAI post evidence key collision'; END IF;
+END $$;
 {targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -5731,6 +5744,15 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('lyonSearchObservations',p.evidence)
 FROM _lyon_search_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _nai_post_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'NAI post evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('naiPublicPostHistory',p.evidence)
+FROM _nai_post_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the

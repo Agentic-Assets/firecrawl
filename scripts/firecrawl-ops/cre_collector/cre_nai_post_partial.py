@@ -26,7 +26,8 @@ def _canonical_alias(value):
     try:
         p = urlsplit(value)
         if (p.scheme.lower() not in {"https", "http"} or not p.hostname or p.username is not None
-                or p.password is not None or p.port not in (None, 80, 443) or p.fragment):
+                or p.password is not None or p.fragment
+                or p.port not in (None, 443 if p.scheme.lower() == "https" else 80)):
             raise ValueError("invalid NAI source alias")
         host = p.hostname.lower()
         if not re.fullmatch(r"[a-z0-9.-]+", host) or ".." in host:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+import cre_ingest as ingest  # noqa: E402
 from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
 from tests.test_nai_post_partial import post  # noqa: E402
 
@@ -88,6 +89,22 @@ SELECT json_build_object(
         assert result == {"existing_title": "Existing title", "existing_history": 1,
                           "preserved_contacts": 1, "held_untouched": 0,
                           "new_rows": 1, "index_rows": 0}, result
+        assert sql("BEGIN; UPDATE credeals.cre_listings SET status='active' WHERE external_id='infabode:3'; "
+                   + readback + "; ROLLBACK;") == "1|3|1"
+        retained = json.loads(sql("SELECT raw_data->'naiPublicPostHistory' FROM credeals.cre_listings "
+                                  "WHERE external_id='infabode:1'"))
+        full = post(1)
+        jobs = [{"slug": "nai-global", "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}]
+        def full_sql(value):
+            return ingest.build_sql([ingest.to_row(value, {}, "2026-11-05T10:05:00Z")],
+                                    jobs, "2026-11-05T10:05:00Z", set())
+        sql(full_sql(full))
+        assert json.loads(sql("SELECT raw_data->'naiPublicPostHistory' FROM credeals.cre_listings "
+                              "WHERE external_id='infabode:1'")) == retained
+        # A reserved incoming member cannot silently replace the retained history.
+        assert run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
+                   "-v", "ON_ERROR_STOP=1", text=full_sql({**full, "naiPublicPostHistory": {}}),
+                   check=False).returncode != 0
         print("NAI post partial real-schema proof passed")
     finally:
         run("docker", "rm", "-f", name, check=False)
