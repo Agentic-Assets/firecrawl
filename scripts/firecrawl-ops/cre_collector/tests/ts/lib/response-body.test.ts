@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readBoundedUtf8, ResponseBodyDeadlineError, ResponseBodyLimitError } from "../../../lib/response-body.js";
+import { readBoundedBytes, readBoundedUtf8, ResponseBodyDeadlineError, ResponseBodyLimitError } from "../../../lib/response-body.js";
 
 async function read(chunks: Uint8Array[], maxBytes: number) {
   let pulls = 0;
@@ -114,4 +114,16 @@ test("shared body removes abort listener and clears timer on success and failure
       assert.equal(listeners, 0); assert.equal(active.size, 0);
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
+});
+
+test("retained oversize evidence contains the first byte beyond the cap", async () => {
+  const reader = new Response(new Uint8Array([1,2,3,4,5])).body!.getReader();
+  try {
+    await assert.rejects(readBoundedBytes(reader, { maxBytes: 3, retainPrefix: true,
+      signal: new AbortController().signal, deadlineAt: performance.now() + 1000 }), error => {
+      assert.ok(error instanceof ResponseBodyLimitError);
+      assert.deepEqual([...error.prefix!], [1,2,3,4]);
+      return true;
+    });
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 });
