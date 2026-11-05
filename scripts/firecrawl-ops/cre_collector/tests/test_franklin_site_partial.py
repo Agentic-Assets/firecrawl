@@ -366,6 +366,14 @@ def test_source_and_aggregate_gate_rederive_original_and_bind_pending_peers(tmp_
                         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='result\n{"expected":1,"invalid":[],"matching_jobs":1}\n'))
     result = admission.run_readback(path, manifest, context, target_sha256="b" * 64, env_file=None, process_env=env)
     assert result["ok"] is True and result["expected"] == 1 and result["held"] == []
+    assert result["database_target_sha256"] == "b" * 64 and result["attempt_id"] == "c" * 32
+    import cre_checkpoint_series as series
+    actual_checkpoint = copy.deepcopy(checkpoint)
+    actual_checkpoint["subset_ingest_attempt_id"] = "c" * 32
+    actual_checkpoint["readback"] = {"ok": True, "kind": "franklin_site_partial",
+        "whole_source_coverage": False, "observation": result}
+    assert series._pipeline_member_report_matches(
+        {"franklin_partial_readback": result}, actual_checkpoint, "franklin-street", "run-1")
     claims_dir = run / "claims"
     claims_dir.mkdir(mode=0o700)
     claims = claims_dir / "claims.json"

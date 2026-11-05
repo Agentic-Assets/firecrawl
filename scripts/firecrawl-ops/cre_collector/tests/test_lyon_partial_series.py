@@ -150,3 +150,89 @@ def test_health_retains_prior_watermark_without_partial_clock(tmp_path):
     child["sources"]["lyon-stahl"]["readback"]["observation"]["generation_id"] = "foreign"
     (run / "manifest.json").write_text(json.dumps(child))
     assert health.build_receipt(tmp_path, manifest)["sources"]["lyon-stahl"]["publicationStatus"] != "partial"
+
+
+def add_franklin(child, run):
+    binding = {"schema": "franklin-site-partial-v1", "scope": "franklin_site_partial_v1",
+        "source_key": "franklin-street", "artifact_sha256": "f" * 64,
+        "source_artifact_sha256": "1" * 64, "generation_id": RUN_ID, "collector_git_sha": "a" * 40,
+        "database_target_sha256": "c" * 64, "staged_sha256": "2" * 64,
+        "held": ["held-franklin"], "held_count": 1, "emitted_count": 2,
+        "buildout_pending": 3, "held_observations": 1,
+        "identity_uncertainty": {"siteToBuildout": "unresolved"}, "whole_source_coverage": False}
+    observed = {"ok": True, "invalid": [], "expected": 2, "held": binding["held"],
+        "artifact_sha256": "f" * 64, "generation_id": RUN_ID, "staged_sha256": "2" * 64,
+        "database_target_sha256": "c" * 64, "attempt_id": "9" * 32, "matching_jobs": 1}
+    checkpoint = {"state": "ingested", "ingest": {"rc": 0},
+        "artifact": {"franklin_partial": True, "sha256": "f" * 64, "path": "franklin-site.json",
+                     "bytes": 123, "staged_unique": 3},
+        "gate": {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+                 "admission_scope": "franklin_site_partial_v1", "current_inventory_proof": binding},
+        "franklin_original": {"sha256": "1" * 64}, "subset_ingest_attempt_id": "9" * 32,
+        "readback": {"ok": True, "kind": "franklin_site_partial", "whole_source_coverage": False,
+                     "observation": observed}}
+    child["sources"]["franklin-street"] = checkpoint
+    unit = child["pipeline"]["units"][0]
+    unit["sources"].append("franklin-street")
+    result = copy.deepcopy(child["pipeline"]["source_results"]["cbre"])
+    result.update(artifact_sha256="f" * 64, qualification="qualified_partial_subset", partial=True,
+                  whole_source_coverage=False, emitted_count=2, held_count=1,
+                  buildout_pending=3, held_observations=1,
+                  identity_uncertainty={"siteToBuildout": "unresolved"})
+    child["pipeline"]["source_results"]["franklin-street"] = result
+    path = run / unit["validation_path"]
+    report = json.loads(path.read_bytes())
+    report["franklin_partial_readback"] = copy.deepcopy(observed)
+    raw = json.dumps(report).encode()
+    path.write_bytes(raw)
+    unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    for entry in child["pipeline"]["source_results"].values():
+        entry["validation_sha256"] = unit["validation_sha256"]
+    return child
+
+
+@pytest.mark.parametrize("ordering", [False, True])
+def test_franklin_lyon_mixed_failure_no_replay_and_health(tmp_path, monkeypatch, ordering):
+    sources = ["cbre", "lyon-stahl", "franklin-street", "savills"]
+    if ordering:
+        sources[1:3] = reversed(sources[1:3])
+    settings = config(pipeline=True, sources=sources)
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["started_at"] = PARENT_START
+    run = tmp_path / "runs" / RUN_ID
+    child = add_franklin(mixed_child(run), run)
+    child.update(error="Savills source failure", config=series._expected_child_config(",".join(sources), settings))
+    child["sources"]["savills"] = {"state": "collect_failed"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed", "reason": "provider failure"}
+    for source in sources:
+        manifest["sources"][source].update(state="running", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    series.reconcile_pipeline_series(tmp_path, manifest)
+    assert manifest["sources"]["cbre"]["state"] == "complete"
+    for source in ("lyon-stahl", "franklin-street"):
+        assert manifest["sources"][source]["state"] == "qualified_partial_subset"
+    assert manifest["sources"]["savills"]["state"] == "failed_source"
+    assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 1
+    (run / "manifest.json").write_text(json.dumps(child))
+    previous = {"sources": {source: {"lastSuccessfulObservationAt": "2026-10-14T12:00:00Z"}
+                            for source in ("lyon-stahl", "franklin-street")}}
+    receipt = health.build_receipt(tmp_path, manifest, previous=previous)
+    for source in previous["sources"]:
+        assert receipt["sources"][source]["publicationStatus"] == "partial"
+        assert receipt["sources"][source]["lastAttemptObservationAt"] is None
+        assert receipt["sources"][source]["lastSuccessfulObservationAt"] == "2026-10-14T12:00:00Z"
+
+
+@pytest.mark.parametrize("field", ["attempt", "target", "invalid"])
+def test_franklin_readback_tampering_fences_unit(tmp_path, field):
+    run = tmp_path / RUN_ID
+    child = add_franklin(mixed_child(run), run)
+    observed = child["sources"]["franklin-street"]["readback"]["observation"]
+    if field == "attempt": observed["attempt_id"] = "0" * 32
+    elif field == "target": observed["database_target_sha256"] = "0" * 64
+    else: observed["invalid"] = ["bad"]
+    assert not series.pipeline_source_qualified(child, "franklin-street", **qualification_context(run))
+    assert not series.pipeline_source_qualified(child, "lyon-stahl", **qualification_context(run))

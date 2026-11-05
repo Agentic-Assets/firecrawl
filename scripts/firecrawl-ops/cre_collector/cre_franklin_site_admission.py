@@ -332,4 +332,5 @@ def run_readback(artifact_path, manifest, claims, *, target_sha256, env_file, pr
     return {"ok": not invalid, "invalid": invalid, "expected": expected, "held": claims["held"],
             "artifact_sha256": claims["binding"]["artifact_sha256"],
             "generation_id": claims["binding"]["generation_id"],
+            "database_target_sha256": target_sha256, "attempt_id": claims["sql_binding"]["attempt_id"],
             "staged_sha256": claims["binding"]["staged_sha256"], "matching_jobs": 1}

@@ -6867,6 +6867,8 @@ def verify_validation_readback(
                   and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
                   and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
                   and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
                   and observed.get("staged_sha256") == binding.get("staged_sha256")
                   and observed.get("held") == binding.get("held")
                   and type(observed.get("expected")) is int

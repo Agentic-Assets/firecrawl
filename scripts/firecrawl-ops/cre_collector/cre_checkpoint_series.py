@@ -2074,6 +2074,20 @@ def _pipeline_member_report_matches(
     """Cross-bind saved exact readback fields to the hashed full query output."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "franklin-street" and artifact.get("franklin_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("franklin_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "franklin_site_partial"
+                and readback.get("whole_source_coverage") is False
+                and observed.get("ok") is True and observed.get("invalid") == [] and observed.get("matching_jobs") == 1
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                and observed.get("staged_sha256") == binding.get("staged_sha256")
+                and _exact_json_equal(observed.get("held"), binding.get("held"))
+                and type(observed.get("expected")) is int and observed["expected"] == binding.get("emitted_count"))
     if source == "lyon-stahl" and artifact.get("lyon_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("lyon_partial_readback")

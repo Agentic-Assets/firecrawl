@@ -1087,6 +1087,23 @@ def verified_pipeline_summary(
                     or (isinstance(source_binding, dict) and (
                         source_binding.get("schema") == "colliers-partial-window-v1"
                         or source_binding.get("scope") == "colliers_partial_window_v1"))))
+            if source != "franklin-street" and (
+                (isinstance(source_artifact, dict) and source_artifact.get("franklin_partial") is True)
+                or (isinstance(source_binding, dict) and (
+                    source_binding.get("schema") == "franklin-site-partial-v1"
+                    or source_binding.get("scope") == "franklin_site_partial_v1"))
+            ):
+                failed.append(source)
+                unverifiable.append(source)
+                continue
+            franklin_partial_candidate = (
+                source == "franklin-street" and (
+                    parent_entry.get("state") == "qualified_partial_subset"
+                    or (isinstance(source_artifact, dict) and source_artifact.get("franklin_partial") is True)
+                    or (isinstance(source_readback, dict) and source_readback.get("kind") == "franklin_site_partial")
+                    or (isinstance(source_binding, dict) and (
+                        source_binding.get("schema") == "franklin-site-partial-v1"
+                        or source_binding.get("scope") == "franklin_site_partial_v1"))))
             jll_partial_candidate = (
                 source == "jll-investor"
                 and (parent_entry.get("state") == "qualified_partial_subset"
@@ -1105,7 +1122,8 @@ def verified_pipeline_summary(
                 interrupted or ((jll_partial_candidate and parent_entry.get("state") in {"complete", "qualified_partial_subset"}
                     or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
-                    or jll_partial_candidate or colliers_partial_candidate or lyon_partial_candidate) else "complete"))
+                    or jll_partial_candidate or colliers_partial_candidate or lyon_partial_candidate
+                    or franklin_partial_candidate) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1164,6 +1182,41 @@ def verified_pipeline_summary(
                 colliers_partial_candidate = True
             if source == "lyon-stahl" and "lyon_partial_readback" in validated_units[unit_id]:
                 lyon_partial_candidate = True
+            if source == "franklin-street" and "franklin_partial_readback" in validated_units[unit_id]:
+                franklin_partial_candidate = True
+            if franklin_partial_candidate:
+                from cre_checkpoint_series import _pipeline_member_report_matches, franklin_partial_child
+
+                binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+                artifact = checkpoint.get("artifact") or {}
+                count = binding.get("emitted_count")
+                proven = (checkpoint.get("state") == "ingested"
+                        and type((checkpoint.get("ingest") or {}).get("rc")) is int
+                        and checkpoint["ingest"]["rc"] == 0
+                        and parent_entry.get("state") == "qualified_partial_subset"
+                        and franklin_partial_child(child)
+                        and _pipeline_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                        and result.get("qualification") == "qualified_partial_subset"
+                        and result.get("partial") is True and result.get("whole_source_coverage") is False
+                        and type(count) is int and 0 <= count <= 500000
+                        and type(result.get("emitted_count")) is int and type(result.get("held_count")) is int
+                        and result.get("emitted_count") == count and result.get("held_count") == binding.get("held_count")
+                        and result.get("buildout_pending") == binding.get("buildout_pending")
+                        and result.get("held_observations") == binding.get("held_observations")
+                        and result.get("identity_uncertainty") == binding.get("identity_uncertainty")
+                        and result.get("artifact_sha256") == artifact.get("sha256")
+                        and type(artifact.get("bytes")) is int and 0 < artifact["bytes"] <= MAX_ARTIFACT_BINDING_BYTES)
+                if not proven:
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
+                summary = {"measurement": "generation_exact_verified_subset", "qualification": "qualified_partial_subset",
+                           "partial": True, "whole_source_coverage": False, "emitted_count": count,
+                           "held_count": binding["held_count"], "buildout_pending": binding["buildout_pending"],
+                           "held_observations": binding["held_observations"],
+                           "identity_uncertainty": binding["identity_uncertainty"]}
+                qualified.append((source, count, checkpoint, unit, 0, summary, None))
+                continue
             if lyon_partial_candidate:
                 from cre_checkpoint_series import _pipeline_member_report_matches, lyon_partial_child
 
@@ -1311,7 +1364,7 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if source == "lyon-stahl" and row.get("partial") is True:
+            if source in {"lyon-stahl", "franklin-street"} and row.get("partial") is True:
                 breakdown_reason = "source_membership_not_transaction_authority"
             elif jll_breakdown is not None:
                 breakdown = jll_breakdown
@@ -1411,7 +1464,7 @@ def verified_pipeline_summary(
             )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
-            if row.get("partial") is True and source != "lyon-stahl":
+            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street"}:
                 require(breakdown is not None)
             result_rows.append(row)
         for descriptor, name, limit, raw in snapshots:
