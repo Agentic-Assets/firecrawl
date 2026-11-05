@@ -743,9 +743,10 @@ def _admit(
         else:
             require(listing.get("daumTitleFallback") is None)
         require(
-            listing.get("preserveChildCollections", False) is (post in retained_ids)
+            listing.get("preserveChildCollections", False) is (post in retained_ids or post in title_fallbacks)
             and (post in retained_ids or not listing.get("daumUnknownTenure"))
             and (post not in retained_ids or (listing.get("daumUnknownTenure") is True and listing.get("detailObservedWithChildPreservation") is True))
+            and (post not in title_fallbacks or listing.get("detailObservedWithChildPreservation") is True)
             and not listing.get("detailError")
             and listing.get("inventoryOnly") is None
         )
@@ -859,6 +860,8 @@ def _admit(
         if v2:
             binding.update(subset_policy=SUBSET_POLICY_V2,
                            title_observations_sha256=_sha(proof["titleObservations"]))
+            if title_fallbacks:
+                binding["title_fallback_observations_sha256"] = _sha(proof["titleFallbackObservations"])
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -955,4 +958,6 @@ def ingest_subset_context(
     }
     if proof["schema"] == SUBSET_SCHEMA_V2:
         result.update(subset_policy=SUBSET_POLICY_V2, titleObservations=proof["titleObservations"])
+        if proof.get("titleFallbackObservations"):
+            result["titleFallbackObservations"] = proof["titleFallbackObservations"]
     return result

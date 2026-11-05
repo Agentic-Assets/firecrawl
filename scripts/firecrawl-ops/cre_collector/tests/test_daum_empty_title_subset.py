@@ -128,6 +128,14 @@ def test_corroborated_title_proof_rejects_drift(tmp_path, monkeypatch, fault):
         admit(prepared)
 
 
+def test_wip_fallback_cannot_use_unguarded_generic_ingest():
+    from cre_ingest import build_sql
+
+    row = {"raw_data": {"daumTitleFallback": {"cardTitle": "Synthetic 100"}}}
+    with pytest.raises(ValueError, match="requires guarded partial persistence"):
+        build_sql([row], [], "2026-11-05T11:00:00Z", [])
+
+
 @pytest.mark.parametrize(
     "fault",
     [

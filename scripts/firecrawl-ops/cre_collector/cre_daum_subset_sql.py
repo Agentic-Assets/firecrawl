@@ -55,6 +55,20 @@ def guard_sql(claims):
             seen.add(post)
             observed_urls.append(by_id[post]["source_url"])
         require(observed_urls == sorted(observed_urls))
+        fallback = claims.get("titleFallbackObservations", [])
+        require(isinstance(fallback, list))
+        if fallback:
+            require(_sha(fallback) == binding.get("title_fallback_observations_sha256"))
+        fallback_ids, fallback_urls = set(), []
+        for observation in fallback:
+            require(isinstance(observation, dict) and set(observation) == {"postId", "cardTitle", "documentTitle"})
+            post, title = observation["postId"], observation["cardTitle"]
+            require(isinstance(post, str) and post in by_id and post not in seen and post not in fallback_ids)
+            require(by_id[post]["emitted"] is True and isinstance(title, str) and title and title == title.strip())
+            require(observation["documentTitle"] == f"{title} – Daum Commercial")
+            fallback_ids.add(post)
+            fallback_urls.append(by_id[post]["source_url"])
+        require(fallback_urls == sorted(fallback_urls))
     require(
         urls == sorted(set(urls))
         and emitted >= 100

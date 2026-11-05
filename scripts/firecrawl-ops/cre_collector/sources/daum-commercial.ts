@@ -720,6 +720,8 @@ export function mapDaumListing(
     daumObservedCanonicalUrl: detail.observedCanonicalUrl,
     daumSearchCard: inventory,
     daumTitleFallback: detail.titleFallback,
+    preserveChildCollections: detail.titleFallback ? true : undefined,
+    detailObservedWithChildPreservation: detail.titleFallback ? true : undefined,
     detailFacts: detail.facts,
   });
 }

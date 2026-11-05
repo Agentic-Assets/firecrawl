@@ -1276,6 +1276,23 @@ def is_daum_unknown_tenure(listing):
     )
 
 
+def is_daum_title_fallback(listing):
+    """Identify a source-corroborated sparse detail; admission still binds its proof."""
+    if not isinstance(listing, dict) or listing.get("sourceKey") != "daum-commercial":
+        return False
+    evidence, card = listing.get("daumTitleFallback"), listing.get("daumSearchCard")
+    if not isinstance(evidence, dict) or set(evidence) != {"cardTitle", "documentTitle"} or not isinstance(card, dict):
+        return False
+    title = evidence.get("cardTitle")
+    return (isinstance(title, str) and bool(title.strip()) and title == title.strip()
+            and evidence.get("documentTitle") == f"{title} – Daum Commercial"
+            and card.get("title") == listing.get("name") == listing.get("street") == title
+            and card.get("url") == listing.get("url") == listing.get("canonicalUrl") == listing.get("daumObservedCanonicalUrl")
+            and all(listing.get(key) is None for key in ("city", "state", "postalCode"))
+            and listing.get("preserveChildCollections") is True
+            and listing.get("detailObservedWithChildPreservation") is True)
+
+
 def transaction_type_of(listing):
     if is_daum_unknown_tenure(listing):
         return None
@@ -2048,6 +2065,8 @@ def validate_strict_artifact_freshness(
         ) and not (
             is_daum_unknown_tenure(listing)
             and listing.get("detailObservedWithChildPreservation") is True
+        ) and not (
+            is_daum_title_fallback(listing)
         ):
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
@@ -3157,7 +3176,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
 
     # DAUM orders these arrays, but that ordering is not an explicit primary
     # witness. Preserve an existing primary while retaining observed children.
-    if is_daum_unknown_tenure(listing):
+    if is_daum_unknown_tenure(listing) or is_daum_title_fallback(listing):
         for child in contacts + images:
             child.pop("isPrimary", None)
 
@@ -3994,6 +4013,10 @@ def build_sql(
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
 ):
+    # WIP: do not permit fallback rows to use the ordinary overwrite/revival
+    # policy before their source-specific target partition is connected.
+    if any("daumTitleFallback" in json.dumps(row.get("raw_data") or {}) for row in rows):
+        raise ValueError("DAUM title fallback requires guarded partial persistence")
     from cre_essex_identity import (
         historical_claims_sql,
         historical_conflicts_sql,
