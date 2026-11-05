@@ -1025,6 +1025,47 @@ def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_
             "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
 
 
+def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file):
+    """Bind a read-only postcondition query to the same sealed ingest claims."""
+    from cre_checkpoint_refresh import git_identity
+    from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    def context():
+        producer, dirty = git_identity()
+        if producer != code_sha or dirty is not False:
+            raise ValueError("partial readback code changed")
+        return ingest_subset_context(artifact_path, envelope, current_code_sha=producer,
+            current_git_dirty=dirty, expected_database_target_sha256=target, attempt_id=attempt_id)
+
+    before = context()
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("partial readback target changed")
+    source = before["source_receipt"]
+    sql, history_holds = partial_readback_sql(before["records"], before["staged"], before["held"],
+        before["preimage"], source["generation"], source["attempt"], source["started_at"],
+        source["finished_at"], before["artifact_finished_at"], before["job_id"])
+    if history_holds != before["history_holds"]:
+        raise ValueError("partial readback held partition changed")
+    result = _run_psql_script(find_psql(), db_url,
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS
+        + "\n" + sql + ";\nROLLBACK;\n", timeout=60)
+    if result.returncode:
+        raise RuntimeError("partial readback query failed")
+    parsed = parse_tsv(result.stdout)
+    expected = before["binding"]["emitted_count"]
+    current_url, _ = load_db_url(env_file)
+    if (database_target_fingerprint_from_url(current_url).get("value") != target or context() != before):
+        raise ValueError("partial readback input or target changed")
+    if parsed != [{"jobs": "1", "observed": str(expected), "mismatches": "0"}]:
+        raise ValueError("partial readback postconditions differ")
+    return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
+            "generation_id": source["generation"], "attempt_id": attempt_id,
+            "database_target_sha256": target, "expected": expected, "held": before["held"],
+            "history_holds": history_holds, "staged_sha256": before["binding"]["staged_sha256"]}
+
+
 def run_window_worker(run_dir, manifest, owner, runner, save):
     """Run one source-specific child under the existing canonical checkpoint owner."""
     import os

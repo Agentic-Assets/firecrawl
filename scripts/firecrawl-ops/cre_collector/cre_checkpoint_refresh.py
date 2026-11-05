@@ -6484,6 +6484,24 @@ def jll_partial_readback(run_dir, manifest, env_file):
                         expected_database_target_sha256=target, env_file=env_file)
 
 
+def colliers_partial_readback(run_dir, manifest, env_file):
+    from cre_colliers_partial import run_partial_readback
+
+    checkpoint = manifest["sources"]["colliers"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "colliers")
+    if len(arguments) < 2:
+        raise GlobalStageError("Colliers partial readback claims are missing")
+    code_sha, dirty = git_identity()
+    if dirty:
+        raise GlobalStageError("Colliers partial readback code is dirty")
+    result = run_partial_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+        code_sha=code_sha, target=manifest_database_target_sha256(manifest),
+        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    # Recheck the claim file after the query as well as the source artifact.
+    subset_ingest_arguments(run_dir, manifest, "colliers")
+    return result
+
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6594,6 +6612,24 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if colliers_partial_candidate(manifest, source):
+            observed = validation.get("colliers_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("outcome") == "exact_commit"
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("staged_sha256") == binding.get("staged_sha256")
+                  and observed.get("held") == binding.get("held")
+                  and observed.get("history_holds") == binding.get("history_holds")
+                  and type(observed.get("expected")) is int and observed.get("expected") == binding.get("emitted_count"))
+            checkpoint["readback"] = {"ok": ok, "kind": "colliers_partial_window",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if jll_partial_candidate(manifest, source):
             observed = validation.get("jll_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7137,6 +7173,9 @@ def run_final_validation(
     absolute_quality = verify_absolute_validation_quality(result)
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "colliers" in sources) and colliers_partial_candidate(manifest, "colliers"):
+        result["colliers_partial_readback"] = colliers_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)
