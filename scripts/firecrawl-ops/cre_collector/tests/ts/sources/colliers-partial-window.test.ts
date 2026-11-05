@@ -52,6 +52,78 @@ test("refuses unidentified observed pages and changed custody", async () => {
   await assert.rejects(selectColliersWindow(source([header,pair,page,hole]), async () => { throw new Error("changed"); }, binding, 1, 1), /changed/);
 });
 
+function driftRows(id = "c") {
+  const driftList = { ...list, total: 4, totalAvail: 4, numProjects: 1,
+    html: `<li class="item"><span class="headline">Changed</span><a href="/handler/modern.aspx?pv=${id}">View</a></li>` };
+  const driftMap = { ...map, total: 4, totalAvail: 4, numProjects: 1, projectLocations: [{ ProjectId: id }] };
+  const driftPair = { ...pair, page: 2, start: 3, pageSize: 1,
+    documents: [{ list: JSON.stringify(driftList), map: JSON.stringify(driftMap) }] };
+  const driftHole = { ...hole, page: 2, start: 3, reason: "recovery_stopped" };
+  return [header, pair, page, driftPair, driftHole];
+}
+
+test("holds count-drifted pages while retaining earlier identity-verified peers", async () => {
+  const selection = await selectColliersWindow(source(driftRows()), async () => {}, binding, 1, 2);
+  assert.deepEqual(selection.eligible.map(row => row.mapProjectId), ["a", "b"]);
+  assert.equal(selection.heldSelected, 0);
+  const duplicate = await selectColliersWindow(source(driftRows("a")), async () => {}, binding, 1, 2);
+  assert.deepEqual(duplicate.eligible.map(row => row.mapProjectId), ["b"]);
+  assert.equal(duplicate.heldSelected, 1);
+  const reordered = driftRows("a") as any[];
+  const mapBody = JSON.parse(reordered[3].documents[0].map);
+  mapBody.projectLocations[0].ProjectId = "b";
+  reordered[3].documents[0].map = JSON.stringify(mapBody);
+  const conflicts = await selectColliersWindow(source(reordered), async () => {}, binding, 1, 2);
+  assert.equal(conflicts.eligible.length, 0);
+  assert.equal(conflicts.heldSelected, 2);
+});
+
+test("count drift cannot conceal malformed, unmatched or later source evidence", async () => {
+  const rows = driftRows();
+  const malformed = structuredClone(rows) as any[];
+  const payload = malformed[3].documents[0];
+  const mismatched = JSON.parse(payload.map); mismatched.total = 5; payload.map = JSON.stringify(mismatched);
+  await assert.rejects(selectColliersWindow(source(malformed), async () => {}, binding, 1, 2), /safely scoped/);
+  const unmatched = structuredClone(rows) as any[]; unmatched[4].start = 2;
+  await assert.rejects(selectColliersWindow(source(unmatched), async () => {}, binding, 1, 2), /safely scoped/);
+  await assert.rejects(selectColliersWindow(source([...rows, pair, page]), async () => {}, binding, 1, 2), /safely scoped/);
+  await assert.rejects(selectColliersWindow(source([header, pair, page, { ...hole, reason: "recovery_stopped" }]), async () => {}, binding, 1, 2), /safely scoped/);
+  const missing = structuredClone(driftRows()) as any[];
+  for (const field of ["list", "map"]) {
+    const body = JSON.parse(missing[1].documents[0][field]); body.total = 4; body.totalAvail = 4;
+    missing[1].documents[0][field] = JSON.stringify(body);
+    const changed = JSON.parse(missing[3].documents[0][field]); changed.total = 5; changed.totalAvail = 5;
+    missing[3].documents[0][field] = JSON.stringify(changed);
+  }
+  missing[3].start = 4; missing[4].start = 4;
+  await assert.rejects(selectColliersWindow(source(missing), async () => {}, binding, 1, 2), /safely scoped/);
+});
+
+test("sealed worker replays a count-drift source without promoting the changed range", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-drift-worker-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from(driftRows("a").map(row => JSON.stringify(row)).join("\n") + "\n");
+  const path = join(dir, "source"); writeFileSync(path, bytes, { mode: 0o600 });
+  const requests: string[] = [];
+  const result = await buildColliersWindowArtifact({
+    ...binding, generationStartedAt: binding.startedAt, cursor: 1, limit: 2,
+    sourcePath: path, sourceBytes: bytes.length, sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+    originalSourceMainSha256: "c".repeat(64), producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+    evidencePath: join(dir, "evidence"), artifactPath: join(dir, "artifact"),
+  }, async token => {
+    requests.push(token);
+    const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+    return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) };
+  });
+  assert.deepEqual(requests, ["b"]);
+  assert.equal(result.admitted, 1); assert.equal(result.held, 1);
+  assert.equal(result.proposedCursor, 3);
+  const artifact = JSON.parse(readFileSync(join(dir, "artifact"), "utf8"));
+  assert.equal(artifact.coverage, "unverified");
+  assert.equal(artifact.sourceOutcome, "source_error");
+  assert.deepEqual(artifact.listings.map((row: any) => row.id), ["b"]);
+});
+
 test("producer obeys rotating order and stops after preserving the current row", async () => {
   const requests: string[] = [], saved: string[] = [];
   const result = await produceColliersWindow(source([header,pair,page,hole]), async () => {}, binding, 2,

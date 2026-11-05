@@ -41,7 +41,7 @@ export async function selectColliersWindow(
   });
   await verify();
   // A page whose identities are unknown can conflict with any candidate.
-  if (first.heldPages || first.stopped || first.providerHoles < 1 || !first.total)
+  if (first.heldPages || first.stopped || (first.providerHoles < 1 && !first.countDrift) || !first.total)
     throw new Error("partial source window is not safely scoped");
   const counts = selected.map(() => ({ id: 0, url: 0, token: 0, position: 0, hole: false }));
   const second = await scan(card => {
@@ -59,7 +59,8 @@ export async function selectColliersWindow(
   });
   await verify();
   if (second.heldPages || second.stopped || second.total !== first.total || second.available !== first.available ||
-      second.indexed !== first.indexed || second.holes !== first.holes || second.providerHoles !== first.providerHoles)
+      second.indexed !== first.indexed || second.holes !== first.holes || second.providerHoles !== first.providerHoles ||
+      second.countDrift !== first.countDrift)
     throw new Error("partial source changed between scans");
   const window = selected.map((candidate, index) => {
     const c = counts[index];
