@@ -98,6 +98,15 @@ def test_claim_sql_source_filter_is_exact_and_does_not_widen_default_drain():
         targeted_sql.index("FOR UPDATE SKIP LOCKED")
 
 
+def test_attempt_fairness_order_is_limited_to_guarded_newmark_page_claims():
+    page = build_claim_sql(1, source="newmark", source_page_witness=True)
+    assert "ORDER BY claimed_at NULLS FIRST, priority, enqueued_at, attempts, id" in page
+    for sql in (build_claim_sql(1), build_claim_sql(1, source="newmark"),
+                build_claim_sql(1, source="svn")):
+        assert "ORDER BY priority, enqueued_at\n" in sql
+        assert "enqueued_at, attempts, id" not in sql
+
+
 def test_claim_sql_source_filter_quotes_and_rejects_blank_values():
     sql = build_claim_sql(1, source="broker'key")
     assert "AND source_key = 'broker''key'" in sql

@@ -63,6 +63,44 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
+        # Exercise the real claim statement with deliberately tied source rows.
+        # Insert the denied-like row first so the old unspecified tie order
+        # demonstrably chooses it; the new order chooses the lower-attempt peer.
+        def seed_claims(rows):
+            sql("DELETE FROM credeals.cre_enrichment_queue WHERE source_key='newmark';")
+            for row in rows:
+                row_id, attempt, priority, enqueued, claimed = row
+                sql("INSERT INTO credeals.cre_enrichment_queue "
+                    "(id,brokerage_id,source_key,external_id,url,reason,attempts,priority,enqueued_at,claimed_at) "
+                    "SELECT '" + row_id + "', id, 'newmark', 'fixture-' || '" + row_id + "', "
+                    "'https://example.test/' || '" + row_id + "', 'new', " + str(attempt) + ", "
+                    + str(priority) + ", '" + enqueued + "', " + claimed + " "
+                    "FROM credeals.cre_brokerages WHERE slug='newmark';")
+
+        def claim_id():
+            return sql(worker.build_claim_sql(1, source="newmark", source_page_witness=True)).splitlines()[-1].split("|")[0]
+
+        high = "00000000-0000-0000-0000-000000000003"
+        low_later = "00000000-0000-0000-0000-000000000002"
+        low_first = "00000000-0000-0000-0000-000000000001"
+        ts_old, ts_new = "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"
+        seed_claims([(high, 2, 100, ts_old, "NULL"), (low_later, 0, 100, ts_old, "NULL"),
+                     (low_first, 0, 100, ts_old, "NULL")])
+        assert claim_id() == low_first, "attempt then ID must break otherwise equal ties"
+        assert claim_id() == low_later, "unclaimed equal-attempt peer should be next"
+        seed_claims([(high, 4, 99, ts_new, "NULL"), (low_first, 0, 100, ts_old, "NULL")])
+        assert claim_id() == high, "priority must precede attempts"
+        seed_claims([(high, 4, 100, ts_old, "NULL"), (low_first, 0, 100, ts_new, "NULL")])
+        assert claim_id() == high, "enqueue time must precede attempts"
+        seed_claims([(high, 4, 100, ts_old, "NULL"), (low_first, 0, 99, ts_old, "now() - interval '2 hours'")])
+        assert claim_id() == high, "unclaimed rows must precede reclaimed rows"
+        seed_claims([(high, 4, 100, ts_old, "now() - interval '2 hours'"),
+                     (low_first, 0, 99, ts_old, "now() - interval '5 minutes'")])
+        assert claim_id() == high, "cooldown must exclude recently claimed rows"
+        sql("DELETE FROM credeals.cre_enrichment_queue WHERE source_key='newmark';")
+        assert "other-source" in sql(worker.build_claim_sql(1, source="svn")), "other source must retain claim behavior"
+        sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=NULL WHERE source_key='svn';")
+
         for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page", "generic-403", "generic-403-omitted", "generic-403-stale"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
