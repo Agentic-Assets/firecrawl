@@ -385,42 +385,56 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
   pass: EssexInventoryPass;
   responseText: { current: string; closed: string; sitemap: string };
 }> {
-  const currentHtml = await transport.getText(ESSEX_LISTINGS_URL);
-  const currentAt = observationNow();
-  const closedHtml = await transport.getText(ESSEX_CLOSED_URL);
-  const closedAt = observationNow();
-  const sitemapXml = await transport.getText(ESSEX_SITEMAP_URL);
-  const sitemapAt = observationNow();
-  const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
-  const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
-  const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
-  const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
-  const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
-    endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
-    rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
-  });
-  const pass: EssexInventoryPass = {
-    fingerprint: "",
-    current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
-    closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
-    sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+  const responses: { endpoint: string; observedAt: string; responseTextSha256: string; responseText: string }[] = [];
+  const read = async (endpoint: string) => {
+    const responseText = await transport.getText(endpoint);
+    const observedAt = observationNow();
+    responses.push({ endpoint, observedAt, responseTextSha256: textSha256(responseText), responseText });
+    return { responseText, observedAt };
   };
-  pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
-  const responseText = { current: currentHtml, closed: closedHtml, sitemap: sitemapXml };
   try {
-    return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass, responseText };
+    const { responseText: currentHtml, observedAt: currentAt } = await read(ESSEX_LISTINGS_URL);
+    const { responseText: closedHtml, observedAt: closedAt } = await read(ESSEX_CLOSED_URL);
+    const { responseText: sitemapXml, observedAt: sitemapAt } = await read(ESSEX_SITEMAP_URL);
+    const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
+    const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
+    const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
+    const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
+    const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
+      endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
+      rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
+    });
+    const pass: EssexInventoryPass = {
+      fingerprint: "",
+      current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
+      closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
+      sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+    };
+    pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
+    const responseText = { current: currentHtml, closed: closedHtml, sitemap: sitemapXml };
+    try {
+      return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass, responseText };
+    } catch (error) {
+      if (!(error instanceof EssexInventoryMismatchError)) throw error;
+      throw new RetainedSourceError(error, [{
+        schema: "essex-inventory-mismatch-v1",
+        coverage: "partial_unknown",
+        generationId: refreshGenerationId(),
+        generationStartedAt: refreshStartedAt(),
+        pass,
+        responseText,
+        archiveOnly: error.archiveOnly,
+        sitemapOnly: error.sitemapOnly,
+        lifecycleOverlap: error.lifecycleOverlap,
+      }]);
+    }
   } catch (error) {
-    if (!(error instanceof EssexInventoryMismatchError)) throw error;
+    if (!(error instanceof Error) || error instanceof RetainedSourceError ||
+        error instanceof NativeEvidenceTerminalError || responses.length === 0) throw error;
     throw new RetainedSourceError(error, [{
-      schema: "essex-inventory-mismatch-v1",
-      coverage: "partial_unknown",
-      generationId: refreshGenerationId(),
-      generationStartedAt: refreshStartedAt(),
-      pass,
-      responseText,
-      archiveOnly: error.archiveOnly,
-      sitemapOnly: error.sitemapOnly,
-      lifecycleOverlap: error.lifecycleOverlap,
+      schema: "essex-inventory-mismatch-v1", coverage: "partial_unknown",
+      generationId: refreshGenerationId(), generationStartedAt: refreshStartedAt(),
+      kind: "incomplete_pass", responses,
     }]);
   }
 }

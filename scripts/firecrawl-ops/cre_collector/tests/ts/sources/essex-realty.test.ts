@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { NativeEvidenceTerminalError } from "../../../lib/source-evidence/terminal-error.js";
 import {
   createPerformanceRecorder,
   resetPerformanceRecorderForTests,
@@ -161,6 +162,15 @@ test("Essex lifecycle overlap retains the three fetched responses", async () => 
     assert.equal(evidence.coverage, "partial_unknown");
     return true;
   });
+});
+
+test("Essex unsettled terminal failure retains its original classification", async () => {
+  const terminal = new NativeEvidenceTerminalError("unsettled");
+  let calls = 0;
+  await assert.rejects(fetchEssexInventory({ getText: async () => {
+    if (++calls === 1) return archive([card("one", "ON MARKET")]);
+    throw terminal;
+  } }), error => error === terminal);
 });
 
 test("Essex sitemap reconciliation proves 43 current + 713 closed = 756", () => {

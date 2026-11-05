@@ -177,8 +177,9 @@ an archive/sitemap mismatch, a current/closed overlap, or drift between complete
 passes, the source fails and carries every completed pass's decoded response text,
 parsed archive rows, sitemap URLs, discrepancy sets, observation clocks and
 response-text hashes as private unqualified evidence.
-If the second pass fails normally before completion, the first completed pass is
-retained; incomplete second-pass responses are not captured by this path.
+If a pass fails normally before completion, each successfully fetched decoded
+response and its endpoint, observation clock and text hash are retained. A prior
+completed pass is retained too; the failed response itself is not captured.
 Terminal or unsettled evidence errors keep their original classification.
 Each response retains the
 existing 32 MiB transport limit; two passes can contain six such responses and

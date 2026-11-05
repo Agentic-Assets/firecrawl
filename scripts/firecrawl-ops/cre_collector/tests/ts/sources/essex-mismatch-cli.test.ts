@@ -60,7 +60,7 @@ for (const mode of ["file", "stdout", "mixed", "private"] as const) test(`Essex 
   } finally { if (privatePath) rmSync(dirname(privatePath), { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
 });
 
-for (const mode of ["second-mismatch", "drift", "overlap"] as const) test(`Essex retains every observed pass on ${mode}`, () => {
+for (const mode of ["second-mismatch", "drift", "overlap", "first-fetch-failure", "second-fetch-failure", "sitemap-fetch-failure", "parse-failure", "second-parse-failure"] as const) test(`Essex retains every observed pass on ${mode}`, () => {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const dir = mkdtempSync(join(tmpdir(), "essex-passes-"));
   const output = join(dir, "artifact.json"), preload = join(dir, "preload.mjs");
@@ -74,10 +74,10 @@ for (const mode of ["second-mismatch", "drift", "overlap"] as const) test(`Essex
   writeFileSync(preload, `import net from 'node:net'; import tls from 'node:tls'; import http from 'node:http'; import https from 'node:https';
     const deny=()=>{throw Error('NETWORK_DENIED')}; net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
     const original=globalThis.setTimeout; globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms>=9000&&ms<=10000?1:ms,...args);
-    let currentReads=0,sitemapReads=0; globalThis.fetch=async input=>{const url=String(input); let body;
+    let currentReads=0,closedReads=0,sitemapReads=0; globalThis.fetch=async input=>{const url=String(input); let body;
       if(url===${JSON.stringify(host)}) {currentReads++; body=${JSON.stringify(mode)}==='drift'&&currentReads===2?${JSON.stringify(changed)}:${JSON.stringify(current)};}
-      else if(url===${JSON.stringify(`${host}?sale_deal_status_id=3`)}) body=${JSON.stringify(closed)};
-      else if(url==='https://essexrealtygroup.com/properties-sitemap.xml') {sitemapReads++; body=${JSON.stringify(mode)}==='second-mismatch'&&sitemapReads===2?${JSON.stringify(other)}:${JSON.stringify(sitemap)};}
+      else if(url===${JSON.stringify(`${host}?sale_deal_status_id=3`)}) {closedReads++; if((${JSON.stringify(mode)}==='first-fetch-failure'&&closedReads===1)||(${JSON.stringify(mode)}==='second-fetch-failure'&&closedReads===2)) throw Error('settled fixture failure'); body=${JSON.stringify(closed)};}
+      else if(url==='https://essexrealtygroup.com/properties-sitemap.xml') {sitemapReads++; if(${JSON.stringify(mode)}==='sitemap-fetch-failure') throw Error('settled fixture failure'); body=${JSON.stringify(mode)}==='parse-failure'||(${JSON.stringify(mode)}==='second-parse-failure'&&sitemapReads===2)?'<urlset></urlset>':${JSON.stringify(mode)}==='second-mismatch'&&sitemapReads===2?${JSON.stringify(other)}:${JSON.stringify(sitemap)};}
       else throw Error('UNEXPECTED_REQUEST'); return new Response(body,{headers:{'content-type':'text/html'}});};`);
   try {
     const child = spawnSync(process.execPath, ["--import", "tsx", "--import", pathToFileURL(preload).href, "collect.ts", "--source=essex-realty", "--transaction=both", `--out=${output}`], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 1024 * 1024, env: { ...process.env, CRE_REQUIRE_FRESH_DETAILS: "1", CRE_REFRESH_GENERATION: "essex-fixture", CRE_REFRESH_STARTED_AT: new Date().toISOString() } });
@@ -90,7 +90,21 @@ for (const mode of ["second-mismatch", "drift", "overlap"] as const) test(`Essex
     assert.deepEqual(artifact.listings, []);
     const sale = artifact.sources.find((entry: any) => entry.transaction === "sale");
     const observations = sale.retainedObservations;
-    assert.equal(observations.length, mode === "overlap" ? 1 : 2);
+    assert.equal(observations.length, ["overlap", "first-fetch-failure", "sitemap-fetch-failure", "parse-failure"].includes(mode) ? 1 : 2);
+    if (["first-fetch-failure", "second-fetch-failure", "sitemap-fetch-failure", "parse-failure", "second-parse-failure"].includes(mode)) {
+      const partial = observations[observations.length - 1];
+      assert.equal(partial.kind, "incomplete_pass");
+      assert.equal(partial.coverage, "partial_unknown");
+      assert.equal(partial.responses.length, mode.includes("parse-failure") ? 3 : mode === "sitemap-fetch-failure" ? 2 : 1);
+      assert.equal(partial.responses[0].endpoint, host);
+      assert.equal(partial.responses[0].responseText, current);
+      assert.ok(partial.responses[0].observedAt);
+      assert.match(partial.responses[0].responseTextSha256, /^[0-9a-f]{64}$/);
+      if (mode.includes("parse-failure")) assert.equal(partial.responses[2].responseText, "<urlset></urlset>");
+      if (mode.startsWith("second-")) assert.equal(observations[0].responseText.current, current);
+      if (process.platform !== "win32") assert.equal(statSync(output).mode & 0o077, 0);
+      return;
+    }
     for (const observation of observations) {
       assert.equal(observation.coverage, "partial_unknown");
       assert.ok(observation.pass.current.observedAt);
