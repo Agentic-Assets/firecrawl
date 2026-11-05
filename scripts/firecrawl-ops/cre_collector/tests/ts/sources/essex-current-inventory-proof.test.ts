@@ -53,7 +53,14 @@ test("Essex proof cache is immutable and limited to the exact successful full ge
   assert.equal((await srcEssexRealty("lease", Infinity, false, own)).currentInventoryProof, undefined);
   process.env.CRE_REFRESH_STARTED_AT = observationNow();
   const failed = transport(true);
-  await assert.rejects(() => srcEssexRealty("sale", Infinity, false, failed), /passes drifted/);
+  await assert.rejects(() => srcEssexRealty("sale", Infinity, false, failed), (error: any) => {
+    assert.match(error.message, /passes drifted/);
+    assert.equal(error.retainedObservations.length, 2);
+    assert.match(error.retainedObservations[0].responseText.current, /Current/);
+    assert.match(error.retainedObservations[1].responseText.current, /Changed/);
+    assert.notEqual(error.retainedObservations[0].pass.fingerprint, error.retainedObservations[1].pass.fingerprint);
+    return true;
+  });
   assert.equal(failed.calls.length, 6);
   assert.equal((await srcEssexRealty("lease", Infinity, false, failed)).currentInventoryProof, undefined);
   const capped = await srcEssexRealty("sale", 1, false, transport());

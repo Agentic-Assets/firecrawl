@@ -51,7 +51,8 @@ let completedProof: { key: string; proof: EssexCurrentInventoryProof } | undefin
 class EssexResponseLimitError extends Error {}
 
 class EssexInventoryMismatchError extends Error {
-  constructor(message: string, readonly archiveOnly: string[], readonly sitemapOnly: string[]) {
+  constructor(message: string, readonly archiveOnly: string[], readonly sitemapOnly: string[],
+    readonly lifecycleOverlap: string[] = []) {
     super(message);
   }
 }
@@ -340,11 +341,10 @@ export function reconcileEssexInventory(
 ): EssexInventory {
   const currentUrls = new Set(current.map((row) => row.url));
   const closedUrls = new Set(closed.map((row) => row.url));
-  for (const url of currentUrls) {
-    if (closedUrls.has(url)) {
-      throw new Error(`Essex lifecycle overlap for ${url}`);
-    }
-  }
+  const lifecycleOverlap = [...currentUrls].filter((url) => closedUrls.has(url)).sort();
+  if (lifecycleOverlap.length) throw new EssexInventoryMismatchError(
+    `Essex lifecycle overlap for ${lifecycleOverlap[0]}`, [], [], lifecycleOverlap
+  );
   const union = new Set([...currentUrls, ...closedUrls]);
   const sitemap = new Set(sitemapUrls);
   const missingFromSitemap = [...union].filter((url) => !sitemap.has(url));
@@ -382,6 +382,7 @@ export async function fetchEssexInventory(
 async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
   inventory: EssexInventory;
   pass: EssexInventoryPass;
+  responseText: { current: string; closed: string; sitemap: string };
 }> {
   const currentHtml = await transport.getText(ESSEX_LISTINGS_URL);
   const currentAt = observationNow();
@@ -404,8 +405,9 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
     sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
   };
   pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
+  const responseText = { current: currentHtml, closed: closedHtml, sitemap: sitemapXml };
   try {
-    return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
+    return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass, responseText };
   } catch (error) {
     if (!(error instanceof EssexInventoryMismatchError)) throw error;
     throw new RetainedSourceError(error, [{
@@ -414,9 +416,10 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
       generationId: refreshGenerationId(),
       generationStartedAt: refreshStartedAt(),
       pass,
-      responseText: { current: currentHtml, closed: closedHtml, sitemap: sitemapXml },
+      responseText,
       archiveOnly: error.archiveOnly,
       sitemapOnly: error.sitemapOnly,
+      lifecycleOverlap: error.lifecycleOverlap,
     }]);
   }
 }
@@ -653,8 +656,21 @@ export async function srcEssexRealty(
   const passes = [first.pass];
   let inventory = first.inventory;
   if (proofEligible) {
-    const second = await fetchEssexInventoryPass(transport);
-    if (first.pass.fingerprint !== second.pass.fingerprint) throw new Error("Essex complete inventory passes drifted");
+    const retainedPass = (value: typeof first) => ({
+      schema: "essex-inventory-mismatch-v1", coverage: "partial_unknown",
+      generationId, generationStartedAt, pass: value.pass, responseText: value.responseText,
+      archiveOnly: [], sitemapOnly: [], lifecycleOverlap: [],
+    });
+    let second: typeof first;
+    try { second = await fetchEssexInventoryPass(transport); }
+    catch (error) {
+      if (!(error instanceof RetainedSourceError)) throw error;
+      throw new RetainedSourceError(error, [retainedPass(first), ...error.retainedObservations]);
+    }
+    if (first.pass.fingerprint !== second.pass.fingerprint) {
+      throw new RetainedSourceError(new Error("Essex complete inventory passes drifted"),
+        [retainedPass(first), retainedPass(second)]);
+    }
     inventory = second.inventory;
     passes.push(second.pass);
     for (const url of inventory.sitemapUrls) proofPath(url);

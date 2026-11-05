@@ -148,6 +148,21 @@ test("Essex discrepancy retains parsed source evidence while refusing completion
   });
 });
 
+test("Essex lifecycle overlap retains the three fetched responses", async () => {
+  const current = archive([card("same", "ON MARKET")]);
+  const closed = archive([card("same", "CLOSED")]);
+  const sitemap = `<urlset><url><loc>https://essexrealtygroup.com/properties/same/</loc></url></urlset>`;
+  const responses = [current, closed, sitemap];
+  await assert.rejects(fetchEssexInventory({ getText: async () => responses.shift()! }), (error: any) => {
+    assert.match(error.message, /lifecycle overlap/);
+    const evidence = error.retainedObservations[0];
+    assert.deepEqual(evidence.lifecycleOverlap, ["https://essexrealtygroup.com/properties/same/"]);
+    assert.deepEqual(evidence.responseText, { current, closed, sitemap });
+    assert.equal(evidence.coverage, "partial_unknown");
+    return true;
+  });
+});
+
 test("Essex sitemap reconciliation proves 43 current + 713 closed = 756", () => {
   const current = [
     ...Array.from({ length: 24 }, (_, index) => ({

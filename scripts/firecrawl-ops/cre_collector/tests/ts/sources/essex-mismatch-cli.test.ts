@@ -59,3 +59,49 @@ for (const mode of ["file", "stdout", "mixed", "private"] as const) test(`Essex 
     if (process.platform !== "win32") assert.equal(statSync(privatePath ?? output).mode & 0o077, 0);
   } finally { if (privatePath) rmSync(dirname(privatePath), { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const mode of ["second-mismatch", "drift", "overlap"] as const) test(`Essex retains every observed pass on ${mode}`, () => {
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "essex-passes-"));
+  const output = join(dir, "artifact.json"), preload = join(dir, "preload.mjs");
+  const host = "https://essexrealtygroup.com/properties/";
+  const card = (name: string, state: string, slug = "one") => `<a class="property-card" href="${host}${slug}/"><div class="property-card__label label">${state}</div><span class="property-info__address--address-1">${name}</span></a>`;
+  const current = `<a class="allposts">ALL [1]</a>${card("Original", "ON MARKET")}`;
+  const changed = `<a class="allposts">ALL [1]</a>${card("Changed", "ON MARKET")}`;
+  const closed = `<a class="allposts">ALL [1]</a>${card("Closed", "CLOSED", mode === "overlap" ? "one" : "two")}`;
+  const sitemap = `<urlset><url><loc>${host}one/</loc></url>${mode === "overlap" ? "" : `<url><loc>${host}two/</loc></url>`}</urlset>`;
+  const other = `<urlset><url><loc>${host}other/</loc></url><url><loc>${host}two/</loc></url></urlset>`;
+  writeFileSync(preload, `import net from 'node:net'; import tls from 'node:tls'; import http from 'node:http'; import https from 'node:https';
+    const deny=()=>{throw Error('NETWORK_DENIED')}; net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+    const original=globalThis.setTimeout; globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms>=9000&&ms<=10000?1:ms,...args);
+    let currentReads=0,sitemapReads=0; globalThis.fetch=async input=>{const url=String(input); let body;
+      if(url===${JSON.stringify(host)}) {currentReads++; body=${JSON.stringify(mode)}==='drift'&&currentReads===2?${JSON.stringify(changed)}:${JSON.stringify(current)};}
+      else if(url===${JSON.stringify(`${host}?sale_deal_status_id=3`)}) body=${JSON.stringify(closed)};
+      else if(url==='https://essexrealtygroup.com/properties-sitemap.xml') {sitemapReads++; body=${JSON.stringify(mode)}==='second-mismatch'&&sitemapReads===2?${JSON.stringify(other)}:${JSON.stringify(sitemap)};}
+      else throw Error('UNEXPECTED_REQUEST'); return new Response(body,{headers:{'content-type':'text/html'}});};`);
+  try {
+    const child = spawnSync(process.execPath, ["--import", "tsx", "--import", pathToFileURL(preload).href, "collect.ts", "--source=essex-realty", "--transaction=both", `--out=${output}`], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 1024 * 1024, env: { ...process.env, CRE_REQUIRE_FRESH_DETAILS: "1", CRE_REFRESH_GENERATION: "essex-fixture", CRE_REFRESH_STARTED_AT: new Date().toISOString() } });
+    assert.ifError(child.error);
+    assert.notEqual(child.status, 0);
+    assert.doesNotMatch(child.stderr, /NETWORK_DENIED|UNEXPECTED_REQUEST/);
+    assert.equal(child.stdout, "");
+    const artifact = JSON.parse(readFileSync(output, "utf8"));
+    assert.equal(artifact.runMeta.evidenceOnly, true);
+    assert.deepEqual(artifact.listings, []);
+    const sale = artifact.sources.find((entry: any) => entry.transaction === "sale");
+    const observations = sale.retainedObservations;
+    assert.equal(observations.length, mode === "overlap" ? 1 : 2);
+    for (const observation of observations) {
+      assert.equal(observation.coverage, "partial_unknown");
+      assert.ok(observation.pass.current.observedAt);
+      assert.match(observation.pass.current.responseTextSha256, /^[0-9a-f]{64}$/);
+      assert.equal(observation.responseText.closed, closed);
+    }
+    assert.equal(observations[0].responseText.current, current);
+    assert.equal(observations[0].responseText.sitemap, sitemap);
+    if (mode === "drift") assert.equal(observations[1].responseText.current, changed);
+    if (mode === "second-mismatch") assert.equal(observations[1].responseText.sitemap, other);
+    if (mode === "overlap") assert.deepEqual(observations[0].lifecycleOverlap, [`${host}one/`]);
+    if (process.platform !== "win32") assert.equal(statSync(output).mode & 0o077, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
