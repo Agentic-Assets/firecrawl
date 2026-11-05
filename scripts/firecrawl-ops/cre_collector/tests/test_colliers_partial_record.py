@@ -337,6 +337,11 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
         with pytest.raises(ValueError):
             validate_window_artifact(changed, receipt, artifact["evidence"])
 
+def test_count_drift_source_through_real_node_replay_and_python_staging(tmp_path, monkeypatch):
+    monkeypatch.setenv("COLLIERS_FIXTURE_COUNT_DRIFT", "1")
+    test_source_bytes_through_node_replay_into_python_staging(tmp_path)
+
+
 def test_native_byte_change_is_rejected_even_when_decoded_text_matches():
     item = sample()
     item["nativeBase64"] = base64.b64encode(b"\xef\xbb\xbf" + item["decodedDetail"].encode()).decode()

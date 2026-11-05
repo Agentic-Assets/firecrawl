@@ -1,6 +1,7 @@
 /** Stream attempt-local evidence. Caller owns path/descriptor, hash and generation binding. */
 import type { Readable } from "node:stream";
 import { replayColliersPage } from "./colliers-partial-replay.js";
+import { groupColliersMapLocations, parseColliersReceiptCards } from "./colliers-receipt.js";
 
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 type Identity = { mapProjectId: string; detailPv: string | null; detailUrl: string | null };
@@ -36,6 +37,25 @@ function failureOnlyPair(row: any): boolean {
   });
 }
 
+/**
+ * A successful pair that triggered count drift is evidence of possible
+ * collisions, but its changed range is never a candidate for this window.
+ */
+function driftIdentities(pair: any, total: number, available: number): Identity[] {
+  if (!pair || !Array.isArray(pair.documents) || pair.documents.length !== 1) throw new Error("drift pair missing");
+  if (!pair.documents[0] || Object.keys(pair.documents[0]).sort().join(",") !== "list,map") throw new Error("drift pair shape invalid");
+  const { list: listText, map: mapText } = pair.documents[0];
+  if (typeof listText !== "string" || typeof mapText !== "string") throw new Error("drift pair invalid");
+  const list = JSON.parse(listText), map = JSON.parse(mapText);
+  const changedTotal = Number(list?.total), changedAvailable = Number(list?.totalAvail);
+  if (!Number.isSafeInteger(changedTotal) || !Number.isSafeInteger(changedAvailable) ||
+      (changedTotal === total && changedAvailable === available) ||
+      typeof list?.html !== "string" || !Array.isArray(map?.projectLocations)) throw new Error("drift counts invalid");
+  const cards = parseColliersReceiptCards(list.html, groupColliersMapLocations(map.projectLocations), pair.start);
+  return replayColliersPage({ start: pair.start, pageSize: pair.pageSize, list: listText, map: mapText, cards },
+    changedTotal, changedAvailable);
+}
+
 /** No source access or write authorization follows from these candidates. */
 export async function scanColliersPartial(stream: Readable, generation: string, attempt: number, startedAt: string, finishedAt: string,
   onPage: ((page: { start: number; page: number; pageSize: number; observedAt: string; list: string; map: string; identities: Identity[] }) => Promise<void>) | undefined,
@@ -46,7 +66,8 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) throw new Error("invalid attempt interval");
   let chunks: Buffer[] = [], lineBytes = 0, lineNo = 0;
   let pending: any = null, total: number | null = null, available: number | null = null;
-  let heldPages = 0, holes = 0, providerHoles = 0, stopped = false, indexed = 0;
+  const ranges: Array<[number, number]> = [];
+  let heldPages = 0, holes = 0, providerHoles = 0, stopped = false, indexed = 0, countDrift = false;
   const processLine = async (bytes: Buffer) => {
     const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (lineNo++ === 0) {
@@ -62,6 +83,7 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
       throw new Error("invalid spool observation");
     if (observedMs < startMs || observedMs > endMs)
       throw new Error("partial source observation clock outside capture interval");
+    if (countDrift && row.kind !== "recovery_hole") { stopped = true; return; }
     if (row.kind === "unqualified_response_pair") {
       if (pending && !failureOnlyPair(pending)) heldPages++;
       pending = row; return;
@@ -69,16 +91,33 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
     if (row.kind === "recovery_hole") {
       // The final request can ask for a full page even when fewer rows remain;
       // its error-only pair then legitimately covers a smaller terminal hole.
-      if (pending && (!failureOnlyPair(pending) || pending.start !== row.start || pending.page !== row.page ||
-          !Number.isSafeInteger(pending.pageSize) || pending.pageSize < row.pageSize))
-        heldPages++;
+      if (total === null || available === null || !Number.isSafeInteger(row.pageSize) || row.pageSize < 1 ||
+          row.start > total || row.pageSize > total - row.start + 1 || typeof row.reason !== "string") {
+        pending = null; stopped = true; return;
+      }
+      if (pending && !failureOnlyPair(pending)) {
+        let identities: Identity[] | undefined;
+        try {
+          if (countDrift || row.reason !== "recovery_stopped" || pending.start !== row.start ||
+              pending.page !== row.page || pending.pageSize !== row.pageSize ||
+              Date.parse(pending.observedAt) > observedMs) throw new Error("drift hole differs");
+          identities = driftIdentities(pending, total, available);
+        } catch { heldPages++; }
+        if (identities) {
+          countDrift = true;
+          for (const [offset, card] of identities.entries()) {
+            onIdentity({ ...card, start: pending.start, page: pending.page, pageSize: pending.pageSize,
+              offset, observedAt: pending.observedAt }, false);
+          }
+        }
+      } else if (pending && (pending.start !== row.start || pending.page !== row.page ||
+          !Number.isSafeInteger(pending.pageSize) || pending.pageSize < row.pageSize)) heldPages++;
       pending = null; holes++;
-      if (total === null || !Number.isSafeInteger(row.pageSize) || row.pageSize < 1 ||
-          row.start > total || row.pageSize > total - row.start + 1) { stopped = true; return; }
-      if (typeof row.reason !== "string") { stopped = true; return; }
+      ranges.push([row.start, row.start + row.pageSize - 1]);
       if (onHole) onHole(row.start, row.pageSize, row.reason);
       if (row.reason === "provider_failure" && row.pageSize === 1) providerHoles++;
-      else if (["budget_exhausted", "requested_limit", "page_cap"].includes(row.reason)) { /* explicit unexamined range */ }
+      else if (["budget_exhausted", "requested_limit", "page_cap"].includes(row.reason) ||
+               (row.reason === "recovery_stopped" && countDrift)) { /* explicit unexamined range */ }
       else stopped = true;
       return;
     }
@@ -98,6 +137,7 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
       total = candidateTotal;
       available = candidateAvailable;
     } catch { heldPages++; return; }
+    ranges.push([row.start, row.start + pair.pageSize - 1]);
     // A visitor can stop work on denial; never swallow its errors as page holds.
     if (onPage) await onPage({ start: row.start, page: row.page, pageSize: pair.pageSize, observedAt: row.observedAt, list: source.list, map: source.map, identities: cards });
     for (const [offset, card] of cards.entries()) {
@@ -121,5 +161,15 @@ export async function scanColliersPartial(stream: Readable, generation: string, 
   }
   if (lineNo === 0 || lineBytes !== 0) throw new Error("incomplete spool");
   if (pending) heldPages++;
-  return { heldPages, holes, providerHoles, stopped, total, available, indexed };
+  if (countDrift && total !== null) {
+    // Every position in the original reported scope must be either a
+    // validated page or an explicitly recorded hole; gaps are not a proof.
+    let next = 1;
+    for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+      if (start > next) { stopped = true; break; }
+      next = Math.max(next, end + 1);
+    }
+    if (next <= total) stopped = true;
+  }
+  return { heldPages, holes, providerHoles, stopped, total, available, indexed, countDrift };
 }

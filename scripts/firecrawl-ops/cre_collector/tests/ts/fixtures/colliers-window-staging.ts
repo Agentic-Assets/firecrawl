@@ -20,6 +20,17 @@ const rows = [
   { ...common, start: 2, pageSize: 1, observedAt: "2026-11-04T15:30:02.000Z", kind: "recovery_hole",
     reason: "provider_failure", documents: [] },
 ];
+if (process.env.COLLIERS_FIXTURE_COUNT_DRIFT === "1") {
+  // Preserve the changed pair as a held conflict witness; it is never fetched.
+  const changedList = { success: true, total: 3, totalAvail: 3, numProjects: 1,
+    html: '<li class="item"><span class="headline">Held</span><a href="/handler/modern.aspx?pv=held">View</a></li>' };
+  const changedMap = { success: true, total: 3, totalAvail: 3, projectLocations: [{ ProjectId: "held" }] };
+  rows.splice(3, 1,
+    { ...common, start: 2, pageSize: 1, observedAt: "2026-11-04T15:30:02.000Z", kind: "unqualified_response_pair",
+      documents: [{ list: JSON.stringify(changedList), map: JSON.stringify(changedMap) }] },
+    { ...common, start: 2, pageSize: 1, observedAt: "2026-11-04T15:30:03.000Z", kind: "recovery_hole",
+      reason: "recovery_stopped", documents: [] });
+}
 const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
 const source = join(dir, "source"), output = join(dir, "evidence");
 writeFileSync(source, bytes, { mode: 0o600 });

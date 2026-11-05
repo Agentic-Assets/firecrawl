@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.parametrize("denied", [False, True])
-def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied):
+def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -36,12 +36,18 @@ globalThis.fetch = async (input) => {
     const start = Number(u.searchParams.get("Start"));
     if (start !== 1) {
       if (process.env.SYNTHETIC_DENIAL === "1") return new Response("denied",{status:403});
+      if (process.env.SYNTHETIC_DRIFT === "1" && start === 101 && Number(u.searchParams.get("PageSize")) === 1) {
+        const html = '<li class="item"><span class="headline">Changed</span><a href="/handler/modern.aspx?pv=changed">View</a></li>';
+        return Response.json(listing ? {success:true,total:103,totalAvail:103,numProjects:1,html}
+                                      : {success:true,total:103,totalAvail:103,projectLocations:[{ProjectId:"changed"}]});
+      }
       return Response.json({success:false,error:listing ? "Failure retrieving listing HTML." : "Failure retrieving map."});
     }
     const html = Array.from({length:100},(_,i)=>`<li class="item"><span class="headline">Fixture</span><a href="/handler/modern.aspx?pv=id${i+1}">View</a></li>`).join("");
     const locations = Array.from({length:100},(_,i)=>({ProjectId:`id${i+1}`}));
-    return Response.json(listing ? {success:true,total:101,totalAvail:101,numProjects:100,html}
-                                  : {success:true,total:101,totalAvail:101,projectLocations:locations});
+    const total = process.env.SYNTHETIC_DRIFT === "1" ? 102 : 101;
+    return Response.json(listing ? {success:true,total,totalAvail:total,numProjects:100,html}
+                                  : {success:true,total,totalAvail:total,projectLocations:locations});
   }
   if (u.pathname.toLowerCase().includes("slp")) {
     writeFileSync(process.env.SYNTHETIC_DETAIL_SENTINEL, "called");
@@ -62,7 +68,8 @@ globalThis.fetch = async (input) => {
             manifest["preflight"]["shared_lock"] = str(lock.path)
             sentinel = tmp_path / "detail-called"
             env = {**os.environ, "NODE_OPTIONS": "--import=" + mock.as_uri(),
-                   "SYNTHETIC_DENIAL": "1" if denied else "0", "SYNTHETIC_DETAIL_SENTINEL": str(sentinel)}
+                   "SYNTHETIC_DENIAL": "1" if denied else "0", "SYNTHETIC_DRIFT": "1" if drift else "0",
+                   "SYNTHETIC_DETAIL_SENTINEL": str(sentinel)}
             monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock.path)
             monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
             monkeypatch.setattr(refresh, "safe_process_env", lambda *_: dict(env))
@@ -94,5 +101,16 @@ globalThis.fetch = async (input) => {
                 assert checkpoint["colliers_partial_worker"]["state"] == "settled"
                 assert checkpoint["artifact"]["colliers_partial"] is True
                 assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
+                if drift:
+                    artifact = json.loads((run_dir / checkpoint["artifact"]["path"]).read_text())
+                    assert artifact["sourceOutcome"] == "source_error"
+                    assert artifact["coverage"] == "unverified"
+                    assert artifact["proposedCursor"] == 101
+                    assert len(artifact["listings"]) == 100
         finally:
             lock.clear_recovery_requirement()
+
+
+
+def test_real_source_count_drift_reaches_partial_pipeline(tmp_path, monkeypatch):
+    test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, False, drift=True)
