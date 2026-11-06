@@ -9,7 +9,7 @@ const html = readFileSync(new URL("avison-young-official-display-role-18194.html
 const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
-async function runCase(denied: boolean) {
+async function runCase(denied: boolean, ordinaryFailure?: "500" | "timeout") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -32,8 +32,9 @@ async function runCase(denied: boolean) {
     };
     firecrawl.scrape = async (url: string) => {
       calls.push(url);
+      if (url === badUrl && ordinaryFailure === "timeout") throw new Error("timeout");
       return { rawHtml: html, markdown: "", links: [],
-        metadata: { sourceURL: url, url, statusCode: denied && url === badUrl ? 403 : 200 } };
+        metadata: { sourceURL: url, url, statusCode: url === badUrl ? (denied ? 403 : ordinaryFailure === "500" ? 500 : 200) : 200 } };
     };
     const source = await import(`../../../sources/avison-young.js?isolation=${denied}`);
     let failure: unknown;
@@ -64,4 +65,48 @@ test("access denial stops before requesting a later peer", async () => {
   assert.ok(failure instanceof source.AvisonYoungAccessDeniedError);
   assert.deepEqual(observed, []);
   assert.deepEqual(calls, [badUrl]);
+});
+
+for (const failure of ["500", "timeout"] as const) {
+  test(`settled ${failure} holds the row while a later peer is retained`, async () => {
+    const result = await runCase(false, failure);
+    assert.ok(result.failure instanceof result.source.AvisonYoungPartialDetailError);
+    assert.deepEqual(result.observed.map(row => row.id), ["18194"]);
+    assert.deepEqual(result.outcomes.map(row => [row.id, row.state]), [["17000", "failed"], ["18194", "validated"]]);
+  });
+}
+
+test("a valid first URL cannot conceal a 500 or timeout on the second", async () => {
+  const previousFresh = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const previousTransport = process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+  const originalScrape = firecrawl.scrape;
+  try {
+    process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+    delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    const source = await import("../../../sources/avison-young.js?mixed-url-errors");
+    const base = source.avisonYoungBaseListing(row, new Map());
+    base.sharpLaunchUrl = row.external_url;
+    base.externalUrl = "https://www.avisonyoung.us/properties/second-sale";
+    for (const failure of ["500", "timeout"]) {
+      const calls: string[] = [];
+      firecrawl.scrape = async (url: string) => {
+        calls.push(url);
+        if (url === base.externalUrl && failure === "timeout") throw new Error("timeout");
+        return { rawHtml: html, markdown: "", links: [], metadata: {
+          sourceURL: url, url, statusCode: url === base.externalUrl ? 500 : 200,
+        } };
+      };
+      await assert.rejects(
+        source.enrichAvisonYoungListing(base, false, undefined, { matchingExternalUrlRowIds: ["18194"] }),
+        failure === "500" ? /HTTP 500/ : /timeout/,
+      );
+      assert.deepEqual(calls, [base.sharpLaunchUrl, base.externalUrl]);
+    }
+  } finally {
+    firecrawl.scrape = originalScrape;
+    if (previousFresh === undefined) delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = previousFresh;
+    if (previousTransport === undefined) delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    else process.env.AVISON_YOUNG_DETAIL_TRANSPORT = previousTransport;
+  }
 });

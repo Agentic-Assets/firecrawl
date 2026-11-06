@@ -8,6 +8,8 @@ import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-pro
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE,
+  AvisonYoungAccessDeniedError,
   AvisonYoungPartialDetailError,
   isAvisonYoungTerminalSourceError,
   isExclusiveAvisonYoungTerminal404Failure,
@@ -249,6 +251,7 @@ async function main() {
     failures: Array<{ listingId: string; role: string; status: 404 }>;
   }> = [];
   let avisonOtherFailures = 0;
+  let avisonAccessDenied = false;
   let terminalCaptureFailure = false;
 
   sourceLoop: for (const key of requestedSources) {
@@ -358,6 +361,10 @@ async function main() {
           ...(err instanceof AvisonYoungPartialDetailError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
+        if (key === "avison-young" && err instanceof AvisonYoungAccessDeniedError) {
+          avisonAccessDenied = true;
+          break;
+        }
       }
     }
   }
@@ -385,7 +392,13 @@ async function main() {
   const evidenceOnly = !MONITOR && listings.length === 0 &&
     (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
   let avisonTerminal404 = false;
+  const terminalAvisonDenial = avisonAccessDenied && !MONITOR && requestedSources.length === 1
+    && requestedSources[0] === "avison-young";
   if (listings.length === 0) {
+    if (terminalAvisonDenial && !evidenceOnly) {
+      process.exitCode = AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
+      return;
+    }
     if (
       !MONITOR
       && isExclusiveAvisonYoungTerminal404Failure({
@@ -548,7 +561,7 @@ async function main() {
   if (terminalCaptureFailure) process.exitCode = 1;
   if (evidenceOnly) {
     console.error("no listings collected from any source");
-    process.exitCode = avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
+    process.exitCode = terminalAvisonDenial ? AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE : avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
   }
 }
 

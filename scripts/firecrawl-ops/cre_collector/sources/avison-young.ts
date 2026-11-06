@@ -68,6 +68,7 @@ export const AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS = boundedInt(
 // checkpoint coordinator handles this separately from ordinary collector and
 // resource/cancellation exit codes; it is still a failed, unaccepted source.
 export const AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78;
+export const AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE = 74;
 const AVISON_YOUNG_TURNDOWN = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
@@ -107,8 +108,7 @@ export class AvisonYoungTerminalDetailError extends Error {
   }
 }
 
-// Only errors produced by the local detail validator are record-local. Fetch,
-// denial, redirect and unsettled transport failures retain their normal stops.
+// These holds never authorize a complete source result or a database write.
 export class AvisonYoungRecordDetailError extends Error {}
 export class AvisonYoungAccessDeniedError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
@@ -383,13 +383,11 @@ export function assertAvisonYoungDetailDoc(
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
-  if (
-    !combined.trim()
-    || /just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
-      combined
-    )
-  ) {
-    throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge or error shell");
+  if (/just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-/i.test(combined)) {
+    throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge");
+  }
+  if (!combined.trim() || /page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(combined)) {
+    throw new Error("Avison Young detail returned an error shell");
   }
 
   const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
@@ -2427,6 +2425,7 @@ export async function enrichAvisonYoungListing(
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
   let recordDetailErrors = 0;
+  let settledDetailErrors = 0;
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     assertAvisonYoungTransportSettled();
@@ -2454,9 +2453,17 @@ export async function enrichAvisonYoungListing(
       }
       docs.push({ url, doc });
     } catch (err) {
-      if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError
-          || (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status))) throw err;
+      if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
+      if (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status)) {
+        throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${err.status}`);
+      }
+      const knownSettledFailure = err instanceof Error &&
+        /\b(?:timeout|timed out|HTTP 5\d\d|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|detail returned an error shell)\b/i.test(err.message);
+      if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
+          && !(err instanceof AvisonYoungHttpStatusError && err.status === 404)
+          && !knownSettledFailure) throw err;
       if (err instanceof AvisonYoungRecordDetailError) recordDetailErrors++;
+      else if (!(err instanceof AvisonYoungHttpStatusError && err.status === 404)) settledDetailErrors++;
       const error = `${url}: ${String(err)}`;
       if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
         const role =
@@ -2478,11 +2485,12 @@ export async function enrichAvisonYoungListing(
       errors.push(error);
     }
   }
+  // A validated alternate must not conceal another URL's ordinary failure.
+  // Keep this row held; the complete validated peers can still be spooled.
+  if (requireLiveDetails && !strict && (recordDetailErrors || settledDetailErrors)) {
+    throw new AvisonYoungRecordDetailError(errors.join("; "));
+  }
   if (!docs.length) {
-    if (requireLiveDetails && !strict && recordDetailErrors > 0
-        && recordDetailErrors + missingDetails.length === detailUrls.length) {
-      throw new AvisonYoungRecordDetailError(errors.join("; "));
-    }
     if (requireLiveDetails && missingDetails.length === detailUrls.length) {
       throw new AvisonYoungTerminalDetailError(missingDetails[0]!);
     }
@@ -2726,8 +2734,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       return result;
     } catch (error) {
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
-      if (requireLiveDetails && !strict && (error instanceof AvisonYoungRecordDetailError
-          || error instanceof AvisonYoungTerminalDetailError)) {
+      if (requireLiveDetails && !strict && error instanceof AvisonYoungRecordDetailError) {
         heldIds.push(selectedProviderIds[index]!);
         return undefined;
       }
@@ -2749,6 +2756,14 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           trackedEnrich
         )
     : [];
+  } catch (error) {
+    // A terminal-only 404 is not authoritative if another record was held
+    // for an independent identity/structure failure in the same batch.
+    if (heldIds.length && (error instanceof AvisonYoungTerminalSourceError
+        || error instanceof AvisonYoungTerminalDetailError)) {
+      throw new Error(`Avison Young detail batch has both held records and required 404: ${heldIds.sort().join(", ")}`);
+    }
+    throw error;
   } finally {
     if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
   }

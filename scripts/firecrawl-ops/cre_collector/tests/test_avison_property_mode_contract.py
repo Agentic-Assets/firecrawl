@@ -62,6 +62,13 @@ https.request=(url,options,callback)=>{
     let status=native?200:404;
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
+    if(mode==='one-bad-identity' && index===1){
+      status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
+    }
+    if(mode==='identity-and-404'){
+      status=index===0?200:404;
+      if(index===0)body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
+    }
     if(mode==='reverse-partial')status=native?404:200;
     if(mode==='one-good-404' && index===1)status=404;
     if(mode==='one-good-403' && index===1)status=403;
@@ -124,7 +131,7 @@ def prepare(tmp_path, case):
     # Keep transient controls fast without changing their attempt budget.
     env["AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS"] = "0"
     env.pop("AVISON_YOUNG_DETAIL_CONCURRENCY", None)
-    if case.startswith("one-good-"):
+    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404"}:
         env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
     if case == "explicit-strict":
         env["CRE_REQUIRE_FRESH_DETAILS"] = "1"
@@ -147,7 +154,7 @@ def collect(tmp_path, case):
     return result, output, started, json.loads((tmp_path / "calls.json").read_text())
 
 
-@pytest.mark.parametrize("case", ["partial-404", "reverse-partial", "partial-503"])
+@pytest.mark.parametrize("case", ["partial-404", "reverse-partial"])
 def test_actual_default_property_mode_keeps_partial_alternate_and_degraded_team(
     tmp_path, case
 ):
@@ -170,8 +177,7 @@ def test_actual_default_property_mode_keeps_partial_alternate_and_degraded_team(
         assert row["detailWarning"]
         assert not row.get("detailError")
         assert row["freshnessProvenance"]["cacheDisposition"] == "live"
-    # Typed404 is already not retried in property mode; transient503 still is.
-    assert len(calls) == (24 if case == "partial-503" else 12)
+    assert len(calls) == 12
     broken = json.loads(output.read_text())
     broken["listings"][0].pop("detailObservedWithChildPreservation")
     invalid = tmp_path / "invalid.json"
@@ -180,6 +186,40 @@ def test_actual_default_property_mode_keeps_partial_alternate_and_degraded_team(
         refresh.ArtifactValidationError, match="inconsistent child-preservation"
     ):
         refresh.validate_source_artifact(invalid, "avison-young", started)
+
+
+def test_valid_alternate_does_not_hide_a_failed_transport(tmp_path):
+    result, output, _started, _calls = collect(tmp_path, "partial-503")
+    assert result.returncode == 1
+    assert not output.exists()
+
+
+def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_path):
+    preload, started, env = prepare(tmp_path, "one-bad-identity")
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    assert data["listings"] == []
+    assert all(entry.get("error") and entry.get("truncated") is True for entry in data["sources"])
+    assert data["sources"][0]["partialCapture"]["coverage"] == "unverified"
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh.validate_source_artifact(output, "avison-young", started)
+    rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
+    records = [json.loads(line) for line in (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    for tx, held, peer in (("sale", "9002", "9003"), ("lease", "9005", "9006")):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        states = {item["id"]: item["state"] for item in outcome["documents"]}
+        assert states[held] == "failed"
+        assert states[peer] == "validated"
+        assert any(record["kind"] == "validated_detail" and record["transaction"] == tx
+                   and str(record["documents"][0]["id"]) == peer for record in records)
 
 
 def test_actual_default_all404_is_terminal_without_artifact_or_new_queued_details(
@@ -192,11 +232,33 @@ def test_actual_default_all404_is_terminal_without_artifact_or_new_queued_detail
     assert {call["index"] for call in calls} == {0, 1}
 
 
+def test_identity_hold_does_not_disguise_mixed_failure_as_terminal_404(tmp_path):
+    result, output, _started, calls = collect(tmp_path, "identity-and-404")
+    assert result.returncode == 1
+    assert result.returncode != refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
+    assert not output.exists()
+    assert {call["index"] for call in calls} == {0, 1}
+
+
 @pytest.mark.parametrize("case", ["mixed-schema", "mixed-503", "mixed-undefined"])
 def test_actual_default_mixed_invalid_detail_is_not_terminal404(tmp_path, case):
     result, output, _started, _calls = collect(tmp_path, case)
-    assert result.returncode == 1
+    assert result.returncode == (refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE if case == "mixed-schema" else 1)
     assert not output.exists()
+
+
+def test_denial_worker_and_retry_classifier_remain_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(refresh, "run_command", lambda *_args, **_kwargs: refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE)
+    rc = refresh.run_cohort_collection_worker(
+        "avison-young", tmp_path / "out.json", run_dir=tmp_path,
+        attempt_log=tmp_path / "attempt.log", attempt_number=1,
+        generation_started_at=datetime.now(timezone.utc).isoformat(),
+        page_cap=0, concurrency=2, transactions=("sale", "lease"),
+    )
+    assert rc == refresh.COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT
+    checkpoint = {"terminal_collection_failure": {"code": refresh.AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE}}
+    assert refresh.has_terminal_collection_failure("avison-young", checkpoint)
+    assert not refresh.has_terminal_collection_failure("hanley", checkpoint)
 
 
 def test_actual_explicit_strict_all_urls_requirement_is_unchanged(tmp_path):
@@ -284,7 +346,7 @@ def test_actual_default_terminal_worker_and_coordinator_do_not_ingest_or_resume(
 
 @pytest.mark.parametrize("case,exit_code", [
     ("one-good-404", refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE),
-    ("one-good-403", 1),
+    ("one-good-403", refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE),
 ])
 def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tmp_path, case, exit_code):
     preload, started, env = prepare(tmp_path, case)
@@ -318,7 +380,10 @@ def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tm
     records = [json.loads(page) for page in pages[1:]]
     outcomes = [record for record in records if record["kind"] == "detail_outcomes"]
     details = [record for record in records if record["kind"] == "validated_detail"]
-    assert len(outcomes) == 2
+    assert len(outcomes) == (2 if case == "one-good-404" else 1)
+    if case == "one-good-403":
+        assert [entry["transaction"] for entry in outcomes] == ["sale"]
+        assert len(data["sources"]) == 1
     assert len(outcomes) + len(details) == len(records)
     for entry in outcomes:
         items = entry["documents"]
@@ -396,14 +461,15 @@ def test_nondirect_failed_worker_drains_delayed_peer_before_outcome_record(tmp_p
     output = tmp_path / "artifact.json"
     result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
                             capture_output=True, text=True, timeout=20, check=False)
-    assert result.returncode == 1
+    assert result.returncode == refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE
     data = json.loads(output.read_text())
     assert data["listings"] == [] and all(source.get("error") for source in data["sources"])
     rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
     assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
     records = [json.loads(line) for line in
                (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
-    for transaction in ("sale", "lease"):
+    assert {record["transaction"] for record in records} == {"sale"}
+    for transaction in ("sale",):
         selected = [record for record in records if record["transaction"] == transaction]
         assert [record["kind"] for record in selected] == ["validated_detail", "detail_outcomes"]
         assert [item["state"] for item in selected[-1]["documents"]] == [
