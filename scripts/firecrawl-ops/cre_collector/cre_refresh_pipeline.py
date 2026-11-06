@@ -1217,6 +1217,46 @@ def run_bounded_pipeline(
         counts()
 
     try:
+        # Under the normal foreground owner, recover a previously committed
+        # Colliers cursor only from fresh read-only validation. This does not
+        # replay the prior write or require a new operator switch.
+        if ("colliers" in pending and manifest["config"].get("additive") is True
+                and manifest["config"].get("mark_missing") is False
+                and manifest["config"].get("status_activation") is False
+                and manifest["config"].get("transactions") == ["sale", "lease"]
+                and manifest["config"].get("max_items") == 0):
+            from recovery.colliers_cursor import recover_prior_generation
+
+            owner = getattr(owner_check, "__self__", None)
+            if isinstance(owner, refresh.SharedLock):
+                try:
+                    def publication_state(unknown):
+                        require_pipeline_owner(manifest, lease)
+                        state["cursor_recovery_outcome_unknown"] = unknown
+                        refresh.save_manifest(run_dir, manifest)
+                    recovered = recover_prior_generation(owner,
+                        expected_target=refresh.manifest_database_target_sha256(manifest), env_file=env_file,
+                        before_publish=lambda: publication_state(True), after_publish=lambda: publication_state(False))
+                    if recovered is not None:
+                        manifest["sources"]["colliers"]["cursor_recovery"] = {
+                            "generation": recovered["generation"], "attempt_id": recovered["attempt_id"],
+                            "artifact_sha256": recovered["artifact_sha256"],
+                            "position": recovered["next_cursor"], "whole_source_coverage": False,
+                            "validation_path": recovered["validation_path"],
+                            "validation_sha256": recovered["validation_sha256"],
+                        }
+                except ValueError:
+                    if state.get("cursor_recovery_outcome_unknown") is True:
+                        raise
+                    require_pipeline_owner(manifest, lease)
+                    if refresh.database_target_fingerprint(env_file) != manifest["preflight"]["database_target"]:
+                        raise refresh.GlobalStageError("Colliers recovery target changed")
+                    pending.remove("colliers")
+                    manifest["sources"]["colliers"].update(state="gate_blocked", pipeline_stage="failed")
+                    state["source_results"]["colliers"] = {"state": "failed", "reason": "prior cursor recovery refused"}
+                    terminal_source_holds.add("colliers")
+                refresh.save_manifest(run_dir, manifest)
+
         with command_poll_hook(tick) as poll:
             while pending or active or ready or partial_ready:
                 poll()

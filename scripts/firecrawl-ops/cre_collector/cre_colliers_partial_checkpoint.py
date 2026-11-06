@@ -504,15 +504,23 @@ def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_
             "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
 
 
-def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file):
-    """Bind a read-only postcondition query to the same sealed ingest claims."""
+def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file,
+                         verifier_sha=None):
+    """Rederive sealed claims under an explicitly bound clean verifier.
+
+    Ordinarily the verifier and producer are the same commit. Historical
+    readback may supply a separate current verifier SHA; the source, receipt,
+    gates and preimage remain bound to the original producer SHA.
+    """
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
     from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
 
     def context():
         producer, dirty = git_identity()
-        if producer != code_sha or dirty is not False:
+        expected_verifier = code_sha if verifier_sha is None else verifier_sha
+        if (not isinstance(expected_verifier, str) or not re.fullmatch(r"[a-f0-9]{40}", expected_verifier)
+                or producer != expected_verifier or dirty is not False):
             raise ValueError("partial readback code changed")
         return ingest_subset_context(artifact_path, envelope, current_code_sha=producer,
             current_git_dirty=dirty, expected_database_target_sha256=target, attempt_id=attempt_id)
