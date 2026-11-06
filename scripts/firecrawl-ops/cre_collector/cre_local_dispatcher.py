@@ -326,7 +326,9 @@ def successor(slot: str, request: dict, result: dict):
         raise ValueError("continuation settlement differs")
     depth = request["continuation_depth"]
     active = [source for source in unfinished if source not in deferred]
-    groups = ([active] if active else []) + [[source] for source in deferred]
+    delayed = ([deferred] if deferred and result.get("outcome") == "settled_no_work"
+               else [[source] for source in deferred])
+    groups = ([active] if active else []) + delayed
     pending = []
     for sources in groups:
         policy = source_policy(request["policy"], sources)
