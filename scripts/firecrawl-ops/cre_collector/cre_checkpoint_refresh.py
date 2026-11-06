@@ -8334,6 +8334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Explicit DAUM verified subset with held rows; always partial, never complete-source credit",
     )
     parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
+    parser.add_argument("--pipeline-dispatch-order", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
@@ -8543,6 +8544,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         transactions = parse_transactions(args.transactions)
     except ValueError as exc:
         parser.error(str(exc))
+    dispatch_sources = sources
+    if args.pipeline_dispatch_order is not None:
+        if not args.pipeline or args.resume:
+            parser.error("pipeline dispatch order requires a fresh pipeline")
+        try:
+            dispatch_sources = parse_sources(args.pipeline_dispatch_order)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if len(dispatch_sources) != len(sources) or set(dispatch_sources) != set(sources):
+            parser.error("pipeline dispatch order differs from source scope")
     if args.admit_baseline_hold_additively and transactions != TRANSACTIONS:
         parser.error(
             "--admit-baseline-hold-additively is only valid with --transactions both"
@@ -8897,8 +8908,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise RefreshError("document reconciliation remains incomplete after evidence replay") from exc
             if args.pipeline:
                 set_cpu_guard_context(cpu_guard, phase="pipeline", active_operation="bounded_pipeline_manual_reconciliation")
+                if args.pipeline_dispatch_order is not None:
+                    manifest["pipeline_dispatch_order"] = list(dispatch_sources)
+                    save_manifest(run_dir, manifest)
                 source_failures = run_bounded_pipeline(
-                    run_dir, manifest, sources,
+                    run_dir, manifest, dispatch_sources,
                     page_cap=args.page_cap, concurrency=args.concurrency,
                     attempts_this_run=args.attempts_per_source, env_file=args.env_file,
                     source_workers=args.source_workers,

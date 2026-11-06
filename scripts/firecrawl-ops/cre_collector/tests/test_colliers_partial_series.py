@@ -378,9 +378,11 @@ def test_controlled_deadline_publishes_qualified_units_and_interrupted_peer(tmp_
 
 
 def test_multiple_window_units_requalify_each_receipt_and_fence_unknown_write(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     import cre_colliers_partial_checkpoint as partial
 
-    run = tmp_path / RUN_ID
+    run = tmp_path / "runs" / RUN_ID
     child = mixed_child(run)
     child["collector_git_dirty"] = False
     child["pipeline"]["units"][0]["sources"] = ["colliers"]
@@ -433,6 +435,25 @@ def test_multiple_window_units_requalify_each_receipt_and_fence_unknown_write(tm
 
     monkeypatch.setattr(partial, "verify_worker_artifact", verified)
     assert series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    settings = config(pipeline=True, sources=["colliers", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest.update(started_at=PARENT_START, status="interrupted")
+    child.update(status="interrupted", config=series._expected_child_config("colliers,savills", settings))
+    child["pipeline"].update(status="reconciliation_required", commit_outcome_unknown=False)
+    child["sources"]["savills"] = {"state": "collecting"}
+    child["pipeline"]["source_results"]["savills"] = {"state": "failed"}
+    for source in settings["sources"]:
+        manifest["sources"][source].update(state="interrupted", checkpoint_run=f"runs/{RUN_ID}",
+            attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *args, **kwargs: (run / "manifest.json", child))
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("must not replay"))
+    control = SimpleNamespace(work_started=True, cleanup_unknown=False, spawn_uncertain=False,
+        group=None, child_unverified=False, checkpoint_run=run, child_invocation_id="bound", checkpoint_pid=123)
+    series.reconcile_settled_interruption(tmp_path, manifest, control)
+    assert manifest["sources"]["colliers"]["state"] == "qualified_partial_subset"
+    assert manifest["sources"]["savills"]["state"] == "interrupted"
+    assert manifest["status"] == "interrupted"
     child["pipeline"]["commit_outcome_unknown"] = True
     assert not series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
     child["pipeline"]["commit_outcome_unknown"] = False

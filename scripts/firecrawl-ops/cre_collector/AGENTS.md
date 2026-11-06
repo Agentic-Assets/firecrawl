@@ -204,6 +204,7 @@ and resolve confirmed findings before shipping.
 | `sources/` | Per-broker adapters - see `sources/AGENTS.md` |
 | `lib/` | Shared scrape/config/util - see `lib/AGENTS.md` |
 | `reporting/` | Source-bound partial qualification and source-health receipt projection; no write admission |
+| `scheduling/` | Fresh-generation source ordering after an exactly settled deadline; never changes source scope or authorizes writes |
 | `source_evidence/` | Private append-only capture planning, admitted append and text search; no canonical listing, lifecycle, normalized fact or OM-fact writes |
 | `document_text/` | Pinned local AnyDoc adapter with explicit extraction/OCR-needed/failure artifacts; no automatic download or hosted upload |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
