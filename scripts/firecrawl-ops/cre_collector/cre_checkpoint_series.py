@@ -2651,6 +2651,15 @@ def run_pipeline_series(
         if proc is not None and control is None:
             _terminate_child(proc)
         raise
+    if control is not None and control.pre_acquisition_refusal:
+        for key in sources:
+            row = manifest["sources"][key]
+            row["attempts"][-1].update(finished_at=utc_now(), rc=rc)
+            row.update(state="failed_source", error="shared lock contention before acquisition")
+        manifest.update(status="failed", finished_at=utc_now(),
+                        error="shared lock contention before acquisition; no checkpoint work started")
+        save_manifest(series_dir, manifest)
+        return rc or 1
     _, child = _load_child_manifest(
         root,
         before=set(),
@@ -3005,6 +3014,14 @@ def run_series(
 
             attempt["finished_at"] = utc_now()
             attempt["rc"] = rc
+            if control is not None and control.pre_acquisition_refusal:
+                checkpoint["state"] = "failed_source"
+                checkpoint["error"] = "shared lock contention before acquisition"
+                manifest["status"] = "failed"
+                manifest["error"] = "shared lock contention before acquisition; no checkpoint work started"
+                manifest["finished_at"] = utc_now()
+                save_manifest(series_dir, manifest)
+                return rc or 1
             try:
                 child_manifest_path, child_manifest = _load_child_manifest(
                     child_out_root,
@@ -3268,7 +3285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Savills-only serial additive refresh retaining its historical coverage hold")
     parser.add_argument("--pipeline", action="store_true")
     parser.add_argument("--source-workers", type=int, default=None)
-    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(

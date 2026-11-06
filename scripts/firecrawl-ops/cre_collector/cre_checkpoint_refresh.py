@@ -240,7 +240,15 @@ class ArtifactValidationError(RefreshError):
 
 
 class LockHeldError(RefreshError):
-    """Another CRE tier owns the shared lock."""
+    """Shared lock acquisition or authority verification refused."""
+
+
+class LockFlockBusyError(LockHeldError):
+    """A nonblocking advisory flock reported contention; retry safety is unknown."""
+
+    def __init__(self, lock_object: str) -> None:
+        super().__init__("CRE lock authority is held by another process")
+        self.lock_object = lock_object
 
 
 class GlobalStageError(RefreshError):
@@ -1103,9 +1111,7 @@ def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise LockHeldError(
-                "CRE lock authority is held by another process"
-            ) from exc
+            raise LockFlockBusyError("recovery_synchronizer") from exc
         named = sync_path.lstat()
         if (
             not stat.S_ISREG(named.st_mode)
@@ -1827,9 +1833,7 @@ class SharedLock:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise LockHeldError(
-                    "CRE lock authority is held by another process"
-                ) from exc
+                raise LockFlockBusyError("authority") from exc
             observed = os.fstat(descriptor)
             self.authority_fd = descriptor
             self.authority_identity = (observed.st_dev, observed.st_ino)
@@ -2418,7 +2422,7 @@ def build_collect_argv(
     source: str,
     output: Path,
     *,
-    page_cap: int = 400,
+    page_cap: int = 0,
     concurrency: int = 3,
     transactions: Sequence[str] = TRANSACTIONS,
 ) -> list[str]:
@@ -8168,7 +8172,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Explicit DAUM verified subset with held rows; always partial, never complete-source credit",
     )
     parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
-    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
         "--source-workers",
@@ -8500,6 +8504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settlement_unknown = False
     guards_stopped = False
     local_refusal = False
+    pre_acquisition_refusal = False
     local_refusal_settled = False
     details = None
 
@@ -8539,7 +8544,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        ownership.enter_context(lock)
+        try:
+            ownership.enter_context(lock)
+        except LockFlockBusyError as exc:
+            # Only synchronizer contention occurs before any lock ownership or work.
+            pre_acquisition_refusal = exc.lock_object == "recovery_synchronizer" and not args.resume
+            raise
         if args.resume and automatic_source_evidence is not None:
             from source_evidence import automatic
             automatic.prepare_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
@@ -8926,6 +8936,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     terminal_evidence_saved=terminal_evidence_saved
                     and not terminal_publication_failed,
+                    pre_acquisition_refusal=pre_acquisition_refusal,
                 )
             if local_refusal and not local_refusal_settled and sys.exception() is None:
                 raise GlobalStageError("source refusal local settlement is unknown")

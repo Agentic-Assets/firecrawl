@@ -143,6 +143,7 @@ class SeriesControl:
         self.checkpoint_sha = None
         self.child_unverified = False
         self.child_invocation_id = None
+        self.pre_acquisition_refusal = False
 
     def _signal(self, signum, _frame):
         signal.setitimer(signal.ITIMER_REAL, 0)
@@ -304,6 +305,7 @@ class SeriesControl:
         self.checkpoint_pid = None
         self.checkpoint_sha = git_sha
         self.child_invocation_id = uuid.uuid4().hex
+        self.pre_acquisition_refusal = False
 
     def verify_checkpoint(self):
         if not self.child_unverified:
@@ -326,9 +328,16 @@ class SeriesControl:
                 or child["pid"] != self.checkpoint_pid
                 or child.get("guards_stopped") is not True
                 or child.get("nested_cleanup_confirmed") is not True
-                or child.get("terminal_evidence_saved") is not True
+                or not (
+                    child.get("terminal_evidence_saved") is True
+                    or (
+                        child.get("pre_acquisition_refusal") is True
+                        and child.get("terminal_evidence_saved") is False
+                    )
+                )
             ):
                 raise SeriesControlError("checkpoint local settlement unverified")
+            self.pre_acquisition_refusal = (child.get("pre_acquisition_refusal") is True and child.get("terminal_evidence_saved") is False)
             self.child_unverified = False
         finally:
             os.close(private)
@@ -531,6 +540,7 @@ def publish_checkpoint_settlement(
     guards_stopped,
     nested_cleanup_confirmed,
     terminal_evidence_saved,
+    pre_acquisition_refusal=False,
 ):
     """Optional final hook AFTER existing canonical ownership teardown."""
     validate_child_invocation(invocation_id)
@@ -561,6 +571,7 @@ def publish_checkpoint_settlement(
                 "guards_stopped": guards_stopped is True,
                 "nested_cleanup_confirmed": nested_cleanup_confirmed is True,
                 "terminal_evidence_saved": terminal_evidence_saved is True,
+                "pre_acquisition_refusal": pre_acquisition_refusal is True,
             },
         )
     finally:

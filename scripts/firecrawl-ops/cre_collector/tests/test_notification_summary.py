@@ -1107,6 +1107,7 @@ def test_actual_pipeline_producer_attempt_and_report_feed_strict_summary(evidenc
             return 0
 
     class Control:
+        pre_acquisition_refusal = False
         invocation_id = INVOCATION
         child_invocation_id = CHILD
         def prepare_checkpoint(self, *a):
@@ -1343,6 +1344,7 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
             return 1
 
     class Control:
+        pre_acquisition_refusal = False
         invocation_id = INVOCATION
         child_invocation_id = CHILD
 
