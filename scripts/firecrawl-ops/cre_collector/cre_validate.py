@@ -23,6 +23,7 @@ from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     MAX_NORMALIZED_SALE_PRICE_USD,
     MIN_PLAUSIBLE_CAP_RATE,
+    SOURCE_TO_BROKERAGE,
     assert_expected_database_target,
     find_psql,
     load_db_url,
@@ -374,17 +375,37 @@ WHERE artifact_run_key = {_sql_literal(artifact_run_key)};
 
 
 def atomic_settlement_query(artifact_run_key, source, generation):
-    """Count both footprints in one statement after acquiring the writer lock."""
+    """Count a job and the existence of its source generation under the lock."""
     artifact_run_jobs_query(artifact_run_key)  # Apply the shared exact-key validator.
-    if source not in load_source_policy() or not isinstance(generation, str) or not generation or len(generation) > 256:
+    if (source not in SOURCE_TO_BROKERAGE or source not in load_source_policy()
+            or not isinstance(generation, str) or not generation or len(generation) > 256):
         raise ValueError("invalid atomic settlement source or generation")
-    generation_sql = QUERIES["freshness_generations"].strip().removesuffix(";")
+    # source_key_sql may return the brokerage slug itself or a folded source
+    # under its mapped brokerage. Include both possible slugs; never infer a
+    # narrower external-id prefix from the source.
+    slug = SOURCE_TO_BROKERAGE[source][0]
+    source_sql = source_key_sql("decoded")
     return f"""
-WITH generations AS ({generation_sql})
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs
         WHERE artifact_run_key = {_sql_literal(artifact_run_key)})::text AS matching_jobs,
-       (SELECT count(*) FROM generations WHERE source_key = {_sql_literal(source)}
-        AND generation_id = {_sql_literal(generation)})::text AS matching_generations;
+       (EXISTS (
+         SELECT 1 FROM credeals.cre_listings l
+         JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+         CROSS JOIN LATERAL (
+           SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data OFFSET 0
+         ) AS decoded
+         CROSS JOIN LATERAL (
+           SELECT {FRESHNESS_PAYLOAD_SQL} AS payload OFFSET 0
+         ) AS persisted
+         CROSS JOIN LATERAL jsonb_to_record(coalesce(persisted.payload, '{{}}'::jsonb))
+           AS observed("inventoryObservedAt" text, "detailObservedAt" text, "freshnessProvenance" jsonb)
+         CROSS JOIN LATERAL jsonb_to_record(coalesce(observed."freshnessProvenance", '{{}}'::jsonb))
+           AS provenance("generationId" text, "detailScope" text, "cacheDisposition" text)
+         WHERE l.deleted_at IS NULL
+           AND b.slug IN ({_sql_literal(slug)}, {_sql_literal(source)})
+           AND ({source_sql}) = {_sql_literal(source)}
+           AND NULLIF(provenance."generationId", '') = {_sql_literal(generation)}
+       ))::int::text AS matching_generations;
 """
 
 

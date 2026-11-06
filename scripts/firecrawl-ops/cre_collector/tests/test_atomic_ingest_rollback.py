@@ -400,6 +400,8 @@ def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
     count = script.index("AS matching_jobs", lock)
     assert script.index("ROLLBACK;") < read_committed < lock < count
     assert "AS matching_generations" in script[count:]
+    assert "EXISTS (" in query and "b.slug IN (" in query
+    assert "raw AS MATERIALIZED" not in query
     assert "SET LOCAL lock_timeout = '30s';" in script[read_committed:lock]
     assert script.count(r"\o :CRE_VALIDATION_RESULTS") == 1
     assert r"\g /dev/null" in script[lock:count] or r"\g nul" in script[lock:count]

@@ -178,21 +178,68 @@ try:
             time.sleep(0.1)
     key = "hashtextextended('credeals:listing-lifecycle:v1', 0)"
     sql(
-        "CREATE SCHEMA credeals; CREATE TABLE credeals.cre_scrape_jobs (artifact_run_key text); CREATE TABLE fixture_generations (source_key text, generation_id text); CREATE FUNCTION delay_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(4); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER deferred_delay AFTER INSERT ON credeals.cre_scrape_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION delay_commit();"
+        "CREATE SCHEMA credeals; CREATE TABLE credeals.cre_scrape_jobs (artifact_run_key text); CREATE TABLE credeals.cre_brokerages (id integer primary key, slug text); INSERT INTO credeals.cre_brokerages VALUES (1, 'daum-commercial'); CREATE TABLE credeals.cre_listings (brokerage_id integer, external_id text, raw_data jsonb, deleted_at timestamptz); CREATE INDEX ON credeals.cre_listings (brokerage_id) WHERE deleted_at IS NULL; CREATE FUNCTION delay_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(4); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER deferred_delay AFTER INSERT ON credeals.cre_scrape_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION delay_commit();"
     )
-    cre_validate.QUERIES["freshness_generations"] = (
-        "SELECT source_key, generation_id FROM fixture_generations;"
+    # Compare the narrow EXISTS with the full grouped report on synthetic
+    # standard, nested, folded and deleted rows before the race cases.
+    sql(
+        "INSERT INTO credeals.cre_brokerages VALUES (2, 'cbre'), (3, 'jll');"
+        "INSERT INTO credeals.cre_listings VALUES "
+        "(1,'equiv-plain',jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','equiv-a')),NULL),"
+        "(1,'equiv-deleted',jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','equiv-deleted')),now()),"
+        "(2,'dealflow:equiv',jsonb_build_object('latestInventoryObservation',jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','equiv-folded'))),NULL),"
+        "(2,'ordinary',jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','equiv-main')),NULL),"
+        "(3,'investor:equiv',jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','equiv-investor')),NULL)"
+    )
+    generation_report = (
+        cre_validate.QUERIES["freshness_generations"].strip().removesuffix(";")
+    )
+    cases = [
+        ("daum-commercial", "equiv-a"),
+        ("daum-commercial", "equiv-deleted"),
+        ("cbre-dealflow", "equiv-folded"),
+        ("cbre", "equiv-main"),
+        ("jll-investor", "equiv-investor"),
+        ("cbre", "absent"),
+    ]
+    for case_source, case_generation in cases:
+        full = sql(
+            "SELECT count(*) FROM ("
+            + generation_report
+            + ") generations WHERE source_key="
+            + cre_validate._sql_literal(case_source)
+            + " AND generation_id="
+            + cre_validate._sql_literal(case_generation)
+        )
+        narrowed = sql(
+            cre_validate.atomic_settlement_query(
+                "ingest:v1:" + "c" * 64, case_source, case_generation
+            )
+        ).split("	")
+        assert len(narrowed) == 2 and narrowed[0] == "0" and narrowed[1] == full
+    plan_query = cre_validate.atomic_settlement_query(
+        "ingest:v1:" + "c" * 64, "daum-commercial", "equiv-a"
+    )
+    (root / "narrow-plan.json").write_text(sql("EXPLAIN (FORMAT JSON) " + plan_query))
+    print(
+        json.dumps(
+            {"case": "generation-equivalence", "cases": len(cases), "passed": True}
+        )
     )
     source = "daum-commercial"
     key_a, key_b = "ingest:v1:" + "a" * 64, "ingest:v1:" + "b" * 64
 
     def fence_sql(artifact_key, generation):
         query = cre_validate.atomic_settlement_query(artifact_key, source, generation)
-        return cre_validate._build_query_batch_script({"ordinary": "SELECT 42 AS sentinel;", "atomic_settlement": query})
+        return cre_validate._build_query_batch_script(
+            {"ordinary": "SELECT 42 AS sentinel;", "atomic_settlement": query}
+        )
 
     def fence_result(app):
         data = (root / (app + ".tsv")).read_text()
-        rows = cre_validate.parse_query_batch(data, {"ordinary": "", "atomic_settlement": ""})
+        rows = cre_validate.parse_query_batch(
+            data, {"ordinary": "", "atomic_settlement": ""}
+        )
         assert rows["ordinary"] == [{"sentinel": "42"}]
         return rows["atomic_settlement"]
 
@@ -200,7 +247,7 @@ try:
         f"""BEGIN;
 SELECT pg_advisory_xact_lock({key});
 INSERT INTO credeals.cre_scrape_jobs VALUES ('{key_a}');
-INSERT INTO fixture_generations VALUES ('daum-commercial','generation-a');
+INSERT INTO credeals.cre_listings VALUES (1, 'fixture-a', jsonb_build_object('freshnessProvenance', jsonb_build_object('generationId','generation-a')), NULL);
 COMMIT;
 """,
         "writer",
@@ -248,7 +295,7 @@ COMMIT;
         f"""BEGIN;
 SELECT pg_advisory_xact_lock({key});
 INSERT INTO credeals.cre_scrape_jobs VALUES ('{key_b}');
-INSERT INTO fixture_generations VALUES ('daum-commercial','generation-b');
+INSERT INTO credeals.cre_listings VALUES (1, 'fixture-b', jsonb_build_object('freshnessProvenance', jsonb_build_object('generationId','generation-b')), NULL);
 COMMIT;
 """,
         "queued",
