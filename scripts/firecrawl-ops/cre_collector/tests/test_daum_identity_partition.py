@@ -46,6 +46,23 @@ def test_identity_partition_rejects_omitted_or_changed_members():
             validate_partition(members, invalid)
 
 
+def test_probe_refuses_wrong_initial_target_even_if_later_target_would_match(tmp_path, monkeypatch):
+    import hashlib
+    import cre_ingest
+    import cre_validate
+    from cre_daum_identity_sql import run_cohort_probe
+
+    artifact = tmp_path / "artifact.json"
+    artifact.write_bytes(b"{}")
+    urls = iter([("wrong", None), ("expected", None)])
+    monkeypatch.setattr(cre_ingest, "load_db_url", lambda *_args: next(urls))
+    monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url",
+                        lambda url: {"value": "a" * 64 if url == "expected" else "b" * 64})
+    monkeypatch.setattr(cre_validate, "_run_psql_script", lambda *_args, **_kwargs: pytest.fail("must not query"))
+    with pytest.raises(ValueError, match="initial target differs"):
+        run_cohort_probe(artifact, hashlib.sha256(b"{}").hexdigest(), "gen", "c" * 40, "a" * 64, None)
+
+
 def test_generated_ingest_rechecks_before_filter_and_never_activates(subset):
     binding, _ = qualified_conflict(subset)
     manifest = subset[3]

@@ -303,11 +303,25 @@ try:
                                     source_held_count=2, emitted_count=99, held_count=3)
     before = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
                  "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
+    child_tables = ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents",
+                    "cre_listing_media", "cre_listing_links")
+    def protected_identity_snapshot():
+        snapshots = {"index": sql("SELECT coalesce(jsonb_agg(to_jsonb(si) ORDER BY si.id)::text,'[]') "
+                                 "FROM credeals.cre_source_index si WHERE external_id IN "
+                                 "('property/Synthetic-0','property/Synthetic-101');", db).stdout}
+        for table in child_tables:
+            snapshots[table] = sql("SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id)::text,'[]') "
+                                   "FROM credeals." + table + " c JOIN credeals.cre_listings l "
+                                   "ON l.id=c.listing_id WHERE l.external_id IN "
+                                   "('property/Synthetic-0','property/Synthetic-101');", db).stdout
+        return snapshots
+    protected_before = protected_identity_snapshot()
     incoming_identity = [row(i, fresh=True, name="Changed" if i == 1 else "Synthetic") for i in range(100)]
     sql(generated(incoming_identity, bound_claims), db)
     after = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
                 "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
     assert after == before
+    assert protected_identity_snapshot() == protected_before
     assert sql("SELECT status || '|' || listings_saved FROM credeals.cre_scrape_jobs WHERE status='partial' "
                "ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial|99"
     assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"

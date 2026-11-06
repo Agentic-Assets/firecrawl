@@ -130,6 +130,8 @@ def run_cohort_probe(artifact_path, artifact_sha256, generation, producer, targe
         raise ValueError("DAUM identity probe binding invalid")
     raw = read_file(artifact_path)
     db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target_sha256:
+        raise ValueError("DAUM identity probe initial target differs")
 
     def recheck():
         current_url, _ = load_db_url(env_file)
