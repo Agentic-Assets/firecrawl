@@ -61,9 +61,9 @@ INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical
 SELECT id,'infabode:1','https://infabode.com/services/listings/1',NULL,'active','Existing title',45.123456789012345,
  '2026-11-05T09:00:00Z','{"sourceKey":"nai-global","id":"infabode:1","existing":true}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,raw_data)
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,scraped_at,raw_data)
 SELECT id,'infabode:old','https://example.test/old',
- 'https://www.naiglobal.com/listings/?propertyId=post-2','active','Conflict','{}'::jsonb
+ 'https://www.naiglobal.com/listings/?propertyId=post-2','active','Conflict','2026-11-05T09:00:00Z','{}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 INSERT INTO credeals.cre_listing_contacts(listing_id,name)
 SELECT id,'Preserve me' FROM credeals.cre_listings WHERE external_id='infabode:1';
@@ -182,9 +182,9 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:1' AND title='Existing title' AND lat=45.123456789012345 AND lng IS NULL") == "1"
         assert sql("BEGIN; UPDATE credeals.cre_listings SET lat=0 WHERE external_id='infabode:5'; " + gap_readback + "; ROLLBACK;") == "1|1|1"
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,raw_data)
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,scraped_at,raw_data)
 SELECT id,'infabode:88','https://infabode.com/services/listings/88',
- 'https://www.naiglobal.com/listings/?propertyId=post-89','active',
+ 'https://www.naiglobal.com/listings/?propertyId=post-89','active','2026-11-05T09:00:00Z',
  '{"sourceKey":"nai-global","id":"infabode:88"}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 """)
@@ -207,14 +207,15 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
         # A second cooperating writer must serialize and invalidate the exact
         # parent preimage before this partial transaction writes a job or row.
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
-SELECT id,'infabode:6','https://infabode.com/services/listings/6','active','Before',
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,scraped_at,raw_data)
+SELECT id,'infabode:6','https://infabode.com/services/listings/6','active','Before','2026-11-05T09:00:00Z',
        '{"sourceKey":"nai-global","id":"infabode:6"}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 """)
         race_rows = [stage_post(post(6), "gen-1"), stage_post(post(7), "gen-1")]
         race_probe = sql(identity_probe_sql(race_rows)).split("|", 3)
         race_held = json.loads(race_probe[2])
+        assert race_held == []
         race_before = json.loads(race_probe[3], parse_float=Decimal)
         race_job = str(uuid.uuid4())
         writer = subprocess.Popen(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q",
@@ -239,8 +240,8 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
         assert sql(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{race_job}'::uuid;") == "0"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:7';") == "0"
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
-SELECT id,'infabode:8','https://infabode.com/services/listings/8','withdrawn','Terminal original',
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,scraped_at,raw_data)
+SELECT id,'infabode:8','https://infabode.com/services/listings/8','withdrawn','Terminal original','2026-11-05T09:00:00Z',
        '{"sourceKey":"nai-global","id":"infabode:8"}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 """)
@@ -258,8 +259,8 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
                    "AND status='withdrawn' AND title='Terminal original';") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='infabode:9' AND status IS NULL;") == "1"
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
-SELECT id,'infabode:10','https://infabode.com/services/listings/10','active','Wrapped original',
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,scraped_at,raw_data)
+SELECT id,'infabode:10','https://infabode.com/services/listings/10','active','Wrapped original','2026-11-05T09:00:00Z',
        '{"primary":{"sourceKey":"nai-global","id":"infabode:10"},
          "secondary_pass":{"sourceKey":"nai-global","id":"infabode:10"}}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
@@ -278,8 +279,8 @@ FROM credeals.cre_brokerages WHERE slug='nai-global';
                    "AND title='Wrapped original' AND raw_data#>>'{primary,sourceKey}'='nai-global' "
                    "AND raw_data#>>'{secondary_pass,sourceKey}'='nai-global';") == "1"
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,raw_data)
-SELECT id,'infabode:11','https://infabode.com/services/listings/11','active',
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,scraped_at,raw_data)
+SELECT id,'infabode:11','https://infabode.com/services/listings/11','active','2026-11-05T09:00:00Z',
        '{"primary":{"sourceKey":"nai-global","id":"infabode:11"},
          "secondary_pass":{"sourceKey":"foreign","id":"infabode:11"}}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
