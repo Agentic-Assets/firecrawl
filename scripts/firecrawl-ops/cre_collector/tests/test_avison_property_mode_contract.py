@@ -8,8 +8,10 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import cre_checkpoint_refresh as refresh
 import cre_partial_page_custody as custody
@@ -273,6 +275,7 @@ def test_sale_success_then_lease_denial_returns_terminal_with_saved_artifact(tmp
                             capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode == refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE
     data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
     assert len(data["listings"]) == 3
     assert data["sources"][0]["transaction"] == "sale"
     assert data["sources"][1]["transaction"] == "lease"
@@ -280,6 +283,67 @@ def test_sale_success_then_lease_denial_returns_terminal_with_saved_artifact(tmp
     assert data["sources"][1]["error"]
     with pytest.raises(refresh.ArtifactValidationError):
         refresh.validate_source_artifact(output, "avison-young", started)
+    ingest = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(output), "--dry-run"],
+                            cwd=COLLECTOR, capture_output=True, text=True, timeout=20, check=False)
+    assert ingest.returncode != 0
+    assert "not a canonical" in ingest.stderr
+
+
+def test_denial_outcome_survives_artifact_publication_failure(tmp_path):
+    preload, _started, env = prepare(tmp_path, "sale-good-lease-denied")
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    output = tmp_path / "existing-directory"
+    output.mkdir()
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE
+    assert "terminal source outcome preserved after collector output failure" in result.stderr
+
+
+def test_mixed_source_projection_holds_failed_avison_and_keeps_peer(tmp_path):
+    preload, _started, env = prepare(tmp_path, "sale-good-lease-denied")
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    peer = "export async function srcHanley(tx){return {company:'Peer',listings:[{id:'peer-'+tx,name:'Healthy peer'}]}}"
+    url = "data:text/javascript," + quote(peer, safe="")
+    hooks = ("import {registerHooks} from 'node:module';\n"
+             "registerHooks({resolve(s,c,n){if(c.parentURL?.endsWith('/collect.ts') && "
+             "s==='./sources/hanley.js')return {url:" + json.dumps(url) + ",shortCircuit:true};return n(s,c)}});\n")
+    preload.write_text(hooks + PRELOAD)
+    output = tmp_path / "mixed.json"
+    argv = [arg.replace("--source=avison-young", "--source=avison-young,hanley")
+            for arg in command(preload, output)]
+    result = subprocess.run(argv, cwd=COLLECTOR, env=env, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(output.read_text())
+    assert not data["runMeta"].get("evidenceOnly")
+    assert {item["sourceKey"] for item in data["listings"]} == {"hanley"}
+    assert all(entry.get("error") and entry.get("truncated") for entry in data["sources"]
+               if entry["sourceKey"] == "avison-young")
+
+
+def test_branded_deadline_survives_artifact_publication_failure(tmp_path):
+    preload, _started, env = prepare(tmp_path, "unused")
+    env["AVISON_YOUNG_DETAIL_TRANSPORT"] = "nondirect"
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    scrape_url = (COLLECTOR / "lib/scrape.ts").as_uri()
+    perf_url = (COLLECTOR / "lib/performance.ts").as_uri()
+    stub = ("export * from " + json.dumps(scrape_url) + ";\n"
+            "import {createClientRequestDeadlineError} from " + json.dumps(perf_url) + ";\n"
+            "export async function scrapeDoc(url){if(url.includes('fixture-lease-'))throw createClientRequestDeadlineError(1);"
+            "return {rawHtml:'<html><main class=\"property-detail\"><h1>Fixture Property</h1>"
+            "<p>Current property details.</p></main></html>',markdown:'',links:[],"
+            "metadata:{statusCode:200,sourceURL:url,url}}}")
+    url = "data:text/javascript," + quote(stub, safe="")
+    hooks = ("import {registerHooks} from 'node:module';\n"
+             "registerHooks({resolve(s,c,n){if(c.parentURL?.endsWith('/sources/avison-young.ts') && "
+             "s==='../lib/scrape.js')return {url:" + json.dumps(url) + ",shortCircuit:true};return n(s,c)}});\n")
+    preload.write_text(hooks + PRELOAD)
+    output = tmp_path / "existing-directory"
+    output.mkdir()
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE
+    assert "terminal source outcome preserved after collector output failure" in result.stderr
 
 
 def test_actual_explicit_strict_all_urls_requirement_is_unchanged(tmp_path):

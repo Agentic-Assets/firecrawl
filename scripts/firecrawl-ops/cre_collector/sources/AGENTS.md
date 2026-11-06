@@ -121,8 +121,9 @@ In fresh property-detail mode, settled identity/structure refusals hold selected
 rows while eligible peers continue into the private
 spool. The source then returns an error marked truncated; these observations
 are not admitted to Supabase, do not prove full coverage, and cannot authorize
-retirement. Settled timeouts, 5xx responses and recognized error shells also
-hold the row. Access denial, challenge, uncertain settlement and unclassified
+retirement. Settled direct timeouts, source 5xx responses and recognized error
+shells also hold the row. A local Firecrawl API 5xx does not prove its scrape
+settled and stops the source without another attempt. Access denial, challenge, uncertain settlement and unclassified
 errors stop the pass. Strict full-detail mode retains its existing stop behavior. A crash
 before spool settlement does not establish a complete outcome record.
 

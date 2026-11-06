@@ -2,7 +2,6 @@ import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
 import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-listing-structure.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
-import { SdkError } from "@mendable/firecrawl-js";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
@@ -116,6 +115,7 @@ export class AvisonYoungTerminalDetailError extends Error {
 // These holds never authorize a complete source result or a database write.
 export class AvisonYoungRecordDetailError extends Error {}
 export class AvisonYoungAccessDeniedError extends Error {}
+class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
   constructor(readonly heldIds: string[]) {
     super(`Avison Young partial detail: ${heldIds.length} record(s) held: ${heldIds.join(", ")}`);
@@ -386,6 +386,9 @@ export function assertAvisonYoungDetailDoc(
   if ([401, 403, 429].includes(status)) {
     throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${status}`);
   }
+  if (Number.isFinite(status) && status >= 500) {
+    throw new AvisonYoungSettledDetailError(`Avison Young detail returned HTTP ${status}`);
+  }
   if (Number.isFinite(status) && status >= 400) {
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
@@ -394,7 +397,7 @@ export function assertAvisonYoungDetailDoc(
     throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge");
   }
   if (!combined.trim() || /page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(combined)) {
-    throw new Error("Avison Young detail returned an error shell");
+    throw new AvisonYoungSettledDetailError("Avison Young detail returned an error shell");
   }
 
   const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
@@ -2374,7 +2377,7 @@ export async function fetchAvisonYoungDirectDocWithRetry(
   }
   if (lastError instanceof AvisonYoungDeadlineError) throw lastError;
   throw new Error(
-    `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`
+    `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`, { cause: lastError }
   );
 }
 
@@ -2465,15 +2468,22 @@ export async function enrichAvisonYoungListing(
       if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
       const classified = classifyPerformanceError(err);
       if (classified.remoteSettlementUnknown) throw refuseUnsettled(err);
-      if (err instanceof SdkError && [401, 403, 429].includes(classified.status ?? 0)) {
+      if (process.env.AVISON_YOUNG_DETAIL_TRANSPORT !== "direct"
+          && [401, 403, 429].includes(classified.status ?? 0)) {
         throw new AvisonYoungAccessDeniedError(`Firecrawl API returned HTTP ${classified.status}`);
+      }
+      // An HTTP failure from the local API is not a receipt that its remote
+      // scrape or browser has settled. This source stops without a retry.
+      if (process.env.AVISON_YOUNG_DETAIL_TRANSPORT !== "direct" && (classified.status ?? 0) >= 500) {
+        throw refuseUnsettled(err);
       }
       if (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status)) {
         throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${err.status}`);
       }
       const knownSettledFailure = err instanceof AvisonYoungDeadlineError
-        || (err instanceof SdkError && (classified.status ?? 0) >= 500)
-        || (err instanceof Error && /\b(?:HTTP 5\d\d|detail returned an error shell)\b/i.test(err.message));
+        || err instanceof AvisonYoungSettledDetailError
+        || (process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct" && err instanceof Error
+            && err.cause instanceof AvisonYoungHttpStatusError && err.cause.status >= 500);
       if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
           && !(err instanceof AvisonYoungHttpStatusError && err.status === 404)
           && !knownSettledFailure) throw err;

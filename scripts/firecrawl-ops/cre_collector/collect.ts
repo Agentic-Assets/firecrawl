@@ -234,6 +234,8 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
   }
 }
 
+let avisonTerminalExit: number | undefined;
+
 async function main() {
   const startedAt = observationNow();
   const spools: Partial<Record<PartialPageSource, PartialPageSpool>> = {};
@@ -367,12 +369,30 @@ async function main() {
         });
         if (key === "avison-young" && err instanceof AvisonYoungAccessDeniedError) {
           avisonAccessDenied = true;
+          if (!MONITOR && requestedSources.length === 1) avisonTerminalExit = AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
           break;
         }
         if (key === "avison-young" && err instanceof AvisonYoungUnsettledError) {
           avisonUnsettled = true;
+          if (!MONITOR && requestedSources.length === 1) avisonTerminalExit = AVISON_YOUNG_UNSETTLED_EXIT_CODE;
           break;
         }
+      }
+    }
+  }
+
+  // A mixed-source artifact can still carry independent peers, but an earlier
+  // successful Avison transaction must not escape its later source failure.
+  // Its validated details, when captured, remain in the private spool.
+  if (requestedSources.length > 1 && sources.some(source => source.sourceKey === "avison-young" && source.error)) {
+    for (let index = listings.length - 1; index >= 0; index--) {
+      if (listings[index].sourceKey === "avison-young") listings.splice(index, 1);
+    }
+    for (const source of sources) {
+      if (source.sourceKey === "avison-young" && !source.error) {
+        source.error = "Avison Young source failed in another transaction; listings held";
+        source.truncated = true;
+        source.listingsCollected = 0;
       }
     }
   }
@@ -397,8 +417,10 @@ async function main() {
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
-  const evidenceOnly = !MONITOR && listings.length === 0 &&
-    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
+  const singletonAvisonFailure = listings.length > 0 && requestedSources.length === 1 && requestedSources[0] === "avison-young"
+    && sources.some(source => source.sourceKey === "avison-young" && source.error);
+  const evidenceOnly = !MONITOR && (singletonAvisonFailure || (listings.length === 0 &&
+    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0))));
   let avisonTerminal404 = false;
   const terminalAvisonDenial = avisonAccessDenied && !MONITOR && requestedSources.length === 1
     && requestedSources[0] === "avison-young";
@@ -436,6 +458,7 @@ async function main() {
         ),
       }));
       avisonTerminal404 = true;
+      avisonTerminalExit = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
       const capture = sources.find(source => source.sourceKey === "avison-young" && source.partialCapture)?.partialCapture;
       if (!capture || !["sealed", "sealed_partial"].includes(capture.state)
           || capture.observationRecords < 1) {
@@ -491,7 +514,7 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+  const privateEvidence = evidenceOnly || partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
   const franklinFallback = !partialCaptureAttached && sources.some(source => source.sourceKey === "franklin-street" &&
       Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
@@ -570,7 +593,7 @@ async function main() {
   }
   if (terminalCaptureFailure) process.exitCode = 1;
   if (evidenceOnly) {
-    console.error("no listings collected from any source");
+    console.error("collector artifact is evidence-only and cannot be ingested");
     process.exitCode = terminalAvisonDenial ? AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE : avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
   }
   if (terminalAvisonDenial || terminalAvisonUnsettled) {
@@ -731,5 +754,6 @@ async function dispatch(): Promise<void> {
 
 dispatch().catch((err) => {
   console.error(err);
-  process.exit(1);
+  if (avisonTerminalExit !== undefined) console.error("Avison terminal source outcome preserved after collector output failure");
+  process.exit(avisonTerminalExit ?? 1);
 });
