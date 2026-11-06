@@ -1,6 +1,6 @@
 <# Uninstalled WIP: discover current series tasks and submit due policy snapshots. #>
 [CmdletBinding()]
-param()
+param([string]$VerifyTaskPath,[string]$VerifyTaskName,[string]$ExpectedTaskSha256)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'CreReviewedTaskUpdate.ps1')
@@ -100,6 +100,7 @@ function ConvertFrom-CreWakeAction([string]$Arguments, [string]$Launcher, [strin
         attempts=[int](Pick 'AttemptsPerSource' $Defaults['AttemptsPerSource']); deadline_seconds=[int]$values['WorkDeadlineSeconds'];
         expected_sha=[string]$values['ExpectedSha']; env_file=[string](Pick 'LinuxEnvFile' $Defaults['LinuxEnvFile']);
         windows_launcher=$Launcher; windows_launcher_sha256=(Get-FileHash -LiteralPath $Launcher -Algorithm SHA256).Hash.ToLowerInvariant();
+        task_path=$null; task_name=$null; task_xml_sha256=$null;
         windows_repo=[string](Pick 'LinuxRepo' $Defaults['LinuxRepo']); distro=[string](Pick 'Distro' $Defaults['Distro']);
         linux_user=[string](Pick 'LinuxUser' $Defaults['LinuxUser']); alert_file=if($values.ContainsKey('AlertWebhookFile')){$values['AlertWebhookFile']}else{$null};
         notification_mode=[string](Pick 'NotificationMode' $Defaults['NotificationMode'])}
@@ -138,6 +139,8 @@ function Invoke-CreDispatcherWake {
             }
             $args=$actions[0].SelectSingleNode('t:Arguments',$ns).InnerText
             $policy=ConvertFrom-CreWakeAction $args $launcher ([string]$defaults['LinuxRepo']) $defaults
+            $policy.task_path=[string]$task.TaskPath; $policy.task_name=[string]$task.TaskName
+            $policy.task_xml_sha256=Get-CreWakeHash $xmlText
             $schedule=Get-CreWakeDue $xml $now
             if($schedule.fallback) {$taskId+='_current_fallback'}
             $tasks+=@(@{task=$taskId; policy=$policy; due=@($schedule.due)})
@@ -154,4 +157,13 @@ function Invoke-CreDispatcherWake {
     if($LASTEXITCODE -ne 0) { throw 'Dispatcher wake failed' }
 }
 
-if($MyInvocation.InvocationName -ne '.') { Invoke-CreDispatcherWake }
+if($MyInvocation.InvocationName -ne '.') {
+    if($VerifyTaskPath -or $VerifyTaskName -or $ExpectedTaskSha256) {
+        if($VerifyTaskPath -cne '\Agentic Assets\CRE\' -or -not $VerifyTaskName -or
+           $VerifyTaskName -match '[\\/\r\n]' -or $ExpectedTaskSha256 -cnotmatch '^[a-f0-9]{64}$') {throw 'Task verification input differs'}
+        $task=Get-ScheduledTask -TaskPath $VerifyTaskPath -TaskName $VerifyTaskName -ErrorAction Stop
+        if($task.State -eq 'Disabled') {throw 'Task disabled'}
+        $xml=Export-ScheduledTask -TaskPath $VerifyTaskPath -TaskName $VerifyTaskName -ErrorAction Stop
+        if((Get-CreWakeHash $xml) -cne $ExpectedTaskSha256) {throw 'Task policy changed'}
+    } else { Invoke-CreDispatcherWake }
+}

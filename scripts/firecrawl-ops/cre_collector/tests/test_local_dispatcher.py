@@ -21,6 +21,7 @@ def policy(monkeypatch):
         "concurrency": 1, "workers": 1, "page_cap": 0, "attempts": 1,
         "deadline_seconds": 1800, "expected_sha": "a" * 40, "env_file": "/synthetic/env",
         "windows_launcher": r"C:\synthetic\Invoke-CreGuardedTier.ps1", "windows_launcher_sha256": "c" * 64,
+        "task_path": None, "task_name": None, "task_xml_sha256": None,
         "windows_repo": str(refresh.REPO_ROOT), "distro": "Ubuntu-24.04", "linux_user": "synthetic",
         "alert_file": None, "notification_mode": "Failure"}
 
@@ -98,6 +99,8 @@ def test_wake_cannot_mix_a_new_policy_or_slot():
 def test_current_snapshot_records_unknown_history_and_keeps_current_peers(tmp_path, policy):
     first = copy.deepcopy(policy)
     second = copy.deepcopy(policy)
+    first.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
+    second.update(task_path="\\Agentic Assets\\CRE\\", task_name="Savills", task_xml_sha256="f" * 64)
     second["sources"] = ["savills"]
     snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
                 "tasks": [{"task": "colliers", "policy": first, "due": ["20261106T042000Z"]},
@@ -115,6 +118,7 @@ def test_current_snapshot_records_unknown_history_and_keeps_current_peers(tmp_pa
 
 
 def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy):
+    policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
     bad = copy.deepcopy(policy)
     bad["pipeline"] = "invalid"
     snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,

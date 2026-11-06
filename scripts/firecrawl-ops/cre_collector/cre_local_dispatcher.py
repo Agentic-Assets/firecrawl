@@ -30,7 +30,7 @@ class SourcePolicyRefusal(ValueError):
 def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> dict:
     """Build both launcher arguments and expected policy from one input."""
     keys = {"pipeline", "sources", "admissions", "daum_subset", "daum_subset_policy", "concurrency", "workers", "page_cap",
-            "attempts", "deadline_seconds", "expected_sha", "env_file", "windows_launcher",
+            "attempts", "deadline_seconds", "expected_sha", "env_file", "windows_launcher", "task_path", "task_name", "task_xml_sha256",
             "windows_launcher_sha256", "windows_repo", "distro", "linux_user", "alert_file", "notification_mode"}
     if not isinstance(policy, dict) or set(policy) != keys:
         raise SourcePolicyRefusal("dispatch policy fields differ")
@@ -68,6 +68,14 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
         raise SourcePolicyRefusal("invalid expected revision")
     if not isinstance(policy["windows_launcher_sha256"], str) or re.fullmatch(r"[a-f0-9]{64}", policy["windows_launcher_sha256"]) is None:
         raise SourcePolicyRefusal("invalid launcher hash")
+    task_binding = (policy["task_path"], policy["task_name"], policy["task_xml_sha256"])
+    if task_binding != (None, None, None) and (
+            policy["task_path"] != "\\Agentic Assets\\CRE\\"
+            or not isinstance(policy["task_name"], str) or not policy["task_name"]
+            or any(c in policy["task_name"] for c in "\\/\r\n")
+            or not isinstance(policy["task_xml_sha256"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", policy["task_xml_sha256"]) is None):
+        raise SourcePolicyRefusal("invalid scheduled task binding")
     if (not isinstance(policy["env_file"], str) or not policy["env_file"].startswith("/")
             or policy["windows_repo"] != str(refresh.REPO_ROOT)
             or not isinstance(policy["windows_launcher"], str)
@@ -183,6 +191,10 @@ def prepare_launch(request: dict) -> list[str]:
         "data/cre-source-policy.json": windows.parent / "data/cre-source-policy.json",
         "data/cre-buildout-sources.json": windows.parent / "data/cre-buildout-sources.json",
     }
+    if policy["task_path"] is not None:
+        for name in ("Invoke-CreDispatcherWake.ps1", "CreReviewedTaskUpdate.ps1", "CreCodeHandoff.ps1",
+                     "CreTaskContract.ps1", "CreRestorationExecution.ps1", "CreRuntimeMaintenance.ps1"):
+            files["windows/" + name] = windows / name
     for relative, observed in files.items():
         try:
             expected = subprocess.run(["git", "show", f"{policy['expected_sha']}:scripts/firecrawl-ops/cre_collector/{relative}"],
@@ -195,6 +207,16 @@ def prepare_launch(request: dict) -> list[str]:
             hold_local(exc)
         if raw != expected or (observed == launcher and hashlib.sha256(raw).hexdigest() != policy["windows_launcher_sha256"]):
             hold_local(ValueError("Windows launcher custody changed before dispatch"))
+    if policy["task_path"] is not None:
+        from pathlib import PureWindowsPath
+        helper = str(PureWindowsPath(policy["windows_launcher"]).with_name("Invoke-CreDispatcherWake.ps1"))
+        try:
+            subprocess.run(["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile",
+                "-NonInteractive", "-File", helper, "-VerifyTaskPath", policy["task_path"],
+                "-VerifyTaskName", policy["task_name"], "-ExpectedTaskSha256", policy["task_xml_sha256"]],
+                check=True, capture_output=True, timeout=30)
+        except subprocess.CalledProcessError as exc:
+            hold_local(exc)
     return launcher_arguments(request)
 
 
@@ -313,6 +335,8 @@ def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
                 raise ValueError("current task due time is in the future")
             slot = f"{due}_{task['task']}_{digest[:12]}"
             try:
+                if any(task["policy"].get(key) is None for key in ("task_path", "task_name", "task_xml_sha256")):
+                    raise SourcePolicyRefusal("current task lacks an exact action binding")
                 request = policy_request(task["policy"], slot)
             except SourcePolicyRefusal:
                 dispatch_queue.hold_invalid_policy(path, slot, digest)
