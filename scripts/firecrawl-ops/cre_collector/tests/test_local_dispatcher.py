@@ -43,3 +43,18 @@ def test_target_change_refuses_before_native_launcher(policy, monkeypatch):
     monkeypatch.setattr(dispatcher.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
     with pytest.raises(ValueError, match="target changed"):
         dispatcher.launch(request)
+
+
+def test_only_one_target_bound_deadline_successor(policy, monkeypatch):
+    slot = "20261106T042000Z_colliers"
+    first = dispatcher.policy_request(policy, slot)
+    result = {"status": "deadline_interrupted", "outcome": "qualified", "unfinished_sources": ["colliers"]}
+    next_slot, next_request = dispatcher.successor(slot, first, result)
+    assert next_slot == slot + "_continuation1"
+    assert next_request["series_id"] != first["series_id"]
+    assert next_request["target"] == first["target"] and next_request["config"] == first["config"]
+    assert dispatcher.successor(next_slot, next_request, result) is None
+    assert dispatcher.successor(slot, first, {**result, "unfinished_sources": []}) is None
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "d" * 64})
+    with pytest.raises(ValueError, match="target or source policy changed"):
+        dispatcher.successor(slot, first, result)

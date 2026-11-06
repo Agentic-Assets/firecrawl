@@ -38,3 +38,18 @@ def test_preexisting_unsafe_queue_is_rejected(tmp_path):
     tmp_path.chmod(0o755)
     with pytest.raises(Exception):
         queue.enqueue(tmp_path, "slot", {})
+
+
+def test_due_peer_precedes_automatic_successor(tmp_path):
+    queue.enqueue(tmp_path, "20261106T000000Z_broad", {"kind": "broad", "continuation_depth": 0})
+    events = []
+    def launch(request):
+        events.append(request["kind"])
+        if request["kind"] == "broad":
+            queue.enqueue(tmp_path, "20261106T010000Z_peer", {"kind": "peer", "continuation_depth": 0})
+    def successor(slot, request, _result):
+        if request["kind"] == "broad":
+            return slot + "_continuation1", {"kind": "continuation", "continuation_depth": 1}
+        return None
+    queue.drain(tmp_path, launch=launch, qualify=lambda _: {"outcome": "qualified"}, successor=successor)
+    assert events == ["broad", "peer", "continuation"]

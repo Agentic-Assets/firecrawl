@@ -48,7 +48,8 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         if control.get("last_checkpoint") is not None:
             raise DispatchSettlementRefused("no-work receipt has a child")
         check_owner()
-        return {"status": terminal["status"], "outcome": "settled_no_work"}
+        return {"status": terminal["status"], "outcome": "settled_no_work",
+                "unfinished_sources": list(expected_config.get("sources") or [])}
     manifest_path = path / "manifest.json"
     parent_bytes = manifest_path.read_bytes()
     parent = json.loads(parent_bytes)
@@ -80,6 +81,7 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     # Reuse the same generation/target/readback qualifications as the series.
     candidate = copy.deepcopy(parent)
     series.reconcile_pipeline_series(path, candidate, publish=False)
+    unfinished = []
     for key in expected_config["sources"]:
         state = candidate["sources"][key]["state"]
         if state in {"complete", "qualified_partial_subset", "failed_source"}:
@@ -91,6 +93,7 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                 or (checkpoint.get("colliers_partial_worker") or {}).get("state") in {
                     "cursor_publishing", "cursor_recovery_required", "settlement_unknown"}):
             raise DispatchSettlementRefused("interrupted source may have unsettled work")
+        unfinished.append(key)
     check_owner()
     if (manifest_path.read_bytes() != parent_bytes
             or read_receipt(path, invocation_id) != control):
@@ -98,4 +101,5 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     verify_preallocated_receipt(root, series_id, invocation_id,
         expected_sha=expected_sha, expected_target=expected_target,
         expected_config=expected_config)
-    return {"status": terminal["status"], "outcome": "qualified", "child": ref}
+    return {"status": terminal["status"], "outcome": "qualified", "child": ref,
+            "unfinished_sources": unfinished}

@@ -83,7 +83,7 @@ def enqueue(path: Path, slot: str, request: dict) -> None:
         os.close(directory)
 
 
-def drain(path: Path, *, launch, qualify) -> bool:
+def drain(path: Path, *, launch, qualify, successor=None) -> bool:
     """Run queued intents under one lock; uncertain attempts are never replayed.
 
     ``launch`` must invoke the real foreground launcher using the request's
@@ -98,11 +98,16 @@ def drain(path: Path, *, launch, qualify) -> bool:
     try:
         _safe_stat(lock, private=True)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
-        records = [(name, _read(directory, name)) for name in names]
-        # No newer due slot can leapfrog a prior potentially active writer.
-        records.sort(key=lambda item: item[1]["state"] != "dispatch_uncertain")
-        for name, record in records:
+        while True:
+            names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+            records = [(name, _read(directory, name)) for name in names]
+            records = [item for item in records if item[1]["state"] != "settled"]
+            if not records:
+                break
+            # Uncertain writes fence everything; fresh due work precedes continuations.
+            records.sort(key=lambda item: (item[1]["state"] != "dispatch_uncertain",
+                bool(item[1]["request"].get("continuation_depth", 0)), item[0]))
+            name, record = records[0]
             if record["state"] == "settled":
                 continue
             if record["state"] == "queued":
@@ -112,6 +117,10 @@ def drain(path: Path, *, launch, qualify) -> bool:
             result = qualify(record["request"])
             if not isinstance(result, dict) or result.get("outcome") not in {"qualified", "settled_no_work"}:
                 raise DispatchRefused("dispatch settlement was not qualified")
+            if successor is not None:
+                next_intent = successor(record["slot"], record["request"], result)
+                if next_intent is not None:
+                    enqueue(path, *next_intent)
             record.update(state="settled", result=result)
             _write(directory, name, record, create=False)
         return True

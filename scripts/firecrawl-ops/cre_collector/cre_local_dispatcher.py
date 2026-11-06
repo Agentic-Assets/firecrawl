@@ -23,7 +23,7 @@ from scheduling import dispatch_queue, dispatch_settlement
 HERE = Path(__file__).resolve().parent
 
 
-def policy_request(policy: dict, slot: str) -> dict:
+def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> dict:
     """Build both launcher arguments and expected policy from one input."""
     keys = {"sources", "admissions", "daum_subset", "concurrency", "workers", "page_cap",
             "attempts", "deadline_seconds", "expected_sha", "env_file", "windows_launcher",
@@ -73,7 +73,10 @@ def policy_request(policy: dict, slot: str) -> dict:
         pipeline=True, source_workers=policy["workers"])
     target = refresh.database_target_fingerprint(policy["env_file"])
     series_id = due.strftime("%Y-%m-%dT%H%M%SZ") + "-" + hashlib.sha256(slot.encode()).hexdigest()[:12]
-    return {"policy": policy, "config": config, "target": target, "series_id": series_id}
+    if type(continuation_depth) is not int or continuation_depth not in {0, 1}:
+        raise ValueError("unsupported continuation depth")
+    return {"policy": policy, "config": config, "target": target, "series_id": series_id,
+            "continuation_depth": continuation_depth}
 
 
 def launch(request: dict) -> None:
@@ -132,6 +135,18 @@ def qualify(request: dict) -> dict:
             expected_config=request["config"], expected_deadline_seconds=policy["deadline_seconds"])
 
 
+def successor(slot: str, request: dict, result: dict):
+    """One bounded follow-on; pending scheduled peers precede it."""
+    if (result.get("status") != "deadline_interrupted"
+            or not result.get("unfinished_sources") or request["continuation_depth"] != 0):
+        return None
+    next_slot = slot + "_continuation1"
+    next_request = policy_request(request["policy"], next_slot, continuation_depth=1)
+    if next_request["target"] != request["target"] or next_request["config"] != request["config"]:
+        raise ValueError("continuation target or source policy changed")
+    return next_slot, next_request
+
+
 def main(argv=None) -> int:
     if not sys.platform.startswith("linux"):
         raise ValueError("this phase requires the WSL/Linux series control contract")
@@ -153,7 +168,7 @@ def main(argv=None) -> int:
         os.close(parent_fd)
     path = parent / "local-dispatch"
     dispatch_queue.enqueue(path, args.slot, request)
-    dispatch_queue.drain(path, launch=launch, qualify=qualify)
+    dispatch_queue.drain(path, launch=launch, qualify=qualify, successor=successor)
     return 0
 
 

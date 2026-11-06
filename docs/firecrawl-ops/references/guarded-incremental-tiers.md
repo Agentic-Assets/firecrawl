@@ -467,9 +467,13 @@ locator to the Windows audit before dispatch. The corresponding read-only
 `verify_preallocated_receipt` checks the exact series identity, producer SHA,
 target, full configuration and terminal local-settlement receipt. A locator or
 a terminal local receipt does not authorize another dispatch or prove a
-database outcome. Durable due intents, automatic continuation and scheduled
-task integration are not implemented by this locator phase; existing tasks
-omit the option. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
+database outcome. The separate local dispatcher can retain a supplied due slot,
+invoke the native Windows launcher with fresh admission, and attempt one fresh
+follow-on after a qualified deadline interruption. It checks current ownership,
+child readback and unresolved-write/cursor evidence before continuing. The
+dispatcher is not installed in the production schedule: missed task triggers,
+repeated continuations and source scheduling fairness are not reconstructed or
+guaranteed. Existing tasks omit the locator. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
 ## Windows Task Scheduler installation and acceptance
