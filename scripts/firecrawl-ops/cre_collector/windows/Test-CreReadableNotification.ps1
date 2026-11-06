@@ -444,7 +444,7 @@ $selectedSourceArgument = $selectedSourceKeys -join ','
 $mixedSources = New-Summary
 $mixedSources['selected_source_keys'] = $selectedSourceKeys
 $mixedSources['per_source_summaries'] = @(
-    [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
+    [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;terminal_stop='worker_failed';measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
     [ordered]@{source_key='lyon-stahl';verified_listings=3;emitted_count=3;held_count=4;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
     [ordered]@{source_key='franklin-street';verified_listings=0;emitted_count=0;held_count=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;buildout_pending=5;held_observations=2;identity_uncertainty=[ordered]@{siteToBuildout='unresolved';possibleDuplicateProperties=$true;reusedSiteIds=@()}},
     [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
@@ -455,6 +455,7 @@ $sourceRead = Get-CreVerifiedSummary (New-Record) 'mixed-source-partials'
 Assert-Cre ($null -ne $sourceRead) 'Source-bound partials, complete peer and failed peer remain separately qualified.'
 $sourceText = Get-CreNotificationText (New-Record) 'Terminal' 1 $sourceRead
 Assert-Cre ($sourceText.Contains('*Colliers:* Verified subset refreshed; 7 emitted; 2 held') -and
+    $sourceText.Contains('A later partial worker failed; earlier verified windows were retained.') -and
     $sourceText.Contains('*For sale:* 7 | *For lease:* 0 | *Both:* 0') -and
     $sourceText.Contains('*Lyon-Stahl:* Verified subset refreshed; 3 emitted; 4 held') -and
     $sourceText.Contains('*Franklin Street:* Verified subset refreshed; 0 emitted; 1 held') -and

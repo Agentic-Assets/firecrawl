@@ -648,6 +648,10 @@ function Get-CreNotificationText {
                 }
                 if (@('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key) {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held; whole brokerage incomplete."
+                    if ($entry.source_key -ceq 'colliers' -and $null -ne $entry.PSObject.Properties['terminal_stop']) {
+                        if ($entry.terminal_stop -ceq 'worker_failed') { $lines += "    A later partial worker failed; earlier verified windows were retained." }
+                        elseif ($entry.terminal_stop -ceq 'source_stopped') { $lines += "    Source detail collection stopped; earlier verified windows were retained." }
+                    }
                     if ($entry.source_key -ceq 'franklin-street') {
                         $pendingBuildout = ([long]$entry.buildout_pending).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                         $heldObservations = ([long]$entry.held_observations).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)

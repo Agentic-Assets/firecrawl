@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.parametrize("denied", [False, True])
-def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False, database=None, interruption=None):
+def test_evidence_only_collector_failure_reaches_partial_pipeline(tmp_path, monkeypatch, denied, drift=False, journal=False, access_stop=False, database=None, interruption=None, worker_failure=False):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -68,7 +68,8 @@ globalThis.fetch = async (input) => {
   if (u.pathname.toLowerCase().includes("slp")) {
     const token = u.searchParams.get("pv");
     appendFileSync(process.env.SYNTHETIC_DETAIL_SENTINEL, token + "\\n");
-    if (process.env.SYNTHETIC_ACCESS_STOP === "1" && token === "id101")
+    if ((process.env.SYNTHETIC_ACCESS_STOP === "1" && token === "id101") ||
+        (process.env.SYNTHETIC_ACCESS_STOP === "after_one" && token === "id102"))
       return new Response("denied", {status:403});
     return Response.json({ProjectSummary:{ProjectId:token}});
 
@@ -90,13 +91,20 @@ globalThis.fetch = async (input) => {
             env = {**os.environ, "NODE_OPTIONS": "--import=" + mock.as_uri(),
                    "SYNTHETIC_DENIAL": "1" if denied else "0", "SYNTHETIC_DRIFT": "1" if drift else "0",
                    "SYNTHETIC_DETAIL_SENTINEL": str(sentinel), "SYNTHETIC_JOURNAL": "1" if journal else "0",
-                   "SYNTHETIC_ACCESS_STOP": "1" if access_stop else "0"}
+                   "SYNTHETIC_ACCESS_STOP": "after_one" if access_stop == "after_one" else "1" if access_stop else "0"}
             if database:
                 env["PSQL_BIN"] = str(database["psql"])
             monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock.path)
             monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
             monkeypatch.setattr(refresh, "safe_process_env", lambda *_: dict(env))
             monkeypatch.setattr(refresh, "COLLECTOR_DIR", target)
+            if worker_failure:
+                actual_runner = refresh.run_command
+                def fail_second_worker(argv, log, **kwargs):
+                    if Path(log).name == "colliers-partial-worker-2.log":
+                        return 1
+                    return actual_runner(argv, log, **kwargs)
+                monkeypatch.setattr(refresh, "run_command", fail_second_worker)
 
             def fake_gate(_run, state, source, _env):
                 checkpoint = state["sources"][source]
@@ -190,13 +198,27 @@ globalThis.fetch = async (input) => {
                 assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
                 if journal:
                     windows = checkpoint["partial_windows"]
-                    expected = ["verified", "settled_no_write"] if access_stop else ["verified", "verified", "settled_no_write"]
+                    expected = (["verified"] if worker_failure else
+                                ["verified", "verified"] if access_stop == "after_one" else
+                                ["verified", "settled_no_write"] if access_stop else
+                                ["verified", "verified", "settled_no_write"])
                     assert [entry["state"] for entry in windows] == expected
+                    result = manifest["pipeline"]["source_results"]["colliers"]
+                    if worker_failure:
+                        assert result["terminal_stop"] == "worker_failed"
+                        assert checkpoint["partial_window_terminal"]["colliers_partial_worker"]["rc"] == 1
+                        assert sentinel.read_text().splitlines()[-1] == "id100"
+                        return
                     assert windows[1]["first_position"] == windows[0]["first_position"]
                     assert windows[1]["cursor"] == windows[0]["next_cursor"]
                     if access_stop:
-                        assert sentinel.read_text().splitlines()[-1] == "id101"
-                        assert windows[1]["cursor"] == windows[1]["next_cursor"]
+                        assert result["terminal_stop"] == "source_stopped"
+                        if access_stop == "after_one":
+                            assert sentinel.read_text().splitlines()[-1] == "id102"
+                            assert windows[1]["next_cursor"] > windows[1]["cursor"]
+                        else:
+                            assert sentinel.read_text().splitlines()[-1] == "id101"
+                            assert windows[1]["cursor"] == windows[1]["next_cursor"]
                     else:
                         assert windows[2]["cursor"] == windows[1]["next_cursor"]
                         assert windows[0]["artifact_sha256"] != windows[1]["artifact_sha256"]
@@ -227,3 +249,13 @@ def test_real_pipeline_keeps_committed_window_on_settled_access_stop(tmp_path, m
 def test_later_window_interruption_fences_recovery(tmp_path, monkeypatch, interruption):
     test_evidence_only_collector_failure_reaches_partial_pipeline(
         tmp_path, monkeypatch, False, journal=True, interruption=interruption)
+
+
+def test_later_worker_failure_reports_retained_verified_window(tmp_path, monkeypatch):
+    test_evidence_only_collector_failure_reaches_partial_pipeline(
+        tmp_path, monkeypatch, False, journal=True, worker_failure=True)
+
+
+def test_source_stop_after_new_detail_reports_both_verified_windows(tmp_path, monkeypatch):
+    test_evidence_only_collector_failure_reaches_partial_pipeline(
+        tmp_path, monkeypatch, False, journal=True, access_stop="after_one")

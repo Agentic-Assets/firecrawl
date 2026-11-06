@@ -714,6 +714,21 @@ def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1,
         raise
 
 
+def partial_window_terminal_stop(checkpoint):
+    """Describe a settled terminal stop without treating it as whole-source coverage."""
+    terminal = checkpoint.get("partial_window_terminal", checkpoint)
+    worker = terminal.get("colliers_partial_worker") if isinstance(terminal, dict) else None
+    if not isinstance(worker, dict):
+        return None
+    if worker.get("state") == "failed" and type(worker.get("rc")) is int and worker["rc"] != 0:
+        return "worker_failed"
+    completion = worker.get("completion")
+    if (worker.get("state") in {"settled", "settled_no_write"} and
+            isinstance(completion, dict) and completion.get("sourceStopped") is True):
+        return "source_stopped"
+    return None
+
+
 def archive_verified_pipeline_window(run_dir, manifest, unit, result, owner):
     """Journal one already-verified pipeline unit before permitting another."""
     import copy
@@ -750,6 +765,8 @@ def archive_verified_pipeline_window(run_dir, manifest, unit, result, owner):
             or completion != {key: receipt[key] for key in completion}):
         raise ValueError("partial window cursor proof differs")
     first = receipt["firstPosition"] if index == 1 else windows[0]["first_position"]
+    if receipt["sourceStopped"]:
+        result["terminal_stop"] = "source_stopped"
     snapshot = copy.deepcopy({key: value for key, value in checkpoint.items() if key != "partial_windows"})
     window = {"index": index, "state": "verified", "unit_id": unit["unit_id"],
               "first_position": first, "cursor": binding["cursor"], "next_cursor": binding["next_cursor"],
@@ -841,4 +858,8 @@ def restore_last_verified_pipeline_window(checkpoint):
     checkpoint.update(copy.deepcopy(prior["checkpoint"]))
     checkpoint["partial_windows"] = windows
     checkpoint["partial_window_terminal"] = terminal_window
-    return copy.deepcopy(prior["result"])
+    result = copy.deepcopy(prior["result"])
+    terminal_stop = partial_window_terminal_stop(checkpoint)
+    if terminal_stop:
+        result["terminal_stop"] = terminal_stop
+    return result

@@ -2000,6 +2000,14 @@ def test_colliers_multiwindow_notification_counts_verified_units_and_keeps_peer(
     assert rows["colliers"]["held_count"] == 4
     assert rows["colliers"]["whole_source_coverage"] is False
     assert "cbre" in rows
+    checkpoint["partial_window_terminal"] = {"colliers_partial_worker": {"state": "failed", "rc": 1}}
+    pipeline["source_results"]["colliers"]["terminal_stop"] = "worker_failed"
+    parent["sources"]["colliers"]["pipeline_result"]["terminal_stop"] = "worker_failed"
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=["colliers", "cbre"])
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert rows["colliers"]["terminal_stop"] == "worker_failed"
+    assert rows["colliers"]["verified_listings"] == 6 and "cbre" in rows
     monkeypatch.setattr(series, "pipeline_source_qualified", lambda *_args, **_kwargs: False)
     result = read_pipeline(evidence, source_keys=["colliers", "cbre"])
     rows = {row["source_key"]: row for row in result["per_source_summaries"]}

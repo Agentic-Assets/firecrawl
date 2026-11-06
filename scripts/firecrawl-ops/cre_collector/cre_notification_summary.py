@@ -1316,9 +1316,16 @@ def verified_pipeline_summary(
                     failed.append(source)
                     unverifiable.append(source)
                     continue
+                from cre_colliers_partial_checkpoint import partial_window_terminal_stop
+                terminal_stop = partial_window_terminal_stop(checkpoint)
+                if terminal_stop != result.get("terminal_stop"):
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
                 summary = {"measurement": "generation_exact_verified_subset", "qualification": "qualified_partial_subset",
                            "partial": True, "whole_source_coverage": False,
-                           "emitted_count": count, "held_count": held_count}
+                           "emitted_count": count, "held_count": held_count,
+                           **({"terminal_stop": terminal_stop} if terminal_stop else {})}
                 breakdown = {"sale": count, "lease": 0, "both": 0,
                              "measurement": "current_staged_inventory_transaction_types"}
                 qualified.append((source, count, checkpoint, unit, 0, summary, breakdown))
