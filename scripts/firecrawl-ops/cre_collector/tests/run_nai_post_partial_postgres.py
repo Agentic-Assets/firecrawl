@@ -1,5 +1,6 @@
 """Small real-schema proof for the NAI post-identity transaction."""
 import json
+import os
 import re
 import subprocess
 import sys
@@ -36,7 +37,8 @@ def main():
         return result.stdout.strip()
 
     try:
-        run("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
+        run("docker", "run", "-d", "--rm", "--pull=never", "--name", name, "--network=none", "--cpus=0.5",
+            "--volume", f"{tmp.name}:{tmp.name}",
             "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
             "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
         for _ in range(100):
@@ -55,7 +57,17 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_APPROVAL_REF AGENTIC-4284",
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
+        # The full audit counts this external view; the isolated fixture has
+        # no market data. This does not simulate live market validation.
+        schema += "\nCREATE VIEW credeals.v_cre_market_summary AS SELECT 1 WHERE false;\n"
         sql(schema)
+        if os.environ.get("NAI_MIXED_ONLY") == "1":
+            # This synthetic pipeline uses actual current observation clocks;
+            # the direct SQL proof below intentionally pins a historical one.
+            nai_admission._utc_now = lambda: datetime.now(timezone.utc)
+            from tests.nai_mixed_postgres_contract import run_mixed_contract
+            run_mixed_contract(sql, name, tmp.name)
+            return
         sql("""
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,lat,scraped_at,raw_data)
 SELECT id,'infabode:1','https://infabode.com/services/listings/1',NULL,'active','Existing title',45.123456789012345,
