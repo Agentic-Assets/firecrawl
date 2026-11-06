@@ -964,6 +964,7 @@ def verified_pipeline_summary(
         ))
         units_by_id = {}
         unit_memberships = {source: [] for source in selected_sources}
+        colliers_journal_valid = True
         for unit in units:
             require(isinstance(unit, dict))
             unit_id = unit.get("unit_id")
@@ -982,12 +983,23 @@ def verified_pipeline_summary(
             if unit.get("state") == "verified":
                 for member in members:
                     member_result = source_results.get(member)
-                    require(
-                        isinstance(member_result, dict)
-                        and member_result.get("state") == "verified"
-                        and member_result.get("unit_id") == unit_id
-                    )
+                    windows = (checkpoints.get("colliers") or {}).get("partial_windows") if member == "colliers" else None
+                    if isinstance(windows, list) and windows:
+                        matching = [entry for entry in windows if isinstance(entry, dict)
+                                    and entry.get("state") == "verified" and entry.get("unit_id") == unit_id]
+                        if (len(members) != 1 or len(matching) != 1
+                                or not isinstance(matching[0].get("result"), dict)
+                                or matching[0]["result"].get("state") != "verified"
+                                or matching[0]["result"].get("unit_id") != unit_id):
+                            colliers_journal_valid = False
+                    else:
+                        require(
+                            isinstance(member_result, dict)
+                            and member_result.get("state") == "verified"
+                            and member_result.get("unit_id") == unit_id
+                        )
                     unit_memberships[member].append(unit_id)
+
             units_by_id[unit_id] = unit
 
         qualified = []
@@ -1147,11 +1159,18 @@ def verified_pipeline_summary(
             )
             unit_id = result.get("unit_id")
             unit = units_by_id.get(unit_id)
+            if colliers_partial_candidate and checkpoint.get("partial_windows") and not colliers_journal_valid:
+                failed.append(source)
+                unverifiable.append(source)
+                continue
             require(
                 isinstance(unit, dict)
                 and unit.get("state") == "verified"
                 and source in unit.get("sources", [])
-                and unit_memberships[source] == [unit_id]
+                and (unit_memberships[source] == [unit_id]
+                     or (source == "colliers" and colliers_journal_valid
+                         and unit_id in unit_memberships[source]
+                         and bool(checkpoint.get("partial_windows"))))
                 and result.get("readback_ok") is True
                 and result.get("generation_id") == run_id
             )
@@ -1319,13 +1338,37 @@ def verified_pipeline_summary(
                         and result.get("artifact_sha256") == artifact.get("sha256")
                         and type(artifact.get("bytes")) is int and 0 < artifact["bytes"] <= MAX_ARTIFACT_BINDING_BYTES
                         and readback.get("kind") == "colliers_partial_window")
+                held_count = binding["held_count"] if proven else None
+                windows = checkpoint.get("partial_windows")
+                if proven and isinstance(windows, list) and windows:
+
+                    from cre_checkpoint_series import pipeline_source_qualified
+
+                    verified_windows = [entry for entry in windows if entry.get("state") == "verified"]
+                    proven = (colliers_journal_valid
+                        and unit_memberships[source] == [entry.get("unit_id") for entry in verified_windows]
+                        and pipeline_source_qualified(child, source, run_dir=selected / run_relative,
+                            parent_started_at=parent["started_at"], parent_finished_at=parent["finished_at"],
+                            parent_attempts=parent_entry["attempts"]))
+                    if proven:
+                        count = sum(entry["result"]["emitted_count"] for entry in verified_windows)
+                        held_count = sum(entry["result"]["held_count"] if entry["state"] == "verified"
+                            else entry["checkpoint"]["colliers_partial_worker"]["completion"]["held"]
+                            for entry in windows)
                 if not proven:
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
+                from cre_colliers_partial_checkpoint import partial_window_terminal_stop
+                terminal_stop = partial_window_terminal_stop(checkpoint)
+                if terminal_stop != result.get("terminal_stop"):
                     failed.append(source)
                     unverifiable.append(source)
                     continue
                 summary = {"measurement": "generation_exact_verified_subset", "qualification": "qualified_partial_subset",
                            "partial": True, "whole_source_coverage": False,
-                           "emitted_count": count, "held_count": binding["held_count"]}
+                           "emitted_count": count, "held_count": held_count,
+                           **({"terminal_stop": terminal_stop} if terminal_stop else {})}
                 breakdown = {"sale": count, "lease": 0, "both": 0,
                              "measurement": "current_staged_inventory_transaction_types"}
                 qualified.append((source, count, checkpoint, unit, 0, summary, breakdown))

@@ -11,16 +11,17 @@ import cre_checkpoint_refresh as refresh
 import cre_colliers_partial_checkpoint as partial
 import pytest
 from cre_checkpoint_refresh import SharedLock
-from cre_partial_cursor import read_cursor
+from cre_partial_cursor import advance_cursor, read_cursor
 
 
 def command(*args, cwd, env=None):
     return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=True, timeout=60)
 
 
+@pytest.mark.parametrize("window_index", [1, 2])
 @pytest.mark.parametrize(("detail_id", "expected_state", "expected_cursor"),
                          [("a", "candidate", 1), ("different", "partial_held_no_write", 2), ("clock", "worker_failed", 1)])
-def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor):
+def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_path, monkeypatch, detail_id, expected_state, expected_cursor, window_index):
     collector = Path(__file__).resolve().parents[1]
     repo = tmp_path / "repo"
     target = repo / "scripts" / "firecrawl-ops" / "cre_collector"
@@ -73,6 +74,7 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
                 source_receipt["finished_at"] = "2026-11-04T15:29:59Z"
             manifest = {"run_id": "gen", "started_at": source_receipt["generation_started_at"],
                 "collector_git_sha": sha, "collector_git_dirty": False,
+                "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
                 "config": {"additive": True, "mark_missing": False, "status_activation": False,
                            "transactions": ["sale", "lease"], "max_items": 0, "sources": ["colliers"]},
                 "sources": {"colliers": {"attempts": [{"number": 1}]}}}
@@ -93,20 +95,41 @@ def test_worker_entry_requires_real_owned_authority_and_seals_fake_source(tmp_pa
                 else:
                     assert child.returncode == 0, child.stderr
                 return child.returncode
-            result = partial.run_window_worker(run_dir, manifest, lock, runner, save)
+            if window_index == 2:
+                prior_receipt = {"firstPosition": 2, "generation": "gen", "attempt": 1,
+                                 "targetSha256": "b" * 64, "producerSha": sha}
+                prior_path = partial_dir / "window-1-receipt.json"
+                prior_path.write_text(json.dumps(prior_receipt))
+                prior_path.chmod(0o600)
+                proof = {"ok": True, "artifact_sha256": "d" * 64, "generation_id": "gen",
+                         "attempt_id": "e" * 32, "database_target_sha256": "b" * 64,
+                         "outcome": "settled_no_write"}
+                advance_cursor(lock.path, "colliers", "b" * 64, 1, 1, generation="gen",
+                    artifact_sha256="d" * 64, attempt_id="e" * 32, outcome="settled_no_write",
+                    proof=proof, owner_check=lock._require_authority)
+                manifest["sources"]["colliers"]["partial_windows"] = [{
+                    "state": "settled_no_write", "next_cursor": 1, "first_position": 2,
+                    "artifact_sha256": "d" * 64, "attempt_id": "e" * 32,
+                    "outcome": "settled_no_write", "receipt_path": "colliers-partial/window-1-receipt.json",
+                    "receipt_sha256": hashlib.sha256(prior_path.read_bytes()).hexdigest()}]
+
+            result = partial.run_window_worker(run_dir, manifest, lock, runner, save, window_index=window_index,
+                                               stop_before_position=2 if window_index == 2 else None)
             if detail_id == "clock":
                 assert result is None and not sentinel.exists()
                 assert manifest["sources"]["colliers"]["colliers_partial_worker"]["state"] == "failed"
                 return
             assert sentinel.read_text() == "fake"
-            receipt = json.loads((partial_path(run_dir) / "window-1-receipt.json").read_text())
+            name = "window-1" if window_index == 1 else f"window-1-{window_index}"
+            receipt = json.loads((partial_path(run_dir) / f"{name}-receipt.json").read_text())
+            assert receipt.get("windowIndex", 1) == window_index
             assert receipt["admitted"] == (1 if detail_id == "a" else 0)
             checkpoint = manifest["sources"]["colliers"]
             assert checkpoint["state"] == expected_state
             assert read_cursor(lock.path, "colliers", "b" * 64)[0] == expected_cursor
             assert snapshots[0]["sources"]["colliers"]["colliers_partial_worker"]["state"] == "dispatching"
             assert (result is not None) == (detail_id == "a")
-            artifact = json.loads((partial_path(run_dir) / "window-1-artifact.json").read_text())
+            artifact = json.loads((partial_path(run_dir) / f"{name}-artifact.json").read_text())
             assert artifact["sourceOutcome"] == "source_error"
         finally:
             lock.clear_recovery_requirement()

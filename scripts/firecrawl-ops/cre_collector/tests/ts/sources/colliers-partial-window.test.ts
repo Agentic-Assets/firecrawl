@@ -13,7 +13,7 @@ import { reverifyColliersWindow } from "../../../sources/colliers-partial-window
 import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
 import { assertPartialNativeIdentity } from "../../../sources/colliers-partial-native-id.js";
-import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
+import { ColliersSettledSourceStop, fetchColliersPartialDetail } from "../../../sources/colliers-partial-fetch.js";
 import { ColliersAccessStop, ColliersIdentityError } from "../../../sources/colliers.js";
 import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
 
@@ -446,3 +446,53 @@ test("source-shaped clock step binds pages to genuine child finish", async () =>
   assert.equal(result.selected, 2);
   assert.equal(result.eligible.length, 2);
 });
+
+test("verified rotation stops before re-fetching the first witnessed candidate", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-rotation-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([header, pair, page, hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"); writeFileSync(sourcePath, bytes, { mode: 0o600 });
+  const calls: string[] = [];
+  const fetchDetail = async (token: string) => {
+    calls.push(token);
+    const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+    return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) };
+  };
+  const common = { ...binding, generationStartedAt: binding.startedAt, sourcePath, sourceBytes: bytes.length,
+    sourceSha256: createHash("sha256").update(bytes).digest("hex"), originalSourceMainSha256: "c".repeat(64),
+    producerSha: "a".repeat(40), targetSha256: "b".repeat(64) };
+  const first = await buildColliersWindowArtifact({ ...common, cursor: 1, limit: 1,
+    evidencePath: join(dir, "e1"), artifactPath: join(dir, "a1") }, fetchDetail);
+  assert.equal(first.firstPosition, 1); assert.equal(first.rotationComplete, false);
+  const second = await buildColliersWindowArtifact({ ...common, cursor: first.proposedCursor, limit: 2,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e2"), artifactPath: join(dir, "a2") }, fetchDetail);
+  assert.deepEqual(calls, ["a", "b"]);
+  assert.equal(second.rotationComplete, true); assert.equal(second.admitted, 1);
+  assert.equal(second.unattempted, 1); assert.equal(second.sourceStopped, false);
+  const empty = await buildColliersWindowArtifact({ ...common, cursor: second.proposedCursor, limit: 1,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e3"), artifactPath: join(dir, "a3") }, fetchDetail);
+  assert.equal(empty.rotationComplete, true); assert.equal(empty.admitted, 0);
+  assert.equal(empty.evidence.records, 0); assert.deepEqual(calls, ["a", "b"]);
+});
+
+for (const [status, retryAfter] of [[403, false], [429, false], [200, true]] as const) {
+  test(`settled access stop ${status}/${retryAfter} seals earlier peers without further detail calls`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), "colliers-access-stop-")); chmodSync(dir, 0o700);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const bytes = Buffer.from([header, pair, page, hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const sourcePath = join(dir, "source"); writeFileSync(sourcePath, bytes, { mode: 0o600 });
+    const calls: string[] = [];
+    const result = await buildColliersWindowArtifact({ ...binding, generationStartedAt: binding.startedAt,
+      cursor: 1, sourcePath, sourceBytes: bytes.length, sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+      originalSourceMainSha256: "c".repeat(64), producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+      evidencePath: join(dir, "evidence"), artifactPath: join(dir, "artifact") }, async token => {
+      calls.push(token);
+      return fetchColliersPartialDetail(token, async () => token === "b"
+        ? new Response("refused", { status, headers: retryAfter ? { "retry-after": "30" } : {} })
+        : Response.json({ ProjectSummary: { ProjectId: token } }));
+
+    });
+    assert.deepEqual(calls, ["a", "b"]); assert.equal(result.sourceStopped, true);
+    assert.equal(result.admitted, 1); assert.equal(result.held, 1); assert.equal(result.proposedCursor, 2);
+  });
+}

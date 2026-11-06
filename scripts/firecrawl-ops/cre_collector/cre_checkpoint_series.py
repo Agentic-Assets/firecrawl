@@ -2220,6 +2220,111 @@ def _pipeline_member_report_matches(
     )
 
 
+def _colliers_windows_qualified(child, *, run_dir, parent_started_at, parent_finished_at,
+                                unit_cache, allow_running, parent_attempts):
+    """Requalify each original partial unit without trusting the latest pointer."""
+    import copy
+
+    from cre_colliers_partial_checkpoint import _read_private_file, _window_base, verify_worker_artifact
+
+    try:
+        checkpoint = child["sources"]["colliers"]
+        windows = checkpoint["partial_windows"]
+        pipeline = child["pipeline"]
+        if (not isinstance(windows, list) or not windows
+                or pipeline.get("commit_outcome_unknown") is True
+                or checkpoint.get("state") in {"ingesting", "ingest_recovery_required"}
+                or (checkpoint.get("colliers_partial_worker") or {}).get("state") in
+                    {"cursor_publishing", "cursor_recovery_required", "settlement_unknown"}):
+            return False
+        anchor = windows[0]["first_position"]
+        if type(anchor) is not int or anchor < 1:
+            return False
+        previous = None
+        prior_terminal = False
+        verified_units = set()
+        verified_count = 0
+        for index, entry in enumerate(windows, 1):
+            if (prior_terminal or not isinstance(entry, dict) or entry.get("index") != index
+                    or entry.get("first_position") != anchor
+                    or type(entry.get("cursor")) is not int or type(entry.get("next_cursor")) is not int
+                    or (previous is not None and entry["cursor"] != previous)):
+                return False
+            snapshot = copy.deepcopy(entry["checkpoint"])
+            if "partial_windows" in snapshot:
+                return False
+            worker = snapshot["colliers_partial_worker"]
+            expected_path = _window_base(worker["attempt"], index) + "-receipt.json"
+            if (entry.get("receipt_path") != expected_path or worker.get("window_index", 1) != index
+                    or worker.get("cursor") != entry["cursor"]):
+                return False
+            raw = _read_private_file(run_dir / entry["receipt_path"], 16384)
+            if (hashlib.sha256(raw).hexdigest() != entry["receipt_sha256"]
+                    or worker.get("receipt_sha256") != entry["receipt_sha256"]
+                    or worker.get("receipt_path") != entry["receipt_path"]):
+                return False
+            receipt = json.loads(raw)
+            completion = worker.get("completion")
+            if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
+                    "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
+                    or completion != {key: receipt[key] for key in completion}
+                    or receipt.get("artifact", {}).get("sha256") != entry["artifact_sha256"]
+                    or receipt.get("proposedCursor") != entry["next_cursor"]
+                    or (index == 1 and receipt.get("firstPosition") != anchor)
+                    or (index > 1 and receipt.get("stopBeforePosition") != anchor)):
+                return False
+            prior_terminal = receipt.get("sourceStopped") is True or receipt.get("rotationComplete") is True
+            if entry["state"] == "verified":
+                binding = snapshot["gate"]["current_inventory_proof"]
+                settlement = snapshot["partial_cursor_settlement"]
+                if (entry.get("attempt_id") != settlement.get("attempt_id")
+                        or entry.get("artifact_sha256") != binding.get("artifact_sha256")
+                        or entry["cursor"] != binding.get("cursor")
+                        or entry["next_cursor"] != binding.get("next_cursor")):
+                    return False
+                checked_manifest = dict(child)
+
+                checked_manifest["sources"] = {**child["sources"], "colliers": snapshot}
+                checked = verify_worker_artifact(run_dir / worker["artifact_path"], checked_manifest,
+                    current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"])
+                if checked["receipt"] != receipt:
+                    return False
+                unit_id = entry["unit_id"]
+                if unit_id in verified_units or entry.get("outcome") != "exact_commit":
+                    return False
+                units = [unit for unit in pipeline["units"] if unit.get("unit_id") == unit_id]
+                if len(units) != 1 or units[0].get("sources") != ["colliers"]:
+                    return False
+                projected = dict(child)
+                projected["sources"] = {**child["sources"], "colliers": snapshot}
+                projected["pipeline"] = {**pipeline, "units": units,
+                    "source_results": {**pipeline["source_results"], "colliers": entry["result"]}}
+                if not pipeline_source_qualified(projected, "colliers", run_dir=run_dir,
+                        parent_started_at=parent_started_at, parent_finished_at=parent_finished_at,
+                        unit_cache={}, allow_running=allow_running, parent_attempts=parent_attempts):
+                    return False
+                verified_units.add(unit_id)
+                verified_count += 1
+            elif entry["state"] == "settled_no_write":
+                if (entry.get("outcome") != "settled_no_write" or receipt.get("admitted") != 0
+                        or entry.get("attempt_id") != worker.get("cursor_attempt_id")):
+                    return False
+                worker["state"] = "settled"
+                snapshot["artifact"] = {"path": worker["artifact_path"], **receipt["artifact"]}
+                projected = dict(child)
+                projected["sources"] = {**child["sources"], "colliers": snapshot}
+                checked = verify_worker_artifact(run_dir / worker["artifact_path"], projected,
+                    current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"],
+                    allow_empty=True)
+                if checked["staged"]:
+                    return False
+            else:
+                return False
+            previous = entry["next_cursor"]
+        return verified_count > 0
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, json.JSONDecodeError):
+        return False
+
 def pipeline_source_qualified(
     child: Mapping[str, Any],
     source: str,
@@ -2246,6 +2351,10 @@ def pipeline_source_qualified(
     if run_dir is None or parent_started_at is None or not parent_attempts:
         return False
     cache = unit_cache if unit_cache is not None else {}
+    if source == "colliers" and (child.get("sources", {}).get(source, {}).get("partial_windows")):
+        return _colliers_windows_qualified(child, run_dir=run_dir, parent_started_at=parent_started_at,
+            parent_finished_at=parent_finished_at, unit_cache=cache, allow_running=allow_running,
+            parent_attempts=parent_attempts)
     try:
         run_id = child["run_id"]
         if not isinstance(run_id, str) or validate_run_id(run_id) != run_dir.name:
