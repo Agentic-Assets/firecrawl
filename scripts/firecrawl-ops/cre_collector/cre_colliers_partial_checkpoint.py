@@ -534,6 +534,11 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
                 raise
             raise ColliersHistoricalEvidenceRefusal("historical Colliers source evidence refused") from exc
 
+    def source_mismatch(message):
+        if verifier_sha is not None:
+            raise ColliersHistoricalEvidenceRefusal(message)
+        raise ValueError(message)
+
     before = context()
     db_url, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(db_url).get("value") != target:
@@ -543,7 +548,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
         before["preimage"], source["generation"], source["attempt"], source["started_at"],
         source["finished_at"], before["artifact_finished_at"], before["job_id"])
     if history_holds != before["history_holds"]:
-        raise ValueError("partial readback held partition changed")
+        source_mismatch("partial readback held partition changed")
     result = _run_psql_script(find_psql(), db_url,
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS
         + "\n" + sql + ";\nROLLBACK;\n", timeout=60)
@@ -552,10 +557,12 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
     parsed = parse_tsv(result.stdout)
     expected = before["binding"]["emitted_count"]
     current_url, _ = load_db_url(env_file)
-    if (database_target_fingerprint_from_url(current_url).get("value") != target or context() != before):
-        raise ValueError("partial readback input or target changed")
+    if database_target_fingerprint_from_url(current_url).get("value") != target:
+        raise ValueError("partial readback target changed")
+    if context() != before:
+        source_mismatch("partial readback source input changed")
     if parsed != [{"jobs": "1", "observed": str(expected), "mismatches": "0"}]:
-        raise ValueError("partial readback postconditions differ")
+        source_mismatch("partial readback postconditions differ")
     return {"ok": True, "outcome": "exact_commit", "artifact_sha256": before["binding"]["artifact_sha256"],
             "generation_id": source["generation"], "attempt_id": attempt_id,
             "database_target_sha256": target, "expected": expected, "held": before["held"],

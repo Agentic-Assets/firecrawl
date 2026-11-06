@@ -234,6 +234,45 @@ def test_qualification_turns_settled_missing_evidence_into_source_hold(incident,
         recovery.qualify(series_dir, owner)
 
 
+@pytest.mark.parametrize("mismatch", ["postimage", "held_partition", "target"])
+def test_actual_historical_readback_mismatch_is_source_local_except_target(incident, monkeypatch, mismatch):
+    from types import SimpleNamespace
+    import cre_colliers_partial_checkpoint as partial
+    import cre_ingest as ingest
+    import cre_validate as validate
+
+    series_dir, _, owner, _, _, child = incident
+    target = child["preflight"]["database_target"]["value"]
+    producer, verifier = child["collector_git_sha"], "9" * 40
+    monkeypatch.setattr(refresh, "git_identity", lambda: (verifier, False))
+    monkeypatch.setattr(recovery.series, "local_git_output", lambda args: producer)
+    monkeypatch.setattr(refresh, "database_target_fingerprint",
+        lambda _: {"algorithm": "sha256", "value": target})
+    context = {"source_receipt": {"generation": child["run_id"], "attempt": 1,
+        "started_at": "start", "finished_at": "finish"}, "records": [], "staged": [], "held": [],
+        "preimage": [], "artifact_finished_at": "finish", "job_id": "job", "history_holds": {},
+        "binding": {"emitted_count": 100}}
+    monkeypatch.setattr(partial, "ingest_subset_context", lambda *args, **kwargs: context)
+    monkeypatch.setattr(partial, "partial_readback_sql",
+        lambda *args: ("SELECT 1", {"conflict": "held"} if mismatch == "held_partition" else {}))
+    monkeypatch.setattr(ingest, "load_db_url", lambda _: ("synthetic", None))
+    monkeypatch.setattr(ingest, "database_target_fingerprint_from_url",
+        lambda _: {"value": "f" * 64 if mismatch == "target" else target})
+    monkeypatch.setattr(ingest, "find_psql", lambda: "synthetic-psql")
+    monkeypatch.setattr(validate, "_run_psql_script",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="jobs\tobserved\tmismatches\n1\t100\t1\n"))
+    def actual_readback(*args, **kwargs):
+        return partial.run_partial_readback("artifact", {}, code_sha=producer, verifier_sha=verifier,
+            target=target, attempt_id="d" * 32, env_file=None)
+    monkeypatch.setattr(refresh, "run_final_validation", actual_readback)
+    publications = []
+    options = {"before_publish": lambda: publications.append("armed"), "after_publish": lambda: publications.append("done")}
+    error = ValueError if mismatch == "target" else recovery.SourceEvidenceRefusal
+    with pytest.raises(error):
+        recovery.recover(series_dir, owner, expected_target=target, env_file=None, **options)
+    assert publications == []
+
+
 def test_cursor_publication_error_does_not_clear_armed_marker(incident, monkeypatch):
     from pathlib import Path
 

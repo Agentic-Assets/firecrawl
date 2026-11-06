@@ -241,7 +241,9 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
     evidence_dir = pipeline_dir / name
     _check_owner(owner)
     # The ordinary full validation implementation runs only read-only queries;
-    # its result is written to new private evidence, not the old manifest.
+    # its result is written to new private evidence, not the old manifest. The
+    # source-specific psql readback has a 60-second timeout and does not poll
+    # peer collection while it waits; it does not issue source or database writes.
     try:
         validation = refresh.run_final_validation(run_dir, child, env_file, sources=["colliers"],
             evidence_dir=evidence_dir, before_path=run_dir / initial["before_path"],
