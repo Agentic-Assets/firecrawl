@@ -394,6 +394,20 @@ export function assertAvisonYoungDetailDoc(
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
+  if (!combined.trim()) {
+    // A missing SDK data envelope is not evidence of an empty source page.
+    // The completed response must identify the requested URL and a 2xx status.
+    const responseUrls = [doc.metadata?.sourceURL, doc.metadata?.url].filter(value => value !== undefined && value !== null);
+    let matchesRequest = responseUrls.length > 0;
+    try {
+      matchesRequest &&= responseUrls.every(value => typeof value === "string" && new URL(value).href === new URL(requestedUrl).href);
+    } catch {
+      matchesRequest = false;
+    }
+    if (!Number.isInteger(status) || status < 200 || status >= 300 || !matchesRequest) {
+      throw refuseUnsettled(new Error("Avison Young empty detail response lacks completed response metadata"));
+    }
+  }
   if (/just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-/i.test(combined)) {
     throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge");
   }

@@ -29,10 +29,12 @@ const mode=process.env.AVISON_CONTRACT_CASE;
 const calls=[];
 globalThis.fetch=async(input,options)=>{
   const u=new URL(String(input));
-  if((mode==='non-direct-drain'||mode==='one-empty-nondirect') && u.pathname==='/v2/scrape'){
+  if((mode==='non-direct-drain'||mode==='one-empty-nondirect'||mode==='empty-malformed-nondirect') && u.pathname==='/v2/scrape'){
     const target=new URL(JSON.parse(options.body).url);
     const index=Number((target.hostname+target.pathname).match(/fixture-(?:sale|lease)-(\d)/)?.[1]);
     calls.push({native:target.hostname.endsWith('.sharplaunch.com'),index});
+    if(mode==='empty-malformed-nondirect' && index===0)
+      return new Response(JSON.stringify({success:true}),{headers:{'content-type':'application/json'}});
     if(index===1)await new Promise(resolve=>setTimeout(resolve,150));
     const html=mode==='one-empty-nondirect' && index===1 ? '' : mode==='non-direct-drain' && index===0
       ? '<html><h1>Access denied</h1><p>captcha</p></html>'
@@ -136,7 +138,7 @@ def prepare(tmp_path, case):
     # Keep transient controls fast without changing their attempt budget.
     env["AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS"] = "0"
     env.pop("AVISON_YOUNG_DETAIL_CONCURRENCY", None)
-    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404", "one-empty-direct", "one-empty-nondirect", "first-404"}:
+    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404", "one-empty-direct", "one-empty-nondirect", "first-404", "empty-malformed-nondirect"}:
         env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
     if case == "explicit-strict":
         env["CRE_REQUIRE_FRESH_DETAILS"] = "1"
@@ -218,6 +220,27 @@ def test_settled_empty_detail_holds_row_and_continues_to_peer(tmp_path, case):
     for tx in ("sale", "lease"):
         outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
         assert [item["state"] for item in outcome["documents"]] == ["validated", "failed", "validated"]
+
+
+def test_malformed_success_envelope_is_unsettled_not_a_settled_empty_page(tmp_path):
+    preload, started, env = prepare(tmp_path, "empty-malformed-nondirect")
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    env["AVISON_YOUNG_DETAIL_TRANSPORT"] = "nondirect"
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True and data["listings"] == []
+    assert len(data["sources"]) == 1 and data["sources"][0]["transaction"] == "sale"
+    records = [json.loads(line) for line in (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    outcomes = [record for record in records if record["kind"] == "detail_outcomes"]
+    assert len(outcomes) == 1
+    assert [item["state"] for item in outcomes[0]["documents"]] == ["failed", "unattempted", "unattempted"]
+    calls = json.loads((tmp_path / "calls.json").read_text())
+    assert [item["index"] for item in calls] == [0]
 
 
 def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_path):

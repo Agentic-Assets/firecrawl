@@ -8,7 +8,7 @@ import { cancelResponseBody, settleResponseBodyRead, type ResponseBodyReader } f
 const CLEANUP_MS = 1_000;
 export class AvisonYoungUnsettledError extends Error {
   constructor(cause: unknown) {
-    super(`Avison Young transport cleanup was not acknowledged: ${String(cause)}`, { cause });
+    super(`Avison Young request settlement was not confirmed: ${String(cause)}`, { cause });
     this.name = "AvisonYoungUnsettledError";
   }
 }
