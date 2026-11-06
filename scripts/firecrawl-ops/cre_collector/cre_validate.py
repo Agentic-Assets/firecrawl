@@ -1805,6 +1805,7 @@ def render_markdown(report):
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
         "artifact_run_jobs": "Artifact Run Jobs",
+        "atomic_settlement": "Atomic Settlement Fence",
     }
     for key in report["queries"]:
         parts.extend(

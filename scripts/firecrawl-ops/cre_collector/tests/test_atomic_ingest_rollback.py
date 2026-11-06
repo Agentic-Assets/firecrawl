@@ -73,7 +73,7 @@ def test_special_partial_and_guarded_sources_are_not_demoted(source, flag):
     assert not outcome.eligible(manifest, source)
 
 
-@pytest.mark.parametrize("outcome_kind", ["settled", "bad_attempt", "unknown_cleanup", "committed"])
+@pytest.mark.parametrize("outcome_kind", ["settled", "bad_attempt", "unknown_cleanup", "committed", "fence_jobs", "fence_generation", "fence_missing"])
 def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_path, monkeypatch, outcome_kind):
     import cre_checkpoint_refresh as refresh
 
@@ -118,6 +118,9 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
                                                     "matching_generations": "1" if outcome_kind == "committed" else "0"}]
         report["atomic_settlement_probe"] = {**report["artifact_run_probe"], "source": source,
                                              "generation_id": manifest["run_id"]}
+        if outcome_kind == "fence_jobs": report["queries"]["atomic_settlement"][0]["matching_jobs"] = "1"
+        if outcome_kind == "fence_generation": report["queries"]["atomic_settlement"][0]["matching_generations"] = "1"
+        if outcome_kind == "fence_missing": report["queries"].pop("atomic_settlement")
         path = Path(argv[argv.index("--out") + 1])
         path.write_text(json.dumps(report))
         return 0
@@ -135,6 +138,11 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
         with pytest.raises(refresh.GlobalStageError, match="readback is invalid"):
             refresh.ingest_source(root, manifest, source, artifact, None)
         assert checkpoint["state"] == "ingest_recovery_required"
+    elif outcome_kind in {"fence_jobs", "fence_generation", "fence_missing"}:
+        with pytest.raises(refresh.GlobalStageError):
+            refresh.ingest_source(root, manifest, source, artifact, None)
+        assert checkpoint["state"] == "ingest_recovery_required"
+        assert checkpoint["ingest_recovery"].get("outcome") != "exact_rollback"
     else:
         with pytest.raises(refresh.ProcessCleanupUnknown):
             refresh.ingest_source(root, manifest, source, artifact, None)
