@@ -256,6 +256,7 @@ async function main() {
     failures: Array<{ listingId: string; role: string; status: 404 }>;
   }> = [];
   let avisonOtherFailures = 0;
+  let avisonOnlyRecordLocalFailures = true;
   let avisonAccessDenied = false;
   let avisonUnsettled = false;
   let terminalCaptureFailure = false;
@@ -357,6 +358,7 @@ async function main() {
             avisonTerminalFailures.push({ transaction: tx, failures: err.failures });
           } else {
             avisonOtherFailures += 1;
+            if (!(err instanceof AvisonYoungPartialDetailError)) avisonOnlyRecordLocalFailures = false;
           }
         }
         sources.push({
@@ -406,8 +408,8 @@ async function main() {
     const receipt = spool.finish();
     const failed = sources.find((source) => source.sourceKey === key && source.error);
     const source = failed ?? sources.find((entry) => entry.sourceKey === key);
-    if (key === "avison-young" && failed && avisonOtherFailures > 0 && requestedSources.length === 1
-        && !avisonAccessDenied && !avisonUnsettled && !terminalCaptureFailure
+    if (key === "avison-young" && failed && avisonOtherFailures > 0 && avisonOnlyRecordLocalFailures
+        && requestedSources.length === 1 && !avisonAccessDenied && !avisonUnsettled && !terminalCaptureFailure
         && (receipt.state === "sealed" || receipt.state === "sealed_partial")) {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
