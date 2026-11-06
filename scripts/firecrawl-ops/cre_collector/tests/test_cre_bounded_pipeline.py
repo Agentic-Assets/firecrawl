@@ -227,7 +227,8 @@ def run_schedule(
         )
         for source in unit["sources"]:
             owner["sources"][source]["readback"] = {"ok": True}
-        unit.update(validation_path="proof", validation_sha256="c" * 64)
+        unit.update(validation_path="proof", validation_sha256="c" * 64,
+                    aggregate_gate={"baseline_advisory_reasons": {}})
         events.append(("db_end", tuple(unit["sources"]), clock["now"]))
         return {
             "path": "proof",
@@ -722,7 +723,8 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
         events.append(("db_end", time.monotonic()))
         for source in unit["sources"]:
             owner["sources"][source]["readback"] = {"ok": True}
-        unit.update(validation_path="offline-proof", validation_sha256="c" * 64)
+        unit.update(validation_path="offline-proof", validation_sha256="c" * 64,
+                    aggregate_gate={"baseline_advisory_reasons": {}})
         return None
 
     monkeypatch.setattr(refresh, "run_command", command)

@@ -138,7 +138,8 @@ globalThis.fetch = async (input) => {
                         attempt_id=attempt, outcome="exact_commit", proof=proof, owner_check=lock._require_authority)
                     checkpoint["partial_cursor_settlement"] = {"state": "settled", "attempt_id": attempt,
                         "artifact_sha256": binding["artifact_sha256"]}
-                unit.update(validation_path="synthetic", validation_sha256="c" * 64)
+                unit.update(validation_path="synthetic", validation_sha256="c" * 64,
+                            aggregate_gate={"baseline_advisory_reasons": {}})
                 return {"path": "synthetic", "sha256": "c" * 64, "sequence": 1}
 
             if database:
