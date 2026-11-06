@@ -403,6 +403,10 @@ def test_count_shortfall_survives_source_aggregate_baseline_drift(closed_pipelin
     assert case.manifest["pipeline"]["status"] == "partial"
     assert refresh.has_admitted_count_hold(case.manifest)
     assert ("write", "svn") in case.events
+    unit = next(unit for unit in case.manifest["pipeline"]["units"] if "cbre" in unit["sources"])
+    report = json.loads((case.root / unit["aggregate_gate"]["path"]).read_text())
+    assert report["per_source"]["cbre"]["mark_missing_safe"] is False
+    assert "cbre" not in report["summary"]["mark_missing_safe_brokerages"]
 
 
 def test_count_shortfall_handled_pipeline_resumes_without_replay(tmp_path, monkeypatch):

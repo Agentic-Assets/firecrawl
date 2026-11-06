@@ -6485,7 +6485,12 @@ def run_aggregate_gate(
             and subset_gate_can_admit(info)
         )
     )
-    limited_admission = not full_transaction_scope or bool(additive_coverage_holds)
+    source_coverage_holds = {
+        source for source in selected
+        if additive_hold_enabled and admitted_count_hold(manifest["sources"][source])
+    }
+    limited_admission = (not full_transaction_scope or bool(additive_coverage_holds)
+                         or bool(source_coverage_holds))
     if limited_admission:
         summary = result.get("summary")
         if (
@@ -6505,7 +6510,7 @@ def run_aggregate_gate(
             "transactions": list(manifest["config"]["transactions"]),
             "whole_source_coverage": False,
         }
-        if additive_coverage_holds:
+        if additive_coverage_holds or source_coverage_holds:
             manifest["scope"]["kind"] = "collector_registry_additive_coverage_hold"
             manifest["scope"]["whole_source_coverage"] = False
         baseline_advisory_holds: list[str] = []
@@ -6530,7 +6535,8 @@ def run_aggregate_gate(
                     )
                     if info["raw_verdict"] == "hold":
                         baseline_advisory_holds.append(source)
-                info["mark_missing_safe"] = False
+                if not full_transaction_scope or source in additive_coverage_holds or source in source_coverage_holds:
+                    info["mark_missing_safe"] = False
                 info["admission_scope"] = (
                     scope_kind
                     if additive_admitted
@@ -6546,7 +6552,16 @@ def run_aggregate_gate(
             for source, info in per_source.items()
             if isinstance(info, dict) and info.get("verdict") == "hold"
         )
-        summary["mark_missing_safe_brokerages"] = []
+        from cre_gate import rollup_brokerages
+        result["per_brokerage"] = rollup_brokerages(per_source)
+        summary["mark_missing_safe_sources"] = sorted(
+            source for source, info in per_source.items()
+            if isinstance(info, dict) and info.get("mark_missing_safe") is True
+        )
+        summary["mark_missing_safe_brokerages"] = sorted(
+            slug for slug, info in result["per_brokerage"].items()
+            if info.get("mark_missing_safe") is True
+        )
         atomic_write_json(output, result)
     configured_sources = set(selected)
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()

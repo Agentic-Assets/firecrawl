@@ -1183,7 +1183,7 @@ def _child_succeeded(
         return False
     if (config.get("admit_baseline_hold_additively") is True
             or child_manifest.get("status") == "additive_scope_complete_coverage_hold"):
-        from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
+        from cre_checkpoint_refresh import SOURCE_TO_BROKERAGE, additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
 
         sources = config.get("sources") or []
         if not isinstance(sources, list) or len(sources) != 1:
@@ -1222,13 +1222,14 @@ def _child_succeeded(
             return False
         aggregate_reason = reasons.get(source)
         aggregate_hold = (aggregate.get("baseline_advisory_holds") == [source]
-                          and aggregate.get("mark_missing_safe_brokerages") == []
+                          and SOURCE_TO_BROKERAGE[source][0] not in aggregate.get("mark_missing_safe_brokerages", [])
                           and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
         return (
             child_manifest.get("status") == "additive_scope_complete_coverage_hold"
             and scope.get("kind") == "collector_registry_additive_coverage_hold"
             and scope.get("whole_source_coverage") is False
             and (source_hold or aggregate_hold)
+            and SOURCE_TO_BROKERAGE[source][0] not in aggregate.get("mark_missing_safe_brokerages", [])
         )
     if nai_post_partial_child(child_manifest):
         scope = child_manifest.get("scope")
@@ -2181,7 +2182,7 @@ def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
 
 def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
     """Recognize the source and its own unit's retained count-only admission."""
-    from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
+    from cre_checkpoint_refresh import SOURCE_TO_BROKERAGE, additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
 
     try:
         checkpoint = child["sources"][source]
@@ -2197,7 +2198,7 @@ def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
             return False
         aggregate_reason = reasons.get(source)
         aggregate_hold = (source in aggregate.get("baseline_advisory_holds", [])
-                          and aggregate.get("mark_missing_safe_brokerages") == []
+                          and SOURCE_TO_BROKERAGE[source][0] not in aggregate.get("mark_missing_safe_brokerages", [])
                           and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
         if not aggregate_hold:
             aggregate_reason = None
@@ -2211,6 +2212,7 @@ def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
             and result.get("baseline_hold_aggregate_reason") == aggregate_reason
             and result.get("baseline_hold_reason") == (source_reason or aggregate_reason)
             and source in unit["sources"]
+            and SOURCE_TO_BROKERAGE[source][0] not in aggregate.get("mark_missing_safe_brokerages", [])
             and aggregate.get("non_ok_sources") == []
         )
     except (KeyError, TypeError, StopIteration):
