@@ -12,7 +12,7 @@ from cre_nai_post_admission import admit, candidate
 from tests.test_nai_post_admission import fixture
 
 
-def test_real_cli_accepts_bound_dry_run_and_refuses_mark_missing(tmp_path):
+def test_real_cli_refuses_fabricated_claims_without_live_owner(tmp_path):
     path, manifest, _ = fixture(tmp_path)
     collector = Path(__file__).resolve().parent.parent
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=collector, text=True,
@@ -57,8 +57,8 @@ def test_real_cli_accepts_bound_dry_run_and_refuses_mark_missing(tmp_path):
     env = {**os.environ, "CRE_ACTIVATE_STATUS": "0"}
     accepted = subprocess.run(base + ["--keep-artifacts", str(private / "accepted")], cwd=collector,
                               env=env, capture_output=True, text=True, timeout=30)
-    assert accepted.returncode == 0, accepted.stderr
-    assert (private / "accepted" / "ingest.sql").is_file()
+    assert accepted.returncode != 0
+    assert not (private / "accepted" / "ingest.sql").exists()
     refused = subprocess.run(base + ["--mark-missing", "--keep-artifacts", str(private / "refused")], cwd=collector,
                              env=env, capture_output=True, text=True, timeout=30)
     assert refused.returncode != 0 and not (private / "refused" / "ingest.sql").exists()

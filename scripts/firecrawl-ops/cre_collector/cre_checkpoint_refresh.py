@@ -3707,8 +3707,13 @@ def run_command(
     log_path: Path,
     *,
     env: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
-    return run_observed_command(argv, log_path, env=env, runner=_run_logged_command)
+    if not pass_fds:
+        return run_observed_command(argv, log_path, env=env, runner=_run_logged_command)
+    def inherited_runner(command, path, *, env=None):
+        return _run_logged_command(command, path, env=env, pass_fds=pass_fds)
+    return run_observed_command(argv, log_path, env=env, runner=inherited_runner)
 
 
 def _run_logged_command(
@@ -3716,6 +3721,7 @@ def _run_logged_command(
     log_path: Path,
     *,
     env: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
@@ -3736,6 +3742,7 @@ def _run_logged_command(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            pass_fds=pass_fds,
         )
         owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
@@ -5830,6 +5837,32 @@ def subset_ingest_arguments(run_dir, manifest, source):
             "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
 
 
+def _run_nai_owned_command(argv, log_path, manifest):
+    """Inherit the actual foreground authority, never authority from claims."""
+    from cre_refresh_pipeline import _OWNER_CHECK, _OWNER_LEASE, require_pipeline_owner
+
+    owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+    if not isinstance(owner, SharedLock):
+        raise GlobalStageError("NAI partial command lacks its coordinator owner")
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    owner._require_authority()
+    directory = owner._owned_directory_fd()
+    os.close(directory)
+    if (owner.path.resolve() != canonical_shared_lock_dir().resolve() or owner.authority_fd < 0
+            or owner.recovery_sync_fd < 0 or not owner.authority_token
+            or owner.authority_generation != owner.lease_token):
+        raise GlobalStageError("NAI partial command authority differs")
+    env = safe_process_env()
+    env.update({"CRE_TIER_LOCK_AUTHORITY_FD": str(owner.authority_fd),
+                "CRE_TIER_LOCK_SYNC_FD": str(owner.recovery_sync_fd),
+                "CRE_TIER_LOCK_TOKEN": owner.authority_token,
+                "CRE_TIER_LOCK_GENERATION": owner.authority_generation,
+                "CRE_TIER_LOCK_OWNER_PID": str(os.getpid())})
+    rc = run_command(argv, log_path, env=env, pass_fds=(owner.authority_fd, owner.recovery_sync_fd))
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    return rc
+
+
 def dry_run_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -5845,15 +5878,13 @@ def dry_run_source(
     sql_dir = run_dir / "dry-run" / source
     log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
-    rc = run_command(
-        build_ingest_dry_run_argv(
+    argv = build_ingest_dry_run_argv(
             artifact,
             sql_dir,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-        ) + subset_ingest_arguments(run_dir, manifest, source),
-        log_path,
-        env=safe_process_env(),
-    )
+        ) + subset_ingest_arguments(run_dir, manifest, source)
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+          else run_command(argv, log_path, env=safe_process_env()))
     sql_path = sql_dir / "ingest.sql"
     sql_info = None
     if sql_path.is_file():
@@ -5926,7 +5957,8 @@ def ingest_source(
     }
     checkpoint["state"] = "ingesting"
     save_manifest(run_dir, manifest)
-    rc = run_command(argv, log_path, env=safe_process_env())
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+          else run_command(argv, log_path, env=safe_process_env()))
     checkpoint["ingest"]["finished_at"] = utc_now()
     checkpoint["ingest"]["rc"] = rc
     if rc != 0:

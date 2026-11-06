@@ -70,7 +70,9 @@ def _inherited_descriptor(value: str | None, label: str) -> int:
     return descriptor
 
 
-def verify_inherited_lock(environ: Mapping[str, str] | None = None) -> None:
+def verify_inherited_lock(environ: Mapping[str, str] | None = None, *,
+                          allow_recovery_required: bool = False,
+                          require_direct_parent: bool = False) -> None:
     """Prove the shell worker inherited the dispatcher's canonical authority.
 
     This is intentionally a cooperative-process boundary.  The descriptors are
@@ -80,6 +82,8 @@ def verify_inherited_lock(environ: Mapping[str, str] | None = None) -> None:
     fails before it can run a tier.
     """
     env = os.environ if environ is None else environ
+    if allow_recovery_required and not require_direct_parent:
+        raise TierDispatchError("CRE recovery-required authority needs its direct owner parent")
     lock_path = canonical_shared_lock_dir()
     authority_fd = _inherited_descriptor(
         env.get("CRE_TIER_LOCK_AUTHORITY_FD"), "authority"
@@ -122,7 +126,7 @@ def verify_inherited_lock(environ: Mapping[str, str] | None = None) -> None:
         raise TierDispatchError("CRE tier inherited authority is incomplete")
     pid, recorded_token, generation, recovery_required = fields
     if (
-        recovery_required
+        (recovery_required and not allow_recovery_required)
         or recorded_token != token
         or generation != expected_generation
         or owner != str(pid)
@@ -138,6 +142,8 @@ def verify_inherited_lock(environ: Mapping[str, str] | None = None) -> None:
         raise TierDispatchError("CRE tier inherited lock is incomplete") from exc
     if lease != expected_generation or lock_owner != owner:
         raise TierDispatchError("CRE tier inherited lock ownership changed")
+    if require_direct_parent and os.getppid() != pid:
+        raise TierDispatchError("CRE tier inherited authority parent differs")
 
 
 def _default_command(tier: str) -> list[str]:

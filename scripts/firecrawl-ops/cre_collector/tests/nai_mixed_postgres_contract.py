@@ -125,7 +125,9 @@ console.log(JSON.stringify({...mapped, sourceKey:'nai-global', transactionMode:'
             return refresh.CohortCollectionProcess(source, process, log, temporary_artifact,
                 attempt, started, OwnedProcessGroup.from_spawn(process))
 
-        lock_path = root / "lock"
+        # This is the isolated standalone clone's canonical lock, so the real
+        # subprocess can independently verify its inherited descriptors.
+        lock_path = refresh.canonical_shared_lock_dir()
         with patch.object(refresh, "canonical_shared_lock_dir", return_value=lock_path), \
              patch.object(ingest, "find_psql", return_value=str(shim)), \
              patch.object(refresh, "safe_process_env", return_value=env), \

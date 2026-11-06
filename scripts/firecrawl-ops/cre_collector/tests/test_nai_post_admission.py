@@ -48,6 +48,43 @@ def test_bound_artifact_partition(tmp_path):
     assert partition["staged"][0]["external_id"] == "infabode:1"
 
 
+def test_active_checkpoint_must_match_claims_and_live_write_attempt(tmp_path, monkeypatch):
+    import cre_checkpoint_refresh as refresh
+    import cre_tier_dispatch as dispatch
+    from cre_nai_post_admission import _require_active_checkpoint
+
+    path, manifest, sha = fixture(tmp_path)
+    lock_path = tmp_path / ".cre.lock"
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock_path)
+    monkeypatch.setattr(dispatch, "verify_inherited_lock", lambda **kwargs: None)
+    monkeypatch.setenv("CRE_TIER_LOCK_AUTHORITY_FD", "4")
+    monkeypatch.setenv("CRE_TIER_LOCK_SYNC_FD", "5")
+    binding, _ = candidate(path, manifest, code_sha=sha, dirty=False)
+    root = path.parent.parent
+    claims_path = root / "claims.json"
+    raw = b"{}"
+    claims_path.write_bytes(raw)
+    checkpoint = manifest["sources"]["nai-global"]
+    checkpoint.update(state="ingesting", subset_ingest_attempt_id="d" * 32,
+        ingest={"attempt_id": "d" * 32, "rc": None}, gate={"current_inventory_proof": binding},
+        nai_post_claims={"path": str(claims_path), "sha256": hashlib.sha256(raw).hexdigest(), "attempt_id": "d" * 32})
+    manifest["preflight"]["shared_lock"] = str(lock_path)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    args = SimpleNamespace(inputs=[str(path)], nai_post_claims=str(claims_path), dry_run=False,
+                           checkpoint_ingest_attempt="d" * 32, expected_db_target_sha256="b" * 64)
+    envelope = {"manifest": manifest, "binding": binding}
+    assert _require_active_checkpoint(args, raw, envelope) == (4, 5)
+    checkpoint["ingest"]["attempt_id"] = "e" * 32
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="write attempt differs"):
+        _require_active_checkpoint(args, raw, envelope)
+    checkpoint["ingest"]["attempt_id"] = "d" * 32
+    checkpoint["nai_post_claims"]["sha256"] = "0" * 64
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="checkpoint binding differs"):
+        _require_active_checkpoint(args, raw, envelope)
+
+
 def test_inventory_recovery_rederives_exact_original_and_rejects_tampering(tmp_path):
     from cre_nai_inventory_recovery import derive
     from tests.test_nai_inventory_recovery import recovery_source

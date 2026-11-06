@@ -296,6 +296,45 @@ def ingest_subset_context(artifact_path, envelope, *, code_sha, dirty, target_sh
             "started_at": info["started_at"], "finished_at": info["finished_at"], "attempt_id": attempt_id}
 
 
+def _require_active_checkpoint(args, claims_raw, envelope):
+    """Bind execution to a direct coordinator holding the real lock FDs."""
+    from cre_checkpoint_refresh import canonical_shared_lock_dir
+    from cre_code_handoff_git import read_file
+    from cre_tier_dispatch import verify_inherited_lock
+    from reporting.partial_qualification import _exact_json_equal
+
+    verify_inherited_lock(allow_recovery_required=True, require_direct_parent=True)
+    authority_fd = int(os.environ["CRE_TIER_LOCK_AUTHORITY_FD"])
+    sync_fd = int(os.environ["CRE_TIER_LOCK_SYNC_FD"])
+    artifact = Path(args.inputs[0])
+    run_dir = artifact.parent.parent
+    claims_path = Path(args.nai_post_claims)
+    if (not artifact.is_absolute() or not claims_path.is_absolute()
+            or not claims_path.is_relative_to(run_dir)
+            or not claims_path.resolve().is_relative_to(run_dir.resolve())):
+        raise ValueError("NAI checkpoint path differs")
+    current = json.loads(read_file(run_dir / "manifest.json"))
+    source = current["sources"][SOURCE]
+    claims = source["nai_post_claims"]
+    if (current.get("run_id") != run_dir.name
+            or (current.get("preflight") or {}).get("shared_lock") != str(canonical_shared_lock_dir())
+            or (current.get("preflight") or {}).get("database_target") != {"algorithm": "sha256", "value": args.expected_db_target_sha256}
+            or current.get("collector_git_sha") != envelope["manifest"].get("collector_git_sha")
+            or source.get("subset_ingest_attempt_id") != args.checkpoint_ingest_attempt
+            or claims.get("attempt_id") != args.checkpoint_ingest_attempt
+            or claims.get("path") != str(claims_path)
+            or claims.get("sha256") != hashlib.sha256(claims_raw).hexdigest()
+            or (source.get("artifact") or {}).get("path") != str(artifact.relative_to(run_dir))
+            or (source.get("artifact") or {}).get("sha256") != envelope["binding"].get("artifact_sha256")
+            or not _exact_json_equal((source.get("gate") or {}).get("current_inventory_proof"), envelope["binding"])):
+        raise ValueError("NAI active checkpoint binding differs")
+    if not args.dry_run and (source.get("state") != "ingesting"
+            or (source.get("ingest") or {}).get("attempt_id") != args.checkpoint_ingest_attempt
+            or (source.get("ingest") or {}).get("rc") is not None):
+        raise ValueError("NAI active checkpoint write attempt differs")
+    return authority_fd, sync_fd
+
+
 def run_ingest(args):
     """Execute only an owner-bound NAI partial attempt, or emit its dry run."""
     import sys
@@ -324,6 +363,7 @@ def run_ingest(args):
         envelope = json.loads(raw)
     finally:
         os.close(directory)
+    inherited_fds = _require_active_checkpoint(args, raw, envelope)
     code_sha, dirty = git_identity()
     context = ingest_subset_context(Path(args.inputs[0]), envelope, code_sha=code_sha, dirty=dirty,
                                     target_sha256=args.expected_db_target_sha256,
@@ -346,6 +386,7 @@ def run_ingest(args):
         finally:
             os.close(descriptor)
         if args.dry_run:
+            _require_active_checkpoint(args, raw, envelope)
             return
         current_sha, current_dirty = git_identity()
         current = ingest_subset_context(Path(args.inputs[0]), envelope, code_sha=current_sha, dirty=current_dirty,
@@ -355,12 +396,14 @@ def run_ingest(args):
             raise ValueError("NAI partial inputs changed before ingest")
         db_url, _ = load_db_url(args.env_file)
         assert_expected_database_target(db_url, args.expected_db_target_sha256)
+        _require_active_checkpoint(args, raw, envelope)
         proc = subprocess.run([find_psql(), *psql_connection_args(db_url), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
                               input=sql, text=True, env=psql_connection_env(db_url), stdout=sys.stdout,
-                              stderr=sys.stderr, check=False)
+                              stderr=sys.stderr, check=False, pass_fds=inherited_fds)
         if proc.returncode:
             raise RuntimeError("NAI partial ingest outcome requires reconciliation")
         current_url, _ = load_db_url(args.env_file)
+        _require_active_checkpoint(args, raw, envelope)
         assert_expected_database_target(current_url, args.expected_db_target_sha256)
 
     if args.keep_artifacts:
