@@ -1451,7 +1451,7 @@ def run_bounded_pipeline(
                         from cre_pyramid_rollback_result import verified_rollback
                         require_pipeline_owner(manifest, _OWNER_LEASE.get())
                         if isinstance(exc, refresh.SettledIngestFailure):
-                            from cre_atomic_ingest_rollback import verified_rollback as verify_atomic
+                            from recovery.atomic_ingest_rollback import verified_rollback as verify_atomic
                             verified = len(sealed) == 1 and verify_atomic(run_dir, manifest, sealed[0])
                         else:
                             verified = (len(sealed) == 1 and sealed[0] in {"pyramid-brokerage", "transwestern", "jll"}

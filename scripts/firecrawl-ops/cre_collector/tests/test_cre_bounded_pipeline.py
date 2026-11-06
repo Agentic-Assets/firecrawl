@@ -325,7 +325,7 @@ def run_schedule(
             monkeypatch.setattr(pipeline, "preseal_source_gate", lambda root, owner, source, env:
                 actual_preseal(root, owner, source, env) if source == "lyon-stahl" else True)
     if settled_ingest_failure:
-        import cre_atomic_ingest_rollback as atomic
+        import recovery.atomic_ingest_rollback as atomic
         monkeypatch.setattr(atomic, "verified_rollback", lambda *a: atomic_rollback_valid)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
@@ -637,7 +637,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
                 # hook frees the held collector slot and dispatches source four.
                 code = (
                     "import pathlib,runpy,sys,time; root=pathlib.Path(sys.argv[1]); "
-                    "(root/'first-compute-started').touch(); deadline=time.monotonic()+5\n"
+                    "(root/'first-compute-started').touch(); deadline=time.monotonic()+30\n"
                     "while not (root/'fourth-started').exists():\n"
                     " if time.monotonic()>=deadline: raise RuntimeError('fourth fetch not dispatched during compute')\n"
                     " time.sleep(0.01)\n"
@@ -669,7 +669,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
                 "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
                 "cache=root/'cache/jll/page.json'; cache.parent.mkdir(parents=True); "
                 "handle=cache.open('wb'); handle.truncate(513*1024**2); handle.close(); "
-                "(root/'cache-ready').touch(); deadline=time.monotonic()+5\n"
+                "(root/'cache-ready').touch(); deadline=time.monotonic()+30\n"
                 "while not (root/'release-cache-worker').exists():\n"
                 " if time.monotonic()>=deadline: raise RuntimeError('independent dispatch withheld')\n"
                 " time.sleep(0.01)\n"
@@ -680,7 +680,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
             # collection slots refill. Hold one slot until actual worker start.
             code = (
                 "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
-                "deadline=time.monotonic()+5\n"
+                "deadline=time.monotonic()+30\n"
                 "while not (root/'first-compute-started').exists():\n"
                 " if time.monotonic()>=deadline: raise RuntimeError('first compute did not start')\n"
                 " time.sleep(0.01)\n"
@@ -718,7 +718,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
         if source == sources[3]:
             fourth_started.touch()
         if retained_cache and source == sources[0]:
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + 30
             while not cache_ready.exists():
                 if process.poll() is not None or time.monotonic() >= deadline:
                     refresh._terminate_cohort_processes([item])

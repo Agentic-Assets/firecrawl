@@ -2145,7 +2145,7 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
 
 def settled_atomic_hold(child: Mapping[str, Any], source: str, run_dir: Path) -> bool:
     """Revalidate singleton unit and bound non-commit evidence for a failed ingest."""
-    from cre_atomic_ingest_rollback import verified_rollback
+    from recovery.atomic_ingest_rollback import verified_rollback
     try:
         pipeline = child["pipeline"]
         result = pipeline["source_results"][source]
@@ -3348,7 +3348,7 @@ def run_series(
                 try:
                     if control is None:
                         _require_completed_group_settlement(proc._cre_owned_group)
-                    from cre_atomic_ingest_rollback import verified_rollback as verify_atomic
+                    from recovery.atomic_ingest_rollback import verified_rollback as verify_atomic
                     local_guard = (
                         child_manifest.get("status") == "failed"
                         and child_manifest.get("serial_guard_holds") == [source]
