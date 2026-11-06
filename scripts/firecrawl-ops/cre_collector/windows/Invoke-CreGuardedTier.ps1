@@ -150,26 +150,36 @@ function Get-CreAdmission {
 '@
     }
 
-    # GetSystemTimes covers one processor group above 64 processors. Refuse that
-    # unsupported topology rather than claiming a whole-host measurement.
-    $processorCount = [CreWindowsAdmission.Native]::GetActiveProcessorCount(65535)
-    if ($processorCount -eq 0 -or $processorCount -gt 64) { throw 'Whole-host CPU admission requires 1 to 64 logical processors.' }
-    $sampleClock = [Diagnostics.Stopwatch]::StartNew()
-    $before = Get-CpuTicks
-    Start-Sleep -Seconds 2
-    $after = Get-CpuTicks
-    $sampleClock.Stop()
-    if ($sampleClock.Elapsed.TotalSeconds -gt 5) { throw 'Windows CPU observation is stale.' }
-    $delta = @(0, 0, 0)
-    for ($i = 0; $i -lt 3; $i++) {
-        if ($after[$i] -lt $before[$i]) { throw 'Windows CPU counters regressed.' }
-        $delta[$i] = [double]($after[$i] - $before[$i])
-    }
-    $total = $delta[1] + $delta[2] # kernel includes idle
-    if ($total -le 0 -or $delta[0] -gt $total) { throw 'Windows CPU counters are invalid.' }
-    $busy = 100.0 * ($total - $delta[0]) / $total
-    if ([double]::IsNaN($busy) -or [double]::IsInfinity($busy) -or $busy -lt 0 -or $busy -gt 100) {
-        throw 'Whole-Windows CPU percentage is invalid.'
+    # CPU is diagnostic; memory admission remains independent and required.
+    $processorCount = $null
+    $busy = $null
+    $cpuTelemetry = 'available'
+    try {
+        # GetSystemTimes covers one processor group above 64 processors. Refuse that
+        # unsupported topology rather than claiming a whole-host measurement.
+        $processorCount = [CreWindowsAdmission.Native]::GetActiveProcessorCount(65535)
+        if ($processorCount -eq 0 -or $processorCount -gt 64) { throw 'Whole-host CPU admission requires 1 to 64 logical processors.' }
+        $sampleClock = [Diagnostics.Stopwatch]::StartNew()
+        $before = Get-CpuTicks
+        Start-Sleep -Seconds 2
+        $after = Get-CpuTicks
+        $sampleClock.Stop()
+        if ($sampleClock.Elapsed.TotalSeconds -gt 5) { throw 'Windows CPU observation is stale.' }
+        $delta = @(0, 0, 0)
+        for ($i = 0; $i -lt 3; $i++) {
+            if ($after[$i] -lt $before[$i]) { throw 'Windows CPU counters regressed.' }
+            $delta[$i] = [double]($after[$i] - $before[$i])
+        }
+        $total = $delta[1] + $delta[2] # kernel includes idle
+        if ($total -le 0 -or $delta[0] -gt $total) { throw 'Windows CPU counters are invalid.' }
+        $busy = 100.0 * ($total - $delta[0]) / $total
+        if ([double]::IsNaN($busy) -or [double]::IsInfinity($busy) -or $busy -lt 0 -or $busy -gt 100) {
+            throw 'Whole-Windows CPU percentage is invalid.'
+        }
+    } catch {
+        $processorCount = $null
+        $busy = $null
+        $cpuTelemetry = 'unavailable'
     }
     $memory = New-Object CreWindowsAdmission.Native+MemoryStatus
     $memory.Length = [Runtime.InteropServices.Marshal]::SizeOf($memory)
@@ -177,16 +187,16 @@ function Get-CreAdmission {
         $memory.TotalPhysical -eq 0 -or $memory.AvailablePhysical -gt $memory.TotalPhysical) {
         throw 'Whole-Windows memory telemetry is unavailable or invalid.'
     }
-    $admitted = $busy -lt 90 -and $memory.AvailablePhysical -ge 8GB
-    $reason = if ($memory.AvailablePhysical -lt 8GB) { 'memory_pressure' }
-        elseif ($busy -ge 90) { 'cpu_pressure' } else { 'admitted' }
+    $admitted = $memory.AvailablePhysical -ge 8GB
+    $reason = if (-not $admitted) { 'memory_pressure' } else { 'admitted' }
     return [ordered]@{
         observedAt = [DateTime]::UtcNow.ToString('o')
         scope = 'whole_windows_host_start_time_only'
         logicalProcessors = $processorCount
-        cpuPercent = [Math]::Round($busy, 2)
+        cpuPercent = if ($null -ne $busy) { [Math]::Round($busy, 2) } else { $null }
+        cpuTelemetry = $cpuTelemetry
         availablePhysicalGiB = [Math]::Round($memory.AvailablePhysical / 1GB, 2)
-        maxCpuPercent = 90
+        cpuPolicy = 'diagnostic_only'
         minAvailablePhysicalGiB = 8
         admitted = $admitted
         admissionReason = $reason

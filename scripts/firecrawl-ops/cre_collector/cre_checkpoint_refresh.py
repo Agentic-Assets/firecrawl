@@ -581,6 +581,16 @@ def read_host_cpu_percent() -> float:
     return host_cpu_sampler()()
 
 
+def windows_wsl() -> bool:
+    """WSL uses the Windows host resource policy, not the shared-host veto."""
+    return sys.platform.startswith("linux") and "microsoft" in os.uname().release.lower()
+
+
+def cpu_guard_actions() -> dict[str, str]:
+    action = "diagnostic_only" if windows_wsl() else "interrupt_and_checkpoint"
+    return {"action": action, "telemetry_failure_action": action}
+
+
 @dataclass
 class HostCpuGuard:
     """Fail-closed watchdog for sustained total host CPU saturation.
@@ -616,8 +626,7 @@ class HostCpuGuard:
             "max_host_cpu_percent": self.max_percent,
             "sustain_seconds": self.sustain_seconds,
             "sample_seconds": self.sample_seconds,
-            "action": "interrupt_and_checkpoint",
-            "telemetry_failure_action": "interrupt_and_checkpoint",
+            **cpu_guard_actions(),
         }
         if sys.platform.startswith("linux"):
             config["telemetry_scope"] = "linux_kernel_or_vm_not_windows_host"
@@ -4592,8 +4601,7 @@ def new_manifest(
                 "max_host_cpu_percent": max_host_cpu_percent,
                 "sustain_seconds": cpu_sustain_seconds,
                 "sample_seconds": cpu_sample_seconds,
-                "action": "interrupt_and_checkpoint",
-                "telemetry_failure_action": "interrupt_and_checkpoint",
+                **cpu_guard_actions(),
             },
             "host_memory_guard": memory_guard_config(
                 memory_sustain_seconds, memory_sample_seconds
@@ -4732,8 +4740,7 @@ def load_resume_manifest(
             "max_host_cpu_percent": max_host_cpu_percent,
             "sustain_seconds": cpu_sustain_seconds,
             "sample_seconds": cpu_sample_seconds,
-            "action": "interrupt_and_checkpoint",
-            "telemetry_failure_action": "interrupt_and_checkpoint",
+            **cpu_guard_actions(),
         },
         "host_memory_guard": memory_guard_config(
             memory_sustain_seconds, memory_sample_seconds
@@ -8803,43 +8810,53 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "pressure_level": memory_pressure,
                 "log": "logs/host-memory-guard.jsonl",
             }
-            initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
-            manifest["preflight"]["host_cpu_guard"] = {
-                **cpu_guard.config(),
-                "log": _relative_to_run(cpu_guard.log_path, run_dir),
-                "initial_host_cpu_percent": round(initial_host_cpu_percent, 2),
-                "started_at": utc_now(),
-            }
-            save_manifest(run_dir, manifest)
-            if initial_host_cpu_percent >= args.max_host_cpu_percent:
-                reason = (
-                    "host CPU is already at or above the guarded ceiling; "
-                    "refusing to start source work"
-                )
-                _set_cpu_guard_trip(
-                    reason,
-                    reason_code="host_cpu_start_blocked",
-                    telemetry_valid=True,
-                    host_cpu_percent=initial_host_cpu_percent,
-                    context=cpu_guard.incident_context,
-                )
-                try:
-                    cpu_guard._write_record(
-                        state="tripped",
-                        percent=initial_host_cpu_percent,
-                        reason=reason,
+            if windows_wsl():
+                # ResourceUsageSampler is optional and records CPU gaps; CPU
+                # diagnostics must never prevent this Windows-owned run.
+                manifest["preflight"]["host_cpu_guard"] = {
+                    **cpu_guard.config(),
+                    "log": "resource-usage.jsonl",
+                    "started_at": utc_now(),
+                }
+                save_manifest(run_dir, manifest)
+            else:
+                initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
+                manifest["preflight"]["host_cpu_guard"] = {
+                    **cpu_guard.config(),
+                    "log": _relative_to_run(cpu_guard.log_path, run_dir),
+                    "initial_host_cpu_percent": round(initial_host_cpu_percent, 2),
+                    "started_at": utc_now(),
+                }
+                save_manifest(run_dir, manifest)
+                if initial_host_cpu_percent >= args.max_host_cpu_percent:
+                    reason = (
+                        "host CPU is already at or above the guarded ceiling; "
+                        "refusing to start source work"
                     )
-                except CpuTelemetryError:
                     _set_cpu_guard_trip(
                         reason,
-                        reason_code="host_cpu_evidence_failed",
+                        reason_code="host_cpu_start_blocked",
                         telemetry_valid=True,
-                        evidence_valid=False,
                         host_cpu_percent=initial_host_cpu_percent,
                         context=cpu_guard.incident_context,
                     )
-                raise CpuGuardTrip(reason)
-            cpu_guard.start()
+                    try:
+                        cpu_guard._write_record(
+                            state="tripped",
+                            percent=initial_host_cpu_percent,
+                            reason=reason,
+                        )
+                    except CpuTelemetryError:
+                        _set_cpu_guard_trip(
+                            reason,
+                            reason_code="host_cpu_evidence_failed",
+                            telemetry_valid=True,
+                            evidence_valid=False,
+                            host_cpu_percent=initial_host_cpu_percent,
+                            context=cpu_guard.incident_context,
+                        )
+                    raise CpuGuardTrip(reason)
+                cpu_guard.start()
             set_cpu_guard_context(
                 cpu_guard,
                 phase="healthcheck",

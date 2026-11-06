@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_checkpoint_refresh import (
+    cpu_guard_actions,
     COLLECTOR_DIR,
     DEFAULT_CPU_SAMPLE_SECONDS,
     DEFAULT_CPU_SUSTAIN_SECONDS,
@@ -214,6 +215,7 @@ def series_config(
             "max_host_cpu_percent": max_host_cpu_percent,
             "sustain_seconds": cpu_sustain_seconds,
             "sample_seconds": cpu_sample_seconds,
+            **cpu_guard_actions(),
         },
         "host_memory_guard": memory_guard_config(
             memory_sustain_seconds, memory_sample_seconds
@@ -778,8 +780,8 @@ def _expected_child_config(
             "max_host_cpu_percent": guard["max_host_cpu_percent"],
             "sustain_seconds": guard["sustain_seconds"],
             "sample_seconds": guard["sample_seconds"],
-            "action": "interrupt_and_checkpoint",
-            "telemetry_failure_action": "interrupt_and_checkpoint",
+            "action": guard.get("action", "interrupt_and_checkpoint"),
+            "telemetry_failure_action": guard.get("telemetry_failure_action", "interrupt_and_checkpoint"),
         },
         "additive": True,
         "status_activation": False,

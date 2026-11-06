@@ -210,7 +210,13 @@ further evidence supports changing it.
 
 ### CPU and memory safety and evidence
 
-Every checkpoint run has a fail-closed platform-selected CPU watchdog: Darwin
+On Windows/WSL, CPU readings are diagnostic and do not block or interrupt
+collection. The optional `resource-usage.jsonl` records WSL CPU samples and gaps;
+the native launcher records its best-effort Windows CPU start sample. WSL VM
+and Docker container limits bound CPU allocation. Memory admission, memory
+pressure stops, and write/ownership safeguards remain required. Windows CPU
+telemetry does not guarantee responsiveness under sustained VM saturation.
+On macOS and native Linux each checkpoint has a fail-closed CPU watchdog: Darwin
 Mach counters on macOS and aggregate `/proc/stat` counters on Linux. The code
 defaults are 90% for 30 seconds, sampled every 2 seconds. It rejects a start
 already at the ceiling and, on sustained pressure or telemetry failure,
