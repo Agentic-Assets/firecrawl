@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { firecrawl } from "../../../lib/scrape.js";
 import { SdkError } from "@mendable/firecrawl-js";
+import { containsCredential } from "../../../lib/source-evidence/avison-page.js";
 import { AvisonYoungDeadlineError, AvisonYoungUnsettledError } from "../../../sources/avison-young-transport.js";
 
 const fixtures = new URL("../../fixtures/raw_data/", import.meta.url);
@@ -192,4 +193,12 @@ test("drained workers select unsettled then denial regardless of completion orde
       throw error;
     }), expected);
   }
+});
+
+test("encoded credential scan handles repeated overlapping literal keys", () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const encoded = String.fromCharCode(92) + "u0030" + key.slice(1);
+  const prefix = key.repeat(10000);
+  assert.equal(containsCredential(prefix, key, true), false);
+  assert.equal(containsCredential(prefix + encoded, key, true), true);
 });

@@ -28,9 +28,10 @@ export function containsCredential(body: string, secret: string, encodedOnly = f
   }).join("");
   if (!encodedOnly) return new RegExp(pattern, "i").test(body);
   // Look ahead at every offset: a literal match can overlap an encoded one.
-  return Array.from(body.matchAll(new RegExp(`(?=(${pattern}))`, "gi")))
-    .some((match) => match[1]?.includes("\\u"));
-
+  for (const match of body.matchAll(new RegExp(`(?=(${pattern}))`, "gi"))) {
+    if (match[1]?.includes("\\u")) return true;
+  }
+  return false;
 }
 
 /** Retain collector-decoded text locally; source-owned projection precedes admission. */
