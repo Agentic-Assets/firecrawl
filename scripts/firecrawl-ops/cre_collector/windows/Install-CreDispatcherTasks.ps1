@@ -12,6 +12,7 @@ if(-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {throw 'Dispatcher la
 $candidates=@((Join-Path $env:LOCALAPPDATA 'Programs/PowerShell/7/pwsh.exe'),(Join-Path $env:ProgramFiles 'PowerShell/7/pwsh.exe'))
 $exe=@($candidates | Where-Object {Test-Path -LiteralPath $_ -PathType Leaf} | Select-Object -First 1)
 if($exe.Count -ne 1) {throw 'PowerShell 7 unavailable'}
+if((Get-Item -LiteralPath $exe[0]).VersionInfo.ProductVersion -notmatch '^7[.]') {throw 'Dispatcher task host must be PowerShell 7'}
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $start=[DateTime]::Now.AddMinutes(1).ToString('yyyy-MM-ddTHH:mm:00')
 function Escape([string]$value) {return [Security.SecurityElement]::Escape($value)}
@@ -32,13 +33,34 @@ foreach($mode in @('Snapshot','Drain')) {
     $definitions+=@([pscustomobject]@{TaskPath='\Agentic Assets\CRE\';TaskName=$name;Xml=$xml})
 }
 if(-not $Register) {return $definitions}
+. (Join-Path $PSScriptRoot 'CreTaskContract.ps1')
+$existing=@(Get-ScheduledTask -ErrorAction Stop)
 foreach($definition in $definitions) {
-    if(Get-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction SilentlyContinue) {throw 'Dispatcher task already exists'}
+    if(@($existing | Where-Object {$_.TaskPath -ieq $definition.TaskPath -and $_.TaskName -ieq $definition.TaskName}).Count) {throw 'Dispatcher task already exists'}
 }
+$service=New-Object -ComObject 'Schedule.Service'
+$service.Connect()
+$folder=$service.GetFolder('\Agentic Assets\CRE')
 foreach($definition in $definitions) {
-    $null=Register-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -Xml $definition.Xml -ErrorAction Stop
+    # TASK_CREATE refuses a race with another installer; never replace a task.
+    [void]$folder.RegisterTask($definition.TaskName,$definition.Xml,2,$sid,$null,3,$null)
+    $readback=Export-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop
+    if((Get-CreTaskContract $readback) -cne (Get-CreTaskContract $definition.Xml)) {
+        [void](Disable-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop)
+        throw 'Dispatcher task readback differs; task disabled'
+    }
 }
 if($Enable) {
-    foreach($definition in $definitions) {$null=Enable-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop}
+    foreach($definition in $definitions) {
+        try {
+            [void](Enable-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop)
+            $readback=Export-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop
+            $expected=$definition.Xml.Replace('<Enabled>false</Enabled><Hidden>','<Enabled>true</Enabled><Hidden>')
+            if((Get-CreTaskContract $readback) -cne (Get-CreTaskContract $expected)) {throw 'Dispatcher task enable readback differs'}
+        } catch {
+            [void](Disable-ScheduledTask -TaskPath $definition.TaskPath -TaskName $definition.TaskName -ErrorAction Stop)
+            throw
+        }
+    }
 }
 return $definitions
