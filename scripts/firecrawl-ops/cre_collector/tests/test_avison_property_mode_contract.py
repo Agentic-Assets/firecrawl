@@ -96,6 +96,13 @@ https.request=(url,options,callback)=>{
     if(mode.startsWith('missing-url-'))status=200;
     if(mode==='second-inventory-bad-json'||mode==='team403'||mode==='first-website500-team403')status=200;
     if(mode==='one-empty-direct' && index===1){status=200;body='';}
+    if(mode==='404-then-local'||mode==='local-then-404'){
+      const sale=(url.hostname+url.pathname).includes('fixture-sale-');
+      const terminal=mode==='404-then-local'?sale:!sale;
+      status=terminal?404:200;
+      if(!terminal && index===1)
+        body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
+    }
     if(mode==='one-bad-identity' && index===1){
       status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
@@ -838,5 +845,25 @@ def test_terminal_detail_not_found_preserves_valid_peer_receipt(tmp_path):
                "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
     receipt = verify_receipt(tmp_path, attempt)
     assert receipt and receipt["source_outcome"] == "terminal_detail_not_found"
+    records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
+    assert any(record["kind"] == "validated_detail" for record in records)
+
+
+@pytest.mark.parametrize("case", ["404-then-local", "local-then-404"])
+def test_mixed_404_and_record_local_receipt_preserves_peers(tmp_path, case):
+    from source_evidence.avison_spool_receipt import verify_receipt
+
+    preload, started, env = prepare(tmp_path, case)
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    attempt = {"number": 1, "rc": result.returncode, "started_at": started,
+               "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
+    receipt = verify_receipt(tmp_path, attempt)
+    assert receipt and receipt["source_outcome"] == "mixed_record_local_and_404"
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
     assert any(record["kind"] == "validated_detail" for record in records)
