@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -176,18 +177,73 @@ def probe_candidate(
     }
 
 
-def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str | None, output: Path):
+def _open_evidence_directory(path):
+    """Anchor each component and retain its descriptor for the final recheck."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("DAUM evidence directory must be absolute")
+    descriptors = [os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for name in path.parts[1:]:
+            parent = descriptors[-1]
+            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                or (info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+                raise ValueError("DAUM evidence directory ancestry is unsafe")
+        final = os.fstat(descriptors[-1])
+        if final.st_uid != os.geteuid() or stat.S_IMODE(final.st_mode) != 0o700:
+            raise ValueError("DAUM evidence directory is not private and owned")
+        return path, descriptors
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
+def _check_evidence_directory(path, descriptors):
+    for parent, descriptor, name in zip(descriptors[:-1], descriptors[1:], path.parts[1:], strict=True):
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode) != (
+            named.st_dev, named.st_ino, named.st_uid, named.st_mode
+        ):
+            raise ValueError("DAUM evidence directory changed")
+        if (opened.st_uid not in (0, os.geteuid())
+            or (opened.st_mode & 0o022 and not (opened.st_uid == 0 and opened.st_mode & stat.S_ISVTX))):
+            raise ValueError("DAUM evidence directory ancestry is unsafe")
+    final = os.fstat(descriptors[-1])
+    if final.st_uid != os.geteuid() or stat.S_IMODE(final.st_mode) != 0o700:
+        raise ValueError("DAUM evidence directory is not private and owned")
+
+
+def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str | None,
+                    evidence_dir: Path, *, node_executable: str):
     """Collect a private observation after two identical read-only target probes.
 
     The result is evidence only. No caller may treat it as permission to map,
     rekey, ingest or retire a listing.
     """
     from cre_checkpoint_refresh import git_identity
-    from cre_code_handoff_git import read_file
+    from cre_stop_guarded_tier import _read_at
+
+    if not isinstance(node_executable, str) or not os.path.isabs(node_executable):
+        raise ValueError("DAUM Node executable must be an absolute path")
+    node = os.path.realpath(node_executable)
+    node_info = os.stat(node)
+    if (os.path.basename(node) != "node" or not stat.S_ISREG(node_info.st_mode)
+            or not os.access(node, os.X_OK)):
+        raise ValueError("DAUM Node executable unavailable")
+    directory, descriptors = _open_evidence_directory(evidence_dir)
+    try:
+        _check_evidence_directory(directory, descriptors)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
     envelope = probe_candidate(run_dir, manifest, native_id, env_file)
     collector_dir = Path(__file__).resolve().parent.parent
-    node = "/usr/bin/node"
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
     process = subprocess.run(
         [node, "--import", "tsx", "sources/daum-redirect-observe-cli.ts"],
@@ -216,20 +272,27 @@ def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str
         or hashlib.sha256(page["html"].encode()).hexdigest() != page["sha256"]
         or probe_candidate(run_dir, manifest, native_id, env_file) != envelope
         or git_identity() != (envelope["producer_sha"], False)
+        or os.path.realpath(node_executable) != node
+        or any(getattr(os.stat(node), field) != getattr(node_info, field)
+               for field in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"))
     ):
         raise ValueError("DAUM redirect receipt binding changed")
-    output = Path(output)
-    if not output.is_absolute() or any(p.is_symlink() for p in output.parents):
-        raise ValueError("DAUM receipt output path is unsafe")
     payload = json.dumps(receipt, ensure_ascii=False, separators=(",", ":")).encode()
-    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    directory, descriptors = _open_evidence_directory(evidence_dir)
     try:
-        with os.fdopen(fd, "wb", closefd=False) as stream:
+        _check_evidence_directory(directory, descriptors)
+        name = "daum-redirect-" + native_id + ".json"
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=descriptors[-1])
+        with os.fdopen(fd, "wb") as stream:
             stream.write(payload)
             stream.flush()
-            os.fsync(fd)
+            os.fsync(stream.fileno())
+        os.fsync(descriptors[-1])
+        if _read_at(descriptors[-1], name, 6_000_000)[0] != payload:
+            raise ValueError("DAUM receipt readback differs")
+        _check_evidence_directory(directory, descriptors)
     finally:
-        os.close(fd)
-    if read_file(output) != payload:
-        raise ValueError("DAUM receipt readback differs")
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
     return receipt
