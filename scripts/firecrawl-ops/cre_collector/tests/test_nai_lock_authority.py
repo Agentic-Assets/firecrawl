@@ -137,7 +137,8 @@ def test_actual_nai_cli_psql_inherits_lock_after_owner_death(tmp_path):
     artifact.write_text("{}")
     claims = root / "private" / "claims.json"
     binding = {"artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}
-    claims.write_text(json.dumps({"manifest": {"collector_git_sha": "a" * 40}, "binding": binding}))
+    claims.write_text(json.dumps({"manifest": {"collector_git_sha": "a" * 40,
+        "sources": {"nai-global": {"artifact": {"nai_coverage_partial": True}}}}, "binding": binding}))
     claims.chmod(0o600)
     attempt = "d" * 32
     manifest = {"run_id": root.name, "collector_git_sha": "a" * 40,
