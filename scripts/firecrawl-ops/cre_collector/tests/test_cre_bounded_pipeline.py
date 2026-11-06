@@ -1183,3 +1183,13 @@ def test_non_daum_atomic_failure_keeps_prior_and_later_peers_independent(tmp_pat
     writes = [event[1] for event in events if event[0] == "db_start"]
     assert all(len(sources) == 1 for sources in writes)
     assert writes.index(("transwestern",)) < writes.index(("savills",)) < writes.index(("hanley",))
+
+
+@pytest.mark.parametrize("pair", [("cbre", "cbre-dealflow"), ("jll", "jll-investor"), ("colliers", "colliers-main")])
+def test_folded_brokerage_sources_each_reach_verified_singleton_unit(tmp_path, monkeypatch, pair):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, sources=pair)
+    assert failures == []
+    assert manifest["pipeline"]["status"] == "complete"
+    assert all(manifest["pipeline"]["source_results"][source]["state"] == "verified" for source in pair)
+    units = [event[1] for event in events if event[0] == "db_start"]
+    assert len(units) == 2 and set(units) == {(pair[0],), (pair[1],)}

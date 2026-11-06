@@ -2013,3 +2013,18 @@ def test_colliers_multiwindow_notification_counts_verified_units_and_keeps_peer(
     rows = {row["source_key"]: row for row in result["per_source_summaries"]}
     assert "colliers" not in rows and "colliers" in result["unverifiable_source_keys"]
     assert "cbre" in rows
+
+
+def test_settled_atomic_ingest_failure_notifies_only_verified_peer(evidence):
+    setup = pipeline_evidence(evidence, second_source="daum-commercial")
+    child = setup["child"]
+    child["sources"]["daum-commercial"]["state"] = "settled_ingest_failed"
+    child["pipeline"]["source_results"]["daum-commercial"] = {
+        "state": "failed", "reason": "settled_ingest_failure", "unit_id": "unit-0002"}
+    child["pipeline"]["units"].append({"unit_id": "unit-0002", "sources": ["daum-commercial"], "state": "source_held"})
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, "daum-commercial"])
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["daum-commercial"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert "verified_listings" not in result
