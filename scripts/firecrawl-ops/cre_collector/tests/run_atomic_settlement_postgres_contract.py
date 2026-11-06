@@ -215,7 +215,7 @@ try:
             cre_validate.atomic_settlement_query(
                 "ingest:v1:" + "c" * 64, case_source, case_generation
             )
-        ).split("	")
+        ).split("|")
         assert len(narrowed) == 2 and narrowed[0] == "0" and narrowed[1] == full
     plan_query = cre_validate.atomic_settlement_query(
         "ingest:v1:" + "c" * 64, "daum-commercial", "equiv-a"
