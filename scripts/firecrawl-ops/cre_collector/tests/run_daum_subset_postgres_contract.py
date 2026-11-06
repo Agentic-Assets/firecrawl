@@ -332,6 +332,48 @@ try:
     assert refused.returncode and "DAUM identity partition changed" in refused.stderr
     checks.append("identity_partition_conflict_peer_and_stale")
     sql("DROP DATABASE " + db + ";")
+    for version, source_held_conflict in ((1, False), (2, False), (1, True), (2, True)):
+        db = f"identity_v{version}_held_{int(source_held_conflict)}"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        sql(generated([row(i) for i in range(103)]), db)
+        if source_held_conflict:
+            sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50101\"') "
+                "WHERE external_id='property/Synthetic-102';", db)
+        classified = json.loads(sql(identity_partition_query(ids) + ";", db).stdout.strip().split("|", 1)[1])
+        assert {item["native_id"] for item in classified if item["conflicted"]} == (
+            {"50101"} if source_held_conflict else set())
+        tested = copy.deepcopy(claims if version == 1 else claims_v2)
+        tested.update(identityMembers=ids, identityPartition=classified)
+        tested["binding"]["identity_partition_sha256"] = _sha(classified)
+        sql(generated([row(i, fresh=True, name="Changed" if i == 1 else "Synthetic")
+                       for i in range(100)], tested), db)
+        job = sql("SELECT status || '|' || listings_saved FROM credeals.cre_scrape_jobs "
+                  "WHERE listings_discovered=100;", db).stdout.strip()
+        assert job == "completed|100", (version, source_held_conflict, job)
+        assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
+        checks.append(f"identity_v{version}_source_held_{int(source_held_conflict)}")
+        sql("DROP DATABASE " + db + ";")
+    for version in (1, 2):
+        db = f"identity_v{version}_no_holds"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        sql(generated([row(i) for i in range(102)]), db)
+        tested = copy.deepcopy(claims if version == 1 else claims_v2)
+        for member in tested["members"]:
+            member["emitted"] = True
+        tested["binding"].update(emitted_count=102, held_count=0)
+        if version == 2:
+            tested["titleObservations"] = []
+            tested["binding"]["title_observations_sha256"] = _sha([])
+        sql(generated([row(i, fresh=True, name="Changed" if i == 1 else "Synthetic")
+                       for i in range(102)], tested), db)
+        job = sql("SELECT string_agg(status || '|' || listings_saved, ',' ORDER BY status) "
+                  "FROM credeals.cre_scrape_jobs WHERE listings_discovered=102;", db).stdout.strip()
+        assert job == "completed|102,completed|102", (version, job)
+        assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
+        checks.append(f"identity_v{version}_no_holds")
+        sql("DROP DATABASE " + db + ";")
     if unknown_mode:
         # Source producer -> authenticated read-only probe -> both gates ->
         # production staging SQL -> real-schema DB -> freshness readback.

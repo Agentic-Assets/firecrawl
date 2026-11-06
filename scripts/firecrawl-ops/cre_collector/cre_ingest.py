@@ -4142,7 +4142,8 @@ UPDATE credeals.cre_scrape_jobs j
      {fallback_held}
    ) held)
  FROM _jobmeta jm
- WHERE jm.slug='daum-commercial' AND j.id=jm.job_id;
+ WHERE jm.slug='daum-commercial' AND j.id=jm.job_id
+   AND ({'TRUE' if daum_fallback_guard else 'EXISTS (SELECT 1 FROM _daum_identity_emitted_held)'});
 """
     pyramid_subset_guard = ""
     if pyramid_verified_subset_claims is not None:

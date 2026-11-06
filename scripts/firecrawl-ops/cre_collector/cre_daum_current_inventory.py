@@ -45,6 +45,10 @@ REASON = (
 )
 
 
+class DaumAllIdentitiesHeld(ValueError):
+    """A fully validated source cohort has no identity-safe emitted peers."""
+
+
 def _sha(value):
     return hashlib.sha256(
         json.dumps(
@@ -944,6 +948,9 @@ def _admit(
             lease_count=len(expected["lease"] - target_ids),
             whole_lease_coverage="unknown" if held or target_ids else "proved",
         )
+        if (binding["emitted_count"] == 0 and phase == "source" and not rechecking
+                and len({item["native_id"] for item in binding["identity_held"]} - held_ids) == emitted_total):
+            raise DaumAllIdentitiesHeld("all emitted DAUM identities are held")
         require(binding["emitted_count"] > 0)
     if phase == "aggregate":
         require(
