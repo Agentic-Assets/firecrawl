@@ -6,6 +6,12 @@ import { SdkError } from "@mendable/firecrawl-js";
 import { containsCredential } from "../../../lib/source-evidence/avison-page.js";
 import { AvisonYoungDeadlineError, AvisonYoungUnsettledError } from "../../../sources/avison-young-transport.js";
 
+async function sourceFor(suffix: string): Promise<typeof import("../../../sources/avison-young.js")> {
+  // Dynamic specifiers retain per-case module isolation under the test loader.
+  const specifier = "../../../sources/avison-young.js?" + suffix;
+  return import(specifier);
+}
+
 const fixtures = new URL("../../fixtures/raw_data/", import.meta.url);
 const row = JSON.parse(readFileSync(new URL("avison-young-official-display-role-18194.json", fixtures), "utf8")).feed_row;
 const html = readFileSync(new URL("avison-young-official-display-role-18194.html", fixtures), "utf8");
@@ -56,7 +62,7 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
       return { rawHtml: html, markdown: "", links: [],
         metadata: { sourceURL: url, url, statusCode: url === badUrl ? (denied ? 403 : ordinaryFailure === "500" ? 500 : 200) : 200 } };
     };
-    const source = await import(`../../../sources/avison-young.js?isolation=${denied}`);
+    const source = await sourceFor(`isolation=${denied}`);
     let failure: unknown;
     try {
       await source.srcAvisonYoung("sale", 100, false,
@@ -146,7 +152,7 @@ test("a valid first URL cannot conceal a 500 on the second", async () => {
   try {
     process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
     delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
-    const source = await import("../../../sources/avison-young.js?mixed-url-errors");
+    const source = await sourceFor("mixed-url-errors");
     const base = source.avisonYoungBaseListing(row, new Map());
     base.sharpLaunchUrl = row.external_url;
     base.externalUrl = "https://www.avisonyoung.us/properties/second-sale";
@@ -172,14 +178,14 @@ test("a valid first URL cannot conceal a 500 on the second", async () => {
 });
 
 test("settled direct deadline retains its actual type after retries", async () => {
-  const source = await import("../../../sources/avison-young.js?settled-deadline");
+  const source = await sourceFor("settled-deadline");
   await assert.rejects(source.fetchAvisonYoungDirectDocWithRetry(
     "https://example.sharplaunch.com/", async () => { throw new AvisonYoungDeadlineError(); }, 2, 0,
   ), AvisonYoungDeadlineError);
 });
 
 test("drained workers select unsettled then denial regardless of completion order", async () => {
-  const source = await import("../../../sources/avison-young.js?priority-test");
+  const source = await sourceFor("priority-test");
   for (const [first, second] of [
     [new Error("ordinary"), new source.AvisonYoungAccessDeniedError("denied")],
     [new source.AvisonYoungAccessDeniedError("denied"), new Error("ordinary")],
