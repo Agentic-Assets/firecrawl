@@ -217,10 +217,32 @@ try:
             )
         ).split("|")
         assert len(narrowed) == 2 and narrowed[0] == "0" and narrowed[1] == full
+    sql(
+        "INSERT INTO credeals.cre_listings SELECT 3, 'bench-other-' || n, "
+        "jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','bench-other')), NULL "
+        "FROM generate_series(1,20000) n; "
+        "INSERT INTO credeals.cre_listings SELECT 1, 'bench-daum-' || n, "
+        "jsonb_build_object('freshnessProvenance',jsonb_build_object('generationId','bench-daum')), NULL "
+        "FROM generate_series(1,2000) n; ANALYZE credeals.cre_listings; ANALYZE credeals.cre_brokerages"
+    )
     plan_query = cre_validate.atomic_settlement_query(
         "ingest:v1:" + "c" * 64, "daum-commercial", "equiv-a"
     )
-    (root / "narrow-plan.json").write_text(sql("EXPLAIN (FORMAT JSON) " + plan_query))
+    narrow_plan = sql("EXPLAIN (ANALYZE, FORMAT JSON) " + plan_query)
+    full_plan = sql("EXPLAIN (ANALYZE, FORMAT JSON) " + generation_report)
+    (root / "narrow-plan.json").write_text(narrow_plan)
+    (root / "full-plan.json").write_text(full_plan)
+    print(
+        json.dumps(
+            {
+                "case": "synthetic-plan",
+                "other_rows": 20000,
+                "source_rows": 2000,
+                "narrow_execution_ms": json.loads(narrow_plan)[0]["Execution Time"],
+                "full_execution_ms": json.loads(full_plan)[0]["Execution Time"],
+            }
+        )
+    )
     print(
         json.dumps(
             {"case": "generation-equivalence", "cases": len(cases), "passed": True}

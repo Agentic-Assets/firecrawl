@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cre_ingest import (
+    FOLDED_SOURCE_PREFIXES,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     MAX_NORMALIZED_SALE_PRICE_USD,
     MIN_PLAUSIBLE_CAP_RATE,
@@ -383,7 +384,9 @@ def atomic_settlement_query(artifact_run_key, source, generation):
     # source_key_sql may return the brokerage slug itself or a folded source
     # under its mapped brokerage. Include both possible slugs; never infer a
     # narrower external-id prefix from the source.
-    slug = SOURCE_TO_BROKERAGE[source][0]
+    slugs = {source, SOURCE_TO_BROKERAGE[source][0]}
+    slugs.update(slug for slug, _prefix, key in FOLDED_SOURCE_PREFIXES if key == source)
+    slug_sql = ", ".join(_sql_literal(slug) for slug in sorted(slugs))
     source_sql = source_key_sql("decoded")
     return f"""
 SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs
@@ -402,7 +405,7 @@ SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs
          CROSS JOIN LATERAL jsonb_to_record(coalesce(observed."freshnessProvenance", '{{}}'::jsonb))
            AS provenance("generationId" text, "detailScope" text, "cacheDisposition" text)
          WHERE l.deleted_at IS NULL
-           AND b.slug IN ({_sql_literal(slug)}, {_sql_literal(source)})
+           AND b.slug IN ({slug_sql})
            AND ({source_sql}) = {_sql_literal(source)}
            AND NULLIF(provenance."generationId", '') = {_sql_literal(generation)}
        ))::int::text AS matching_generations;
