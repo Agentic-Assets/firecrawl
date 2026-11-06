@@ -364,7 +364,8 @@ def test_unsuccessful_work_remains_fenced_without_retry_or_secret_errors(
 
 
 @pytest.mark.parametrize("sampler", [lambda: 95.0, lambda: float("nan")])
-def test_cpu_admission_blocks_before_worker(tmp_path, sampler):
+def test_cpu_admission_blocks_before_worker(tmp_path, sampler, monkeypatch):
+    monkeypatch.setattr(checkpoint, "windows_wsl", lambda: False)
     assert (
         execute(
             options(),
@@ -780,3 +781,28 @@ def test_unqualified_monitor_outcome_retains_recovery_fence(tmp_path, monkeypatc
     assert execute(options(tier="monitor", source=source, apply=apply), tmp_path, _runner=runner) == 1
     assert receipt(tmp_path)["status"] == "failed_recovery_required"
     assert_fenced(tmp_path)
+
+
+@pytest.mark.parametrize("cpu", [lambda: 99.0, lambda: float("nan"), lambda: (_ for _ in ()).throw(ValueError("stale"))])
+def test_windows_tier_does_not_admit_or_stop_on_cpu(tmp_path, monkeypatch, cpu):
+    monkeypatch.setattr(checkpoint, "windows_wsl", lambda: True)
+    calls = []
+    data = monitor_artifact()
+    def runner(argv, log, *, env):
+        calls.append(log.stem)
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(json.dumps(data))
+        return 0
+    assert execute(options(tier="monitor"), tmp_path, _cpu_sampler=cpu, _runner=runner) == 0
+    assert calls == ["collect", "monitor_dry_run"]
+    assert receipt(tmp_path)["cpu_guard"]["action"] == "diagnostic_only"
+    assert_released(tmp_path)
+
+
+def test_windows_tier_memory_failure_remains_fatal(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "windows_wsl", lambda: True)
+    def unavailable():
+        raise ValueError("memory unavailable")
+    assert execute(options(), tmp_path, _memory_sampler=unavailable,
+                   _runner=lambda *_a, **_kw: pytest.fail("unexpected work")) == 75
+    assert_released(tmp_path)
