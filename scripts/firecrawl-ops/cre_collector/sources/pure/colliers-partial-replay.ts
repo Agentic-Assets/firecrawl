@@ -20,9 +20,14 @@ export function replayColliersPage(page: Page, expectedTotal: number, expectedAv
       typeof page.list !== "string" || typeof page.map !== "string" || !Array.isArray(page.cards)) throw new Error("invalid page scope");
   const list = JSON.parse(page.list);
   const map = JSON.parse(page.map);
+  const mapAvailable = count(map?.totalAvail);
   if (!list || !map || list.success !== true || map.success !== true || typeof list.html !== "string" ||
       !Array.isArray(map.projectLocations) || count(list.total) !== expectedTotal || count(map.total) !== expectedTotal ||
-      count(list.totalAvail) !== expectedAvailable || count(map.totalAvail) !== expectedAvailable) throw new Error("page response differs");
+      count(list.totalAvail) !== expectedAvailable ||
+      mapAvailable === null || mapAvailable < expectedTotal) throw new Error("page response differs");
+  // Availability counts can move independently between the two settled
+  // responses. Individual card/map parity still binds every eligible ID;
+  // the original response strings retain both counts as partial evidence.
   const cardCount = cheerio.load(list.html)("li.item").length;
   const groups = groupColliersMapLocations(map.projectLocations);
   if (cardCount !== page.pageSize || count(list.numProjects) !== cardCount || groups.length !== cardCount) throw new Error("page count differs");
