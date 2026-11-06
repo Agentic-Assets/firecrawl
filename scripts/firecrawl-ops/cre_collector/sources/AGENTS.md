@@ -1272,7 +1272,9 @@ caching preserves the actual observation clock, and non-strict pagination is
 unchanged. Strict transaction passes share the exact complete-inventory request
 in flight; a 401, 403 or 429 is retained only after response-body cancellation
 is acknowledged, for that generation and process. Other failures remain retryable,
-and later processes do not inherit a denial. Provider evidence and the guarded live acceptance are tracked by
+except unconfirmed denial cleanup stays a distinct source-local hold for the
+generation to prevent overlap. Later processes do not inherit either state.
+Provider evidence and the guarded live acceptance are tracked by
 [AGENTIC-4269](https://linear.app/agenticassets/issue/AGENTIC-4269); transport
 success alone does not prove source-gate or database acceptance.
 

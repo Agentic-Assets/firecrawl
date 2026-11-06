@@ -47,6 +47,7 @@ export type KidderMappingContext = {
 let kidderCache: KidderInventoryResult | null = null;
 let strictInventoryRequest: { key: string; promise: Promise<KidderInventoryResult> } | null = null;
 class KidderSettledInventoryDenial extends Error {}
+class KidderInventoryCleanupUnknown extends Error {}
 const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
 function kidderDisposition(row: any): CacheDisposition {
   return kidderCacheDisposition.get(row) ?? "live";
@@ -180,7 +181,7 @@ export async function kidderFetchCompleteInventory(
       const message = "Kidder complete inventory HTTP " + response.status;
       if ([401, 403, 429].includes(response.status)) {
         if (!await cancelResponseBody(response.body, 1000)) {
-          throw new Error(message + "; response cleanup was not confirmed");
+          throw new KidderInventoryCleanupUnknown(message + "; response cleanup was not confirmed");
         }
         throw new KidderSettledInventoryDenial(message);
       }
@@ -278,8 +279,8 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
   if (kidderCache) kidderCache = null;
   if (strict) {
     // Both transaction passes use the same fixed URL and complete-inventory
-    // request body. Share in-flight work and retain only a settled denial for
-    // this generation; transient failures remain retryable.
+    // request body. Share in-flight work and retain a settled denial or an
+    // unknown cleanup for this generation; other failures remain retryable.
     const key = JSON.stringify([generationId, KIDDER_API, KIDDER_COMPLETE_BODY]);
     if (strictInventoryRequest?.key === key) {
       const shared = await strictInventoryRequest.promise;
@@ -303,7 +304,8 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
       }
       return result;
     } catch (error) {
-      if (strictInventoryRequest === request && !(error instanceof KidderSettledInventoryDenial)) {
+      if (strictInventoryRequest === request && !(error instanceof KidderSettledInventoryDenial)
+          && !(error instanceof KidderInventoryCleanupUnknown)) {
         strictInventoryRequest = null;
       }
       throw error;

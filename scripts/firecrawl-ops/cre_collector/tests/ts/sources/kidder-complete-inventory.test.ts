@@ -295,7 +295,7 @@ test("sale and lease do not repeat the same settled inventory denial", async () 
   }
 });
 
-test("a denial with unacknowledged response cleanup is not cached as settled", async () => {
+test("an unacknowledged denial cleanup blocks same-generation retry without claiming settlement", async () => {
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const oldGeneration = process.env.CRE_REFRESH_GENERATION;
   const originalFetch = globalThis.fetch;
@@ -310,8 +310,38 @@ test("a denial with unacknowledged response cleanup is not cached as settled", a
     process.env.CRE_REFRESH_GENERATION = "kidder-unsettled-denial";
     await assert.rejects(kidderFetchAll(Infinity), /cleanup was not confirmed/);
     await assert.rejects(kidderFetchAll(Infinity), /cleanup was not confirmed/);
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
   } finally {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("pending denial cancellation cannot overlap another inventory request", async () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let release!: () => void;
+  const cancellation = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response(new ReadableStream({ cancel() { return cancellation; } }), { status: 403 });
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "kidder-pending-cleanup";
+    const first = kidderFetchAll(Infinity);
+    const second = kidderFetchAll(Infinity);
+    const results = await Promise.allSettled([first, second]);
+    assert(results.every(result => result.status === "rejected" && /cleanup was not confirmed/.test(String(result.reason))));
+    await assert.rejects(kidderFetchAll(Infinity), /cleanup was not confirmed/);
+    assert.equal(calls, 1);
+  } finally {
+    release();
     globalThis.fetch = originalFetch;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
