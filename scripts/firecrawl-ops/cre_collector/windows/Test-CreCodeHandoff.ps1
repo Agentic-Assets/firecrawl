@@ -68,6 +68,9 @@ $foreign=[pscustomobject]@{ProcessId=987654;Name='pwsh.exe';CreationDate=$birth;
 $fixture.graph=@($own);$fixture.hosts=@($selfHost,$foreign);$fixture.graphCalls=0;$fixture.hostCalls=0
 $frontends=@(Get-CreHandoffNativeFrontends)
 Assert-Fixture ($frontends.Count -eq 1 -and $frontends[0].pid -eq 987654 -and $frontends[0].Keys.Count -eq 2) 'Native observer must exclude own ancestry and retain PID/name only'
+$foreign.CommandLine='Invoke-CreDispatcherWake.ps1 -DrainOnly'
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Dispatcher frontend must block maintenance while active'
+$foreign.CommandLine='Invoke-CreGuardedTier.ps1 private-value'
 $missingCommand=[pscustomobject]@{ProcessId=987655;Name='pwsh.exe';CreationDate=$birth;CommandLine=$null}
 $fixture.hosts=@($selfHost,$missingCommand);$fixture.recheck=@()
 Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Vanished unclassifiable PowerShell process must not block'
