@@ -153,6 +153,7 @@ COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
 COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
 PYRAMID_GUARD_SETTLED_EXIT = 86
+DAUM_ALL_HELD_SETTLED_EXIT = 87
 PYRAMID_DENIED_EXITS = {401: 76, 403: 77}
 COHORT_SETTLED_PYRAMID_DENIED_EXITS = {401: 84, 403: 85}
 PYRAMID_DENIED_FAILURE_CODE = "PYRAMID_HTTP_ACCESS_DENIED"
@@ -265,6 +266,10 @@ class SourceGuardRefusal(RefreshError):
 
 class DaumPartialProbeHold(SourceGuardRefusal):
     """Settled DAUM source identity output cannot be qualified."""
+
+
+class DaumAllTargetHeld(DaumPartialProbeHold):
+    """Every emitted DAUM observation was held by validated target checks."""
 
 
 class LyonPartialProbeHold(SourceGuardRefusal):
@@ -5668,6 +5673,10 @@ def _admit_current_inventory(
             source=source,
         )
     except (ArtifactValidationError, KeyError, TypeError, ValueError) as exc:
+        from cre_daum_current_inventory import DaumAllIdentitiesHeld
+        if (isinstance(exc, DaumAllIdentitiesHeld) and source == "daum-commercial"
+                and phase == "source"):
+            raise DaumAllTargetHeld("all emitted DAUM observations are held") from exc
         raise GlobalStageError("current-inventory admission refused") from exc
 
 
@@ -5773,8 +5782,12 @@ def gate_source(
                     raise GlobalStageError("Franklin partial identity classification failed") from exc
             if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
                 from cre_daum_fallback_partition import DaumSourceProbeRefusal, run_identity_probe
+                from daum.identity_sql import run_cohort_probe
                 try:
                     daum_data = _load_json(artifact)
+                    checkpoint["daum_identity_probe"] = run_cohort_probe(
+                        artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                        manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
                     if any((entry.get("currentInventoryProof") or {}).get("titleFallbackObservations")
                            for entry in (daum_data.get("sources") or [])):
                         checkpoint["daum_fallback_probe"] = run_identity_probe(
@@ -6737,6 +6750,29 @@ def recover_interrupted_ingest(
                 }
             },
         }
+        if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+            from cre_daum_current_inventory import ingest_subset_context
+
+            claims_args = subset_ingest_arguments(run_dir, manifest, source)
+            attempt = checkpoint["ingest"]["attempt_id"]
+            if attempt != checkpoint["subset_ingest_attempt_id"]:
+                raise ValueError("DAUM recovery attempt changed")
+            code_sha, dirty = git_identity()
+            if code_sha != manifest["collector_git_sha"] or dirty:
+                raise ValueError("DAUM recovery code identity changed")
+            context = ingest_subset_context(
+                run_dir / artifact_info["path"], _load_json(Path(claims_args[1])),
+                current_code_sha=code_sha, current_git_dirty=dirty,
+                expected_database_target_sha256=manifest_database_target_sha256(manifest),
+                attempt_id=attempt,
+            )
+            binding = context["binding"]
+            if (binding != checkpoint["gate"]["current_inventory_proof"]
+                    or binding["generation_id"] != manifest["run_id"]
+                    or binding["artifact_sha256"] != artifact_info["sha256"]):
+                raise ValueError("DAUM recovery binding changed")
+            probe_manifest["config"] = {**manifest["config"], "sources": [source]}
+            probe_manifest["sources"][source] = {"artifact": artifact_info, "gate": checkpoint["gate"]}
         if jll_partial_candidate(manifest, source):
             validation["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
             atomic_write_json(output, validation)
@@ -9186,6 +9222,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest["finished_at"] = utc_now()
         persist_terminal()
         return 130
+    except DaumAllTargetHeld as exc:
+        if not lock.held:
+            raise
+        from daum.serial_hold import binding as serial_daum_hold_binding
+        try:
+            if _cleanup_unknown_in_chain(exc):
+                raise GlobalStageError("DAUM serial all-held process settlement is unknown")
+            lock._require_authority()
+            held_binding = serial_daum_hold_binding(run_dir, manifest)
+            lock._require_authority()
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            manifest["status"] = "failed"
+            manifest["error"] = "DAUM serial all-held evidence could not be verified"
+            manifest["finished_at"] = utc_now()
+            persist_terminal()
+            raise GlobalStageError("DAUM serial all-held evidence could not be verified") from error
+        checkpoint = manifest["sources"]["daum-commercial"]
+        checkpoint.update(state="gate_blocked", partial_probe_hold="all_emitted_target_held",
+                          serial_all_held=held_binding)
+        manifest["status"] = "failed"
+        manifest["resource_stop"] = None
+        manifest["error"] = "all emitted DAUM observations held by target checks"
+        manifest["finished_at"] = utc_now()
+        persist_terminal()
+        local_refusal = True
+        return DAUM_ALL_HELD_SETTLED_EXIT
     except SourceGuardRefusal as exc:
         if not lock.held:
             raise

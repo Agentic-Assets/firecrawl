@@ -31,6 +31,7 @@ def produce(
     subset_policy=None,
     with_spaces=False,
     corroborated_title=False,
+    empty_title_all=False,
 ):
     preload = folder / "transport.mts"
     fixtures = ROOT / "tests/fixtures/daum-proof-pages.ts"
@@ -55,8 +56,8 @@ globalThis.fetch=async(input,init)=>{
  }
  const match=url.match(/^https:\/\/daumcommercial[.]com\/property\/Synthetic-(\d+)\/$/);
  if(init?.method==='GET'&&match){
-  let html=daumProofDetail(Number(match[1]),__ALL_SALE__).replace(__UNKNOWN_DETAIL__ ? /class="title-about">[^<]*</g : /UNMATCHABLE/, 'class="title-about"><').replace(__EMPTY_TITLE__ && Number(match[1])===100 ? /class="title-property">[^<]*</ : /UNMATCHABLE_TITLE/, 'class="title-property">   <');
-  if(__CORROBORATED_TITLE__ && Number(match[1])===100)html=html.replace('<head>', '<head><title>Synthetic 100 – Daum Commercial</title>');
+  let html=daumProofDetail(Number(match[1]),__ALL_SALE__).replace(__UNKNOWN_DETAIL__ ? /class="title-about">[^<]*</g : /UNMATCHABLE/, 'class="title-about"><').replace(__EMPTY_TITLE__ && (Number(match[1])===100 || __EMPTY_ALL__) ? /class="title-property">[^<]*</ : /UNMATCHABLE_TITLE/, 'class="title-property">   <');
+  if(__CORROBORATED_TITLE__ && (Number(match[1])===100 || __EMPTY_ALL__))html=html.replace('<head>', `<head><title>Synthetic ${match[1]} – Daum Commercial</title>`);
   if(__WITH_SPACES__ && (Number(match[1])===0 || (__CORROBORATED_TITLE__ && Number(match[1])===100)))html=html.replace('</body>','<div class="units-info"><div class="right-side"><div class="unit-item"><li>Unit 7101-B: $0 PSF <p>$6,600 per month</p></li></div></div></div></body>');
   return new Response(html);
  }
@@ -67,6 +68,7 @@ process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
         .replace("__ALL_SALE__", str(all_sale).lower())
         .replace("__UNKNOWN_DETAIL__", str(unknown_detail).lower())
         .replace("__EMPTY_TITLE__", str(empty_title).lower())
+        .replace("__EMPTY_ALL__", str(empty_title_all).lower())
         .replace("__WITH_SPACES__", str(with_spaces).lower())
         .replace("__CORROBORATED_TITLE__", str(corroborated_title).lower())
         .replace("__UNKNOWN_INVENTORY__", str(unknown_inventory).lower())

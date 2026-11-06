@@ -172,7 +172,7 @@ SELECT (SELECT count(*) FROM candidate) AS staged,
          ORDER BY external_id)::text FROM assessed), '[]') AS partition
 """
 
-def transaction_guard_sql(members, partition, *, filter_src=False):
+def transaction_guard_sql(members, partition, *, filter_src=False, identity_held=False):
     """Lock owned targets and recheck the bound partition before filtering holds."""
     import json
     import re
@@ -231,6 +231,9 @@ BEGIN
 END $$;
 """
     if filter_src:
+        identity_filter = ("AND NOT EXISTS (SELECT 1 FROM _daum_identity_held h "
+                           "WHERE h.brokerage_id=m.brokerage_id AND h.external_id=m.external_id)"
+                           if identity_held else "")
         sql += f"""
 CREATE TEMP TABLE _daum_fallback_partition ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset({bound}::jsonb)
@@ -273,7 +276,8 @@ SELECT s.*, m.inventory_at AS fallback_inventory_at, m.detail_at AS fallback_det
 FROM _daum_fallback_members m JOIN _daum_fallback_partition p
   ON p.external_id=m.external_id AND p.hold_reason IS NULL
 JOIN _src s ON s.brokerage_id=m.brokerage_id AND s.external_id=m.external_id
-LEFT JOIN credeals.cre_listings t ON t.brokerage_id=m.brokerage_id AND t.external_id=m.external_id;
+LEFT JOIN credeals.cre_listings t ON t.brokerage_id=m.brokerage_id AND t.external_id=m.external_id
+WHERE true {identity_filter};
 CREATE TEMP TABLE _daum_fallback_skipped ON COMMIT DROP AS
 SELECT brokerage_id, external_id FROM _daum_fallback_held
 UNION ALL
@@ -374,6 +378,65 @@ def bound_held_count(binding, checkpoint):
     import re
 
     from cre_daum_current_inventory import _path_key, _post, _sha
+
+    if "identity_partition_sha256" in binding:
+        from daum.identity_sql import validate_partition
+
+        probe = checkpoint.get("daum_identity_probe")
+        if not isinstance(probe, dict) or any(probe.get(key) != binding.get(expected) for key, expected in (
+                ("artifact_sha256", "artifact_sha256"), ("generation_id", "generation_id"),
+                ("producer_sha", "collector_git_sha"), ("database_target_sha256", "database_target_sha256"))):
+            raise ValueError("DAUM identity publication binding differs")
+        partition = probe.get("partition")
+        if not isinstance(partition, list) or _sha(partition) != binding["identity_partition_sha256"]:
+            raise ValueError("DAUM identity publication partition differs")
+        members = [{key: item[key] for key in ("native_id", "external_id", "source_url")}
+                   for item in partition]
+        if _sha(members) != probe.get("members_sha256"):
+            raise ValueError("DAUM identity publication cohort differs")
+        conflicted = validate_partition(members, partition)
+        for item in members:
+            _post(item["native_id"])
+            if _path_key(item["source_url"]) != item["external_id"]:
+                raise ValueError("DAUM identity publication URL differs")
+        if (len({item["native_id"] for item in members}) != len(members)
+                or len({item["external_id"] for item in members}) != len(members)
+                or [item["source_url"] for item in members] != sorted(item["source_url"] for item in members)):
+            raise ValueError("DAUM identity publication membership differs")
+        source_held = binding.get("identity_source_held")
+        if (not isinstance(source_held, list) or source_held != sorted(set(source_held))
+                or len(source_held) != binding.get("source_held_count")
+                or not set(source_held) <= {item["native_id"] for item in members}):
+            raise ValueError("DAUM source-held identity differs")
+        identity_held = [{"native_id": item["native_id"], "external_id": item["external_id"],
+                          "reason": "identity_conflict"} for item in conflicted]
+        if identity_held != binding.get("identity_held"):
+            raise ValueError("DAUM identity-held publication differs")
+        fallback_held = []
+        if "fallback_partition_sha256" in binding:
+            fallback_probe = checkpoint.get("daum_fallback_probe") or {}
+            fallback_partition = fallback_probe.get("partition")
+            if not isinstance(fallback_partition, list):
+                raise ValueError("DAUM fallback partition missing")
+            fallback_held = [{"native_id": item["native_id"], "external_id": item["external_id"],
+                              "reason": item["hold_reason"]}
+                             for item in fallback_partition if item.get("hold_reason") is not None]
+            legacy = dict(binding)
+            legacy.pop("identity_partition_sha256")
+            legacy.update(target_held=fallback_held,
+                          emitted_count=binding["source_emitted_count"] - len(fallback_held),
+                          held_count=binding["source_held_count"] + len(fallback_held))
+            bound_held_count(legacy, checkpoint)
+        union = {item["native_id"]: item for item in fallback_held}
+        for item in identity_held:
+            if item["native_id"] not in source_held:
+                union.setdefault(item["native_id"], item)
+        held = sorted(union.values(), key=lambda item: item["external_id"])
+        if (held != binding.get("target_held")
+                or binding.get("emitted_count") != binding.get("source_emitted_count") - len(held)
+                or binding.get("held_count") != binding.get("source_held_count") + len(held)):
+            raise ValueError("DAUM identity-held counts differ")
+        return len(held)
 
     probe = checkpoint.get("daum_fallback_probe")
     if not isinstance(binding, dict) or not isinstance(probe, dict):
