@@ -171,6 +171,10 @@ def qualify(request: dict) -> dict:
 
 def successor(slot: str, request: dict, result: dict):
     """One bounded follow-on; pending scheduled peers precede it."""
+    if (result.get("status") == "deadline_interrupted" and result.get("unfinished_sources")
+            and request["continuation_depth"] == 1):
+        result["continuation_limit_reached"] = True
+        return None
     if (result.get("status") != "deadline_interrupted"
             or not result.get("unfinished_sources") or request["continuation_depth"] != 0):
         return None

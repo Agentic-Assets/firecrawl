@@ -82,7 +82,9 @@ def test_only_one_target_bound_deadline_successor(policy, monkeypatch):
     assert next_request["predecessor_series_id"] == first["series_id"]
     assert next_request["series_id"] != first["series_id"]
     assert next_request["target"] == first["target"] and next_request["config"] == first["config"]
-    assert dispatcher.successor(next_slot, next_request, result) is None
+    follow_on_result = dict(result)
+    assert dispatcher.successor(next_slot, next_request, follow_on_result) is None
+    assert follow_on_result["continuation_limit_reached"] is True
     assert dispatcher.successor(slot, first, {**result, "unfinished_sources": []}) is None
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "d" * 64})
     with pytest.raises(ValueError, match="target or source policy changed"):
