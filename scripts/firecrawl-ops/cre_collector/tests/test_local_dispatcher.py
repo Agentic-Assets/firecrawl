@@ -132,6 +132,17 @@ def test_new_due_after_current_policy_observation_is_queued_as_due(tmp_path, pol
     assert len(list(tmp_path.glob("20261106T042500Z_colliers_*.json"))) == 1
 
 
+def test_weekly_due_before_observation_produces_current_catchup_not_historical_replay(tmp_path, policy):
+    policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Weekly", task_xml_sha256="e" * 64)
+    snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
+                "tasks": [{"task": "weekly", "policy": policy, "due": ["20261030T042000Z"]}]}
+    dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
+    queued = list(tmp_path.glob("*.json"))
+    assert len(queued) == 1 and "_current_" in queued[0].name
+    assert not queued[0].name.startswith("20261030T042000Z")
+    assert len(list(tmp_path.glob(".history-*.audit"))) == 1
+
+
 def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy):
     policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
     bad = copy.deepcopy(policy)

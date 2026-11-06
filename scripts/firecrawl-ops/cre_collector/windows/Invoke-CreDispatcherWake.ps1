@@ -51,19 +51,23 @@ function Get-CreWakeDue([xml]$Document, [DateTimeOffset]$Now) {
         $day=$trigger.SelectSingleNode('t:ScheduleByDay/t:DaysInterval',$ns)
         $week=$trigger.SelectSingleNode('t:ScheduleByWeek',$ns)
         $weeks=if($week){$week.SelectSingleNode('t:WeeksInterval',$ns)}else{$null}
-        if($day -and -not $week -and $day.InnerText -ceq '1') { $active=$true }
+        if($day -and -not $week -and $day.InnerText -ceq '1') { $days=$null; $lookback=1 }
         elseif($week -and -not $day -and $weeks -and $weeks.InnerText -ceq '1') {
             $days=$week.SelectSingleNode('t:DaysOfWeek',$ns)
             if(-not $days) { return @{due=@($Now.UtcDateTime.Date.ToString('yyyyMMddTHHmmssZ')); fallback=$true} }
-            $active=$null -ne $days.SelectSingleNode('t:'+$today.DayOfWeek.ToString(),$ns)
+            $lookback=7
         } else { return @{due=@($Now.UtcDateTime.Date.ToString('yyyyMMddTHHmmssZ')); fallback=$true} }
-        if(-not $active) { continue }
-        $local=[DateTime]::SpecifyKind($today.Add($start.TimeOfDay),[DateTimeKind]::Unspecified)
-        if($zone.IsAmbiguousTime($local) -or $zone.IsInvalidTime($local)) {
-            return @{due=@($Now.UtcDateTime.Date.ToString('yyyyMMddTHHmmssZ')); fallback=$true}
+        for($offset=0;$offset -le $lookback;$offset++) {
+            $date=$today.AddDays(-$offset)
+            if($date -lt $start.Date) { break }
+            if($days -and -not $days.SelectSingleNode('t:'+$date.DayOfWeek.ToString(),$ns)) { continue }
+            $local=[DateTime]::SpecifyKind($date.Add($start.TimeOfDay),[DateTimeKind]::Unspecified)
+            if($zone.IsAmbiguousTime($local) -or $zone.IsInvalidTime($local)) {
+                return @{due=@($Now.UtcDateTime.Date.ToString('yyyyMMddTHHmmssZ')); fallback=$true}
+            }
+            $utc=[TimeZoneInfo]::ConvertTimeToUtc($local,$zone)
+            if($utc -le $Now.UtcDateTime) { $due+=@($utc.ToString('yyyyMMddTHHmmssZ')); break }
         }
-        $utc=[TimeZoneInfo]::ConvertTimeToUtc($local,$zone)
-        if($utc -le $Now.UtcDateTime) { $due+=@($utc.ToString('yyyyMMddTHHmmssZ')) }
     }
     return @{due=@($due | Sort-Object -Unique); fallback=$false}
 }

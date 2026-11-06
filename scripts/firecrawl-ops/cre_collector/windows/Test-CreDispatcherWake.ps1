@@ -17,6 +17,12 @@ Assert-Wake (-not $due.fallback -and @($due.due).Count -eq 1) 'Only the already 
 $unsupported=[xml]'<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger /></Triggers></Task>'
 $fallback=Get-CreWakeDue $unsupported $now
 Assert-Wake ($fallback.fallback -and @($fallback.due).Count -eq 1) 'Unknown trigger must yield a marked current-policy fallback.'
+$prior=$localNow.AddDays(-1)
+$weeklyStart=$prior.AddDays(-14).ToString('yyyy-MM-dd')
+$weekday=$prior.DayOfWeek.ToString()
+$weekly=[xml](('<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><CalendarTrigger><StartBoundary>'+ $weeklyStart +'T08:00:00</StartBoundary><Enabled>true</Enabled><ScheduleByWeek><WeeksInterval>1</WeeksInterval><DaysOfWeek><'+$weekday+' /></DaysOfWeek></ScheduleByWeek></CalendarTrigger></Triggers></Task>'))
+$missed=Get-CreWakeDue $weekly $now
+Assert-Wake (-not $missed.fallback -and @($missed.due).Count -eq 1) 'A weekly opportunity during an outage must remain visible for current-policy catchup.'
 $launcher=Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'
 $defaults=Get-CreWakeDefaults $launcher
 $prefix='-NoProfile -NonInteractive -File "'+$launcher+'" -Tier series -AcknowledgeDatabaseWrites -ExpectedSha '+('a'*40)+' -WorkDeadlineSeconds 1800 '
