@@ -17,7 +17,7 @@ function bound(name: string, maximum: number): number {
   return number;
 }
 
-function containsCredential(body: string, secret: string): boolean {
+export function containsCredential(body: string, secret: string): boolean {
   if (body.includes(secret)) return true;
   // SharpLaunch integration keys are alphanumeric; reject equivalent JSON
   // Unicode escapes too, without placing the key in errors or metadata.

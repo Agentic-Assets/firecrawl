@@ -30,7 +30,7 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
       const url = new URL(String(input));
       if (url.hostname === "www.avisonyoung.us") return new Response("SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')");
       return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website"
-          ? [ordinaryFailure === "missing-url" ? { ...bad, url: null, external_url: null } : bad, row] : [] }),
+          ? [ordinaryFailure === "missing-url" ? { ...bad, url: null, external_url: null, description: "record 0123456789abcdef0123456789abcdef extra" } : bad, row] : [] }),
         { status: 200, headers: { "content-type": "application/json" } });
     };
     firecrawl.scrape = async (url: string) => {
@@ -70,6 +70,16 @@ test("a URL-less source row is held while a later identified peer is retained", 
   assert.deepEqual(observed.map(item => item.id), ["18194"]);
   assert.deepEqual(outcomes.map(item => [item.id, item.state]), [["17000", "failed"], ["18194", "validated"]]);
   assert.equal(outcomes[0].reason, "missing_public_detail_urls");
+  const evidence = outcomes[0].feedObservation;
+  assert.equal(evidence.sourceKey, "avison-young");
+  assert.equal(evidence.qualification, "unverified");
+  assert.equal(evidence.credentialRedacted, true);
+  assert.ok(!evidence.sourceRowJson.includes("0123456789abcdef0123456789abcdef"));
+  const retained = JSON.parse(evidence.sourceRowJson);
+  assert.equal(retained.id, 17000);
+  assert.equal(retained.url, null);
+  assert.equal(retained.external_url, null);
+  assert.equal(retained.description, "record [REDACTED_API_KEY] extra");
   assert.ok(!calls.includes(badUrl));
 });
 

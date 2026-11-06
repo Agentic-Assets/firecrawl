@@ -8,7 +8,7 @@ import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { classifyPerformanceError } from "../lib/performance.js";
-import { publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
+import { containsCredential, publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
@@ -2729,7 +2729,7 @@ export async function enrichAvisonYoungListing(
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   onValidatedDetail?: (listing: any, index: number) => void,
-  onDetailOutcomes?: (outcomes: Array<{ id: string; state: string }>) => void): Promise<SourceResult> {
+  onDetailOutcomes?: (outcomes: Array<{ id: string; state: string; feedObservation?: unknown }>) => void): Promise<SourceResult> {
   const strict = requireFreshDetails();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   if (requireLiveDetails && !refreshGenerationId()) {
@@ -2749,7 +2749,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     avisonYoungCache = null;
   }
   const sourceUrl = `https://www.avisonyoung.us/properties/#/?transaction=${tx}&view=sidebar&status=active`;
-  const { websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
+  const { apiKey, websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
   const officialFeedUrls = indexAvisonYoungOfficialFeedUrls(websiteRows);
   assertAvisonYoungStrictFeed(teamFeedComplete, teamFeedReason, strict);
   const inventoryObservation = detailObservation(
@@ -2837,7 +2837,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes: Array<{ id: string; state: string; reason?: string; redirectObservations?: AvisonRedirectObservation[] }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const outcomes: Array<{ id: string; state: string; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
   const heldIds: string[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
@@ -2854,6 +2854,21 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           outcomes[index]!.redirectObservations = error.redirectObservations;
         } else if (error.message === "missing public detail URLs") {
           outcomes[index]!.reason = "missing_public_detail_urls";
+          // Keep the parsed source row only as private unqualified evidence.
+          // Store it as JSON text so redaction cannot change or merge object keys.
+          try {
+            const raw = JSON.stringify(selectedRows[index]);
+            if (typeof raw !== "string" || !apiKey) throw new Error();
+            const redacted = raw.split(apiKey).join("[REDACTED_API_KEY]");
+            if (containsCredential(redacted, apiKey)) throw new Error();
+            outcomes[index]!.feedObservation = {
+              sourceKey: "avison-young", method: "SharpLaunch website inventory",
+              observedAt: inventoryObservation.observedAt, sourceRowJson: redacted,
+              credentialRedacted: redacted !== raw, qualification: "unverified",
+            };
+          } catch {
+            outcomes[index]!.feedObservation = { state: "retention_failed" };
+          }
         } else if (error.message.includes("Avison Young detail has empty or missing content")) {
           outcomes[index]!.reason = "empty_or_missing_content";
         } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
