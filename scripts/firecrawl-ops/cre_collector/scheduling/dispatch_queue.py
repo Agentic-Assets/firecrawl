@@ -22,7 +22,7 @@ def _directory(path: Path) -> int:
 
 
 def _slot(slot: str) -> str:
-    if not isinstance(slot, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", slot) is None:
+    if (not isinstance(slot, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,112}(?:\.continuation1)?", slot) is None):
         raise DispatchRefused("invalid due slot")
     return slot + ".json"
 
@@ -113,8 +113,12 @@ def drain(path: Path, *, launch, qualify, successor=None) -> bool:
             if record["state"] == "queued":
                 record["state"] = "dispatch_uncertain"
                 _write(directory, name, record, create=False)
-                launch(record["request"])
-            result = qualify(record["request"])
+                launch_result = launch(record["request"])
+            else:
+                launch_result = None
+            result = (launch_result if isinstance(launch_result, dict)
+                      and launch_result.get("outcome") == "settled_no_work"
+                      else qualify(record["request"]))
             if not isinstance(result, dict) or result.get("outcome") not in {"qualified", "settled_no_work"}:
                 raise DispatchRefused("dispatch settlement was not qualified")
             if successor is not None:

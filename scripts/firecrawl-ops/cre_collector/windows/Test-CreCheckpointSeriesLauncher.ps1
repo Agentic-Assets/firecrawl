@@ -64,6 +64,7 @@ $cases = @(
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
     @{ Name = 'fresh-series-locator'; Args = $series + @('-FreshSeriesId', $freshSeriesId); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId },
     @{ Name = 'fresh-series-target'; Args = $series + @('-FreshSeriesId', $freshSeriesId, '-ExpectedTargetSha256', ('b' * 64)); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId; TargetHash = ('b' * 64) },
+    @{ Name = 'fresh-no-work'; Args = $series + @('-FreshSeriesId', $freshSeriesId, '-ExpectedTargetSha256', ('b' * 64)); Exit = 1; Dispatch = $false; ReadinessDenied = $true; NoWork = $true },
     @{ Name = 'target-without-fresh'; Args = $series + @('-ExpectedTargetSha256', ('b' * 64)); Exit = 1; Dispatch = $false },
     @{ Name = 'fresh-invalid-date'; Args = $series + @('-FreshSeriesId', '2026-02-30T010203Z-012345abcdef'); Exit = 1; Dispatch = $false },
     @{ Name = 'fresh-invalid-id'; Args = $series + @('-FreshSeriesId', '../bad'); Exit = 1; Dispatch = $false },
@@ -184,6 +185,12 @@ foreach ($case in $cases) {
     [IO.File]::WriteAllText($scriptFile, $source, (New-Object Text.UTF8Encoding($true)))
     $result = [CreWindowsCapture.Capture]::Run($hostExecutable, (@('-NoProfile', '-NonInteractive', '-File', $scriptFile) + $case.Args), (Join-Path $caseRoot 'stdout'), (Join-Path $caseRoot 'stderr'), $null)
     Assert-True (-not $result.Failed -and $result.NativeExitCode -eq $case.Exit) ("Unexpected host result: " + $case.Name)
+    if ($case.ContainsKey('NoWork')) {
+        $lines = @([IO.File]::ReadAllLines((Join-Path $caseRoot 'stdout')) | Where-Object { $_.StartsWith('CRE_DISPATCH_NO_WORK:') })
+        Assert-True ($lines.Count -eq 1) 'Settled no-dispatch requires exactly one native marker.'
+        $noWork = $lines[0].Substring('CRE_DISPATCH_NO_WORK:'.Length) | ConvertFrom-Json
+        Assert-True ($noWork.seriesId -ceq $freshSeriesId -and $noWork.targetSha256 -ceq ('b' * 64) -and $noWork.reason -ceq 'local_api_not_ready_no_dispatch') 'Native marker must bind locator, target and reason.'
+    }
     Assert-True ([IO.File]::Exists($argvPath) -eq $case.Dispatch) ("Unexpected dispatch: " + $case.Name)
     if ($case.ContainsKey('CpuRecovery')) {
         $sampleCount = [int][IO.File]::ReadAllText($admissionPath)

@@ -30,7 +30,10 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
             "windows_launcher_sha256", "windows_repo", "distro", "linux_user", "alert_file", "notification_mode"}
     if not isinstance(policy, dict) or set(policy) != keys:
         raise ValueError("dispatch policy fields differ")
-    match = re.fullmatch(r"(\d{8}T\d{6}Z)_[A-Za-z0-9_-]{1,96}", slot)
+    if type(continuation_depth) is not int or continuation_depth not in {0, 1}:
+        raise ValueError("unsupported continuation depth")
+    pattern = r"(\d{8}T\d{6}Z)_[A-Za-z0-9_-]{1,96}" + (r"\.continuation1" if continuation_depth else "")
+    match = re.fullmatch(pattern, slot)
     if match is None:
         raise ValueError("slot must bind a UTC due time and task identity")
     from datetime import datetime
@@ -73,13 +76,35 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
         pipeline=True, source_workers=policy["workers"])
     target = refresh.database_target_fingerprint(policy["env_file"])
     series_id = due.strftime("%Y-%m-%dT%H%M%SZ") + "-" + hashlib.sha256(slot.encode()).hexdigest()[:12]
-    if type(continuation_depth) is not int or continuation_depth not in {0, 1}:
-        raise ValueError("unsupported continuation depth")
     return {"policy": policy, "config": config, "target": target, "series_id": series_id,
-            "continuation_depth": continuation_depth}
+            "continuation_depth": continuation_depth, "predecessor_series_id": None}
 
 
-def launch(request: dict) -> None:
+def launcher_arguments(request: dict) -> list[str]:
+    policy = request["policy"]
+    selection = (["-Source", "all"] if policy["sources"] == ["all"] else
+                 ["-Sources", ",".join(policy["sources"])])
+    argv = ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile", "-NonInteractive", "-File", policy["windows_launcher"],
+        "-Tier", "series", "-Pipeline", *selection,
+        "-Concurrency", str(policy["concurrency"]), "-SourceWorkers", str(policy["workers"]),
+        "-PageCap", str(policy["page_cap"]), "-AttemptsPerSource", str(policy["attempts"]),
+        "-ExpectedSha", policy["expected_sha"], "-FreshSeriesId", request["series_id"],
+        "-ExpectedTargetSha256", request["target"]["value"],
+        "-WorkDeadlineSeconds", str(policy["deadline_seconds"]), "-AcknowledgeDatabaseWrites",
+        "-LinuxRepo", policy["windows_repo"], "-LinuxEnvFile", policy["env_file"],
+        "-Distro", policy["distro"], "-LinuxUser", policy["linux_user"], "-NotificationMode", policy["notification_mode"]]
+    if policy["admissions"]:
+        argv += ["-AdmitCurrentInventorySources", ",".join(policy["admissions"])]
+    if policy["daum_subset"]:
+        argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", "tenure-and-empty-title-v2"]
+    if policy["alert_file"] is not None:
+        argv += ["-AlertWebhookFile", policy["alert_file"]]
+    if request["predecessor_series_id"] is not None:
+        argv += ["-PriorityFromSeriesId", request["predecessor_series_id"]]
+    return argv
+
+
+def launch(request: dict) -> dict | None:
     """Invoke the existing native launcher; it performs fresh Windows admission."""
     policy = request["policy"]
     if refresh.database_target_fingerprint(policy["env_file"]) != request["target"]:
@@ -103,22 +128,30 @@ def launch(request: dict) -> None:
         raw = observed.read_bytes()
         if raw != expected or (observed == launcher and hashlib.sha256(raw).hexdigest() != policy["windows_launcher_sha256"]):
             raise ValueError("Windows launcher custody changed before dispatch")
-    argv = ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile", "-NonInteractive", "-File", policy["windows_launcher"],
-        "-Tier", "series", "-Pipeline", "-Sources", ",".join(policy["sources"]),
-        "-Concurrency", str(policy["concurrency"]), "-SourceWorkers", str(policy["workers"]),
-        "-PageCap", str(policy["page_cap"]), "-AttemptsPerSource", str(policy["attempts"]),
-        "-ExpectedSha", policy["expected_sha"], "-FreshSeriesId", request["series_id"],
-        "-ExpectedTargetSha256", request["target"]["value"],
-        "-WorkDeadlineSeconds", str(policy["deadline_seconds"]), "-AcknowledgeDatabaseWrites",
-        "-LinuxRepo", policy["windows_repo"], "-LinuxEnvFile", policy["env_file"],
-        "-Distro", policy["distro"], "-LinuxUser", policy["linux_user"], "-NotificationMode", policy["notification_mode"]]
-    if policy["admissions"]:
-        argv += ["-AdmitCurrentInventorySources", ",".join(policy["admissions"])]
-    if policy["daum_subset"]:
-        argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", "tenure-and-empty-title-v2"]
-    if policy["alert_file"] is not None:
-        argv += ["-AlertWebhookFile", policy["alert_file"]]
-    subprocess.run(argv, check=False)
+    argv = launcher_arguments(request)
+    completed = subprocess.run(argv, check=False, capture_output=True, text=True)
+    return native_no_work_result(completed.returncode, completed.stdout, request)
+
+
+def native_no_work_result(returncode: int, stdout: str, request: dict) -> dict | None:
+    """Accept only a final marker bound to this completed native process."""
+    policy = request["policy"]
+    markers = [line.removeprefix("CRE_DISPATCH_NO_WORK:") for line in stdout.splitlines()
+               if line.startswith("CRE_DISPATCH_NO_WORK:")]
+    if returncode != 0 and len(markers) == 1:
+        try:
+            marker = json.loads(markers[0])
+        except json.JSONDecodeError:
+            marker = None
+        expected = {"schema": "cre-dispatch-no-work/v1", "seriesId": request["series_id"],
+                    "expectedSha": policy["expected_sha"], "targetSha256": request["target"]["value"],
+                    "source": ",".join(policy["sources"])}
+        if (isinstance(marker, dict) and set(marker) == set(expected) | {"reason"}
+                and all(marker.get(key) == value for key, value in expected.items())
+                and marker.get("reason") in {"local_api_not_ready_no_dispatch",
+                    "startup_admission_deadline_no_dispatch", "notification_config_refused_no_dispatch",
+                    "admission_refused"}):
+            return {"outcome": "settled_no_work", "status": "native_refused", "reason": marker["reason"]}
 
 
 def qualify(request: dict) -> dict:
@@ -140,10 +173,11 @@ def successor(slot: str, request: dict, result: dict):
     if (result.get("status") != "deadline_interrupted"
             or not result.get("unfinished_sources") or request["continuation_depth"] != 0):
         return None
-    next_slot = slot + "_continuation1"
+    next_slot = slot + ".continuation1"
     next_request = policy_request(request["policy"], next_slot, continuation_depth=1)
     if next_request["target"] != request["target"] or next_request["config"] != request["config"]:
         raise ValueError("continuation target or source policy changed")
+    next_request["predecessor_series_id"] = request["series_id"]
     return next_slot, next_request
 
 

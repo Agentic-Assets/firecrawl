@@ -84,9 +84,32 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     unfinished = []
     for key in expected_config["sources"]:
         state = candidate["sources"][key]["state"]
+        checkpoint = (child.get("sources") or {}).get(key) or {}
+        if (key == "colliers" and checkpoint.get("state") == "ingested"
+                and ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
+                     or checkpoint.get("partial_windows"))):
+            # A previously verified partial result cannot qualify a newer
+            # ingested window whose readback or cursor publication was cut off.
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            observed = (checkpoint.get("readback") or {}).get("observation") or {}
+            cursor = checkpoint.get("partial_cursor_settlement") or {}
+            if ((checkpoint.get("readback") or {}).get("ok") is not True
+                    or observed.get("outcome") != "exact_commit"
+                    or cursor.get("state") != "settled"
+                    or cursor.get("attempt_id") != checkpoint.get("subset_ingest_attempt_id")
+                    or observed.get("attempt_id") != cursor.get("attempt_id")
+                    or not cursor.get("attempt_id")
+                    or observed.get("generation_id") != child.get("run_id")
+                    or observed.get("database_target_sha256") != expected_target.get("value")
+                    or any(observed.get("artifact_sha256") != item for item in (
+                        cursor.get("artifact_sha256"), binding.get("artifact_sha256"),
+                        (checkpoint.get("artifact") or {}).get("sha256")))
+                    or not observed.get("artifact_sha256")
+                    or cursor.get("cursor") != binding.get("cursor")
+                    or cursor.get("next_cursor") != binding.get("next_cursor")):
+                raise DispatchSettlementRefused("current Colliers window is not exactly settled")
         if state in {"complete", "qualified_partial_subset", "failed_source"}:
             continue
-        checkpoint = (child.get("sources") or {}).get(key) or {}
         if (state != "interrupted" or checkpoint.get("ingest") is not None
                 or checkpoint.get("state") in {"ingested", "ingesting", "ingest_recovery_required"}
                 or checkpoint.get("partial_cursor_settlement") is not None

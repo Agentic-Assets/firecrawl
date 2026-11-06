@@ -65,3 +65,17 @@ def test_uncertain_or_foreign_child_never_qualifies(case, damage):
         control["last_checkpoint"]["child_invocation_id"] = "e" * 32
     with pytest.raises(settlement.DispatchSettlementRefused):
         settlement.qualify(root, series_id, invocation, **options)
+
+
+def test_prior_verified_partial_does_not_qualify_new_unreadback_window(case, monkeypatch):
+    root, series_id, invocation, options, child, _ = case
+    child["sources"]["colliers"] = {"state": "ingested", "artifact": {"colliers_partial": True, "sha256": "f" * 64},
+        "partial_windows": [{"state": "verified", "index": 1}],
+        "subset_ingest_attempt_id": "e" * 32, "ingest": {"rc": 0},
+        "gate": {"current_inventory_proof": {"cursor": 1565, "next_cursor": 1670, "artifact_sha256": "f" * 64}}}
+    def prior_result(_path, parent, *, publish):
+        parent["sources"]["colliers"]["state"] = "qualified_partial_subset"
+        parent["sources"]["savills"]["state"] = "complete"
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", prior_result)
+    with pytest.raises(settlement.DispatchSettlementRefused, match="current Colliers window"):
+        settlement.qualify(root, series_id, invocation, **options)

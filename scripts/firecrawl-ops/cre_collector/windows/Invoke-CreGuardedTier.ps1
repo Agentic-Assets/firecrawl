@@ -25,6 +25,7 @@ param(
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedTargetSha256,
     [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$FreshSeriesId,
+    [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$PriorityFromSeriesId,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
@@ -71,6 +72,9 @@ if ($PSBoundParameters.ContainsKey('FreshSeriesId')) {
 }
 if ($PSBoundParameters.ContainsKey('ExpectedTargetSha256') -and -not $FreshSeriesId) {
     throw '-ExpectedTargetSha256 requires a preallocated series.'
+}
+if ($PSBoundParameters.ContainsKey('PriorityFromSeriesId') -and (-not $FreshSeriesId -or -not $ExpectedTargetSha256)) {
+    throw '-PriorityFromSeriesId requires a target-bound preallocated series.'
 }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
     throw '-SourceWorkers requires -Pipeline.'
@@ -985,6 +989,7 @@ try {
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
             if ($FreshSeriesId) { $arguments += @('--fresh-series-id', $FreshSeriesId) }
             if ($ExpectedTargetSha256) { $arguments += @('--expected-database-target-sha256', $ExpectedTargetSha256) }
+            if ($PriorityFromSeriesId) { $arguments += @('--priority-from-series-id', $PriorityFromSeriesId) }
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }
@@ -1039,5 +1044,16 @@ if ($result -ne 0 -or $NotificationMode -eq 'StartFinish') {
         try { Write-CreAudit $auditPath $record }
         catch { Write-Error 'Windows post-notification audit publication failed; the prior receipt may omit the notification outcome.' -ErrorAction Continue }
     }
+}
+if ($FreshSeriesId -and $ExpectedTargetSha256 -and $result -ne 0 -and
+    $record.dispatch -ceq 'not_attempted' -and $record.status -cin @(
+        'local_api_not_ready_no_dispatch', 'startup_admission_deadline_no_dispatch',
+        'notification_config_refused_no_dispatch', 'admission_refused')) {
+    # Final output from this exact native process, after the final dispatch
+    # decision. Missing output or a crash is never a no-work receipt.
+    $noWork = [ordered]@{ schema='cre-dispatch-no-work/v1'; seriesId=$FreshSeriesId;
+        expectedSha=$ExpectedSha; targetSha256=$ExpectedTargetSha256;
+        source=$selectedSourceArgument; reason=$record.status } | ConvertTo-Json -Compress
+    Write-Output ('CRE_DISPATCH_NO_WORK:' + $noWork)
 }
 exit $result

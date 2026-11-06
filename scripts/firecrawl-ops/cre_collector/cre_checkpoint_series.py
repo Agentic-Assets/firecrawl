@@ -2031,7 +2031,8 @@ def reconcile_settled_interruption(series_dir: Path, manifest: dict, control) ->
     manifest["sources"] = candidate["sources"]
 
 
-def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dict) -> dict | None:
+def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dict, *,
+                                predecessor_id: str | None = None) -> dict | None:
     """Derive an order from the latest matching locally settled deadline.
 
     This changes scheduling order only. Every selected source is still run in
@@ -2042,18 +2043,29 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
     from scheduling.priority import after_deadline
 
     try:
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", current_dir.name):
-            return None
-        candidates = sorted(
-            (path for path in out_root.iterdir()
-             if path != current_dir and path.name < current_dir.name and not path.is_symlink()
-             and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", path.name)
-             and path.is_dir()),
-            key=lambda path: path.name, reverse=True,
-        )
+        if predecessor_id is not None:
+            validate_fresh_series_id(current_dir.name)
+            validate_fresh_series_id(predecessor_id)
+            prior_path = out_root / predecessor_id
+            if prior_path == current_dir or prior_path.is_symlink() or not prior_path.is_dir():
+                return None
+            candidates = [prior_path]
+        else:
+            if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", current_dir.name):
+                return None
+            candidates = sorted(
+                (path for path in out_root.iterdir()
+                 if path != current_dir and path.name < current_dir.name and not path.is_symlink()
+                 and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", path.name)
+                 and path.is_dir()),
+                key=lambda path: path.name, reverse=True,
+            )
         for prior_dir in candidates:
             raw = _read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024)
             prior = json.loads(raw)
+            if (predecessor_id is not None and _parse_utc_timestamp(prior.get("finished_at"), field="prior finished_at")
+                    > _parse_utc_timestamp(manifest.get("started_at"), field="current started_at")):
+                return None
             if (not isinstance(prior, dict) or prior.get("series_id") != prior_dir.name
                     or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))):
                 continue
@@ -3464,6 +3476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-sha", default=None)
     parser.add_argument("--expected-database-target-sha256", default=None,
                         help="internal preallocated-dispatch target binding")
+    parser.add_argument("--priority-from-series-id", default=None,
+                        help="internal exact preallocated predecessor")
     parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
     parser.add_argument(
         "--reconcile-stale-series",
@@ -3699,6 +3713,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 or re.fullmatch(r"[a-f0-9]{64}", args.expected_database_target_sha256) is None
                 or database_target != {"algorithm": "sha256", "value": args.expected_database_target_sha256}):
             raise SeriesError("preallocated dispatch database target differs")
+    if args.priority_from_series_id is not None:
+        if args.expected_database_target_sha256 is None:
+            raise SeriesError("preallocated predecessor requires target binding")
+        validate_fresh_series_id(args.priority_from_series_id)
 
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()
@@ -3744,7 +3762,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.expected_database_target_sha256 is not None:
                     manifest["preallocated_expected_target_sha256"] = args.expected_database_target_sha256
             if not args.resume and config.get("pipeline"):
-                priority = scheduled_deadline_priority(series_dir.parent, series_dir, manifest)
+                priority = scheduled_deadline_priority(series_dir.parent, series_dir, manifest,
+                    **({"predecessor_id": args.priority_from_series_id} if args.priority_from_series_id else {}))
+                if args.priority_from_series_id and priority is None:
+                    raise SeriesError("preallocated predecessor did not qualify for deadline priority")
                 if priority is not None:
                     manifest["pipeline_dispatch"] = priority
             # This is a replaceable latest-invocation observation, never config/history.

@@ -1,5 +1,9 @@
 """Durable due-slot behavior; callbacks are local synthetic stand-ins."""
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from scheduling import dispatch_queue as queue
@@ -49,7 +53,39 @@ def test_due_peer_precedes_automatic_successor(tmp_path):
             queue.enqueue(tmp_path, "20261106T010000Z_peer", {"kind": "peer", "continuation_depth": 0})
     def successor(slot, request, _result):
         if request["kind"] == "broad":
-            return slot + "_continuation1", {"kind": "continuation", "continuation_depth": 1}
+            return slot + ".continuation1", {"kind": "continuation", "continuation_depth": 1}
         return None
     queue.drain(tmp_path, launch=launch, qualify=lambda _: {"outcome": "qualified"}, successor=successor)
     assert events == ["broad", "peer", "continuation"]
+
+
+def test_bound_no_work_refusal_does_not_block_due_peer(tmp_path):
+    queue.enqueue(tmp_path, "a_refused", {"kind": "refused"})
+    queue.enqueue(tmp_path, "b_peer", {"kind": "peer"})
+    calls = []
+    def launch(request):
+        calls.append(("launch", request["kind"]))
+        if request["kind"] == "refused":
+            return {"outcome": "settled_no_work", "status": "native_refused"}
+    queue.drain(tmp_path, launch=launch,
+        qualify=lambda request: calls.append(("qualify", request["kind"])) or {"outcome": "qualified"})
+    assert calls == [("launch", "refused"), ("launch", "peer"), ("qualify", "peer")]
+
+
+def test_real_process_death_after_prespawn_fences_restart(tmp_path):
+    queue.enqueue(tmp_path, "20261106T000000Z_broad", {"kind": "broad"})
+    collector = Path(__file__).resolve().parents[1]
+    script = (
+        "import os,sys; from pathlib import Path; "
+        "from scheduling import dispatch_queue as q; "
+        "q.drain(Path(sys.argv[1]), launch=lambda _: os._exit(19), "
+        "qualify=lambda _: {'outcome':'qualified'})"
+    )
+    env = {**os.environ, "PYTHONPATH": str(collector)}
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env, timeout=10)
+    assert result.returncode == 19
+    attempts = []
+    with pytest.raises(queue.DispatchRefused):
+        queue.drain(tmp_path, launch=lambda _: pytest.fail("must never redispatch uncertain work"),
+                    qualify=lambda request: attempts.append(request) or {"outcome": "unknown"})
+    assert attempts == [{"kind": "broad"}]
