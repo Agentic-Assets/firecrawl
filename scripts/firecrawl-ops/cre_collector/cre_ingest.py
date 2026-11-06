@@ -4065,6 +4065,11 @@ def build_sql(
     targeted_queue, targeted_guard, targeted_observation = (
         _matthews_targeted_sql_parts(matthews_targeted_targets) if targeted else ("", "", "")
     )
+    from cre_daum_identity_sql import historical_conflict_sql
+
+    daum_historical_conflict = historical_conflict_sql(
+        source_alias="s", target_alias="t", native_sql="s.native_ids[1]"
+    )
     daum_subset_guard = ""
     if daum_verified_subset_claims is not None:
         if targeted or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
@@ -5041,13 +5046,7 @@ BEGIN
     SELECT count(*) INTO conflicting_rows
     FROM _daum_identity_claims s
     JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
-    WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
-       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
-       OR (s.native_ids[1] = ANY(t.native_ids)
-           AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
-       OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
-           AND cardinality(t.native_ids) > 0
-           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_ids[1]));
+    WHERE {daum_historical_conflict};
     IF conflicting_rows > 0 THEN
       RAISE EXCEPTION 'DAUM identity contradiction in historical rows; refusing mutation';
     END IF;
