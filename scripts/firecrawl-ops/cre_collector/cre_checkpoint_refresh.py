@@ -607,6 +607,7 @@ class HostCpuGuard:
     diagnostic_allowance_seconds: float = field(default=0.0, init=False)
     last_incident_snapshot: dict[str, Any] | None = field(default=None, init=False)
     gap_resampled: bool = field(default=False, init=False)
+    gap_low_since: float | None = field(default=None, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
 
@@ -722,7 +723,7 @@ class HostCpuGuard:
         if not 0.0 <= observed - started <= read_budget:
             raise CpuTelemetryError("host CPU read time stale")
         # A brief Linux scheduling pause can leave one stale interval even
-        # when the counters remain readable. Permit one explicitly recorded
+        # when the counters remain readable. Permit an explicitly recorded
         # recovery only while below threshold, shorter than a saturation
         # window, then require an independent fresh low sample. Darwin and
         # arbitrary sampler implementations retain the original strict rule.
@@ -786,6 +787,18 @@ class HostCpuGuard:
             self._write_record(state=state, percent=percent, reason=reason)
         except Exception as exc:  # Adapters must not silently end monitoring.
             raise CpuEvidenceError("host CPU guard log unavailable") from exc
+        if self.gap_resampled:
+            if self.high_since is not None:
+                self.gap_low_since = None
+            elif self.gap_low_since is None:
+                self.gap_low_since = observed
+            elif observed - self.gap_low_since >= 60.0:
+                # All observations in this interval passed the normal
+                # freshness check and their required records were persisted.
+                self._write_record(state="gap_cooldown_complete", percent=percent,
+                                   reason="60 seconds of fresh low samples")
+                self.gap_resampled = False
+                self.gap_low_since = None
         if reason is not None:
             self._trip(reason, percent=percent)
         return percent

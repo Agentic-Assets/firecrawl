@@ -67,3 +67,83 @@ def test_recovery_evidence_failure_stops(setup_guard, monkeypatch):
     monkeypatch.setattr(guard, "_write_record", lambda **_: (_ for _ in ()).throw(refresh.CpuEvidenceError("unavailable")))
     with pytest.raises(refresh.CpuEvidenceError):
         guard.sample_once()
+
+
+def test_second_gap_allowed_only_after_sixty_seconds_fresh_low(setup_guard):
+    guard, now, monkeypatch = setup_guard
+    monkeypatch.setattr(refresh, "linux_cpu_percent", lambda *_: 20.0)
+    guard.sample_once()
+    now[0] = 7.9
+    guard.sample_once()
+    start = guard.previous_observed
+    for second in range(1, 60):
+        now[0] = start + second
+        guard.sample_once()
+    assert guard.gap_resampled is True
+    now[0] = start + 60
+    guard.sample_once()
+    assert guard.gap_resampled is False
+    now[0] += 7.9
+    guard.sample_once()
+    records = [json.loads(line)["state"] for line in guard.log_path.read_text().splitlines()]
+    assert records.count("gap_recovered") == 2
+    assert records.count("gap_cooldown_complete") == 1
+
+
+def test_high_sample_restarts_cooldown(setup_guard):
+    guard, now, monkeypatch = setup_guard
+    value = [20.0]
+    monkeypatch.setattr(refresh, "linux_cpu_percent", lambda *_: value[0])
+    guard.sample_once()
+    now[0] = 7.9
+    guard.sample_once()
+    start = guard.previous_observed
+    for second in range(1, 60):
+        now[0] = start + second
+        guard.sample_once()
+    value[0] = 99.0
+    now[0] = start + 60
+    guard.sample_once()
+    assert guard.gap_resampled is True
+    assert guard.gap_low_since is None
+    value[0] = 20.0
+    now[0] += 1
+    guard.sample_once()
+    now[0] += 3.1
+    with pytest.raises(refresh.CpuTelemetryError, match="stale"):
+        guard.sample_once()
+
+
+def test_failed_cooldown_record_never_releases_budget(setup_guard, monkeypatch):
+    guard, now, _ = setup_guard
+    monkeypatch.setattr(refresh, "linux_cpu_percent", lambda *_: 20.0)
+    guard.sample_once()
+    now[0] = 7.9
+    guard.sample_once()
+    start = guard.previous_observed
+    for second in range(1, 60):
+        now[0] = start + second
+        guard.sample_once()
+    write = guard._write_record
+    def fail_cooldown(**record):
+        if record["state"] == "gap_cooldown_complete":
+            raise refresh.CpuEvidenceError("unavailable")
+        write(**record)
+    monkeypatch.setattr(guard, "_write_record", fail_cooldown)
+    now[0] = start + 60
+    with pytest.raises(refresh.CpuEvidenceError):
+        guard.sample_once()
+    assert guard.gap_resampled is True
+
+
+def test_invalid_sample_during_cooldown_fails_closed(setup_guard, monkeypatch):
+    guard, now, _ = setup_guard
+    monkeypatch.setattr(refresh, "linux_cpu_percent", lambda *_: 20.0)
+    guard.sample_once()
+    now[0] = 7.9
+    guard.sample_once()
+    monkeypatch.setattr(refresh, "linux_cpu_percent", lambda *_: float("nan"))
+    now[0] += 1
+    with pytest.raises(refresh.CpuTelemetryError, match="invalid"):
+        guard.sample_once()
+    assert guard.gap_resampled is True
