@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 
 from cre_stop_guarded_tier import _read_at, _safe_stat
@@ -102,6 +103,13 @@ def drain(path: Path, *, launch, qualify, successor=None) -> bool:
             names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
             records = [(name, _read(directory, name)) for name in names]
             records = [item for item in records if item[1]["state"] != "settled"]
+            for _, item in records:
+                due = item["request"].get("due_unix_ms")
+                if "policy" in item["request"] and (type(due) is not int or due < 0):
+                    raise DispatchRefused("dispatch due time is invalid")
+            now_ms = int(time.time() * 1000)
+            records = [item for item in records if item[1]["state"] == "dispatch_uncertain"
+                       or item[1]["request"].get("due_unix_ms", 0) <= now_ms]
             if not records:
                 break
             # Uncertain writes fence everything; fresh due work precedes continuations.

@@ -72,6 +72,19 @@ def test_bound_no_work_refusal_does_not_block_due_peer(tmp_path):
     assert calls == [("launch", "refused"), ("launch", "peer"), ("qualify", "peer")]
 
 
+def test_future_slot_waits_for_later_wake(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue.time, "time", lambda: 100.0)
+    queue.enqueue(tmp_path, "future", {"due_unix_ms": 101000})
+    queue.drain(tmp_path, launch=lambda _: pytest.fail("future intent launched"),
+                qualify=lambda _: pytest.fail("future intent qualified"))
+    assert json.loads((tmp_path / "future.json").read_text())["state"] == "queued"
+    monkeypatch.setattr(queue.time, "time", lambda: 101.0)
+    calls = []
+    queue.drain(tmp_path, launch=lambda _: calls.append("launch"),
+                qualify=lambda _: {"outcome": "qualified"})
+    assert calls == ["launch"]
+
+
 def test_real_process_death_after_prespawn_fences_restart(tmp_path):
     queue.enqueue(tmp_path, "20261106T000000Z_broad", {"kind": "broad"})
     collector = Path(__file__).resolve().parents[1]

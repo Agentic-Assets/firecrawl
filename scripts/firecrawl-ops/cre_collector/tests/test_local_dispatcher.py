@@ -108,7 +108,7 @@ def test_real_cli_path_persists_and_drains_synthetic_intent(tmp_path, policy, mo
     monkeypatch.setattr(dispatcher, "launch", lambda request: calls.append(("launch", request["series_id"])))
     monkeypatch.setattr(dispatcher, "qualify", lambda request: calls.append(("qualify", request["series_id"]))
                         or {"status": "complete", "outcome": "qualified", "unfinished_sources": []})
-    slot = "20261106T042000Z_colliers"
+    slot = "20200101T000000Z_colliers"
     assert dispatcher.main(["--slot", slot, "--policy", str(policy_file)]) == 0
     assert [row[0] for row in calls] == ["launch", "qualify"]
     assert json.loads((tmp_path / "out" / "local-dispatch" / (slot + ".json")).read_text())["state"] == "settled"
@@ -162,7 +162,8 @@ raise SystemExit(s.main(sys.argv[1:]))
                 manifest["latest_invocation_control"]["invocation_id"], owner=owner,
                 expected_sha=value["policy"]["expected_sha"], expected_target=value["target"],
                 expected_config=value["config"], expected_deadline_seconds=1800)
-    slot = "20261106T042000Z_colliers"
+    slot = "20200101T000000Z_colliers"
+    request = dispatcher.policy_request(policy, slot)
     dispatch_queue.enqueue(queue_dir, slot, request)
     assert dispatch_queue.drain(queue_dir, launch=launch, qualify=qualify)
     assert calls == ["launch", "qualify"]

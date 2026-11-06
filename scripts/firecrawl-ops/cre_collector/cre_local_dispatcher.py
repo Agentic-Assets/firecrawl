@@ -36,7 +36,7 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
     match = re.fullmatch(pattern, slot)
     if match is None:
         raise ValueError("slot must bind a UTC due time and task identity")
-    from datetime import datetime
+    from datetime import datetime, timezone
     due = datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ")
     raw_sources = policy["sources"]
     admissions = policy["admissions"]
@@ -77,6 +77,7 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
     target = refresh.database_target_fingerprint(policy["env_file"])
     series_id = due.strftime("%Y-%m-%dT%H%M%SZ") + "-" + hashlib.sha256(slot.encode()).hexdigest()[:12]
     return {"policy": policy, "config": config, "target": target, "series_id": series_id,
+            "due_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
             "continuation_depth": continuation_depth, "predecessor_series_id": None}
 
 
