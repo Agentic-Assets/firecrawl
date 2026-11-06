@@ -6,6 +6,8 @@ import cre_memory_guard as memory
 import pytest
 
 PSI = "some avg10=0.00 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+REAL_READ_MEMORY = memory.read_memory_pressure
+
 EVENTS = "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"
 
 
@@ -351,7 +353,8 @@ def test_linux_policy_scope_and_darwin_policy_unchanged(monkeypatch):
 
 
 @pytest.mark.parametrize("component", ["host", "cgroup"])
-def test_partial_critical_is_not_lost_when_later_input_fails(kernel, tmp_path, component):
+def test_partial_critical_is_not_lost_when_later_input_fails(kernel, tmp_path, component, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
     sampler, group = kernel
     if component == "host":
         write(sampler.proc / "meminfo", "MemTotal: 1000000 kB\nMemAvailable: 40000 kB\nSwapTotal: 200000 kB\nSwapFree: 200000 kB\n")
@@ -368,7 +371,8 @@ def test_partial_critical_is_not_lost_when_later_input_fails(kernel, tmp_path, c
     assert trips[0]["telemetry_valid"] is False
 
 
-def test_psi_failure_still_checks_critical_cgroup_usage(kernel, tmp_path):
+def test_psi_failure_still_checks_critical_cgroup_usage(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
     sampler, group = kernel
     (sampler.proc / "pressure/memory").unlink()
     write(group / "memory.current", "960000000\n")
@@ -382,7 +386,8 @@ def test_psi_failure_still_checks_critical_cgroup_usage(kernel, tmp_path):
     assert sampler.partial_critical_cause == "cgroup_usage_critical"
 
 
-def test_psi_failure_keeps_event_baseline_and_detects_new_oom(kernel, tmp_path):
+def test_psi_failure_keeps_event_baseline_and_detects_new_oom(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
     sampler, group = kernel
     (sampler.proc / "pressure/memory").unlink()
     trips = []
@@ -397,7 +402,8 @@ def test_psi_failure_keeps_event_baseline_and_detects_new_oom(kernel, tmp_path):
     assert sampler.partial_critical_cause == "cgroup_oom"
 
 
-def test_cgroup_psi_failure_does_not_hide_new_oom(kernel, tmp_path):
+def test_cgroup_psi_failure_does_not_hide_new_oom(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
     sampler, group = kernel
     assert sampler() == 1
     (group / "memory.pressure").unlink()

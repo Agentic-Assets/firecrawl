@@ -142,3 +142,30 @@ def test_historical_policy_reconciles_but_cannot_resume(tmp_path, monkeypatch):
     series.save_manifest(tmp_path, manifest)
     with pytest.raises(series.SeriesError, match="configuration differs"):
         series.load_resume_manifest(tmp_path / "manifest.json", git_sha="a" * 40, config=config)
+
+
+def test_advisory_loop_continues_after_failure_and_trips_on_later_critical(tmp_path):
+    class BoundedTicks:
+        def __init__(self):
+            self.count = 0
+
+        def wait(self, _seconds):
+            self.count += 1
+            return self.count > 3
+
+    samples = iter([ValueError("private"), 1, 4])
+    def sample():
+        value = next(samples)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw),
+                                   sampler=sample, advisory_failures=True)
+    guard.stop_event = BoundedTicks()
+    guard._run()
+    assert guard.stop_event.count == 3
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert "private" not in guard.log_path.read_text()
