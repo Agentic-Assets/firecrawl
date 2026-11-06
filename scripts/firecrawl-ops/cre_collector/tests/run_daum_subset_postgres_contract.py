@@ -291,29 +291,29 @@ try:
     sql(schema, db)
     sql(generated([row(i) for i in range(103)]), db)
     sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50000\"') "
-        "WHERE external_id='property/Synthetic-102';", db)
+        "WHERE external_id='property/Synthetic-101';", db)
     ids = [{key: item[key] for key in ("native_id", "external_id", "source_url")} for item in members]
     result = sql(identity_partition_query(ids) + ";", db).stdout.strip().split("|", 1)
     assert result[0] == "102"
     part = json.loads(result[1])
-    assert {item["native_id"] for item in part if item["conflicted"]} == {"50000", "50102"}
+    assert {item["native_id"] for item in part if item["conflicted"]} == {"50000", "50101"}
     bound_claims = copy.deepcopy(claims)
     bound_claims.update(identityMembers=ids, identityPartition=part)
     bound_claims["binding"].update(identity_partition_sha256=_sha(part), source_emitted_count=100,
                                     source_held_count=2, emitted_count=99, held_count=3)
     before = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
-                 "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-102');", db).stdout
+                 "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
     incoming_identity = [row(i, fresh=True, name="Changed" if i == 1 else "Synthetic") for i in range(100)]
     sql(generated(incoming_identity, bound_claims), db)
     after = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
-                "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-102');", db).stdout
+                "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
     assert after == before
     assert sql("SELECT status || '|' || listings_saved FROM credeals.cre_scrape_jobs WHERE status='partial' "
                "ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial|99"
     assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
     stale = copy.deepcopy(bound_claims)
-    sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50102\"') "
-        "WHERE external_id='property/Synthetic-102';", db)
+    sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50101\"') "
+        "WHERE external_id='property/Synthetic-101';", db)
     refused = sql(generated([row(i, fresh=True) for i in range(100)], stale), db, check=False)
     assert refused.returncode and "DAUM identity partition changed" in refused.stderr
     checks.append("identity_partition_conflict_peer_and_stale")
