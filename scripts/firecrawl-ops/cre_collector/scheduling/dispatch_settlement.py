@@ -108,6 +108,14 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                     or cursor.get("cursor") != binding.get("cursor")
                     or cursor.get("next_cursor") != binding.get("next_cursor")):
                 raise DispatchSettlementRefused("current Colliers window is not exactly settled")
+            from cre_partial_cursor import read_cursor
+            position, cursor_record = read_cursor(owner.path, "colliers", expected_target["value"])
+            expected_cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers",
+                "targetSha256": expected_target["value"], "position": binding["next_cursor"],
+                "generation": child["run_id"], "artifactSha256": binding["artifact_sha256"],
+                "attemptId": cursor["attempt_id"], "outcome": "exact_commit"}
+            if position != binding["next_cursor"] or cursor_record != expected_cursor:
+                raise DispatchSettlementRefused("Colliers cursor no longer matches settled window")
         if state in {"complete", "qualified_partial_subset", "failed_source"}:
             continue
         if (state != "interrupted" or checkpoint.get("ingest") is not None

@@ -79,3 +79,30 @@ def test_prior_verified_partial_does_not_qualify_new_unreadback_window(case, mon
     monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", prior_result)
     with pytest.raises(settlement.DispatchSettlementRefused, match="current Colliers window"):
         settlement.qualify(root, series_id, invocation, **options)
+
+
+def test_current_partial_requires_actual_bound_cursor(case, monkeypatch):
+    import cre_partial_cursor
+    root, series_id, invocation, options, child, _ = case
+    child["run_id"] = "2026-11-06T010203Z-fedcba987654"
+    attempt, artifact = "e" * 32, "f" * 64
+    binding = {"cursor": 1565, "next_cursor": 1670, "artifact_sha256": artifact}
+    child["sources"]["colliers"] = {"state": "ingested", "artifact": {"colliers_partial": True, "sha256": artifact},
+        "partial_windows": [{"state": "verified", "index": 1}], "subset_ingest_attempt_id": attempt,
+        "gate": {"current_inventory_proof": binding},
+        "readback": {"ok": True, "observation": {"outcome": "exact_commit", "attempt_id": attempt,
+            "artifact_sha256": artifact, "generation_id": child["run_id"], "database_target_sha256": "d" * 64}},
+        "partial_cursor_settlement": {"state": "settled", "attempt_id": attempt,
+            "artifact_sha256": artifact, "cursor": 1565, "next_cursor": 1670}}
+    def partial(_path, parent, *, publish):
+        parent["sources"]["colliers"]["state"] = "qualified_partial_subset"
+        parent["sources"]["savills"]["state"] = "complete"
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", partial)
+    cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": "d" * 64,
+        "position": 1670, "generation": child["run_id"], "artifactSha256": artifact,
+        "attemptId": attempt, "outcome": "exact_commit"}
+    monkeypatch.setattr(cre_partial_cursor, "read_cursor", lambda *args: (1670, cursor))
+    assert settlement.qualify(root, series_id, invocation, **options)["outcome"] == "qualified"
+    cursor["attemptId"] = "0" * 32
+    with pytest.raises(settlement.DispatchSettlementRefused, match="cursor no longer matches"):
+        settlement.qualify(root, series_id, invocation, **options)
