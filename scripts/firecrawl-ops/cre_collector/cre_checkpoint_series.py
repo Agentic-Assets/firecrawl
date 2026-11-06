@@ -2138,6 +2138,50 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
     return None
 
 
+def scheduled_source_rotation(out_root: Path, current_dir: Path, manifest: dict, priority: dict | None) -> dict:
+    """Rotate a saved order for fairness; it grants no source or write authority."""
+    from cre_series_status import _read_regular_file
+
+    sources = manifest["config"]["sources"]
+    if not isinstance(sources, list) or not sources or len(set(sources)) != len(sources):
+        raise SeriesError("source rotation scope is invalid")
+    try:
+        prior_dirs = sorted(out_root.iterdir(), key=lambda path: path.name, reverse=True)
+    except OSError:
+        prior_dirs = []
+    for prior_dir in prior_dirs:
+        if (prior_dir == current_dir or prior_dir.name >= current_dir.name
+                or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", prior_dir.name)
+                or prior_dir.is_symlink() or not prior_dir.is_dir()):
+            continue
+        try:
+            raw = _read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024)
+            prior = json.loads(raw)
+            config = prior["config"]
+            dispatch = prior["pipeline_dispatch"]
+            order = dispatch["order"]
+            if (prior.get("series_id") != prior_dir.name or not config.get("pipeline")
+                    or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))
+                    or config.get("sources") != sources
+                    or dispatch.get("rotation") != "source_rotation_v1"
+                    or not isinstance(order, list) or len(order) != len(sources)
+                    or set(order) != set(sources)):
+                continue
+            return {"order": order[1:] + order[:1], "rotation": "source_rotation_v1",
+                    "previous_series": prior_dir.name,
+                    "previous_manifest_sha256": hashlib.sha256(raw).hexdigest()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    # Day and minute components make the fallback advance for fixed daily
+    # schedules as well as successive same-day generations. This is ordering
+    # only, not proof that any source previously ran.
+    timestamp = datetime.strptime(current_dir.name, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC)
+    offset = (timestamp.toordinal() + timestamp.hour * 60 + timestamp.minute) % len(sources)
+    seed = priority["order"] if priority is not None else sources
+    return {**(priority or {}), "order": seed[offset:] + seed[:offset],
+            "rotation": "source_rotation_v1"}
+
+
 def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
     """Recognize only a terminal coordinator clock refusal with no unknown write."""
     try:
@@ -3727,6 +3771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             if not args.resume and config.get("pipeline"):
                 priority = scheduled_deadline_priority(series_dir.parent, series_dir, manifest)
+                if set(config["sources"]) == set(parse_sources("all")):
+                    priority = scheduled_source_rotation(series_dir.parent, series_dir, manifest, priority)
                 if priority is not None:
                     manifest["pipeline_dispatch"] = priority
             # This is a replaceable latest-invocation observation, never config/history.
