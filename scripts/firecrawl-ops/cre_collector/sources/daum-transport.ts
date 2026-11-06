@@ -108,7 +108,7 @@ export class DaumPoliteTransport {
     private readonly maxResponseBytes = DAUM_MAX_RESPONSE_BYTES,
   ) {}
 
-  private request(url: string, method: DaumRequestMethod, expectedRedirect?: string): Promise<string> {
+  private request(url: string, method: DaumRequestMethod, expectedRedirect?: string, observePage = false): Promise<string> {
     const safeUrl = daumAbsoluteUrl(url);
     if (!safeUrl) {
       return Promise.reject(new Error(`DAUM refused unsafe URL ${url}`));
@@ -147,7 +147,7 @@ export class DaumPoliteTransport {
               },
               ...(method === "POST" ? { body: "" } : {}),
               redirect: "manual",
-              ...(expectedRedirect ? { cache: "no-store" as const } : {}),
+              ...(expectedRedirect || observePage ? { cache: "no-store" as const } : {}),
               signal: controller.signal,
             });
           } catch (error) {
@@ -173,6 +173,13 @@ export class DaumPoliteTransport {
               throw new DaumUnsettledBodyError("DAUM non-redirect body did not settle");
             }
             throw new Error("DAUM permanent redirect not observed");
+          }
+          if (observePage && response.ok && response.status !== 200) {
+            if (!await daumCancelBody(response.body)) {
+              this.poisoned = true;
+              throw new DaumUnsettledBodyError("DAUM unexpected page body did not settle");
+            }
+            throw new Error("DAUM current page did not return HTTP 200");
           }
           if (!response.ok) {
             if (!await daumCancelBody(response.body)) {
@@ -210,6 +217,12 @@ export class DaumPoliteTransport {
     if (!oldCanonical || !newCanonical || oldCanonical === newCanonical) throw new Error("DAUM redirect candidate URLs invalid");
     const observation = JSON.parse(await this.request(oldCanonical, "GET", newCanonical)) as { rawLocation: string; observedAt: string };
     return { status: 301, oldUrl: oldCanonical, newUrl: newCanonical, ...observation };
+  }
+
+  observeCurrentPage(url: string): Promise<string> {
+    const canonical = canonicalDaumPropertyUrl(url);
+    if (!canonical || canonical !== url) return Promise.reject(new Error("DAUM current page URL invalid"));
+    return this.request(url, "GET", undefined, true);
   }
 
   get(url: string): Promise<string> {
