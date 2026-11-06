@@ -2000,7 +2000,8 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict, *, publish: bool
             )
             else ("failed_source" if ((child.get("sources", {}).get(key, {}).get("state") in {
                 "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
-                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} or settled_clock_hold(child, key))
+                "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} or settled_clock_hold(child, key)
+                or settled_atomic_hold(child, key, series_dir / relative))
                 and child.get("pipeline", {}).get("source_results", {}).get(key, {}).get("state") == "failed"
                 and child.get("pipeline", {}).get("commit_outcome_unknown") is not True
                 and child.get("pipeline", {}).get("status") != "reconciliation_required")
@@ -2140,6 +2141,23 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
         return None
     return None
+
+
+def settled_atomic_hold(child: Mapping[str, Any], source: str, run_dir: Path) -> bool:
+    """Revalidate singleton unit and bound non-commit evidence for a failed ingest."""
+    from cre_atomic_ingest_rollback import verified_rollback
+    try:
+        pipeline = child["pipeline"]
+        result = pipeline["source_results"][source]
+        units = [unit for unit in pipeline["units"] if unit.get("unit_id") == result.get("unit_id")]
+        return (pipeline.get("commit_outcome_unknown") is not True
+                and pipeline.get("status") != "reconciliation_required"
+                and result.get("state") == "failed" and result.get("reason") == "settled_ingest_failure"
+                and len(units) == 1 and units[0].get("state") == "source_held"
+                and units[0].get("sources") == [source]
+                and verified_rollback(run_dir, child, source))
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
@@ -2723,7 +2741,8 @@ def run_pipeline_series(
         if (pipeline.get("commit_outcome_unknown") is True or pipeline.get("status") == "reconciliation_required"
                 or any(((child.get("sources", {}).get(key, {}).get("state") not in {
                     "collect_failed", "artifact_rejected", "gate_failed", "gate_blocked",
-                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} and not settled_clock_hold(child, key))
+                    "baseline_seed_required", "dry_run_failed", "partial_held_no_write"} and not settled_clock_hold(child, key)
+                    and not settled_atomic_hold(child, key, series_dir / relative))
                     or pipeline.get("source_results", {}).get(key, {}).get("state") != "failed") for key in failed)):
             raise SeriesError("handled subset has unresolved source failure")
         cache = {}
@@ -2896,6 +2915,8 @@ def run_pipeline_series(
             if (key, state) in {("pyramid-brokerage", "pyramid_historical_guard_refused"), ("transwestern", "transwestern_image_guard_refused"), ("jll", "jll_image_guard_refused")}:
                 from cre_pyramid_rollback_result import verified_rollback
                 outcome = "failed_source" if verified_rollback(child_run, child, key) else "failed_global"
+            elif settled_atomic_hold(child, key, child_run):
+                outcome = "failed_source"
             elif settled_clock_hold(child, key) or state in {
                 "collect_failed",
                 "artifact_rejected",
@@ -3327,12 +3348,14 @@ def run_series(
                 try:
                     if control is None:
                         _require_completed_group_settlement(proc._cre_owned_group)
+                    from cre_atomic_ingest_rollback import verified_rollback as verify_atomic
                     local_guard = (
-                        source in {"pyramid-brokerage", "transwestern", "jll"}
-                        and child_manifest.get("status") == "failed"
+                        child_manifest.get("status") == "failed"
                         and child_manifest.get("serial_guard_holds") == [source]
                         and child_manifest.get("preflight", {}).get("database_target") == manifest.get("database_target")
-                        and verified_rollback(child_manifest_path.parent, child_manifest, source)
+                        and ((source in {"pyramid-brokerage", "transwestern", "jll"}
+                              and verified_rollback(child_manifest_path.parent, child_manifest, source))
+                             or verify_atomic(child_manifest_path.parent, child_manifest, source))
                     )
                 except ProcessCleanupUnknown:
                     local_guard = False

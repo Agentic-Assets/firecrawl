@@ -168,3 +168,26 @@ def test_cli_flag_omits_only_the_post_commit_summary(tmp_path, monkeypatch):
     transaction_sql, separator, _summary_sql = default_sql.partition(SUMMARY_SEPARATOR)
     assert separator == SUMMARY_SEPARATOR
     assert skipped_sql.rstrip("\n") == transaction_sql
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_checkpoint_ingest_ignores_psql_startup_files(tmp_path, monkeypatch, platform):
+    from types import SimpleNamespace
+
+    artifact = tmp_path / "artifact.json"
+    _write_artifact(artifact)
+    captured = []
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sys, "argv", ["cre_ingest.py", "--in", str(artifact),
+        "--checkpoint-ingest-attempt", "a" * 32, "--skip-post-commit-summary",
+        "--keep-artifacts", str(tmp_path / "sql")])
+    monkeypatch.setattr(ci, "load_db_url", lambda *_: ("synthetic", "synthetic.env"))
+    monkeypatch.setattr(ci, "find_psql", lambda: "synthetic-psql")
+    monkeypatch.setattr(ci, "psql_connection_args", lambda *_: [])
+    monkeypatch.setattr(ci, "psql_connection_env", lambda *_: {})
+    monkeypatch.setattr(ci.subprocess, "run", lambda argv, **kw: captured.append(argv) or SimpleNamespace(returncode=0))
+    ci.main()
+    assert len(captured) == 1
+    assert captured[0][0] == "synthetic-psql"
+    assert "-X" in captured[0]
+    assert captured[0][captured[0].index("-f") + 1].endswith("ingest.sql")

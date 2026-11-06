@@ -478,3 +478,41 @@ def test_non_wsl_series_preserves_historical_cpu_config_shape(monkeypatch):
     child = series._expected_child_config("cbre", settings)
     assert child["host_cpu_guard"]["action"] == "interrupt_and_checkpoint"
     assert child["host_cpu_guard"]["telemetry_failure_action"] == "interrupt_and_checkpoint"
+
+
+@pytest.mark.parametrize("case", ["local", "bad_evidence", "unsettled"])
+def test_serial_settled_atomic_failure_continues_only_with_bound_evidence(tmp_path, monkeypatch, case):
+    import cre_checkpoint_refresh as refresh
+    import cre_atomic_ingest_rollback as atomic
+
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40,
+                                   config=config(("daum-commercial", "cbre")), database_target=target)
+    started = []
+    returns = iter([refresh.PYRAMID_GUARD_SETTLED_EXIT, 0])
+    children = iter([
+        {"status": "failed", "serial_guard_holds": ["daum-commercial"], "preflight": {"database_target": target}},
+        {"status": series.SUCCESS_STATUS, "error": None},
+    ])
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.pid = 4321
+            self.rc = next(returns)
+            started.append(self)
+        def wait(self, timeout=None): return self.rc
+        def poll(self): return self.rc
+    monkeypatch.setattr(series.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(series, "_load_child_manifest", lambda root, **kw: (root / "child" / "manifest.json", next(children)))
+    monkeypatch.setattr(atomic, "verified_rollback", lambda *a: case != "bad_evidence")
+    def settle(*args):
+        if case == "unsettled": raise refresh.ProcessCleanupUnknown("unknown")
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", settle)
+    rc = series.run_series(tmp_path, manifest, env_file=None, retry_failed=False)
+    if case == "local":
+        assert rc == 2 and len(started) == 2
+        assert manifest["status"] == "complete_with_source_failures"
+        assert manifest["sources"]["daum-commercial"]["state"] == "failed_source"
+        assert manifest["sources"]["cbre"]["state"] == "complete"
+    else:
+        assert rc == 1 and len(started) == 1
+        assert manifest["sources"]["daum-commercial"]["state"] == "failed_global"
