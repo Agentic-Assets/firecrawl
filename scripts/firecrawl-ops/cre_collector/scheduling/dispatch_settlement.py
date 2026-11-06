@@ -6,12 +6,15 @@ does not establish that an interrupted database write or cursor was settled.
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
+import os
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
 import cre_checkpoint_series as series
-from cre_series_control import read_receipt, verify_preallocated_receipt
+from cre_series_control import read_receipt, validate_fresh_series_id, verify_preallocated_receipt
+from cre_stop_guarded_tier import _identity, _safe_stat
 
 
 class DispatchSettlementRefused(ValueError):
@@ -21,6 +24,41 @@ class DispatchSettlementRefused(ValueError):
 def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
             expected_sha: str, expected_target: dict, expected_config: dict,
             expected_deadline_seconds: int) -> dict:
+    """Hold the original parent lock while checking its exact terminal child."""
+    validate_fresh_series_id(series_id)
+    root_fd = os.open(series_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(root_fd, directory=True)
+        directory = os.open(series_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            _safe_stat(directory, directory=True)
+            descriptor = os.open(".series.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                observed = _safe_stat(descriptor, private=True)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise DispatchSettlementRefused("series parent has not settled") from exc
+                result = _qualify(series_root, series_id, invocation_id, owner=owner,
+                    expected_sha=expected_sha, expected_target=expected_target,
+                    expected_config=expected_config, expected_deadline_seconds=expected_deadline_seconds)
+                receipt = read_receipt(Path(series_root) / series_id, invocation_id)
+                named = os.stat(".series.lock", dir_fd=directory, follow_symlinks=False)
+                if (_identity(observed) != _identity(named)
+                        or (receipt.get("stop_owner") or {}).get("series_lock_identity") != _identity(observed)):
+                    raise DispatchSettlementRefused("series parent lock identity differs")
+                return result
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(root_fd)
+
+
+def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
+             expected_sha: str, expected_target: dict, expected_config: dict,
+             expected_deadline_seconds: int) -> dict:
     """Verify a settled exact child under the current canonical owner.
 
     This does not clear a fence, replay a write, or alter either manifest.

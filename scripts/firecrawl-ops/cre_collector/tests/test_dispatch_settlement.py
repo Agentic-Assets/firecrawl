@@ -1,5 +1,6 @@
 """Fail-closed dispatch classification using synthetic receipts and child state."""
 import json
+import fcntl
 from unittest.mock import MagicMock
 
 import cre_checkpoint_refresh as refresh
@@ -21,11 +22,15 @@ def case(tmp_path, monkeypatch):
     child_invocation = "b" * 32
     path = tmp_path / series_id
     path.mkdir()
+    series_lock = path / ".series.lock"
+    series_lock.write_text("123\n")
+    series_lock.chmod(0o600)
     parent = {"preallocated_expected_target_sha256": "d" * 64,
               "sources": {key: {"checkpoint_run": f"runs/{child_id}", "attempts": [
         {"series_control_child_id": child_invocation}]} for key in config["sources"]}}
     (path / "manifest.json").write_text(json.dumps(parent))
-    control = {"work_deadline_seconds": 30, "last_checkpoint": {
+    control = {"work_deadline_seconds": 30, "stop_owner": {
+        "series_lock_identity": settlement._identity(series_lock.stat())}, "last_checkpoint": {
         "run_id": child_id, "child_invocation_id": child_invocation}}
     child = {"pipeline": {"commit_outcome_unknown": False}, "sources": {
         "colliers": {"state": "collecting"}, "savills": {"state": "ingested"}}}
@@ -79,6 +84,14 @@ def test_prior_verified_partial_does_not_qualify_new_unreadback_window(case, mon
     monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", prior_result)
     with pytest.raises(settlement.DispatchSettlementRefused, match="current Colliers window"):
         settlement.qualify(root, series_id, invocation, **options)
+
+
+def test_terminal_receipt_does_not_bypass_live_series_parent_lock(case):
+    root, series_id, invocation, options, _, _ = case
+    with (root / series_id / ".series.lock").open() as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(settlement.DispatchSettlementRefused, match="parent has not settled"):
+            settlement.qualify(root, series_id, invocation, **options)
 
 
 def test_current_partial_requires_actual_bound_cursor(case, monkeypatch):
