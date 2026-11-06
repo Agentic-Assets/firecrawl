@@ -115,6 +115,13 @@ def main() -> int:
             request["action"], request["arguments"], args.response
         )
         result["ok"] = True
+    except refresh.DaumAllTargetHeld:
+        arguments = request.get("arguments") or {}
+        if (request.get("action") == "admit" and arguments.get("source") == "daum-commercial"
+                and arguments.get("phase") == "source"):
+            result["daum_all_identities_held"] = True
+        else:
+            result["error"] = "artifact computation failed"
     except refresh.ArtifactValidationError as exc:
         result.update(artifact_rejected=True, error=str(exc))
     except Exception:

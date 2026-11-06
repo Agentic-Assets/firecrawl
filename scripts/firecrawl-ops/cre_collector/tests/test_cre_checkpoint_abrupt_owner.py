@@ -623,6 +623,34 @@ def test_serial_pyramid_hold_exit_requires_owner_settlement(tmp_path, monkeypatc
         lock.release()
 
 
+@pytest.mark.parametrize("valid", [True, False])
+def test_serial_daum_all_held_exit_requires_bound_no_write_evidence(tmp_path, monkeypatch, valid):
+    from daum import serial_hold
+
+    argv = configure_main(monkeypatch, tmp_path)
+    argv[-1] = "daum-commercial"
+    argv.append("--admit-daum-verified-subset")
+    def refuse(*_args, **_kwargs):
+        raise refresh.DaumAllTargetHeld("all emitted observations held")
+    monkeypatch.setattr(refresh, "prepare_sources_cohort", refuse)
+    def bind(_run, manifest):
+        assert manifest["sources"]["daum-commercial"]["ingest"] is None
+        if not valid:
+            raise ValueError("unbound evidence")
+        return {"schema": "synthetic-verified-no-write"}
+    monkeypatch.setattr(serial_hold, "binding", bind)
+    if valid:
+        assert refresh.main(argv) == refresh.DAUM_ALL_HELD_SETTLED_EXIT
+        manifest = json.loads(next((tmp_path / "runs").glob("*/manifest.json")).read_text())
+        checkpoint = manifest["sources"]["daum-commercial"]
+        assert checkpoint["state"] == "gate_blocked"
+        assert checkpoint["partial_probe_hold"] == "all_emitted_target_held"
+        assert checkpoint["ingest"] is None and manifest["status"] == "failed"
+    else:
+        with pytest.raises(refresh.GlobalStageError, match="could not be verified"):
+            refresh.main(argv)
+
+
 def test_unknown_cursor_publication_keeps_real_owner_fence(tmp_path, monkeypatch):
     argv = configure_main(monkeypatch, tmp_path) + ["--pipeline"]
     def interrupted(run_dir, manifest, *args, **kwargs):

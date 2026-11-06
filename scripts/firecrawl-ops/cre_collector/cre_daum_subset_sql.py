@@ -11,6 +11,7 @@ def guard_sql(claims):
         SUBSET_POLICY_V2, _path_key, _post, _sha,
     )
     from cre_ingest import sql_lit
+    from daum.identity_sql import historical_conflict_sql, validate_partition
 
     require(isinstance(claims, dict) and claims.get("schema") in {SUBSET_SCHEMA, SUBSET_SCHEMA_V2})
     v2 = claims["schema"] == SUBSET_SCHEMA_V2
@@ -75,6 +76,13 @@ def guard_sql(claims):
         and emitted == binding.get("source_emitted_count", binding.get("emitted_count"))
         and len(members) - emitted == binding.get("source_held_count", binding.get("held_count"))
     )
+    identity_members = claims.get("identityMembers")
+    identity_partition = claims.get("identityPartition")
+    require(isinstance(identity_members, list)
+            and identity_members == [{key: member[key] for key in ("native_id", "external_id", "source_url")}
+                                     for member in members]
+            and _sha(identity_partition) == binding.get("identity_partition_sha256"))
+    validate_partition(identity_members, identity_partition)
     fallback_members = claims.get("fallbackMembers", [])
     fallback_partition = claims.get("fallbackPartition", [])
     if fallback_members or fallback_partition:
@@ -93,8 +101,13 @@ def guard_sql(claims):
         "WHERE h.brokerage_id=s.brokerage_id AND h.external_id=s.external_id)"
         if fallback_members else ""
     )
+    held_filter += (" AND NOT EXISTS (SELECT 1 FROM _daum_identity_held h "
+                    "WHERE h.brokerage_id=s.brokerage_id AND h.external_id=s.external_id)")
     staged_filter = held_filter.replace("_daum_fallback_held", "_daum_fallback_skipped")
     payload = sql_lit(json.dumps(members, separators=(",", ":")))
+    historical_conflict = historical_conflict_sql(
+        source_alias="s", target_alias="t", native_sql="s.native_id"
+    )
     return f"""
 -- DAUM verified subset: exhaustive incoming identities, including held members.
 -- This runs under the existing lifecycle advisory lock, after emitted row locks.
@@ -128,13 +141,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM _daum_subset_members s
     JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id{held_filter}
-    WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
-       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
-       OR (s.native_id = ANY(t.native_ids)
-           AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
-       OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
-           AND cardinality(t.native_ids) > 0
-           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_id))
+    WHERE {historical_conflict}
   ) OR EXISTS (
     SELECT 1 FROM _daum_subset_members s
     JOIN credeals.cre_source_index si ON si.brokerage_id = s.brokerage_id{held_filter}
