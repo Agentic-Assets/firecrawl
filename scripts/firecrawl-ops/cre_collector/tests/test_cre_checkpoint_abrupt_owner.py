@@ -510,6 +510,8 @@ def test_unknown_settlement_keeps_fence_even_when_watchdog_replaces_error(
 
 
 def test_watchdog_still_alive_keeps_fence(tmp_path, monkeypatch):
+    # Exercise the mandatory CPU watchdog on platforms where it is enabled.
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: False)
     argv = configure_main(monkeypatch, tmp_path)
     monkeypatch.setattr(
         refresh.HostCpuGuard,

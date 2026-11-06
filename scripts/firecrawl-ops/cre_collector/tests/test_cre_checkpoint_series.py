@@ -448,3 +448,33 @@ def test_unlimited_page_cap_serializes_and_forwards_as_zero(tmp_path):
     )
     assert argv[argv.index("--page-cap") + 1] == "0"
     assert series._expected_child_config("cbre", decoded)["page_cap"] == 0
+
+
+def test_windows_series_and_child_bind_same_advisory_cpu_policy(monkeypatch):
+    import cre_checkpoint_refresh as refresh
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: True)
+    settings = config(("cbre",))
+    child = series._expected_child_config("cbre", settings)
+    assert settings["host_cpu_guard"]["action"] == "diagnostic_only"
+    assert child["host_cpu_guard"]["action"] == "diagnostic_only"
+    assert child["host_cpu_guard"]["telemetry_failure_action"] == "diagnostic_only"
+
+
+def test_historical_series_still_expects_guarded_child():
+    settings = config(("cbre",))
+    settings["host_cpu_guard"].pop("action", None)
+    settings["host_cpu_guard"].pop("telemetry_failure_action", None)
+    child = series._expected_child_config("cbre", settings)
+    assert child["host_cpu_guard"]["action"] == "interrupt_and_checkpoint"
+
+
+def test_non_wsl_series_preserves_historical_cpu_config_shape(monkeypatch):
+    import cre_checkpoint_refresh as refresh
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: False)
+    settings = config(("cbre",))
+    assert set(settings["host_cpu_guard"]) == {
+        "max_host_cpu_percent", "sustain_seconds", "sample_seconds"
+    }
+    child = series._expected_child_config("cbre", settings)
+    assert child["host_cpu_guard"]["action"] == "interrupt_and_checkpoint"
+    assert child["host_cpu_guard"]["telemetry_failure_action"] == "interrupt_and_checkpoint"

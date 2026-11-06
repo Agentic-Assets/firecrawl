@@ -234,12 +234,23 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         self.child["config"]["host_memory_guard"] = copy.deepcopy(
             self.parent["config"]["host_memory_guard"]
         )
+        # Current WSL parent/child carry the same diagnostic CPU policy.
+        for field in ("action", "telemetry_failure_action"):
+            if field in self.parent["config"]["host_cpu_guard"]:
+                self.child["config"]["host_cpu_guard"][field] = self.parent["config"]["host_cpu_guard"][field]
         self.parent["database_target"] = dict(DATABASE_TARGET)
         self._write()
 
     def test_current_series_parent_config_is_admitted(self) -> None:
         self._use_current_parent_config()
         self._validate()
+
+    def test_current_wsl_cpu_policy_must_match_child_exactly(self) -> None:
+        with patch("cre_checkpoint_refresh.windows_wsl", return_value=True):
+            self._use_current_parent_config()
+        self._validate()
+        self.child["config"]["host_cpu_guard"]["action"] = "interrupt_and_checkpoint"
+        self._refused("child configuration differs")
 
     def test_current_memory_policy_must_match_child_exactly(self) -> None:
         self._use_current_parent_config()
