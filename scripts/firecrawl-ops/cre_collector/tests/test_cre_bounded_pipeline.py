@@ -59,6 +59,7 @@ def run_schedule(
     colliers_failure_nonzero=False,
     lyon_partial=None,
     clock_deferrals=None,
+    owner_check=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -328,6 +329,7 @@ def run_schedule(
         attempts_this_run=attempts_this_run,
         env_file=None,
         source_workers=workers,
+        owner_check=owner_check,
     )
     return manifest, events, failures
 
@@ -989,3 +991,124 @@ def test_dispatch_order_keeps_configured_scope_and_runs_every_peer(tmp_path, mon
     assert manifest["config"]["sources"] == list(sources)
     assert set(manifest["pipeline"]["source_results"]) == set(sources)
     assert failures == []
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path, monkeypatch, refuse):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+    owner = object.__new__(Owner)
+    calls = []
+    def reconcile(actual_owner, **kwargs):
+        calls.append(actual_owner)
+        if refuse:
+            raise recovery.SourceEvidenceRefusal("synthetic settled source-local refusal")
+        polls = iter([None] * 12 + [0])
+        pipeline.wait_with_poll_hook(SimpleNamespace(poll=lambda: next(polls, 0)))
+        return None
+    monkeypatch.setattr(recovery, "recover_prior_generation", reconcile)
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert calls == [owner]
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert ("colliers" in failures) is refuse
+    if refuse:
+        assert not any(event[0] == "partial_worker" for event in events)
+        assert manifest["pipeline"]["source_results"]["colliers"]["reason"] == "prior cursor recovery refused"
+    else:
+        assert any(event[:2] == ("start", "colliers") for event in events)
+        assert next(i for i, event in enumerate(events) if event[:2] == ("published", "savills")) < next(
+            i for i, event in enumerate(events) if event[0] == "partial_worker")
+
+
+def test_unavailable_legacy_series_is_reported_and_fresh_window_continues(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    monkeypatch.setattr(recovery, "recover_prior_generation", lambda actual, **kwargs: {
+        "history_unavailable": True, "generation": "2026-11-06T030006Z-123456789abc", "position": 1565})
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert "colliers" not in failures
+    assert any(event[0] == "partial_worker" for event in events)
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert manifest["sources"]["colliers"]["cursor_recovery"] == {
+        "state": "prior_cursor_history_unavailable",
+        "generation": "2026-11-06T030006Z-123456789abc", "position": 1565,
+        "prior_window_qualified": False, "whole_source_coverage": False,
+    }
+
+
+def test_unavailable_legacy_series_does_not_bypass_target_change(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    monkeypatch.setattr(recovery, "recover_prior_generation", lambda actual, **kwargs: {
+        "history_unavailable": True, "generation": "2026-11-06T030006Z-123456789abc", "position": 1565})
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "f" * 64})
+    with pytest.raises(refresh.GlobalStageError, match="target changed"):
+        run_schedule(tmp_path, monkeypatch, 2, sources=("colliers", "savills"),
+            owner_check=owner._require_authority, colliers_partial="accepted", colliers_failure_nonzero=True)
+
+
+@pytest.mark.parametrize("failure", [KeyError("missing field"), FileNotFoundError("missing file")])
+def test_malformed_prior_evidence_holds_colliers_but_continues_peer(tmp_path, monkeypatch, failure):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    def malformed(*args):
+        raise failure
+    monkeypatch.setattr(recovery, "_qualify", malformed)
+    monkeypatch.setattr(recovery, "_check_owner", lambda actual: actual._require_authority())
+    monkeypatch.setattr(recovery, "recover_prior_generation",
+        lambda actual, **kwargs: recovery.qualify(tmp_path, actual))
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert "colliers" in failures
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert not any(event[0] == "partial_worker" for event in events)
+    assert manifest["pipeline"]["source_results"]["colliers"]["reason"] == "prior cursor recovery refused"
+
+
+def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+    owner = object.__new__(Owner)
+    def fail_after_arm(actual_owner, **kwargs):
+        kwargs["before_publish"]()
+        raise OSError("synthetic uncertain cursor publication")
+    monkeypatch.setattr(recovery, "recover_prior_generation", fail_after_arm)
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    with pytest.raises(OSError, match="uncertain cursor publication"):
+        run_schedule(tmp_path, monkeypatch, 2, sources=("colliers", "savills"), owner_check=owner._require_authority,
+            colliers_partial="accepted", colliers_failure_nonzero=True)
+    manifest = json.loads((tmp_path / "2026-10-15T120000Z" / "manifest.json").read_text())
+    assert manifest["pipeline"]["cursor_recovery_outcome_unknown"] is True
