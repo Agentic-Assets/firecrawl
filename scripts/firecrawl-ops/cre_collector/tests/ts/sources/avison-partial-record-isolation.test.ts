@@ -201,4 +201,8 @@ test("encoded credential scan handles repeated overlapping literal keys", () => 
   const prefix = key.repeat(10000);
   assert.equal(containsCredential(prefix, key, true), false);
   assert.equal(containsCredential(prefix + encoded, key, true), true);
+  // The only encoded match begins inside the preceding literal key.
+  const overlapOnly = key + String.fromCharCode(92) + "u0030" + key.slice(1, 16);
+  assert.equal(containsCredential(overlapOnly, key, true), true);
+  assert.equal(containsCredential(overlapOnly.split(key).join("[REDACTED_API_KEY]"), key, true), false);
 });
