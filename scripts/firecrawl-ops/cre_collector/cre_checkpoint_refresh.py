@@ -8298,6 +8298,7 @@ def render_report(manifest: Mapping[str, Any]) -> str:
                 tuple((manifest.get("config") or {}).get("transactions") or ())
                 == TRANSACTIONS
                 and not has_admitted_count_hold(manifest)
+                and not (manifest.get("aggregate_gate") or {}).get("baseline_advisory_holds")
             )
             else (
                 "- Scope admission: additive transaction subset only; no whole-source coverage or lifecycle claim."
