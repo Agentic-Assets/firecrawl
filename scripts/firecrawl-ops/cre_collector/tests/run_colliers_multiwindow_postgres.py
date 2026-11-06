@@ -1,4 +1,5 @@
 """Synthetic multi-window pipeline against an isolated real PostgreSQL schema."""
+import copy
 import os
 import re
 import subprocess
@@ -102,7 +103,23 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id LIKE 'id%' AND status IS NOT NULL") == "0"
         windows = database["manifest"]["sources"]["colliers"]["partial_windows"]
         assert [window["state"] for window in windows] == ["verified", "verified", "settled_no_write"]
-        print("Two real database windows and settled rotation: PASS")
+        # Reuse the actual saved claims and source artifact from the first committed
+        # window while a different, clean verifier is current. The claim rederiver
+        # and read-only PostgreSQL query are real; no source context is mocked.
+        import cre_checkpoint_refresh as refresh
+        historical = copy.deepcopy(database["manifest"])
+        historical["sources"]["colliers"] = copy.deepcopy(windows[0]["checkpoint"])
+        original = historical["collector_git_sha"]
+        verifier = "9" * 40 if original != "9" * 40 else "8" * 40
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(refresh, "git_identity", lambda: (verifier, False))
+            patch.setattr(ingest, "find_psql", lambda: str(shim))
+            proof = refresh.colliers_partial_readback(
+                root / "fixture" / "generation", historical, str(env_file),
+                historical_producer_sha=original)
+        assert proof["ok"] is True and proof["outcome"] == "exact_commit"
+        assert proof["expected"] == 100
+        print("Two real database windows, settled rotation and historical readback: PASS")
     finally:
         command("docker", "rm", "-f", name, check=False)
 

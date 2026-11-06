@@ -504,6 +504,10 @@ def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_
             "job_id": str(uuid.UUID(attempt_id)), "attempt_id": attempt_id}
 
 
+class ColliersHistoricalEvidenceRefusal(ValueError):
+    """Historical source bytes or claims cannot be rederived locally."""
+
+
 def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_id, env_file,
                          verifier_sha=None):
     """Rederive sealed claims under an explicitly bound clean verifier.
@@ -522,8 +526,13 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
         if (not isinstance(expected_verifier, str) or not re.fullmatch(r"[a-f0-9]{40}", expected_verifier)
                 or producer != expected_verifier or dirty is not False):
             raise ValueError("partial readback code changed")
-        return ingest_subset_context(artifact_path, envelope, current_code_sha=producer,
-            current_git_dirty=dirty, expected_database_target_sha256=target, attempt_id=attempt_id)
+        try:
+            return ingest_subset_context(artifact_path, envelope, current_code_sha=code_sha,
+                current_git_dirty=dirty, expected_database_target_sha256=target, attempt_id=attempt_id)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError, KeyError) as exc:
+            if verifier_sha is None:
+                raise
+            raise ColliersHistoricalEvidenceRefusal("historical Colliers source evidence refused") from exc
 
     before = context()
     db_url, _ = load_db_url(env_file)

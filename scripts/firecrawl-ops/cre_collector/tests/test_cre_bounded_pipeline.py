@@ -1005,7 +1005,7 @@ def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path
     def reconcile(actual_owner, **kwargs):
         calls.append(actual_owner)
         if refuse:
-            raise ValueError("synthetic settled source-local refusal")
+            raise recovery.SourceEvidenceRefusal("synthetic settled source-local refusal")
         polls = iter([None] * 12 + [0])
         pipeline.wait_with_poll_hook(SimpleNamespace(poll=lambda: next(polls, 0)))
         return None
@@ -1025,6 +1025,32 @@ def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path
         assert any(event[:2] == ("start", "colliers") for event in events)
         assert next(i for i, event in enumerate(events) if event[:2] == ("published", "savills")) < next(
             i for i, event in enumerate(events) if event[0] == "partial_worker")
+
+
+@pytest.mark.parametrize("failure", [KeyError("missing field"), FileNotFoundError("missing file")])
+def test_malformed_prior_evidence_holds_colliers_but_continues_peer(tmp_path, monkeypatch, failure):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    def malformed(*args):
+        raise failure
+    monkeypatch.setattr(recovery, "_qualify", malformed)
+    monkeypatch.setattr(recovery, "_check_owner", lambda actual: actual._require_authority())
+    monkeypatch.setattr(recovery, "recover_prior_generation",
+        lambda actual, **kwargs: recovery.qualify(tmp_path, actual))
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert "colliers" in failures
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert not any(event[0] == "partial_worker" for event in events)
+    assert manifest["pipeline"]["source_results"]["colliers"]["reason"] == "prior cursor recovery refused"
 
 
 def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, monkeypatch):

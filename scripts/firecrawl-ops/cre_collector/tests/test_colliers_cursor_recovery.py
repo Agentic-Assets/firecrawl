@@ -58,7 +58,10 @@ def incident(tmp_path, monkeypatch):
         "gate": {"current_inventory_proof": {"artifact_sha256": "f" * 64, "cursor": 1459, "next_cursor": 1565}},
         "partial_cursor_settlement": {"attempt_id": old_attempt}}
     import cre_colliers_partial_checkpoint as partial
-    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: {"receipt": completion})
+    worker_receipt = {**completion, "schema": "colliers-window-worker-receipt/v1",
+        "generation": run_id, "attempt": 1, "producerSha": sha, "targetSha256": target,
+        "artifact": {"sha256": "f" * 64, "bytes": 123}, "evidence": {"sha256": "2" * 64, "bytes": 456}}
+    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: {"receipt": worker_receipt})
     checkpoint = {"state": "ingested", "ingest": {"rc": 0, "finished_at": "done", "additive": True,
         "mark_missing": False, "status_activation": False, "attempt_id": attempt},
         "subset_ingest_attempt_id": attempt, "artifact": {"sha256": artifact},
@@ -180,6 +183,35 @@ def test_normal_discovery_uses_only_current_cursor_generation(incident, monkeypa
         if seen:
             assert seen[0][0][0] == series_dir
 
+@pytest.mark.parametrize("damage", ["missing_parent", "missing_child", "bad_child", "cursor_mismatch"])
+def test_discovery_holds_unusable_existing_cursor_history(incident, monkeypatch, tmp_path, damage):
+    series_dir, run, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    target = child["preflight"]["database_target"]["value"]
+    if damage == "missing_parent":
+        (series_dir / "manifest.json").unlink()
+    elif damage == "missing_child":
+        (run / "manifest.json").unlink()
+    elif damage == "bad_child":
+        _write(run / "manifest.json", ["not a manifest"])
+    else:
+        child["sources"]["colliers"]["gate"]["current_inventory_proof"]["cursor"] = 999
+        _write(run / "manifest.json", child)
+    with pytest.raises(recovery.SourceEvidenceRefusal):
+        recovery.recover_prior_generation(owner, expected_target=target, env_file=None,
+            before_publish=lambda: None, after_publish=lambda: None)
+
+
+@pytest.mark.parametrize("failure", [KeyError("missing manifest field"), FileNotFoundError("missing file")])
+def test_qualification_turns_settled_missing_evidence_into_source_hold(incident, monkeypatch, failure):
+    series_dir, _, owner, _, _, _ = incident
+    def missing(*args):
+        raise failure
+    monkeypatch.setattr(recovery, "_qualify", missing)
+    with pytest.raises(recovery.SourceEvidenceRefusal):
+        recovery.qualify(series_dir, owner)
+
+
 def test_cursor_publication_error_does_not_clear_armed_marker(incident, monkeypatch):
     from pathlib import Path
 
@@ -218,7 +250,7 @@ def test_historical_readback_keeps_original_producer_and_binds_clean_verifier(mo
         calls.append(kwargs)
         raise ValueError("stopped after context binding")
     monkeypatch.setattr(partial, "ingest_subset_context", inspect)
-    with pytest.raises(ValueError, match="stopped after context binding" if allowed else "code changed"):
+    with pytest.raises(ValueError, match="historical Colliers source evidence refused" if allowed else "code changed"):
         partial.run_partial_readback("artifact", {}, code_sha=producer, verifier_sha=verifier,
             target="c" * 64, attempt_id="d" * 32, env_file=None)
     assert bool(calls) is allowed

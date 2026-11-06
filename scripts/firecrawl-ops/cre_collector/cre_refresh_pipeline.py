@@ -1224,7 +1224,7 @@ def run_bounded_pipeline(
                 or config.get("mark_missing") is not False or config.get("status_activation") is not False
                 or config.get("transactions") != ["sale", "lease"] or config.get("max_items") != 0):
             return True
-        from recovery.colliers_cursor import recover_prior_generation
+        from recovery.colliers_cursor import SourceEvidenceRefusal, recover_prior_generation
 
         def publication_state(unknown):
             require_pipeline_owner(manifest, lease)
@@ -1235,7 +1235,7 @@ def run_bounded_pipeline(
             recovered = recover_prior_generation(owner,
                 expected_target=refresh.manifest_database_target_sha256(manifest), env_file=env_file,
                 before_publish=lambda: publication_state(True), after_publish=lambda: publication_state(False))
-        except ValueError:
+        except SourceEvidenceRefusal:
             if state.get("cursor_recovery_outcome_unknown") is True:
                 raise
             require_pipeline_owner(manifest, lease)

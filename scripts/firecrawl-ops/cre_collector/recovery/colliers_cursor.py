@@ -16,8 +16,12 @@ from pathlib import Path
 import cre_checkpoint_refresh as refresh
 import cre_checkpoint_series as series
 from cre_partial_cursor import read_cursor
-from cre_series_control import read_receipt
-from cre_stop_guarded_tier import _read_at, _safe_stat
+from cre_series_control import SeriesControlError, read_receipt
+from cre_stop_guarded_tier import StopRefused, _read_at, _safe_stat
+
+
+class SourceEvidenceRefusal(ValueError):
+    """Settled Colliers-specific evidence cannot qualify; hold only this source."""
 
 
 def _digest(path: Path, limit: int) -> tuple[bytes, str]:
@@ -36,7 +40,7 @@ def _check_owner(owner):
     os.close(descriptor)
 
 
-def qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
+def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     """Bind a stopped series and its unverified last Colliers window.
 
     This is only a local evidence check: callers must still perform fresh,
@@ -132,16 +136,16 @@ def qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     projected["sources"] = {**child["sources"], "colliers": previous}
     checked = verify_worker_artifact(run_dir / prior_worker["artifact_path"], projected,
         current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"])
-    receipt = checked["receipt"]
+    worker_receipt = checked["receipt"]
     completion = prior_worker.get("completion")
     if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
             "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
-            or completion != {key: receipt[key] for key in completion}
-            or receipt.get("sourceStopped") is not False or receipt.get("rotationComplete") is not False
-            or receipt.get("proposedCursor") != last_window["next_cursor"]
-            or receipt.get("firstPosition") != last_window["cursor"]
+            or completion != {key: worker_receipt[key] for key in completion}
+            or worker_receipt.get("sourceStopped") is not False or worker_receipt.get("rotationComplete") is not False
+            or worker_receipt.get("proposedCursor") != last_window["next_cursor"]
+            or worker_receipt.get("firstPosition") != last_window["cursor"]
             or (len(windows) == 1 and last_window.get("first_position") != last_window["cursor"])
-            or (len(windows) > 1 and receipt.get("stopBeforePosition") != last_window.get("first_position"))
+            or (len(windows) > 1 and worker_receipt.get("stopBeforePosition") != last_window.get("first_position"))
             or worker.get("stop_before_position") != last_window.get("first_position")):
         raise ValueError("Colliers prior worker completion differs")
     prior_unit = [unit for unit in child["pipeline"]["units"] if unit.get("unit_id") == last_window.get("unit_id")]
@@ -192,6 +196,17 @@ def qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
         "before_path": str(before), "prior_cursor": cursor}
 
 
+def qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
+    """Classify only settled source-local evidence refusal; owner loss stays global."""
+    _check_owner(owner)
+    try:
+        return _qualify(series_dir, owner)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, KeyError, TypeError,
+            ValueError, StopRefused, SeriesControlError, series.SeriesError) as exc:
+        _check_owner(owner)
+        raise SourceEvidenceRefusal("Colliers saved source evidence did not qualify") from exc
+
+
 def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str, env_file: str | None,
             before_publish, after_publish):
     """Revalidate and publish one cursor without replaying its database write.
@@ -203,12 +218,12 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
 
     initial = qualify(series_dir, owner)
     if initial["target"] != expected_target:
-        raise ValueError("Colliers recovery database target differs")
+        raise refresh.GlobalStageError("Colliers recovery database target differs")
     verifier_sha, dirty = refresh.git_identity()
     if (dirty is not False or not re.fullmatch(r"[a-f0-9]{40}", verifier_sha or "")
             or series.local_git_output(["merge-base", initial["producer_sha"], verifier_sha]).strip()
                != initial["producer_sha"]):
-        raise ValueError("Colliers recovery verifier is not a clean reviewed descendant")
+        raise refresh.GlobalStageError("Colliers recovery verifier is not a clean reviewed descendant")
     run_dir = Path(initial["run_dir"])
     child_raw, digest = _digest(run_dir / "manifest.json", 4 * 1024 * 1024)
     if digest != initial["child_sha256"]:
@@ -237,8 +252,20 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
                 and completed["rc"] == 0
                 and completed.get("query_execution_ok") is True
                 and (completed.get("quality_no_regression") is False or completed.get("readback_ok") is False)):
-            raise ValueError("Colliers recovery readback or quality refused") from exc
+            raise SourceEvidenceRefusal("Colliers recovery readback or quality refused") from exc
         raise
+    except refresh.LockHeldError:
+        raise
+    except Exception as exc:
+        from cre_colliers_partial_checkpoint import ColliersHistoricalEvidenceRefusal
+
+        if not isinstance(exc, ColliersHistoricalEvidenceRefusal):
+            raise
+        _check_owner(owner)
+        if (refresh.database_target_fingerprint(env_file) != {"algorithm": "sha256", "value": expected_target}
+                or refresh.git_identity() != (verifier_sha, False)):
+            raise refresh.GlobalStageError("Colliers recovery owner, verifier or target changed") from exc
+        raise SourceEvidenceRefusal("Colliers historical source evidence refused") from exc
     proof = child["sources"]["colliers"]["readback"]["observation"]
     validation_path = evidence_dir / "validation.json"
     validation_raw, validation_sha = _digest(validation_path, 32 * 1024 * 1024)
@@ -297,24 +324,38 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
     run_id = cursor["generation"]
     match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{6}Z)-[a-f0-9]{12}", run_id)
     if match is None:
-        return None
+        raise SourceEvidenceRefusal("Colliers cursor generation has no supported history")
     base = Path(refresh.__file__).resolve().parent / "out" / "checkpoint-series"
     series_dir = base / match.group(1)
     run_dir = series_dir / "runs" / run_id
-    if not (series_dir / "manifest.json").exists() or not (run_dir / "manifest.json").exists():
-        return None
-    parent = json.loads(_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0])
-    child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])
-    source = (child.get("sources") or {}).get("colliers") or {}
-    worker = source.get("colliers_partial_worker") or {}
-    binding = (source.get("gate") or {}).get("current_inventory_proof") or {}
-    windows = source.get("partial_windows") or []
-    if (not isinstance(windows, list) or not windows
-            or worker.get("window_index") != len(windows) + 1):
-        return None
+    try:
+        parent = json.loads(_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])
+    except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError, StopRefused) as exc:
+        _check_owner(owner)
+        raise SourceEvidenceRefusal("Colliers cursor history is missing or malformed") from exc
+    try:
+        source = (child.get("sources") or {}).get("colliers") or {}
+        worker = source.get("colliers_partial_worker") or {}
+        binding = (source.get("gate") or {}).get("current_inventory_proof") or {}
+        windows = source.get("partial_windows") or []
+        if not all(isinstance(value, dict) for value in (parent, child, source, worker, binding)):
+            raise TypeError("invalid Colliers history shape")
+    except (AttributeError, TypeError) as exc:
+        _check_owner(owner)
+        raise SourceEvidenceRefusal("Colliers cursor history is malformed") from exc
+    if not isinstance(windows, list) or not isinstance(child.get("pipeline"), dict):
+        raise SourceEvidenceRefusal("Colliers cursor history is malformed")
     if source.get("state") in {"ingesting", "ingest_recovery_required"} or (
-            (child.get("pipeline") or {}).get("commit_outcome_unknown") is not False):
+            child["pipeline"].get("commit_outcome_unknown") is not False):
         raise refresh.GlobalStageError("Colliers prior write settlement remains unknown")
+    if not windows:
+        return None  # First-window recovery is not supported by this discovery.
+    index = worker.get("window_index")
+    if index == len(windows):
+        return None  # The last window is already journaled.
+    if type(index) is not int or index != len(windows) + 1:
+        raise SourceEvidenceRefusal("Colliers window history is incomplete")
     if source.get("state") != "ingested":
         return None
     desired = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": expected_target,
@@ -324,8 +365,8 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
     if cursor == desired:
         return None  # An earlier owner already published this exact result.
     if binding.get("cursor") != position:
-        return None  # This generation is not the current cursor's successor.
+        raise SourceEvidenceRefusal("Colliers pending window does not match the current cursor")
     if parent.get("database_target") != {"algorithm": "sha256", "value": expected_target}:
-        raise ValueError("Colliers prior series target differs")
+        raise refresh.GlobalStageError("Colliers prior series target differs")
     return recover(series_dir, owner, expected_target=expected_target, env_file=env_file,
                    before_publish=before_publish, after_publish=after_publish)
