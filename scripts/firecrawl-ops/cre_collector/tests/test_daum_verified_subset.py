@@ -94,7 +94,7 @@ def test_subset_scope_is_explicit_and_exact(subset, mutation):
 
 def install_identity_probe(prepared):
     from cre_checkpoint_refresh import git_identity
-    from cre_daum_identity_sql import cohort_members
+    from daum.identity_sql import cohort_members
     import json
 
     manifest = prepared[3]

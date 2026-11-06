@@ -5773,7 +5773,7 @@ def gate_source(
                     raise GlobalStageError("Franklin partial identity classification failed") from exc
             if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
                 from cre_daum_fallback_partition import DaumSourceProbeRefusal, run_identity_probe
-                from cre_daum_identity_sql import run_cohort_probe
+                from daum.identity_sql import run_cohort_probe
                 try:
                     daum_data = _load_json(artifact)
                     checkpoint["daum_identity_probe"] = run_cohort_probe(

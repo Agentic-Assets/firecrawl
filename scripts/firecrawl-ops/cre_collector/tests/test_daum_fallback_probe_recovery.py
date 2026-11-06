@@ -143,7 +143,7 @@ def test_settled_daum_probe_hold_keeps_verified_peer_running(closed_pipeline, mo
 
 def test_gate_translates_only_typed_daum_source_refusal(tmp_path, monkeypatch, artifact_bytes):
     import test_essex_current_inventory as helpers
-    import cre_daum_identity_sql as identity
+    import daum.identity_sql as identity
 
     data = json.loads(artifact_bytes)
     generation = data["runMeta"]["freshness"]["generationId"]

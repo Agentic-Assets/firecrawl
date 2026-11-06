@@ -285,7 +285,7 @@ try:
     # native ID and an already source-held conflicting member.  All rows and
     # target state here are synthetic and live only in this owned container.
     from cre_daum_current_inventory import _sha
-    from cre_daum_identity_sql import identity_partition_query
+    from daum.identity_sql import identity_partition_query
     db = "identity_partition"
     sql("CREATE DATABASE " + db + ";")
     sql(schema, db)

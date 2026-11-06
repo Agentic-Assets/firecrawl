@@ -380,7 +380,7 @@ def bound_held_count(binding, checkpoint):
     from cre_daum_current_inventory import _path_key, _post, _sha
 
     if "identity_partition_sha256" in binding:
-        from cre_daum_identity_sql import validate_partition
+        from daum.identity_sql import validate_partition
 
         probe = checkpoint.get("daum_identity_probe")
         if not isinstance(probe, dict) or any(probe.get(key) != binding.get(expected) for key, expected in (
