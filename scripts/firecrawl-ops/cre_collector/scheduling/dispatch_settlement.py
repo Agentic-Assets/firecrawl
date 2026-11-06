@@ -52,6 +52,8 @@ def qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     manifest_path = path / "manifest.json"
     parent_bytes = manifest_path.read_bytes()
     parent = json.loads(parent_bytes)
+    if parent.get("preallocated_expected_target_sha256") != expected_target.get("value"):
+        raise DispatchSettlementRefused("preallocated target evidence differs")
     if not expected_config.get("pipeline"):
         raise DispatchSettlementRefused("only the pipeline series is supported")
     refs = {parent["sources"][key].get("checkpoint_run") for key in expected_config["sources"]}

@@ -2787,6 +2787,8 @@ def run_pipeline_series(
         resume_run=resume,
         fresh_run_id=run_id,
     )
+    if manifest.get("preallocated_expected_target_sha256") is not None:
+        argv.extend(["--expected-parent-db-target-sha256", manifest["preallocated_expected_target_sha256"]])
     dispatch = manifest.get("pipeline_dispatch")
     if dispatch is not None and resume is None:
         order = dispatch.get("order") if isinstance(dispatch, dict) else None
@@ -3693,7 +3695,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     database_target = database_target_fingerprint(args.env_file)
     if args.expected_database_target_sha256 is not None:
-        if (args.fresh_series_id is None
+        if (args.fresh_series_id is None or not args.pipeline
                 or re.fullmatch(r"[a-f0-9]{64}", args.expected_database_target_sha256) is None
                 or database_target != {"algorithm": "sha256", "value": args.expected_database_target_sha256}):
             raise SeriesError("preallocated dispatch database target differs")
@@ -3739,6 +3741,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config=config,
                     database_target=database_target,
                 )
+                if args.expected_database_target_sha256 is not None:
+                    manifest["preallocated_expected_target_sha256"] = args.expected_database_target_sha256
             if not args.resume and config.get("pipeline"):
                 priority = scheduled_deadline_priority(series_dir.parent, series_dir, manifest)
                 if priority is not None:

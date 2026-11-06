@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import cre_checkpoint_refresh as refresh
 import cre_checkpoint_series as series
 import cre_series_control as control
 
@@ -32,10 +33,20 @@ def test_preallocated_dispatch_refuses_wrong_target_before_series_creation(tmp_p
     monkeypatch.setattr(series, "admit_series_invocation", lambda *_: None)
     monkeypatch.setattr(series, "database_target_fingerprint", lambda *_: {"algorithm": "sha256", "value": "b" * 64})
     with pytest.raises(series.SeriesError, match="database target differs"):
-        series.main(["--sources", "cbre", "--out-root", str(tmp_path / "out"),
+        series.main(["--sources", "cbre", "--pipeline", "--out-root", str(tmp_path / "out"),
                      "--fresh-series-id", "2026-11-06T010203Z-012345abcdef",
                      "--expected-database-target-sha256", "c" * 64])
     assert not (tmp_path / "out").exists()
+
+
+def test_preallocated_child_refuses_target_change_before_lock_or_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(refresh, "checkpoint_lock_dir", lambda *_: tmp_path / ".cre.lock")
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda *_: {"algorithm": "sha256", "value": "b" * 64})
+    with pytest.raises(refresh.RefreshError, match="child database target differs"):
+        refresh.main(["--sources", "colliers", "--pipeline", "--out-root", str(tmp_path / "out"),
+                      "--expected-parent-db-target-sha256", "c" * 64])
+    assert not (tmp_path / "out").exists()
+    assert not (tmp_path / ".cre.lock").exists()
 
 
 def test_preallocated_controlled_series_receipt_is_bound_and_never_authorizes_continuation(

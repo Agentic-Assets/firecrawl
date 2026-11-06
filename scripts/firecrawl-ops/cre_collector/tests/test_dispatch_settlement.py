@@ -21,7 +21,8 @@ def case(tmp_path, monkeypatch):
     child_invocation = "b" * 32
     path = tmp_path / series_id
     path.mkdir()
-    parent = {"sources": {key: {"checkpoint_run": f"runs/{child_id}", "attempts": [
+    parent = {"preallocated_expected_target_sha256": "d" * 64,
+              "sources": {key: {"checkpoint_run": f"runs/{child_id}", "attempts": [
         {"series_control_child_id": child_invocation}]} for key in config["sources"]}}
     (path / "manifest.json").write_text(json.dumps(parent))
     control = {"work_deadline_seconds": 30, "last_checkpoint": {
