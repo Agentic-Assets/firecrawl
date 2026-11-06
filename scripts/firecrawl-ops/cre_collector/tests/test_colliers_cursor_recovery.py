@@ -232,6 +232,20 @@ def test_ambiguous_history_does_not_hide_unknown_write(incident, monkeypatch, tm
 
 
 
+
+def test_unrelated_series_symlink_does_not_hold_bound_parent(incident, monkeypatch, tmp_path):
+    series_dir, _, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    series_dir.with_name("2026-11-06T030005Z").symlink_to(
+        tmp_path / "unrelated", target_is_directory=True)
+    seen = []
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: seen.append(args[0]) or {"done": True})
+    result = recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+        env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+    assert result == {"done": True}
+    assert seen == [series_dir]
+
+
 def test_symlinked_series_is_held_without_treating_history_as_absent(incident, monkeypatch, tmp_path):
     series_dir, _, owner, _, _, child = incident
     monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
