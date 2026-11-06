@@ -1425,6 +1425,41 @@ test("Avison alternate denial never retries the same provider or a rate limit", 
   }
 });
 
+test("Avison alternate 403 retains evidence and fresh mode holds the incomplete row", async (t) => {
+  const oldTransport = process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+  const oldFresh = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  process.env.AVISON_YOUNG_DETAIL_TRANSPORT = "direct";
+  t.after(() => {
+    if (oldTransport === undefined) delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    else process.env.AVISON_YOUNG_DETAIL_TRANSPORT = oldTransport;
+    if (oldFresh === undefined) delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = oldFresh;
+  });
+  const base = {
+    id: "17808", name: "602 N Capitol Ave", street: "602 N Capitol Ave",
+    sharpLaunchUrl: "https://stale-alias.sharplaunch.com",
+    externalUrl: "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  const calls: string[] = [];
+  const fetch = async (url: string): Promise<ScrapedDoc> => {
+    calls.push(url);
+    if (url === base.sharpLaunchUrl) throw new AvisonYoungHttpStatusError(url, 403);
+    return {
+      ...doc("<html><main class=\"property-detail\"><h1>602 N Capitol Ave</h1><p>Property details</p></main></html>"),
+      metadata: { sourceURL: url, url, statusCode: 200, transport: "direct_http" },
+    };
+  };
+  delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const listing = await enrichAvisonYoungListing(base, false, fetch);
+  assert.equal(listing.preserveChildCollections, true);
+  assert.match(listing.detailWarning, /HTTP 403/);
+  assert.deepEqual(calls, [base.sharpLaunchUrl, base.externalUrl]);
+  calls.length = 0;
+  process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+  await assert.rejects(() => enrichAvisonYoungListing(base, false, fetch), /HTTP 403/);
+  assert.deepEqual(calls, [base.sharpLaunchUrl, base.externalUrl]);
+});
+
 test("strict Avison detail scrape is uncached, complete, and generation-bound", async (t) => {
   const originalScrape = firecrawl.scrape;
   const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
