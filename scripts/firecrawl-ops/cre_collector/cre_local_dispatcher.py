@@ -104,8 +104,28 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
     return {"slot": slot, "policy": policy, "config": config, "target": target, "series_id": series_id,
             "due_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
             "continuation_depth": continuation_depth, "eligible_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
-            "predecessor_series_id": None,
-            "predecessor_no_work": False}
+            "predecessor_series_id": None, "predecessor_slot": None, "predecessor_policy": None,
+            "predecessor_no_priority": False}
+
+
+def source_policy(policy: dict, sources: list[str]) -> dict:
+    """Project one current policy to a source subset without inventing options."""
+    selected = series.parse_sources(",".join(policy["sources"]))
+    if not sources or len(set(sources)) != len(sources) or not set(sources) <= set(selected):
+        raise ValueError("continuation source scope differs")
+    result = dict(policy)
+    result["sources"] = [source for source in selected if source in sources]
+    result["admissions"] = [source for source in policy["admissions"] if source in sources]
+    result["daum_subset"] = policy["daum_subset"] and "daum-commercial" in sources
+    if not result["daum_subset"]:
+        result["daum_subset_policy"] = "tenure-only-v1"
+    return result
+
+
+def continuation_slot(previous_slot: str, sources: list[str], depth: int) -> str:
+    prefix = previous_slot[:16]
+    key = hashlib.sha256((previous_slot + "\0" + ",".join(sources)).encode()).hexdigest()[:24]
+    return f"{prefix}_c{key}.continuation{depth}"
 
 
 def validate_request(request: dict) -> None:
@@ -116,13 +136,19 @@ def validate_request(request: dict) -> None:
     slot = request.get("slot")
     expected = policy_request(request.get("policy"), slot, continuation_depth=depth)
     if depth:
-        base = slot.removesuffix(f".continuation{depth}")
-        prior = base + (f".continuation{depth - 1}" if depth > 1 else "")
-        origin = policy_request(request["policy"], prior, continuation_depth=depth - 1)
+        prior = request.get("predecessor_slot")
+        prior_policy = request.get("predecessor_policy")
+        origin = policy_request(prior_policy, prior, continuation_depth=depth - 1)
+        if source_policy(prior_policy, expected["config"]["sources"]) != request["policy"]:
+            raise ValueError("continuation policy projection differs")
+        if slot != continuation_slot(prior, expected["config"]["sources"], depth):
+            raise ValueError("continuation slot differs")
         expected["predecessor_series_id"] = origin["series_id"]
-        if type(request.get("predecessor_no_work")) is not bool:
+        expected["predecessor_slot"] = prior
+        expected["predecessor_policy"] = prior_policy
+        if type(request.get("predecessor_no_priority")) is not bool:
             raise ValueError("dispatch predecessor outcome differs")
-        expected["predecessor_no_work"] = request["predecessor_no_work"]
+        expected["predecessor_no_priority"] = request["predecessor_no_priority"]
         eligible = request.get("eligible_unix_ms")
         if type(eligible) is not int or eligible < expected["due_unix_ms"]:
             raise ValueError("continuation eligibility differs")
@@ -152,7 +178,7 @@ def launcher_arguments(request: dict) -> list[str]:
         argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", policy["daum_subset_policy"]]
     if policy["alert_file"] is not None:
         argv += ["-AlertWebhookFile", policy["alert_file"]]
-    if request["predecessor_series_id"] is not None and not request["predecessor_no_work"]:
+    if request["predecessor_series_id"] is not None and not request["predecessor_no_priority"] and policy["pipeline"]:
         argv += ["-PriorityFromSeriesId", request["predecessor_series_id"]]
     return argv
 
@@ -174,7 +200,7 @@ def prepare_launch(request: dict) -> list[str]:
         validate_request(request)
     except (ValueError, TypeError, KeyError) as exc:
         hold_local(exc)
-    verify_no_work_predecessor(request)
+    verify_predecessor(request)
     # The OS executes the exact pinned launcher; never evaluate shell text.
     try:
         local = subprocess.run(["wslpath", "-u", policy["windows_launcher"]], check=True,
@@ -270,42 +296,53 @@ def qualify(request: dict, *, validate=True) -> dict:
             expected_config=request["config"], expected_deadline_seconds=policy["deadline_seconds"])
 
 
-def verify_no_work_predecessor(request: dict) -> None:
-    """Only a requalified deadline with no child may omit predecessor ordering."""
-    if not request.get("predecessor_no_work"):
+def verify_predecessor(request: dict) -> None:
+    """Requalify the exact prior generation before any projected retry."""
+    if request["continuation_depth"] == 0:
         return
     depth = request["continuation_depth"]
-    base = request["slot"].removesuffix(f".continuation{depth}")
-    prior = base + (f".continuation{depth - 1}" if depth > 1 else "")
-    origin = policy_request(request["policy"], prior, continuation_depth=depth - 1)
+    origin = policy_request(request["predecessor_policy"], request["predecessor_slot"], continuation_depth=depth - 1)
     if origin["series_id"] != request["predecessor_series_id"]:
-        raise ValueError("no-work predecessor identity differs")
+        raise ValueError("predecessor identity differs")
     previous = qualify(origin, validate=False)
-    if previous.get("status") != "deadline_interrupted" or previous.get("outcome") != "settled_no_work":
-        raise ValueError("no-work predecessor did not requalify")
+    if (previous.get("outcome") not in {"qualified", "settled_no_work"}
+            or not set(request["config"]["sources"]) <= set(previous.get("unfinished_sources") or [])
+            or request["predecessor_no_priority"] != (
+                previous.get("status") != "deadline_interrupted" or previous.get("outcome") == "settled_no_work")):
+        raise ValueError("predecessor did not requalify")
 
 
 def successor(slot: str, request: dict, result: dict):
-    """Queue another settled deadline wave, yielding to fresh due work."""
+    """Queue immediate peers and separately deferred sources from settled work."""
     unfinished = result.get("unfinished_sources")
-    if result.get("status") != "deadline_interrupted" or not unfinished:
+    if not unfinished:
         return None
+    deferred = result.get("deferred_sources") or []
     if (not isinstance(unfinished, list) or len(set(unfinished)) != len(unfinished)
             or not set(unfinished) <= set(request["config"]["sources"])
+            or not isinstance(deferred, list) or len(set(deferred)) != len(deferred)
+            or not set(deferred) <= set(unfinished)
             or type(result.get("finished_unix_ms")) is not int):
         raise ValueError("continuation settlement differs")
     depth = request["continuation_depth"]
-    base = slot.removesuffix(f".continuation{depth}") if depth else slot
-    next_slot = f"{base}.continuation{depth + 1}"
-    next_request = policy_request(request["policy"], next_slot, continuation_depth=depth + 1)
-    if next_request["target"] != request["target"] or next_request["config"] != request["config"]:
-        raise ValueError("continuation target or source policy changed")
-    next_request["predecessor_series_id"] = request["series_id"]
-    next_request["predecessor_no_work"] = result.get("outcome") == "settled_no_work"
-    # No terminal source progress is a scheduling hint, never a coverage proof.
-    delay = 300_000 if len(request["config"]["sources"]) == 1 and len(unfinished) == 1 else 0
-    next_request["eligible_unix_ms"] = max(next_request["due_unix_ms"], result["finished_unix_ms"] + delay)
-    return next_slot, next_request
+    active = [source for source in unfinished if source not in deferred]
+    groups = ([active] if active else []) + [[source] for source in deferred]
+    pending = []
+    for sources in groups:
+        policy = source_policy(request["policy"], sources)
+        next_slot = continuation_slot(slot, sources, depth + 1)
+        next_request = policy_request(policy, next_slot, continuation_depth=depth + 1)
+        if next_request["target"] != request["target"]:
+            raise ValueError("continuation target changed")
+        next_request["predecessor_series_id"] = request["series_id"]
+        next_request["predecessor_slot"] = slot
+        next_request["predecessor_policy"] = request["policy"]
+        next_request["predecessor_no_priority"] = (
+            result.get("status") != "deadline_interrupted" or result.get("outcome") == "settled_no_work")
+        delay = 300_000 if sources[0] in deferred else 0
+        next_request["eligible_unix_ms"] = max(next_request["due_unix_ms"], result["finished_unix_ms"] + delay)
+        pending.append((next_slot, next_request))
+    return pending
 
 
 def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:

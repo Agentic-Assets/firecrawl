@@ -90,6 +90,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         check_owner()
         return {"status": terminal["status"], "outcome": "settled_no_work",
                 "unfinished_sources": list(expected_config.get("sources") or []),
+                "deferred_sources": list(expected_config.get("sources") or []),
                 "finished_unix_ms": control["finished_unix_ms"]}
     manifest_path = path / "manifest.json"
     parent_bytes = manifest_path.read_bytes()
@@ -139,7 +140,8 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         verify_preallocated_receipt(root, series_id, invocation_id, expected_sha=expected_sha,
             expected_target=expected_target, expected_config=expected_config)
         return {"status": terminal["status"], "outcome": "qualified", "child": ref,
-                "unfinished_sources": unfinished, "finished_unix_ms": control["finished_unix_ms"]}
+                "unfinished_sources": unfinished, "deferred_sources": list(unfinished),
+                "finished_unix_ms": control["finished_unix_ms"]}
     refs = {parent["sources"][key].get("checkpoint_run") for key in expected_config["sources"]}
     if len(refs) != 1:
         raise DispatchSettlementRefused("pipeline child owner differs")
@@ -165,6 +167,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     candidate = copy.deepcopy(parent)
     series.reconcile_pipeline_series(path, candidate, publish=False)
     unfinished = []
+    deferred = []
     for key in expected_config["sources"]:
         state = candidate["sources"][key]["state"]
         checkpoint = (child.get("sources") or {}).get(key) or {}
@@ -210,10 +213,21 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                 raise DispatchSettlementRefused("Colliers cursor no longer matches settled window")
         if state == "qualified_partial_subset" and key == "colliers" and terminal["status"] == "deadline_interrupted":
             from cre_colliers_partial_checkpoint import partial_window_terminal_stop
-            if partial_window_terminal_stop(checkpoint) is None:
-                unfinished.append(key)
+            unfinished.append(key)
+            if partial_window_terminal_stop(checkpoint) is not None:
+                deferred.append(key)
             continue
-        if state in {"complete", "qualified_partial_subset", "failed_source"}:
+        if state == "failed_source":
+            if checkpoint.get("ingest") is not None and (checkpoint.get("readback") or {}).get("ok") is not True:
+                raise DispatchSettlementRefused("failed source may contain an unreadback write")
+            unfinished.append(key)
+            deferred.append(key)
+            continue
+        if state == "qualified_partial_subset" and terminal["status"] == "deadline_interrupted":
+            unfinished.append(key)
+            deferred.append(key)
+            continue
+        if state in {"complete", "qualified_partial_subset"}:
             continue
         if (state != "interrupted" or checkpoint.get("ingest") is not None
                 or checkpoint.get("state") in {"ingested", "ingesting", "ingest_recovery_required"}
@@ -222,6 +236,8 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                     "cursor_publishing", "cursor_recovery_required", "settlement_unknown"}):
             raise DispatchSettlementRefused("interrupted source may have unsettled work")
         unfinished.append(key)
+        if checkpoint.get("attempts"):
+            deferred.append(key)
     check_owner()
     if (manifest_path.read_bytes() != parent_bytes
             or read_receipt(path, invocation_id) != control):
@@ -230,4 +246,5 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         expected_sha=expected_sha, expected_target=expected_target,
         expected_config=expected_config)
     return {"status": terminal["status"], "outcome": "qualified", "child": ref,
-            "unfinished_sources": unfinished, "finished_unix_ms": control["finished_unix_ms"]}
+            "unfinished_sources": unfinished, "deferred_sources": deferred,
+            "finished_unix_ms": control["finished_unix_ms"]}

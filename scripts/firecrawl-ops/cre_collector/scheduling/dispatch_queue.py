@@ -207,8 +207,10 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=Tru
             if not isinstance(result, dict) or result.get("outcome") not in {"qualified", "settled_no_work"}:
                 raise DispatchRefused("dispatch settlement was not qualified")
             if successor is not None:
-                next_intent = successor(record["slot"], record["request"], result)
-                if next_intent is not None:
+                next_intents = successor(record["slot"], record["request"], result)
+                if isinstance(next_intents, tuple):
+                    next_intents = [next_intents]
+                for next_intent in next_intents or []:
                     enqueue(path, *next_intent)
             record.update(state="settled", result=result)
             _write(directory, name, record, create=False)

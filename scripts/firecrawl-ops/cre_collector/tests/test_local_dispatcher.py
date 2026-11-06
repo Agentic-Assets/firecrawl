@@ -202,28 +202,28 @@ def test_error_after_native_start_is_not_no_work(policy, monkeypatch):
 def test_deadline_successors_are_unbounded_and_no_progress_is_deferred(policy, monkeypatch):
     slot = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, slot)
-    result = {"status": "deadline_interrupted", "outcome": "qualified", "unfinished_sources": ["colliers"],
+    result = {"status": "deadline_interrupted", "outcome": "qualified", "unfinished_sources": ["colliers"], "deferred_sources": ["colliers"],
               "finished_unix_ms": first["due_unix_ms"] + 100}
-    next_slot, next_request = dispatcher.successor(slot, first, result)
-    assert next_slot == slot + ".continuation1"
+    [(next_slot, next_request)] = dispatcher.successor(slot, first, result)
+    assert next_slot.endswith(".continuation1")
     assert next_request["predecessor_series_id"] == first["series_id"]
     assert next_request["series_id"] != first["series_id"]
     assert next_request["target"] == first["target"] and next_request["config"] == first["config"]
     assert next_request["eligible_unix_ms"] == result["finished_unix_ms"] + 300_000
-    third_slot, third = dispatcher.successor(next_slot, next_request, result)
-    assert third_slot == slot + ".continuation2"
+    [(third_slot, third)] = dispatcher.successor(next_slot, next_request, result)
+    assert third_slot.endswith(".continuation2")
     assert third["predecessor_series_id"] == next_request["series_id"]
     dispatcher.validate_request(third)
     assert dispatcher.successor(slot, first, {**result, "unfinished_sources": []}) is None
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "d" * 64})
-    with pytest.raises(ValueError, match="target or source policy changed"):
+    with pytest.raises(ValueError, match="target changed"):
         dispatcher.successor(slot, first, result)
 
 
 def test_crash_after_successor_enqueue_reuses_receipt_bound_time(tmp_path, policy, monkeypatch):
     slot = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, slot)
-    result = {"status": "deadline_interrupted", "outcome": "qualified", "unfinished_sources": ["colliers"],
+    result = {"status": "deadline_interrupted", "outcome": "qualified", "unfinished_sources": ["colliers"], "deferred_sources": ["colliers"],
               "finished_unix_ms": first["due_unix_ms"] + 100}
     dispatch_queue.enqueue(tmp_path, slot, first)
     monkeypatch.setattr(dispatch_queue.time, "time", lambda: (first["due_unix_ms"] + 100) / 1000)
@@ -242,41 +242,68 @@ def test_crash_after_successor_enqueue_reuses_receipt_bound_time(tmp_path, polic
     assert dispatch_queue.drain(tmp_path, launch=lambda _: launches.append(1), qualify=lambda _: dict(result),
                                 successor=dispatcher.successor)
     assert launches == [1]
-    assert (tmp_path / (slot + ".continuation1.json")).exists()
+    next_slot, _ = dispatcher.successor(slot, first, result)[0]
+    assert (tmp_path / (next_slot + ".json")).exists()
 
 
 def test_multi_source_wave_does_not_delay_other_unfinished_sources(policy):
     policy["sources"] = ["colliers", "savills"]
     first = dispatcher.policy_request(policy, "20261106T042000Z_broad")
     result = {"status": "deadline_interrupted", "outcome": "qualified",
-              "unfinished_sources": ["colliers", "savills"],
+              "unfinished_sources": ["colliers", "savills"], "deferred_sources": ["colliers"],
               "finished_unix_ms": first["due_unix_ms"] + 100}
-    _, following = dispatcher.successor(first["slot"], first, result)
-    assert following["eligible_unix_ms"] == result["finished_unix_ms"]
+    following = [value for _, value in dispatcher.successor(first["slot"], first, result)]
+    by_source = {value["config"]["sources"][0]: value for value in following}
+    assert by_source["savills"]["eligible_unix_ms"] == result["finished_unix_ms"]
+    assert by_source["colliers"]["eligible_unix_ms"] == result["finished_unix_ms"] + 300_000
+
+
+def test_crash_between_projected_peer_enqueues_preserves_both(tmp_path, policy, monkeypatch):
+    policy["sources"] = ["colliers", "savills"]
+    first = dispatcher.policy_request(policy, "20261106T042000Z_broad")
+    result = {"status": "deadline_interrupted", "outcome": "qualified",
+              "unfinished_sources": ["colliers", "savills"], "deferred_sources": ["colliers"],
+              "finished_unix_ms": first["due_unix_ms"] + 100}
+    dispatch_queue.enqueue(tmp_path, first["slot"], first)
+    monkeypatch.setattr(dispatch_queue.time, "time", lambda: first["due_unix_ms"] / 1000)
+    original = dispatch_queue.enqueue
+    seen = []
+    def crash_second(path, slot, request):
+        if slot != first["slot"]:
+            seen.append(slot)
+            if len(seen) == 2:
+                raise OSError("synthetic enqueue interruption")
+        return original(path, slot, request)
+    monkeypatch.setattr(dispatch_queue, "enqueue", crash_second)
+    with pytest.raises(OSError, match="synthetic enqueue interruption"):
+        dispatch_queue.drain(tmp_path, launch=lambda _: None, qualify=lambda _: dict(result), successor=dispatcher.successor)
+    dispatch_queue.drain(tmp_path, launch=lambda _: pytest.fail("predecessor must not replay"),
+                         qualify=lambda _: dict(result), successor=dispatcher.successor)
+    assert all((tmp_path / (slot + ".json")).exists() for slot, _ in dispatcher.successor(first["slot"], first, result))
 
 
 def test_deadline_with_settled_no_child_requalifies_and_omits_priority(policy, monkeypatch):
     slot = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, slot)
-    result = {"status": "deadline_interrupted", "outcome": "settled_no_work", "unfinished_sources": ["colliers"],
+    result = {"status": "deadline_interrupted", "outcome": "settled_no_work", "unfinished_sources": ["colliers"], "deferred_sources": ["colliers"],
               "finished_unix_ms": first["due_unix_ms"]}
-    _, successor = dispatcher.successor(slot, first, result)
+    [(_, successor)] = dispatcher.successor(slot, first, result)
     assert successor["predecessor_series_id"] == first["series_id"]
-    assert successor["predecessor_no_work"] is True
+    assert successor["predecessor_no_priority"] is True
     assert "-PriorityFromSeriesId" not in dispatcher.launcher_arguments(successor)
     seen = []
     monkeypatch.setattr(dispatcher, "qualify", lambda request, **kwargs: seen.append(request) or result)
-    dispatcher.verify_no_work_predecessor(successor)
+    dispatcher.verify_predecessor(successor)
     assert seen == [first]
     monkeypatch.setattr(dispatcher, "qualify", lambda _, **kwargs: {"status": "deadline_interrupted", "outcome": "qualified"})
     with pytest.raises(ValueError, match="did not requalify"):
-        dispatcher.verify_no_work_predecessor(successor)
+        dispatcher.verify_predecessor(successor)
 
 
 def test_scheduled_task_identity_cannot_collide_with_reserved_successor(policy):
     initial = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, initial)
-    next_slot, _ = dispatcher.successor(initial, first,
+    [(next_slot, _)] = dispatcher.successor(initial, first,
         {"status": "deadline_interrupted", "unfinished_sources": ["colliers"],
          "finished_unix_ms": first["due_unix_ms"]})
     with pytest.raises(ValueError, match="slot must bind"):
