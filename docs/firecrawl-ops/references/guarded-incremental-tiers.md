@@ -466,29 +466,39 @@ locator to the Windows audit before dispatch. The corresponding read-only
 `verify_preallocated_receipt` checks the exact series identity, producer SHA,
 target, full configuration and terminal local-settlement receipt. A locator or
 a terminal local receipt does not authorize another dispatch or prove a
-database outcome. The separate local dispatcher can retain a supplied due slot,
-invoke the native Windows launcher with fresh admission, and attempt one fresh
-follow-on after a qualified deadline interruption. It checks current ownership,
-child readback and unresolved-write/cursor evidence before continuing. The
-dispatcher is not installed in the production schedule: missed task triggers,
-repeated continuations and source scheduling fairness are not reconstructed or
-guaranteed. Existing tasks omit the locator. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
+database outcome. The uninstalled local dispatcher WIP invokes the native
+Windows launcher with fresh admission and requires current ownership, child
+readback and unresolved-write/cursor evidence before a fresh continuation. It
+does not prove that an old trigger ran or that partial source coverage is complete.
+Existing tasks omit the locator. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
 The uninstalled WSL dispatcher entrypoint is `cre_local_dispatcher.py`: it
 accepts an internal UTC slot (`YYYYMMDDTHHMMSSZ_task`) and a JSON policy file.
-The policy binds `sources`, `admissions`, `daum_subset`, `concurrency`,
+The policy binds `pipeline`, `sources`, `admissions`, `daum_subset`,
+`daum_subset_policy`, `concurrency`,
 `workers`, `page_cap`, `attempts`, `deadline_seconds`, `expected_sha`,
 `env_file`, `windows_launcher`, `windows_launcher_sha256`, `windows_repo`,
-`distro`, `linux_user`, `alert_file` and `notification_mode`. It stores only
+`distro`, `linux_user`, `alert_file`, `notification_mode`, and, when discovered
+from Task Scheduler, the exact task identity and XML hash. It stores only
 file references and target fingerprints, not credential values. Before a real
 dispatch, the Windows launcher, its native helpers and source policy files
 must match the pinned commit. Each due slot is retained in the private local
 queue before process creation; an ambiguous attempt blocks later slots rather
-than being replayed. The single automatic follow-on is lower priority than
-already due peer slots and records when its own limit is reached. Future slots
-remain queued until another invocation wakes the dispatcher. The launcher still
-performs its normal startup admission and notification behavior on every run.
+than being replayed. A settled source may receive another fresh continuation;
+stalled sources use separate delayed intents, while fresh due peers take priority.
+The scanner records unavailable historical policy intervals as unknown and uses
+the current policy for current eligible work; a fallback slot for an unsupported
+calendar is labeled as such and does not assert a past trigger. The launcher still
+performs its normal admission and notification behavior on every run.
+
+`Install-CreDispatcherTasks.ps1` previews a separate periodic snapshot task and
+drain task. This work remains untested and uninstalled. It does not yet provide
+a safe migration of the existing tasks: disabling them currently removes them
+from discovery, while leaving them enabled would also run their original
+actions. Enrichment tasks are not dispatched. Do not register the pair or change
+existing task actions until the migration, native tests and exact-head review
+have been completed. Split retries can generate additional StartFinish messages.
 
 ## Windows Task Scheduler installation and acceptance
 
