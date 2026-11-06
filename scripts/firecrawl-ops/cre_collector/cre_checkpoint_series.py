@@ -3320,7 +3320,28 @@ def run_series(
                     return cooldown_rc
                 resume_run = child_manifest_path.parent
                 continue
-            from cre_checkpoint_refresh import PYRAMID_GUARD_SETTLED_EXIT
+            from cre_checkpoint_refresh import DAUM_ALL_HELD_SETTLED_EXIT, PYRAMID_GUARD_SETTLED_EXIT
+            if rc == DAUM_ALL_HELD_SETTLED_EXIT:
+                from cre_checkpoint_refresh import _require_completed_group_settlement
+                from daum.serial_hold import verified as verified_daum_serial_hold
+                try:
+                    if control is None:
+                        _require_completed_group_settlement(proc._cre_owned_group)
+                    local_hold = (source == "daum-commercial"
+                                  and child_manifest.get("status") == "failed"
+                                  and child_manifest.get("preflight", {}).get("database_target") == manifest.get("database_target")
+                                  and verified_daum_serial_hold(child_manifest_path.parent, child_manifest))
+                except ProcessCleanupUnknown:
+                    local_hold = False
+                if local_hold:
+                    checkpoint["state"] = "failed_source"
+                    save_manifest(series_dir, manifest)
+                    break
+                checkpoint["state"] = "failed_global"
+                manifest.update(status="failed", finished_at=utc_now(),
+                                error="DAUM serial hold or settlement evidence invalid")
+                save_manifest(series_dir, manifest)
+                return 1
             if rc == PYRAMID_GUARD_SETTLED_EXIT:
                 from cre_checkpoint_refresh import _require_completed_group_settlement
                 from cre_pyramid_rollback_result import verified_rollback

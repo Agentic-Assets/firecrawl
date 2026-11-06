@@ -153,6 +153,7 @@ COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
 COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
 PYRAMID_GUARD_SETTLED_EXIT = 86
+DAUM_ALL_HELD_SETTLED_EXIT = 87
 PYRAMID_DENIED_EXITS = {401: 76, 403: 77}
 COHORT_SETTLED_PYRAMID_DENIED_EXITS = {401: 84, 403: 85}
 PYRAMID_DENIED_FAILURE_CODE = "PYRAMID_HTTP_ACCESS_DENIED"
@@ -9221,6 +9222,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest["finished_at"] = utc_now()
         persist_terminal()
         return 130
+    except DaumAllTargetHeld as exc:
+        if not lock.held:
+            raise
+        from daum.serial_hold import binding as serial_daum_hold_binding
+        try:
+            if _cleanup_unknown_in_chain(exc):
+                raise GlobalStageError("DAUM serial all-held process settlement is unknown")
+            lock._require_authority()
+            held_binding = serial_daum_hold_binding(run_dir, manifest)
+            lock._require_authority()
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            manifest["status"] = "failed"
+            manifest["error"] = "DAUM serial all-held evidence could not be verified"
+            manifest["finished_at"] = utc_now()
+            persist_terminal()
+            raise GlobalStageError("DAUM serial all-held evidence could not be verified") from error
+        checkpoint = manifest["sources"]["daum-commercial"]
+        checkpoint.update(state="gate_blocked", partial_probe_hold="all_emitted_target_held",
+                          serial_all_held=held_binding)
+        manifest["status"] = "failed"
+        manifest["resource_stop"] = None
+        manifest["error"] = "all emitted DAUM observations held by target checks"
+        manifest["finished_at"] = utc_now()
+        persist_terminal()
+        local_refusal = True
+        return DAUM_ALL_HELD_SETTLED_EXIT
     except SourceGuardRefusal as exc:
         if not lock.held:
             raise
