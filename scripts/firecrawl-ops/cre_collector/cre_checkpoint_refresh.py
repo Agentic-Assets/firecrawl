@@ -606,6 +606,7 @@ class HostCpuGuard:
     previous_observed: float | None = field(default=None, init=False)
     diagnostic_allowance_seconds: float = field(default=0.0, init=False)
     last_incident_snapshot: dict[str, Any] | None = field(default=None, init=False)
+    gap_resampled: bool = field(default=False, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
 
@@ -720,6 +721,47 @@ class HostCpuGuard:
             read_budget += 2.0
         if not 0.0 <= observed - started <= read_budget:
             raise CpuTelemetryError("host CPU read time stale")
+        # A brief Linux scheduling pause can leave one stale interval even
+        # when the counters remain readable. Permit one explicitly recorded
+        # recovery only while below threshold, shorter than a saturation
+        # window, then require an independent fresh low sample. Darwin and
+        # arbitrary sampler implementations retain the original strict rule.
+        previous = self.previous_observed
+        gap = observed - previous if previous is not None else 0.0
+        limit = self.sample_seconds * 1.5 + self.diagnostic_allowance_seconds
+        if previous is not None and gap > limit:
+            if (not sys.platform.startswith("linux")
+                    or not isinstance(self.sampler, LinuxCpuSampler)
+                    or self.gap_resampled or was_high
+                    or gap > min(8.0, self.sustain_seconds * 0.8)
+                    or isinstance(percent, bool) or not isinstance(percent, (int, float))
+                    or not math.isfinite(percent) or not 0 <= percent < self.max_percent):
+                raise CpuTelemetryError("host CPU observation time stale")
+            self._write_record(state="gap_resampling", percent=percent,
+                               reason=f"stale observation gap {gap:.3f}s; fresh sample required")
+            self.gap_resampled = True
+            # The Linux sampler has just captured new kernel counters.
+            time.sleep(0.1)
+            resample_started = time.monotonic()
+            self._validate_clock(resample_started)
+            if resample_started < observed or resample_started - observed > read_budget:
+                raise CpuTelemetryError("host CPU resample time stale")
+            fresh_percent = self.sampler()
+            fresh_observed = time.monotonic()
+            self._validate_clock(fresh_observed)
+            if (fresh_observed < resample_started
+                    or fresh_observed <= observed
+                    or fresh_observed - observed > read_budget
+                    or isinstance(fresh_percent, bool)
+                    or not isinstance(fresh_percent, (int, float))
+                    or not math.isfinite(fresh_percent)
+                    or not 0 <= fresh_percent < self.max_percent):
+                raise CpuTelemetryError("host CPU resample invalid or high")
+            self.previous_observed = observed
+            self.diagnostic_allowance_seconds = 0.0
+            percent, observed = fresh_percent, fresh_observed
+            self._write_record(state="gap_recovered", percent=percent,
+                               reason="fresh below-threshold sample after bounded gap")
         reason = self.observe(percent, observed_monotonic=observed)
         if (
             not was_high
