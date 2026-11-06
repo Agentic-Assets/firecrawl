@@ -1183,7 +1183,7 @@ def _child_succeeded(
         return False
     if (config.get("admit_baseline_hold_additively") is True
             or child_manifest.get("status") == "additive_scope_complete_coverage_hold"):
-        from cre_checkpoint_refresh import additive_coverage_hold_enabled, subset_gate_can_admit
+        from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
 
         sources = config.get("sources") or []
         if not isinstance(sources, list) or len(sources) != 1:
@@ -1211,17 +1211,16 @@ def _child_succeeded(
         # The fresh source may also clear its historical baseline naturally.
         if child_manifest.get("status") == SUCCESS_STATUS:
             return gate.get("verdict") == "ok" and aggregate.get("baseline_advisory_holds") == []
+        source_hold = admitted_count_hold(checkpoint)
+        aggregate_reason = (aggregate.get("baseline_advisory_reasons") or {}).get(source)
+        aggregate_hold = (aggregate.get("baseline_advisory_holds") == [source]
+                          and aggregate.get("mark_missing_safe_brokerages") == []
+                          and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
         return (
             child_manifest.get("status") == "additive_scope_complete_coverage_hold"
             and scope.get("kind") == "collector_registry_additive_coverage_hold"
             and scope.get("whole_source_coverage") is False
-            and gate.get("verdict") == "ok_additive_coverage_hold"
-            and gate.get("raw_verdict") == "hold"
-            and subset_gate_can_admit({"verdict": gate.get("raw_verdict"), "reason": gate.get("raw_reason")})
-            and gate.get("mark_missing_safe") is False
-            and gate.get("admission_scope") == "additive_coverage_hold"
-            and aggregate.get("baseline_advisory_holds") == [source]
-            and aggregate.get("mark_missing_safe_brokerages") == []
+            and (source_hold or aggregate_hold)
         )
     if nai_post_partial_child(child_manifest):
         scope = child_manifest.get("scope")
@@ -2174,7 +2173,7 @@ def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
 
 def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
     """Recognize the source and its own unit's retained count-only admission."""
-    from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold
+    from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
 
     try:
         checkpoint = child["sources"][source]
@@ -2182,16 +2181,23 @@ def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
         unit = next(unit for unit in child["pipeline"]["units"]
                     if unit["unit_id"] == result["unit_id"])
         aggregate = unit["aggregate_gate"]
+        source_reason = checkpoint["gate"].get("raw_reason") if admitted_count_hold(checkpoint) else None
+        aggregate_reason = (aggregate.get("baseline_advisory_reasons") or {}).get(source)
+        aggregate_hold = (source in aggregate.get("baseline_advisory_holds", [])
+                          and aggregate.get("mark_missing_safe_brokerages") == []
+                          and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
+        if not aggregate_hold:
+            aggregate_reason = None
         return (
             additive_coverage_hold_enabled(child["config"])
-            and admitted_count_hold(checkpoint)
+            and (source_reason is not None or aggregate_hold)
             and result.get("qualification") == "additive_coverage_hold"
             and result.get("partial") is True
             and result.get("whole_source_coverage") is False
-            and result.get("baseline_hold_reason") == checkpoint["gate"]["raw_reason"]
+            and result.get("baseline_hold_source_reason") == source_reason
+            and result.get("baseline_hold_aggregate_reason") == aggregate_reason
+            and result.get("baseline_hold_reason") == (source_reason or aggregate_reason)
             and source in unit["sources"]
-            and source in aggregate.get("baseline_advisory_holds", [])
-            and aggregate.get("mark_missing_safe_brokerages") == []
             and aggregate.get("non_ok_sources") == []
         )
     except (KeyError, TypeError, StopIteration):
@@ -2632,7 +2638,8 @@ def pipeline_source_qualified(
             nai_partial = key == "nai-global" and nai_post_partial_child(child)
             count_partial = count_hold_pipeline_member(child, key)
             from cre_checkpoint_refresh import admitted_count_hold
-            if admitted_count_hold(checkpoint) and not count_partial:
+            if (admitted_count_hold(checkpoint)
+                    or key in (unit.get("aggregate_gate") or {}).get("baseline_advisory_holds", [])) and not count_partial:
                 return False
             if ((checkpoint.get("artifact") or {}).get("nai_post_partial") is True
                     or binding.get("schema") == "nai-public-post-partial-v1"
@@ -2760,7 +2767,10 @@ def run_pipeline_series(
                     or pipeline.get("source_results", {}).get(key, {}).get("state") != "failed") for key in failed)):
             raise SeriesError("handled subset has unresolved source failure")
         cache = {}
-        if (child.get("status") != ("failed" if failed else "qualified_partial_subset")
+        expected_statuses = {"failed"} if failed else {"qualified_partial_subset"}
+        if not failed and any(count_hold_pipeline_member(child, key) for key in verified):
+            expected_statuses.add("additive_scope_complete_coverage_hold")
+        if (child.get("status") not in expected_statuses
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
                 parent_started_at=manifest["started_at"],parent_finished_at=utc_now(),

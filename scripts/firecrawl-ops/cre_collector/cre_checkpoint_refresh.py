@@ -5594,7 +5594,10 @@ def admitted_count_hold(checkpoint: Mapping[str, Any]) -> bool:
 
 
 def has_admitted_count_hold(manifest: Mapping[str, Any]) -> bool:
-    return any(admitted_count_hold(checkpoint) for checkpoint in manifest["sources"].values())
+    return (any(admitted_count_hold(checkpoint) for checkpoint in manifest["sources"].values())
+            or bool((manifest.get("aggregate_gate") or {}).get("baseline_advisory_holds"))
+            or any((unit.get("aggregate_gate") or {}).get("baseline_advisory_holds")
+                   for unit in (manifest.get("pipeline") or {}).get("units", [])))
 
 
 def gate_verdict_is_admitted(
@@ -6566,6 +6569,10 @@ def run_aggregate_gate(
         "baseline_advisory_holds": (
             (result.get("summary") or {}).get("baseline_advisory_holds") or []
         ),
+        "baseline_advisory_reasons": {
+            source: per_source[source].get("raw_reason")
+            for source in additive_coverage_holds
+        },
         "non_ok_sources": non_ok_sources,
         "mark_missing_safe_brokerages": (
             (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []

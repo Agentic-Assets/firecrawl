@@ -1462,7 +1462,7 @@ def verified_pipeline_summary(
             count_partial = count_hold_pipeline_member(child, source)
             if count_partial:
                 row.update(partial=True, whole_source_coverage=False,
-                           baseline_hold_reason=checkpoint["gate"]["raw_reason"])
+                           baseline_hold_reason=child["pipeline"]["source_results"][source]["baseline_hold_reason"])
             if inventory_only:
                 row["verified_inventory_only"] = inventory_only
             breakdown = None

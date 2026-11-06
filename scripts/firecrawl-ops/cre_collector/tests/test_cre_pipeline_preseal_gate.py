@@ -380,6 +380,69 @@ def test_count_shortfall_threshold_and_source_error_precedence():
     assert not refresh.subset_gate_can_admit({"verdict": verdict, "reason": reason})
 
 
+@pytest.mark.parametrize("verdicts", [("ok", "hold"), ("hold", "ok")])
+def test_count_shortfall_survives_source_aggregate_baseline_drift(closed_pipeline, verdicts):
+    import cre_checkpoint_series as series
+
+    case = closed_pipeline
+    case.gates["cbre"] = list(verdicts)
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+
+    def count_hold(report):
+        info = report["per_source"].get("cbre")
+        if info is not None and info["verdict"] == "hold":
+            info.update(current_active=1365, baseline_median=1953, reason=reason)
+
+    case.mutations["gate_report"] = count_hold
+    assert case.run() == []
+    result = case.manifest["pipeline"]["source_results"]["cbre"]
+    assert result["baseline_hold_source_reason"] == (reason if verdicts[0] == "hold" else None)
+    assert result["baseline_hold_aggregate_reason"] == (reason if verdicts[1] == "hold" else None)
+    assert result["baseline_hold_reason"] == reason
+    assert series.count_hold_pipeline_member(case.manifest, "cbre")
+    assert case.manifest["pipeline"]["status"] == "partial"
+    assert refresh.has_admitted_count_hold(case.manifest)
+    assert ("write", "svn") in case.events
+
+
+def test_count_shortfall_handled_pipeline_resumes_without_replay(tmp_path, monkeypatch):
+    import cre_checkpoint_series as series
+
+    config = series.series_config(
+        sources=["cbre", "svn"], page_cap=400, concurrency=1, attempts_per_source=1,
+        max_resume_age_hours=24, max_host_cpu_percent=90, cpu_sustain_seconds=30,
+        cpu_sample_seconds=2, nice=15, pipeline=True,
+    )
+    parent = series.new_manifest(tmp_path, git_sha=SHA, config=config)
+    for key, row in parent["sources"].items():
+        row.update(state="qualified_partial_subset" if key == "cbre" else "complete",
+                   checkpoint_run="runs/2026-07-29T120000Z", attempts=[{}])
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+    child = {
+        "status": "additive_scope_complete_coverage_hold",
+        "config": {"additive": True, "mark_missing": False, "status_activation": False},
+        "sources": {"cbre": {"gate": {"verdict": "ok_additive_coverage_hold",
+            "raw_verdict": "hold", "raw_reason": reason, "mark_missing_safe": False,
+            "admission_scope": "additive_coverage_hold"}}},
+        "pipeline": {"source_results": {"cbre": {"unit_id": "unit-0001",
+            "qualification": "additive_coverage_hold", "partial": True,
+            "whole_source_coverage": False, "baseline_hold_reason": reason,
+            "baseline_hold_source_reason": reason, "baseline_hold_aggregate_reason": reason}},
+            "units": [{"unit_id": "unit-0001", "sources": ["cbre"],
+                "aggregate_gate": {"baseline_advisory_holds": ["cbre"],
+                    "baseline_advisory_reasons": {"cbre": reason},
+                    "mark_missing_safe_brokerages": [], "non_ok_sources": []}}]},
+    }
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw: (tmp_path / "manifest.json", child))
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *a, **kw: True)
+    monkeypatch.setattr(series, "_pipeline_has_unresolved", lambda *a: False)
+    monkeypatch.setattr(series, "document_incomplete", lambda *a: False)
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
+    assert series.run_pipeline_series(tmp_path, parent, env_file=None) == 0
+    assert parent["status"] == "qualified_partial_subset"
+    assert all(len(row["attempts"]) == 1 for row in parent["sources"].values())
+
+
 def test_count_shortfall_with_conversion_errors_never_enters_a_write_unit(closed_pipeline):
     case = closed_pipeline
 

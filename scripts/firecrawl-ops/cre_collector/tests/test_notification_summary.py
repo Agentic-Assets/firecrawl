@@ -836,11 +836,12 @@ def test_pipeline_count_hold_reports_verified_rows_as_partial(evidence):
     }
     child["pipeline"]["units"][0]["aggregate_gate"] = {
         "baseline_advisory_holds": [SOURCE], "mark_missing_safe_brokerages": [],
-        "non_ok_sources": [],
+        "baseline_advisory_reasons": {SOURCE: reason}, "non_ok_sources": [],
     }
     result = child["pipeline"]["source_results"][SOURCE]
     result.update(qualification="additive_coverage_hold", partial=True,
-                  whole_source_coverage=False, baseline_hold_reason=reason)
+                  whole_source_coverage=False, baseline_hold_reason=reason,
+                  baseline_hold_source_reason=reason, baseline_hold_aggregate_reason=reason)
     parent["sources"][SOURCE].update(state="qualified_partial_subset", pipeline_result=result)
     evidence["save"]()
     summary_result = read_pipeline(evidence, [SOURCE, setup["source2"]])
