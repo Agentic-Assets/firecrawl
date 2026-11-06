@@ -418,11 +418,11 @@ async function main() {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
           receipt, startedAt, observationNow(),
-          avisonOtherFailures === 0
-            ? avisonYoungTeamDenialObserved() ? "terminal_404_with_team_denial" : "terminal_detail_not_found"
-            : avisonYoungTeamDenialObserved() ? "unclassified_source_error"
-              : avisonOnlyRecordLocalFailures && avisonTerminalFailures.length > 0 ? "mixed_record_local_and_404"
-                : avisonOnlyRecordLocalFailures ? "record_local_error" : "unclassified_source_error");
+          avisonTerminalFailures.length > 0 && (avisonOtherFailures > 0 || avisonYoungTeamDenialObserved())
+            ? "mixed_source_errors"
+            : avisonOtherFailures === 0 ? "terminal_detail_not_found"
+              : avisonOnlyRecordLocalFailures && !avisonYoungTeamDenialObserved()
+                ? "record_local_error" : "unclassified_source_error");
       } catch {
         // The ordinary artifact/peer path remains independent; a missing
         // receipt must never qualify the spool without the main artifact.

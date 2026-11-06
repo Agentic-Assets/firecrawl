@@ -864,7 +864,7 @@ def test_mixed_404_and_record_local_receipt_preserves_peers(tmp_path, case):
     attempt = {"number": 1, "rc": result.returncode, "started_at": started,
                "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
     receipt = verify_receipt(tmp_path, attempt)
-    assert receipt and receipt["source_outcome"] == "mixed_record_local_and_404"
+    assert receipt and receipt["source_outcome"] == "mixed_source_errors"
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
     assert any(record["kind"] == "validated_detail" for record in records)
 
@@ -883,7 +883,7 @@ def test_terminal_404_with_optional_team_denial_retains_partial_receipt(tmp_path
     attempt = {"number": 1, "rc": result.returncode, "started_at": started,
                "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
     receipt = verify_receipt(tmp_path, attempt)
-    assert receipt and receipt["source_outcome"] == "terminal_404_with_team_denial"
+    assert receipt and receipt["source_outcome"] == "mixed_source_errors"
     calls = json.loads((tmp_path / "calls.json").read_text())
     assert sum(item.get("feed") == "team" for item in calls) == 1
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
