@@ -341,7 +341,7 @@ def nai_post_partial_child(child: Mapping[str, Any]) -> bool:
                 and isinstance(source_held, list) and all(isinstance(item, Mapping) for item in source_held)
                 and all(set(item) == {"index", "reason"} and type(item["index"]) is int
                         and 0 <= item["index"] < proof["source_count"]
-                        and item["reason"] in {"unqualified_source_post", "duplicate_post_id", "conflicting_source_alias"}
+                        and item["reason"] in {"unqualified_source_post", "duplicate_post_id", "conflicting_source_alias", "invalid_projection"}
                         for item in source_held)
                 and [item["index"] for item in source_held] == sorted({item["index"] for item in source_held})
                 and type(proof.get("source_count")) is int and type(proof.get("staged_count")) is int

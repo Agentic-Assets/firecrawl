@@ -71,6 +71,26 @@ def derive(original: bytes, generation: str, generation_started: str, attempt_st
         raise ValueError("NAI recovery lacks an inventory-only observation")
     partition = partition_posts(rows, generation, capture_start=max(start, now - timedelta(hours=max_age_hours)),
                                 capture_finish=finish, exact_listings=exact["listings"])
+    # Use the same singleton staging precheck as the later candidate validator.
+    # Keep invalid peers in the sealed original and in the explicit held set;
+    # do not let one malformed mapped row abort otherwise identifiable posts.
+    from cre_checkpoint_refresh import ArtifactValidationError, compute_staged_stats
+
+    initially_held = {item["index"] for item in partition["held"]}
+    rejected_ids = set()
+    for index, row in enumerate(rows):
+        if index in initially_held:
+            continue
+        try:
+            stats = compute_staged_stats({"runMeta": meta, "brokers": data["brokers"], "listings": [row]})
+            valid = stats["rejected_by_ingest"] == 0 and stats["staged_unique"] == 1
+        except (ArtifactValidationError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            partition["held"].append({"index": index, "reason": "invalid_projection"})
+            rejected_ids.add(row["id"])
+    partition["held"].sort(key=lambda item: item["index"])
+    partition["staged"] = [item for item in partition["staged"] if item["external_id"] not in rejected_ids]
     if not partition["staged"]:
         raise ValueError("NAI recovery has no identified source posts")
     held_indices = {item["index"] for item in partition["held"]}
@@ -108,7 +128,7 @@ def validate_structure(data, generation, generation_started, attempt_started, *,
     held = receipt["sourceHeld"]
     if (any(not isinstance(item, dict) or set(item) != {"index", "reason"}
             or type(item["index"]) is not int or not 0 <= item["index"] < receipt["originalCount"]
-            or item["reason"] not in {"unqualified_source_post", "duplicate_post_id", "conflicting_source_alias"}
+            or item["reason"] not in {"unqualified_source_post", "duplicate_post_id", "conflicting_source_alias", "invalid_projection"}
             for item in held) or [item["index"] for item in held] != sorted({item["index"] for item in held})
             or len(rows) + len(held) != receipt["originalCount"]):
         raise ValueError("NAI recovery candidate partition differs")

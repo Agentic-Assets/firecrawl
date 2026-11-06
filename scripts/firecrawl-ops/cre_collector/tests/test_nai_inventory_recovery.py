@@ -67,6 +67,15 @@ def test_unidentifiable_row_is_held_without_discarding_identified_peers():
     assert json.loads(encoded)["naiRecovery"]["originalCount"] == 3
 
 
+def test_projection_failure_is_held_before_candidate_validation():
+    data = recovery_source()
+    data["listings"][1]["detailUnavailable"] = True
+    candidate, result = partition(data)
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:1"]
+    assert result["held"] == [{"index": 1, "reason": "invalid_projection"}]
+    assert len(json.loads(candidate)["listings"]) == 1
+
+
 def test_candidate_requires_explicit_unlimited_scope_and_valid_partition():
     data = recovery_source()
     candidate, _ = partition(data)
