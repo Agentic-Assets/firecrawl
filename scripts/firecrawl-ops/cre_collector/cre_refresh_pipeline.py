@@ -316,7 +316,7 @@ def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None
     attempt = checkpoint["attempts"][-1]
     # Franklin may already have archived the original before derivation failed.
     # Keep both that evidence and any derived candidate in their private paths.
-    if source == "franklin-street" and attempt.get("rejected_artifact"):
+    if source in {"franklin-street", "nai-global"} and attempt.get("rejected_artifact"):
         return
     attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
         refresh.archive_rejected_with_evidence(
@@ -361,7 +361,34 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
                 },
             },
         )
-    except refresh.ArtifactValidationError:
+    except refresh.ArtifactValidationError as source_error:
+        if source == "nai-global":
+            from datetime import datetime, timezone
+            from nai_partial.inventory_recovery import _FRESHNESS_ERROR, prepare_owned
+            attempts = checkpoint.get("attempts") or []
+            attempt = attempts[-1] if attempts else {}
+            if (_FRESHNESS_ERROR.fullmatch(str(source_error))
+                    and attempt.get("number") == candidate.get("attempt_number")
+                    and type(attempt.get("rc")) is int and attempt["rc"] == 0
+                    and not attempt.get("rejected_artifact")):
+                original = path.lstat()
+                identity = [original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns, original.st_ctime_ns]
+                if identity != candidate.get("file_identity"):
+                    raise refresh.GlobalStageError("NAI recovery source candidate changed")
+                rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
+                if os.path.lexists(rejected):
+                    raise refresh.GlobalStageError("NAI recovery rejected evidence path occupied")
+                attempt["error"] = str(source_error)
+                relative, digest = refresh.archive_rejected_with_evidence(path, run_dir, manifest, source, attempt)
+                attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = relative, digest
+                refresh.save_manifest(run_dir, manifest)
+                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                recovery = prepare_owned(run_dir, manifest, owner, now=datetime.now(timezone.utc))
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                if recovery is not None:
+                    return prepare_candidate(run_dir, manifest, source)
+                raise source_error
         if source != "franklin-street" or checkpoint.get("franklin_original"):
             raise
         attempts = checkpoint.get("attempts") or []
@@ -516,6 +543,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         )
     try:
         refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.NaiPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "nai-global" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("NAI held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     except refresh.DaumPartialProbeHold:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "daum-commercial" or refresh.git_identity() != (binding["collector_git_sha"], False)
@@ -541,8 +578,15 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
     digest = refresh.sha256_file(path)
     try:
         report = refresh._load_json(path)
+        report_manifest = manifest
+        if source == "nai-global" and checkpoint["artifact"].get("nai_coverage_partial") is True:
+            import copy
+            from nai_partial.coverage_candidate import ORIGINAL
+            if artifact == run_dir / ORIGINAL:
+                report_manifest = copy.deepcopy(manifest)
+                report_manifest["sources"][source]["artifact"]["path"] = ORIGINAL
         refresh.current_inventory.validate_report_scope(
-            report, manifest, source, artifact
+            report, report_manifest, source, artifact
         )
         info = report["per_source"][source]
         summary = report["summary"]
@@ -833,7 +877,8 @@ def run_database_unit(
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
                 or refresh.colliers_partial_candidate(manifest, source)
                 or refresh.franklin_partial_candidate(manifest, source)
-                or refresh.lyon_partial_candidate(manifest, source)):
+                or refresh.lyon_partial_candidate(manifest, source)
+                or refresh.nai_post_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -1385,6 +1430,9 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "nai-public-post-partial-v1":
+                                state["source_results"][source]["visibility_limitation"] = (
+                                    "new post rows with unknown status are excluded from active listing views")
                             if binding.get("schema") == "franklin-site-partial-v1":
                                 state["source_results"][source].update(
                                     buildout_pending=binding.get("buildout_pending"),

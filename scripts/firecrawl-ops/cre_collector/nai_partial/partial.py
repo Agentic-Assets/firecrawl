@@ -1,0 +1,653 @@
+"""Source-native Infabode post staging for an explicitly partial NAI result.
+
+A post is a publication identity, not proof of a unique property or offering.
+The caller must independently authenticate the original artifact and owner.
+"""
+from __future__ import annotations
+
+import base64
+import json
+import math
+import re
+from datetime import datetime, timezone
+from decimal import Decimal
+from urllib.parse import urlsplit, urlunsplit
+
+SOURCE = "nai-global"
+SCOPE = "infabode_public_post"
+_POST_ID = re.compile(r"infabode:([1-9][0-9]*)")
+
+
+def _canonical_alias(value):
+    """Recognize ordinary URLs for collision checks; preserve originals in raw."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or any(ord(c) < 33 or ord(c) == 127 for c in value):
+        raise ValueError("invalid NAI source alias")
+    try:
+        p = urlsplit(value)
+        if (p.scheme.lower() not in {"https", "http"} or not p.hostname or p.username is not None
+                or p.password is not None or p.fragment
+                or p.port not in (None, 443 if p.scheme.lower() == "https" else 80)):
+            raise ValueError("invalid NAI source alias")
+        host = p.hostname.lower()
+        if not re.fullmatch(r"[a-z0-9.-]+", host) or ".." in host:
+            raise ValueError("invalid NAI source alias")
+        # Keep path and query bytes intact. Aliases beyond this narrow rule
+        # remain unresolved; no physical-property uniqueness follows.
+        path = p.path.rstrip("/") or "/"
+        return urlunsplit((p.scheme.lower(), host, path, p.query, ""))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("invalid NAI source alias") from exc
+
+
+def _timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("NAI observation clock missing")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("NAI observation clock invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("NAI observation clock invalid")
+    return parsed
+
+
+def stage_post(listing, generation, *, exact_observation=None):
+    """Validate exact source-post identity; retain the complete input record."""
+    if not isinstance(listing, dict) or listing.get("sourceKey") != SOURCE:
+        raise ValueError("NAI source differs")
+    native = listing.get("id")
+    match = _POST_ID.fullmatch(native) if isinstance(native, str) else None
+    if not match:
+        raise ValueError("NAI native post ID invalid")
+    post_id = match.group(1)
+    if int(post_id) > 9007199254740991:
+        raise ValueError("NAI native post ID exceeds exact source numeric precision")
+    expected_url = f"https://infabode.com/services/listings/{post_id}"
+    post_url = f"https://infabode.com/post/{post_id}"
+    if listing.get("url") != expected_url:
+        raise ValueError("NAI source post URL differs")
+    tx = listing.get("transactionMode")
+    if tx not in {None, "sale", "lease"}:
+        raise ValueError("NAI transaction category invalid")
+    categories = set()
+    for key in ("feedRow", "publicPost"):
+        raw = listing.get(key)
+        if raw is None and key == "publicPost":
+            continue
+        if (not isinstance(raw, dict) or type(raw.get("id")) not in {int, str}
+                or str(raw["id"]) != post_id or raw.get("url") != post_url):
+            raise ValueError("NAI source post evidence differs")
+        category = raw.get("contentType")
+        if isinstance(category, dict) and category.get("id") in (4, 10):
+            categories.add(category["id"])
+    if len(categories) > 1 or (tx is not None and categories and
+                               next(iter(categories)) != (4 if tx == "sale" else 10)):
+        raise ValueError("NAI source transaction category differs")
+    provenance = listing.get("freshnessProvenance")
+    if (not isinstance(provenance, dict) or provenance.get("generationId") != generation
+            or provenance.get("method") != "infabode_public_posts_graphql"
+            or provenance.get("cacheDisposition") != "live"
+            or provenance.get("detailScope") not in {"source_native_public_record", "inventory_only"}):
+        raise ValueError("NAI source generation differs")
+    if (provenance["detailScope"] == "inventory_only"
+            and (listing.get("detailObservedAt") is not None
+                 or (listing.get("publicPost") is not None and not listing.get("detailError")))):
+        raise ValueError("NAI inventory-only detail claim differs")
+    if (provenance["detailScope"] == "source_native_public_record"
+            and (not isinstance(listing.get("publicPost"), dict)
+                 or not listing.get("detailObservedAt") or listing.get("detailError"))):
+        raise ValueError("NAI native detail observation missing")
+    inventory = _timestamp(listing.get("inventoryObservedAt"))
+    detail = _timestamp(listing.get("detailObservedAt")) if listing.get("detailObservedAt") else inventory
+    if detail < inventory:
+        raise ValueError("NAI observation ordering differs")
+    alias = listing.get("canonicalUrl")
+    witness = listing.get("publicPost") or listing["feedRow"]
+    public_alias = witness.get("urlOriginal") or witness.get("url")
+    source_aliases = {raw.get("urlOriginal") for raw in (listing["feedRow"], listing.get("publicPost"))
+                      if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str)
+                      and raw.get("urlOriginal")}
+    if len(source_aliases) > 1:
+        raise ValueError("NAI source aliases differ")
+    if alias is not None and alias != public_alias:
+        raise ValueError("NAI source alias differs")
+    if alias is None and source_aliases:
+        alias = next(iter(source_aliases))
+    alias_key = _canonical_alias(alias)
+
+    # Reuse existing source mapper only after checking source identity. Values
+    # absent or ambiguous there remain NULL; the unmodified source remains raw.
+    from cre_ingest import to_row
+
+    row = to_row(listing, {}, None)
+    if not row or row.get("slug") != SOURCE or row.get("external_id") != native:
+        raise ValueError("NAI mapped identity differs")
+    fields = ("title", "city", "state", "description", "transaction_type",
+              "property_type", "size_sf", "available_sf", "min_divisible_sf",
+              "max_divisible_sf", "lot_size_sf", "year_built", "sale_price_usd",
+              "sale_price_per_sf", "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights", "building_class")
+    projected = {key: row.get(key) for key in fields}
+    # Only lift the title when the actual source record witnesses it. A mapped
+    # display name or address-shaped slug alone is not evidence of a title.
+    title_record = listing.get("publicPost") if provenance["detailScope"] == "source_native_public_record" else listing["feedRow"]
+    source_title = title_record.get("title") if isinstance(title_record, dict) else None
+    source_title = source_title.strip() if isinstance(source_title, str) else None
+    if not source_title or projected["title"] != source_title:
+        projected["title"] = None
+    if tx is None or not categories or projected["transaction_type"] != tx:
+        projected["transaction_type"] = None
+    # These mapped values are not yet rederived from source-native content.
+    # Retain the complete observation below and do not assert them as facts.
+    for key in ("description", "property_type", "size_sf", "available_sf",
+                "min_divisible_sf", "max_divisible_sf", "lot_size_sf",
+                "year_built", "sale_price_per_sf", "highlights"):
+        projected[key] = None
+    # City/state come from the first detail location, or the feed when detail
+    # has none. Require exact mapper output to occur in that native path.
+    location_records = title_record.get("locations") if isinstance(title_record, dict) else None
+    if not isinstance(location_records, list) or not location_records:
+        location_records = listing["feedRow"].get("locations")
+    first = location_records[0] if isinstance(location_records, list) and location_records else None
+    location_value = (first.get("path") or first.get("name")) if isinstance(first, dict) else None
+    parts = [part.strip() for part in location_value.split(",") if part.strip()] if isinstance(location_value, str) else []
+    if not parts or projected["city"] != parts[0]:
+        projected["city"] = None
+    states = [part for part in parts if re.fullmatch(r"[A-Z]{2}", part)]
+    if not states or projected["state"] != states[0]:
+        projected["state"] = None
+    # The native price has a currency label but no lease-rate unit/basis. Do
+    # not turn a lease amount into $/SF/year. DOLLAR supports USD only when a
+    # source location explicitly says United States; the mapper defaults US.
+    price_source = listing.get("publicPost") or listing["feedRow"]
+    tags = price_source.get("tags")
+    classes = set()
+    for tag in tags if isinstance(tags, list) else []:
+        match = re.fullmatch(r"BuildingClass([A-D])", tag.strip(), re.IGNORECASE) if isinstance(tag, str) else None
+        if match:
+            classes.add(match.group(1).upper())
+    if len(classes) != 1 or projected["building_class"] not in classes:
+        projected["building_class"] = None
+    locations = price_source.get("locations")
+    first_location = locations[0] if isinstance(locations, list) and locations else None
+    location_path = (first_location.get("path") or first_location.get("name")) if isinstance(first_location, dict) else None
+    explicit_us = (isinstance(location_path, str)
+                   and any(part.strip().lower() == "united states" for part in location_path.split(",")))
+    projected["country"] = "US" if explicit_us else None
+    def native_amount(value):
+        if type(value) not in {int, float, str}:
+            return None
+        text = str(value).strip()
+        if len(text) > 30 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            return None
+        amount = Decimal(text)
+        return amount if amount.is_finite() and amount > 0 else None
+
+    source_amount = native_amount(price_source.get("price"))
+    mapped_amount = native_amount(projected["sale_price_usd"])
+    other_source = listing["feedRow"] if price_source is listing.get("publicPost") else None
+    other_raw = other_source.get("price") if isinstance(other_source, dict) else None
+    other_amount = native_amount(other_raw) if other_raw is not None else None
+    if (tx != "sale" or categories != {4}
+            or str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us
+            or source_amount is None or mapped_amount != source_amount
+            or (other_raw is not None and other_amount != source_amount)):
+        projected["sale_price_usd"] = None
+    projected["lease_rate_min"] = None
+    projected["lease_rate_max"] = None
+    projected["lease_rate_type"] = None
+    for key, value in projected.items():
+        if isinstance(value, str) and ("\x00" in value or
+                any(0xD800 <= ord(character) <= 0xDFFF for character in value)):
+            projected[key] = None
+        elif isinstance(value, float) and not math.isfinite(value):
+            projected[key] = None
+    state = projected["state"]
+    if state is not None and (not isinstance(state, str) or not re.fullmatch(r"[A-Z]{2}", state)):
+        projected["state"] = None
+    if isinstance(projected["highlights"], list):
+        projected["highlights"] = [value for value in projected["highlights"]
+                                   if isinstance(value, str) and "\x00" not in value
+                                   and not any(0xD800 <= ord(character) <= 0xDFFF for character in value)]
+    else:
+        projected["highlights"] = None
+    year = projected["year_built"]
+    if type(year) not in {int, float} or not math.isfinite(year) or int(year) != year or not -(2**31) <= year < 2**31:
+        projected["year_built"] = None
+    else:
+        projected["year_built"] = int(year)
+    lat, lng = row.get("lat"), row.get("lng")
+    locations = title_record.get("locations") if isinstance(title_record, dict) else None
+    geometry = locations[0].get("geometry") if isinstance(locations, list) and locations and isinstance(locations[0], dict) else None
+    coordinates = geometry.get("coordinates") if isinstance(geometry, dict) else None
+    witnessed_pair = (provenance["detailScope"] == "source_native_public_record"
+                      and isinstance(coordinates, list) and len(coordinates) >= 2
+                      and type(coordinates[0]) in {int, float} and type(coordinates[1]) in {int, float}
+                      and lng == coordinates[0] and lat == coordinates[1]
+                      and (lat != 0 or lng != 0))
+    if (witnessed_pair and type(lat) in {int, float} and type(lng) in {int, float}
+            and math.isfinite(lat) and math.isfinite(lng)
+            and -90 <= lat <= 90 and -180 <= lng <= 180):
+        projected.update(lat=lat, lng=lng)
+    else:
+        projected.update(lat=None, lng=None)
+    if provenance["detailScope"] == "inventory_only":
+        # Preserve the identified post and its complete source observation,
+        # but do not promote mapped facts that could have come from a failed
+        # detail response. Later verified observations may fill these gaps.
+        witnessed_title = projected["title"]
+        projected = {key: None for key in projected}
+        projected["title"] = witnessed_title
+    try:
+        payload = _encode_json(listing if exact_observation is None else exact_observation).encode("ascii")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("NAI source observation cannot be retained") from exc
+    return {"external_id": native, "source_url": expected_url, "alias_key": alias_key, "generation_id": generation,
+            "observed_at": detail.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            "observation_base64": base64.b64encode(payload).decode("ascii"),
+            **projected}
+
+
+def partition_posts(listings, generation, *, capture_start=None, capture_finish=None, exact_listings=None):
+    """Hold invalid or duplicate source identities; never discard source rows."""
+    if not isinstance(listings, list) or not isinstance(generation, str) or not generation:
+        raise ValueError("NAI source partition invalid")
+    if exact_listings is not None and (not isinstance(exact_listings, list) or len(exact_listings) != len(listings)):
+        raise ValueError("NAI exact source partition differs")
+    staged, held = [], []
+    id_counts, alias_counts = {}, {}
+    # An invalid peer can still witness a competing identity. Never count only
+    # the successfully staged partition when testing source-local uniqueness.
+    for index, listing in enumerate(listings):
+        if isinstance(listing, dict):
+            witnessed_ids = set()
+            native = listing.get("id")
+            if isinstance(native, str) and _POST_ID.fullmatch(native):
+                witnessed_ids.add(native)
+            observed_aliases = [listing.get("canonicalUrl"), listing.get("url")]
+            for key in ("feedRow", "publicPost"):
+                raw = listing.get(key)
+                if isinstance(raw, dict):
+                    raw_id = raw.get("id")
+                    raw_text = str(raw_id) if type(raw_id) in {int, str} else ""
+                    if len(raw_text) <= 16 and re.fullmatch(r"[1-9][0-9]*", raw_text) and int(raw_text) <= 9007199254740991:
+                        witnessed_ids.add("infabode:" + raw_text)
+                if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str):
+                    observed_aliases.append(raw["urlOriginal"])
+                if isinstance(raw, dict) and isinstance(raw.get("url"), str):
+                    observed_aliases.append(raw["url"])
+            for alias in observed_aliases:
+                if isinstance(alias, str):
+                    found = re.fullmatch(r"https://infabode\.com/(?:post|services/listings)/([1-9][0-9]*)/?", alias)
+                    if found and len(found.group(1)) <= 16 and int(found.group(1)) <= 9007199254740991:
+                        witnessed_ids.add("infabode:" + found.group(1))
+            for witnessed_id in witnessed_ids:
+                id_counts[witnessed_id] = id_counts.get(witnessed_id, 0) + 1
+            normalized_aliases = set()
+            for alias in observed_aliases:
+                try:
+                    normalized = _canonical_alias(alias)
+                    if normalized is not None:
+                        normalized_aliases.add(normalized)
+                except ValueError:
+                    pass
+            for alias in normalized_aliases:
+                alias_counts[alias] = alias_counts.get(alias, 0) + 1
+        try:
+            row = stage_post(listing, generation, exact_observation=exact_listings[index] if exact_listings is not None else None)
+            if (capture_start is not None and capture_finish is not None
+                    and not (capture_start <= _timestamp(listing.get("inventoryObservedAt"))
+                             <= _timestamp(row["observed_at"]) <= capture_finish)):
+                raise ValueError("NAI source observation outside capture")
+            staged.append((index, row))
+        except (TypeError, ValueError, KeyError, RecursionError):
+            held.append({"index": index, "reason": "unqualified_source_post"})
+    accepted = []
+    for index, row in staged:
+        if id_counts[row["external_id"]] > 1:
+            held.append({"index": index, "reason": "duplicate_post_id"})
+        elif (alias_counts.get(_canonical_alias(row["source_url"]), 0) > 1
+              or (row["alias_key"] is not None and alias_counts.get(row["alias_key"], 0) > 1)):
+            held.append({"index": index, "reason": "conflicting_source_alias"})
+        else:
+            accepted.append(row)
+    return {"staged": accepted, "held": sorted(held, key=lambda item: item["index"])}
+
+def _validated(staged):
+    if not isinstance(staged, list) or not staged:
+        raise ValueError("NAI staged partition empty")
+    seen = set()
+    for row in staged:
+        try:
+            raw = base64.b64decode(row["observation_base64"], validate=True)
+            original = json.loads(raw)
+            exact = json.loads(raw, parse_float=Decimal)
+            expected = stage_post(original, row["generation_id"], exact_observation=exact)
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, RecursionError) as exc:
+            raise ValueError("NAI staged record invalid") from exc
+        if expected != row or row["external_id"] in seen:
+            raise ValueError("NAI staged record differs or repeats")
+        seen.add(row["external_id"])
+
+
+def _encode_json(value):
+    # A PostgreSQL preimage may include numeric values with more precision than
+    # a Python float. Callers parse probe JSON with parse_float=Decimal; encode
+    # those values as JSON numbers rather than rounding or stringifying them.
+    def encode(item):
+        if isinstance(item, Decimal):
+            if not item.is_finite():
+                raise ValueError("NAI preimage number invalid")
+            return str(item)
+        if isinstance(item, dict):
+            if not all(isinstance(key, str) for key in item):
+                raise ValueError("NAI preimage key invalid")
+            return "{" + ",".join(json.dumps(key, ensure_ascii=True) + ":" + encode(item[key])
+                                  for key in sorted(item)) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(value) for value in item) + "]"
+        return json.dumps(item, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+
+    return encode(value)
+
+
+def _payload(value):
+    from cre_ingest import sql_lit
+    return sql_lit(_encode_json(value))
+
+
+def _url_key(expression):
+    # Conservative case-folding intentionally holds possible conflicts. Query
+    # and path stay part of the key; it makes no property-equivalence claim.
+    return ("regexp_replace(regexp_replace(lower(" + expression
+            + "), ':443(?=[/?#]|$)', '', 'g'), '/+(?=\\?|$)', '', 'g')")
+
+
+def identity_probe_sql(staged):
+    """Return source-bound parent/index preimages and collision holds.
+
+    Intended to be rechecked inside the shared lifecycle transaction. It is not
+    a standalone write authorization or a universal cross-writer URL constraint.
+    """
+    _validated(staged)
+    payload = _payload(staged)
+    alias = _url_key("s.r->>'alias_key'")
+    source = _url_key("s.r->>'source_url'")
+    other_source = _url_key("other.source_url")
+    other_canonical = _url_key("other.canonical_url")
+    own_canonical = _url_key("own.canonical_url")
+    index_url = _url_key("other.url")
+    peer_alias = _url_key("peer.r->>'alias_key'")
+    peer_source = _url_key("peer.r->>'source_url'")
+    history_alias = _url_key("entry.value->>'aliasKey'")
+    return f"""
+WITH candidate AS (SELECT value AS r FROM jsonb_array_elements({payload}::jsonb)),
+scoped AS (
+ SELECT b.id brokerage_id, c.r FROM candidate c
+ JOIN credeals.cre_brokerages b ON b.slug='nai-global'
+),
+conflicts AS (
+ SELECT s.r->>'external_id' external_id FROM scoped s
+ LEFT JOIN credeals.cre_listings own
+   ON own.brokerage_id=s.brokerage_id AND own.external_id=s.r->>'external_id'
+ LEFT JOIN credeals.cre_source_index si
+   ON si.brokerage_id=s.brokerage_id AND si.external_id=s.r->>'external_id'
+ WHERE (own.id IS NOT NULL AND (
+   own.deleted_at IS NOT NULL OR (own.status IS NOT NULL AND own.status <> 'active')
+   OR own.source_url IS DISTINCT FROM s.r->>'source_url'
+   OR (own.canonical_url IS NOT NULL AND NOT COALESCE(({own_canonical}) IN ({source},{alias}), false))
+   OR (own.scraped_at IS NOT NULL AND own.scraped_at > (s.r->>'observed_at')::timestamptz)
+   OR jsonb_typeof(own.raw_data) IS DISTINCT FROM 'object'
+   OR NOT COALESCE((own.raw_data->>'sourceKey'='nai-global'
+                    AND own.raw_data->>'id'=s.r->>'external_id')
+       OR (jsonb_typeof(own.raw_data->'primary')='object'
+           AND jsonb_typeof(own.raw_data->'secondary_pass')='object'
+           AND own.raw_data#>>'{{primary,sourceKey}}'='nai-global'
+           AND own.raw_data#>>'{{secondary_pass,sourceKey}}'='nai-global'
+           AND own.raw_data#>>'{{primary,id}}'=s.r->>'external_id'
+           AND own.raw_data#>>'{{secondary_pass,id}}'=s.r->>'external_id'), false)
+   OR (own.raw_data ? 'naiPublicPostHistory' AND NOT COALESCE(
+      jsonb_typeof(own.raw_data->'naiPublicPostHistory')='object'
+      AND own.raw_data#>>'{{naiPublicPostHistory,schema}}'='nai-public-post-history/v1'
+      AND own.raw_data#>>'{{naiPublicPostHistory,identityScope}}'='infabode_public_post'
+      AND own.raw_data#>>'{{naiPublicPostHistory,externalId}}'=s.r->>'external_id'
+      AND jsonb_typeof(own.raw_data#>'{{naiPublicPostHistory,entries}}')='array'
+      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(own.raw_data#>'{{naiPublicPostHistory,entries}}')='array'
+             THEN own.raw_data#>'{{naiPublicPostHistory,entries}}' ELSE '[]'::jsonb END) e(value)
+        WHERE jsonb_typeof(e.value) IS DISTINCT FROM 'object'
+          OR e.value->>'schema' IS DISTINCT FROM 'nai-public-post-entry/v1'
+          OR COALESCE(e.value->>'observedAt','') !~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T\\d{{2}}:\\d{{2}}:\\d{{2}}\\.\\d{{6}}Z$'
+          OR (e.value->>'observedAt') >= (s.r->>'observed_at')
+          OR jsonb_typeof(e.value->'recordBase64') IS DISTINCT FROM 'string'), false))))
+ OR (si.id IS NOT NULL AND (
+   own.id IS NULL OR si.source_key IS DISTINCT FROM 'nai-global'
+   OR si.url IS DISTINCT FROM own.source_url OR si.soft_deleted IS TRUE
+   OR si.observation_present IS FALSE
+   OR (si.last_enumerated_at IS NOT NULL AND si.last_enumerated_at > (s.r->>'observed_at')::timestamptz)))
+ OR EXISTS (SELECT 1 FROM scoped peer
+   WHERE peer.r->>'external_id'<>s.r->>'external_id'
+   AND (({peer_source}) IN ({source},{alias}) OR ({peer_alias}) IN ({source},{alias})))
+ OR EXISTS (SELECT 1 FROM credeals.cre_listings other
+   WHERE other.brokerage_id=s.brokerage_id AND (own.id IS NULL OR other.id<>own.id)
+   AND (({other_source}) IN ({source},{alias}) OR ({other_canonical}) IN ({source},{alias})))
+ OR EXISTS (SELECT 1 FROM credeals.cre_source_index other
+   WHERE other.brokerage_id=s.brokerage_id AND other.external_id IS DISTINCT FROM s.r->>'external_id'
+   AND ({index_url}) IN ({source},{alias}))
+ OR EXISTS (SELECT 1 FROM credeals.cre_listings other
+   CROSS JOIN LATERAL jsonb_array_elements(
+     CASE WHEN jsonb_typeof(other.raw_data#>'{{naiPublicPostHistory,entries}}')='array'
+          THEN other.raw_data#>'{{naiPublicPostHistory,entries}}' ELSE '[]'::jsonb END) entry(value)
+   WHERE other.brokerage_id=s.brokerage_id AND (own.id IS NULL OR other.id<>own.id)
+     AND ({history_alias}) IN ({source},{alias}))
+)
+SELECT (SELECT count(*) FROM candidate) staged, (SELECT count(*) FROM scoped) joined,
+ COALESCE((SELECT json_agg(external_id ORDER BY external_id) FROM conflicts),'[]'::json)::text held,
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('external_id',s.r->>'external_id',
+   'listing',to_jsonb(own),'source_index',to_jsonb(si),'children',jsonb_build_object(
+     'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=own.id),'[]'::jsonb),
+     'documents',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=own.id),'[]'::jsonb),
+     'images',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=own.id),'[]'::jsonb),
+     'media',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_media x WHERE x.listing_id=own.id),'[]'::jsonb),
+     'links',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_links x WHERE x.listing_id=own.id),'[]'::jsonb)))
+   ORDER BY s.r->>'external_id')
+ FROM scoped s LEFT JOIN credeals.cre_listings own
+   ON own.brokerage_id=s.brokerage_id AND own.external_id=s.r->>'external_id'
+ LEFT JOIN credeals.cre_source_index si
+   ON si.brokerage_id=s.brokerage_id AND si.external_id=s.r->>'external_id'),'[]'::jsonb)::text preimage
+"""
+
+def _partition(staged, held, preimage):
+    _validated(staged)
+    ids = {row["external_id"] for row in staged}
+    if (not isinstance(held, list) or held != sorted(set(held))
+            or not set(held) <= ids or not isinstance(preimage, list)
+            or len(preimage) != len(ids)
+            or any(not isinstance(row, dict)
+                   or set(row) != {"external_id", "listing", "source_index", "children"}
+                   for row in preimage)
+            or {row["external_id"] for row in preimage} != ids):
+        raise ValueError("NAI target partition invalid")
+
+
+def build_partial_sql(staged, held, preimage, job_id, started_at, finished_at):
+    """Add post observations under the shared lifecycle lock.
+
+    The caller authenticates source/target/owner and must resolve uncertain
+    commit outcomes before another writer. Noncooperating writers are outside
+    the shared advisory-lock contract.
+    """
+    import uuid
+
+    from cre_ingest import lifecycle_transaction_lock_sql, sql_lit
+
+    _partition(staged, held, preimage)
+    job = str(uuid.UUID(job_id))
+    payload, hold, before = _payload(staged), _payload(held), _payload(preimage)
+    source = _url_key("c.r->>'source_url'")
+    alias = _url_key("c.r->>'alias_key'")
+    other_source = _url_key("l.source_url")
+    other_canonical = _url_key("l.canonical_url")
+    index_url = _url_key("si.url")
+    return f"""
+BEGIN;
+{lifecycle_transaction_lock_sql()}
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM credeals.cre_scrape_jobs WHERE id={sql_lit(job)}::uuid)
+ THEN RAISE EXCEPTION 'NAI partial job already exists'; END IF;
+ PERFORM si.id FROM credeals.cre_source_index si
+ WHERE si.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='nai-global')
+ AND EXISTS (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+    WHERE si.external_id=c.r->>'external_id' OR ({index_url}) IN ({source},{alias}))
+ ORDER BY si.id FOR UPDATE;
+ PERFORM l.id FROM credeals.cre_listings l
+ WHERE l.brokerage_id=(SELECT id FROM credeals.cre_brokerages WHERE slug='nai-global')
+ AND EXISTS (SELECT 1 FROM jsonb_array_elements({payload}::jsonb) c(r)
+    WHERE l.external_id=c.r->>'external_id'
+       OR ({other_source}) IN ({source},{alias})
+       OR ({other_canonical}) IN ({source},{alias}))
+ ORDER BY l.id FOR UPDATE;
+END $$;
+CREATE TEMP TABLE _nai_partial_probe ON COMMIT DROP AS {identity_probe_sql(staged)};
+DO $$ BEGIN
+ IF (SELECT staged FROM _nai_partial_probe) <> {len(staged)}
+ OR (SELECT joined FROM _nai_partial_probe) <> {len(staged)}
+ OR (SELECT held::jsonb FROM _nai_partial_probe) <> {hold}::jsonb
+ OR (SELECT preimage::jsonb FROM _nai_partial_probe) <> {before}::jsonb
+ THEN RAISE EXCEPTION 'NAI post identity partition changed'; END IF;
+END $$;
+CREATE TEMP TABLE _nai_partial_rows ON COMMIT DROP AS
+ SELECT b.id brokerage_id,value r FROM jsonb_array_elements({payload}::jsonb)
+ JOIN credeals.cre_brokerages b ON b.slug='nai-global'
+ WHERE NOT (value->>'external_id' IN (SELECT jsonb_array_elements_text({hold}::jsonb)));
+INSERT INTO credeals.cre_scrape_jobs
+ (id,brokerage_id,status,started_at,completed_at,listings_discovered,listings_scraped,listings_saved,errors_count,notes)
+SELECT {sql_lit(job)}::uuid,id,'partial',{sql_lit(started_at)}::timestamptz,{sql_lit(finished_at)}::timestamptz,
+ {len(staged)},{len(staged)},{len(staged)-len(held)},0,'NAI source posts; identity scope publication; coverage unknown'
+FROM credeals.cre_brokerages WHERE slug='nai-global';
+UPDATE credeals.cre_listings l SET
+ title=COALESCE(l.title,r->>'title'),
+ lat=CASE WHEN l.lat IS NULL AND l.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lat')::double precision ELSE l.lat END,
+ lng=CASE WHEN l.lat IS NULL AND l.lng IS NULL AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+          THEN (r->>'lng')::double precision ELSE l.lng END,
+ raw_data=jsonb_set(l.raw_data,'{{naiPublicPostHistory}}',
+ CASE WHEN l.raw_data ? 'naiPublicPostHistory'
+   THEN jsonb_set(l.raw_data->'naiPublicPostHistory','{{entries}}',
+      (l.raw_data#>'{{naiPublicPostHistory,entries}}') ||
+      jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
+          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key')))
+   ELSE jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
+      'externalId',r->>'external_id','entries',
+      jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
+          'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key'))) END)
+FROM _nai_partial_rows s WHERE l.brokerage_id=s.brokerage_id AND l.external_id=r->>'external_id';
+INSERT INTO credeals.cre_listings
+ (brokerage_id,external_id,source_url,canonical_url,status,transaction_type,property_type,
+  title,city,state,lat,lng,description,size_sf,available_sf,min_divisible_sf,max_divisible_sf,
+  lot_size_sf,year_built,sale_price_usd,sale_price_per_sf,lease_rate_min,lease_rate_max,lease_rate_type,highlights,building_class,
+  country,scraped_at,raw_data)
+SELECT brokerage_id,r->>'external_id',r->>'source_url',NULL,NULL,r->>'transaction_type',r->>'property_type',
+ r->>'title',r->>'city',r->>'state',(r->>'lat')::double precision,(r->>'lng')::double precision,
+ r->>'description',(r->>'size_sf')::numeric,(r->>'available_sf')::numeric,
+ (r->>'min_divisible_sf')::numeric,(r->>'max_divisible_sf')::numeric,(r->>'lot_size_sf')::numeric,
+ (r->>'year_built')::integer,(r->>'sale_price_usd')::numeric,(r->>'sale_price_per_sf')::numeric,
+ (r->>'lease_rate_min')::numeric,(r->>'lease_rate_max')::numeric,r->>'lease_rate_type',
+ CASE WHEN jsonb_typeof(r->'highlights')='array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'highlights')) END,
+ r->>'building_class',
+ r->>'country',NULL,jsonb_build_object('sourceKey','nai-global','id',r->>'external_id',
+ 'identityScope','infabode_public_post','naiPublicPostHistory',
+ jsonb_build_object('schema','nai-public-post-history/v1','identityScope','infabode_public_post',
+   'externalId',r->>'external_id','entries',
+   jsonb_build_array(jsonb_build_object('schema','nai-public-post-entry/v1',
+     'observedAt',r->>'observed_at','recordBase64',r->>'observation_base64','aliasKey',r->'alias_key'))))
+FROM _nai_partial_rows s WHERE NOT EXISTS (
+ SELECT 1 FROM credeals.cre_listings l
+ WHERE l.brokerage_id=s.brokerage_id AND l.external_id=s.r->>'external_id');
+COMMIT;
+"""
+
+def partial_readback_sql(staged, held, preimage, job_id, started_at, finished_at):
+    """Verify exact parent projection, raw history, lifecycle and five children."""
+    import copy
+    import uuid
+
+    from cre_ingest import sql_lit
+
+    _partition(staged, held, preimage)
+    job = str(uuid.UUID(job_id))
+    prior = {item["external_id"]: item for item in preimage}
+    expected = []
+    for row in staged:
+        previous = prior[row["external_id"]]
+        entry = {"schema": "nai-public-post-entry/v1", "observedAt": row["observed_at"],
+                 "recordBase64": row["observation_base64"], "aliasKey": row["alias_key"]}
+        listing = previous["listing"]
+        if row["external_id"] in held:
+            raw = None
+        elif listing is None:
+            raw = {"sourceKey": "nai-global", "id": row["external_id"],
+                   "identityScope": SCOPE, "naiPublicPostHistory": {
+                       "schema": "nai-public-post-history/v1", "identityScope": SCOPE,
+                       "externalId": row["external_id"], "entries": [entry]}}
+        else:
+            raw = copy.deepcopy(listing["raw_data"])
+            history = raw.get("naiPublicPostHistory")
+            if history is None:
+                history = {"schema": "nai-public-post-history/v1", "identityScope": SCOPE,
+                           "externalId": row["external_id"], "entries": []}
+                raw["naiPublicPostHistory"] = history
+            history["entries"].append(entry)
+        expected.append({"r": row, "p": previous, "held": row["external_id"] in held, "raw": raw})
+    payload = _payload(expected)
+    fields = ("transaction_type", "property_type", "title", "city", "state",
+              "description", "size_sf", "available_sf", "min_divisible_sf", "max_divisible_sf",
+              "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
+              "lease_rate_min", "lease_rate_max", "lease_rate_type", "highlights", "building_class")
+    projected = " OR ".join(f"listing->'{key}' IS DISTINCT FROM r->'{key}'" for key in fields)
+    projected += (" OR (listing->>'lat')::double precision IS DISTINCT FROM (r->>'lat')::double precision"
+                  " OR (listing->>'lng')::double precision IS DISTINCT FROM (r->>'lng')::double precision")
+    return f"""
+WITH expected AS (
+ SELECT value->'r' r,value->'p' p,(value->>'held')::boolean held,value->'raw' raw
+ FROM jsonb_array_elements({payload}::jsonb)
+), observed AS (
+ SELECT e.*,to_jsonb(l) listing,to_jsonb(si) source_index,
+ encode(float8send(l.lat),'hex') lat_bits,encode(float8send(l.lng),'hex') lng_bits,
+ jsonb_build_object(
+  'contacts',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=l.id),'[]'::jsonb),
+  'documents',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_documents x WHERE x.listing_id=l.id),'[]'::jsonb),
+  'images',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_images x WHERE x.listing_id=l.id),'[]'::jsonb),
+  'media',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_media x WHERE x.listing_id=l.id),'[]'::jsonb),
+  'links',COALESCE((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_links x WHERE x.listing_id=l.id),'[]'::jsonb)) children
+ FROM expected e JOIN credeals.cre_brokerages b ON b.slug='nai-global'
+ LEFT JOIN credeals.cre_listings l ON l.brokerage_id=b.id AND l.external_id=e.r->>'external_id'
+ LEFT JOIN credeals.cre_source_index si ON si.brokerage_id=b.id AND si.external_id=e.r->>'external_id'
+), mismatches AS (
+ SELECT 1 FROM observed WHERE source_index IS DISTINCT FROM NULLIF(p->'source_index','null'::jsonb)
+ OR children IS DISTINCT FROM p->'children'
+ OR (held AND listing IS DISTINCT FROM NULLIF(p->'listing','null'::jsonb))
+ OR (NOT held AND (listing IS NULL OR listing->'raw_data' IS DISTINCT FROM raw
+   OR listing->>'source_url' IS DISTINCT FROM r->>'source_url'
+   OR (p->'listing'='null'::jsonb AND (
+       listing->>'status' IS NOT NULL OR listing->>'canonical_url' IS NOT NULL
+       OR listing->>'country' IS DISTINCT FROM r->>'country'
+       OR listing->>'scraped_at' IS NOT NULL OR {projected}))
+   OR (p->'listing'<>'null'::jsonb AND (
+      (listing - ARRAY['updated_at','raw_data','title','lat','lng']) IS DISTINCT FROM
+      ((p->'listing') - ARRAY['updated_at','raw_data','title','lat','lng'])
+      OR listing->'title' IS DISTINCT FROM COALESCE(NULLIF(p->'listing'->'title','null'::jsonb),r->'title')
+      OR CASE WHEN p->'listing'->>'lat' IS NULL AND p->'listing'->>'lng' IS NULL
+                    AND r->>'lat' IS NOT NULL AND r->>'lng' IS NOT NULL
+         THEN lat_bits IS DISTINCT FROM encode(float8send((r->>'lat')::double precision),'hex')
+           OR lng_bits IS DISTINCT FROM encode(float8send((r->>'lng')::double precision),'hex')
+         ELSE listing->'lat' IS DISTINCT FROM p->'listing'->'lat'
+           OR listing->'lng' IS DISTINCT FROM p->'listing'->'lng' END))))
+)
+SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs j JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
+ WHERE b.slug='nai-global' AND j.id={sql_lit(job)}::uuid AND j.status='partial'
+ AND j.listings_discovered={len(staged)} AND j.listings_saved={len(staged)-len(held)}
+ AND j.started_at={sql_lit(started_at)}::timestamptz AND j.completed_at={sql_lit(finished_at)}::timestamptz) jobs,
+ (SELECT count(*) FROM observed) observed,(SELECT count(*) FROM mismatches) mismatches
+"""
