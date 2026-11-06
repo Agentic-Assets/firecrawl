@@ -102,3 +102,18 @@ def test_real_process_death_after_prespawn_fences_restart(tmp_path):
         queue.drain(tmp_path, launch=lambda _: pytest.fail("must never redispatch uncertain work"),
                     qualify=lambda request: attempts.append(request) or {"outcome": "unknown"})
     assert attempts == [{"kind": "broad"}]
+
+
+def test_preparation_failure_remains_queued_and_can_be_retried(tmp_path):
+    queue.enqueue(tmp_path, "slot", {"kind": "source"})
+    with pytest.raises(ValueError, match="preflight"):
+        queue.drain(tmp_path, prepare=lambda _: (_ for _ in ()).throw(ValueError("preflight")),
+                    launch=lambda *_: pytest.fail("must not launch"), qualify=lambda _: pytest.fail("must not qualify"))
+    record = json.loads((tmp_path / "slot.json").read_text())
+    assert record["state"] == "queued" and record["result"]["outcome"] == "pre_spawn_refused"
+    events = []
+    queue.drain(tmp_path, prepare=lambda _: ["prepared"],
+        launch=lambda _request, prepared: events.append(prepared),
+        qualify=lambda _: {"outcome": "qualified"})
+    assert events == [["prepared"]]
+    assert json.loads((tmp_path / "slot.json").read_text())["state"] == "settled"

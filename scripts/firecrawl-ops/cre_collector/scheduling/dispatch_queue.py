@@ -86,7 +86,7 @@ def enqueue(path: Path, slot: str, request: dict) -> None:
         os.close(directory)
 
 
-def drain(path: Path, *, launch, qualify, successor=None) -> bool:
+def drain(path: Path, *, launch, qualify, successor=None, prepare=None) -> bool:
     """Run queued intents under one lock; uncertain attempts are never replayed.
 
     ``launch`` must invoke the real foreground launcher using the request's
@@ -121,9 +121,21 @@ def drain(path: Path, *, launch, qualify, successor=None) -> bool:
             if record["state"] == "settled":
                 continue
             if record["state"] == "queued":
+                prepared = None
+                if prepare is not None:
+                    try:
+                        prepared = prepare(record["request"])
+                    except Exception as exc:
+                        # Nothing capable of launching the native process has
+                        # run. Preserve this intent for a later safe retry.
+                        record["result"] = {"outcome": "pre_spawn_refused", "error_type": type(exc).__name__}
+                        _write(directory, name, record, create=False)
+                        raise
                 record["state"] = "dispatch_uncertain"
+                record["result"] = None
                 _write(directory, name, record, create=False)
-                launch_result = launch(record["request"])
+                launch_result = (launch(record["request"], prepared) if prepare is not None
+                                 else launch(record["request"]))
             else:
                 launch_result = None
             result = (launch_result if isinstance(launch_result, dict)

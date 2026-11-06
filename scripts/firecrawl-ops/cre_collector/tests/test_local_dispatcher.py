@@ -70,7 +70,7 @@ def test_target_change_refuses_before_native_launcher(policy, monkeypatch):
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "d" * 64})
     monkeypatch.setattr(dispatcher.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
     with pytest.raises(ValueError, match="target changed"):
-        dispatcher.launch(request)
+        dispatcher.prepare_launch(request)
 
 
 def test_tampered_derived_scope_refuses_before_native_launcher(policy, monkeypatch):
@@ -78,7 +78,25 @@ def test_tampered_derived_scope_refuses_before_native_launcher(policy, monkeypat
     request["config"]["sources"] = ["savills"]
     monkeypatch.setattr(dispatcher.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
     with pytest.raises(ValueError, match="intent differs"):
-        dispatcher.launch(request)
+        dispatcher.prepare_launch(request)
+
+
+def test_failed_native_exec_is_proven_no_work(policy, monkeypatch):
+    request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("synthetic executable missing")
+    monkeypatch.setattr(dispatcher.subprocess, "Popen", missing)
+    assert dispatcher.launch(request, ["synthetic-missing"])["status"] == "native_start_failed"
+
+
+def test_error_after_native_start_is_not_no_work(policy, monkeypatch):
+    request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
+    class Started:
+        def communicate(self):
+            raise OSError("synthetic lost process")
+    monkeypatch.setattr(dispatcher.subprocess, "Popen", lambda *a, **kw: Started())
+    with pytest.raises(OSError, match="lost process"):
+        dispatcher.launch(request, ["synthetic"])
 
 
 def test_only_one_target_bound_deadline_successor(policy, monkeypatch):
@@ -115,7 +133,8 @@ def test_real_cli_path_persists_and_drains_synthetic_intent(tmp_path, policy, mo
     policy_file = tmp_path / "policy.json"
     policy_file.write_text(json.dumps(policy))
     calls = []
-    monkeypatch.setattr(dispatcher, "launch", lambda request: calls.append(("launch", request["series_id"])))
+    monkeypatch.setattr(dispatcher, "prepare_launch", lambda request: ["synthetic"])
+    monkeypatch.setattr(dispatcher, "launch", lambda request, _argv: calls.append(("launch", request["series_id"])))
     monkeypatch.setattr(dispatcher, "qualify", lambda request: calls.append(("qualify", request["series_id"]))
                         or {"status": "complete", "outcome": "qualified", "unfinished_sources": []})
     slot = "20200101T000000Z_colliers"

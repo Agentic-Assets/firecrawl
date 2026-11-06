@@ -120,8 +120,8 @@ def launcher_arguments(request: dict) -> list[str]:
     return argv
 
 
-def launch(request: dict) -> dict | None:
-    """Invoke the existing native launcher; it performs fresh Windows admission."""
+def prepare_launch(request: dict) -> list[str]:
+    """Perform only read-only checks before any native process is started."""
     policy = request["policy"]
     if refresh.database_target_fingerprint(policy["env_file"]) != request["target"]:
         raise ValueError("database target changed before dispatch")
@@ -145,9 +145,19 @@ def launch(request: dict) -> dict | None:
         raw = observed.read_bytes()
         if raw != expected or (observed == launcher and hashlib.sha256(raw).hexdigest() != policy["windows_launcher_sha256"]):
             raise ValueError("Windows launcher custody changed before dispatch")
-    argv = launcher_arguments(request)
-    completed = subprocess.run(argv, check=False, capture_output=True, text=True)
-    return native_no_work_result(completed.returncode, completed.stdout, request)
+    return launcher_arguments(request)
+
+
+def launch(request: dict, argv: list[str]) -> dict | None:
+    """Invoke the existing native launcher; it performs fresh Windows admission."""
+    try:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        # With shell=False and no pre-exec hook, an exec error means the native
+        # launcher image did not start. All later failures remain uncertain.
+        return {"outcome": "settled_no_work", "status": "native_start_failed"}
+    stdout, _stderr = process.communicate()
+    return native_no_work_result(process.returncode, stdout, request)
 
 
 def native_no_work_result(returncode: int, stdout: str, request: dict) -> dict | None:
@@ -224,7 +234,7 @@ def main(argv=None) -> int:
         os.close(parent_fd)
     path = parent / "local-dispatch"
     dispatch_queue.enqueue(path, args.slot, request)
-    dispatch_queue.drain(path, launch=launch, qualify=qualify, successor=successor)
+    dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify, successor=successor)
     return 0
 
 
