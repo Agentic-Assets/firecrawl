@@ -213,6 +213,10 @@ if result_fd is not None:
         assert proof["ok"] is True and proof["outcome"] == "exact_commit"
         assert proof["expected"] == 100
         print("Two real database windows, settled rotation and historical readback: PASS")
+        from tests.colliers_controlled_recovery_fixture import run as run_controlled_recovery
+        run_controlled_recovery(root, HERE.parent, env_file, shim,
+                                root / "fixture" / "fake-fetch.mjs", database["target"]["value"],
+                                lambda: sql("SELECT count(*) FROM credeals.cre_scrape_jobs"))
     finally:
         if container_id is not None:
             inspected = docker("inspect", "--format",
