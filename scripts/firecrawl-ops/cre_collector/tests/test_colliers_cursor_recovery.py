@@ -234,6 +234,73 @@ def test_qualification_turns_settled_missing_evidence_into_source_hold(incident,
         recovery.qualify(series_dir, owner)
 
 
+@pytest.mark.parametrize("case", ["nai_only", "colliers", "duplicate", "child_collapse", "missing_metric"])
+def test_historical_quality_preserves_global_diagnostic_and_scopes_admission(tmp_path, monkeypatch, case):
+    from pathlib import Path
+    import copy
+    import cre_colliers_image_transition
+    from tests.test_cre_preflight_validation_profile import declared_full
+    from tests.test_cre_checkpoint_refresh import absolute_quality_report
+
+    run = tmp_path / "run"
+    (run / "logs").mkdir(parents=True)
+    before = declared_full()
+    after = copy.deepcopy(before)
+    colliers = absolute_quality_report(source="colliers")["queries"]["quality_by_source"][0]
+    changed = copy.deepcopy(colliers)
+    if case == "colliers":
+        changed["bad_source_url"] = "1"
+    if case == "missing_metric":
+        changed.pop("bad_source_url")
+    before["queries"]["quality_by_source"] = [
+        {"source_key": "nai-global", "missing_canonical_url": "0"}, colliers]
+    after["queries"]["quality_by_source"] = [
+        {"source_key": "nai-global", "missing_canonical_url": "92"},
+        {"source_key": "colliers-main", "missing_canonical_url": "100"}, changed]
+    before["queries"]["child_counts"].append({"source_key": "colliers", "child_type": "images", "count": "100"})
+    after["queries"]["child_counts"].append({"source_key": "colliers", "child_type": "images",
+        "count": "50" if case == "child_collapse" else "100"})
+    if case == "duplicate":
+        after["queries"]["duplicates"].append({"check_name": "duplicate_source_url_groups",
+            "source_key": "colliers", "groups": "1", "rows": "2"})
+    assert refresh.compare_validation_quality(before, after)["ok"] is False
+    colliers_regression = case != "nai_only"
+    baseline = run / "before.json"
+    _write(baseline, before)
+    evidence = run / "private-evidence"
+    manifest = refresh.new_manifest(run, git_sha="a" * 40, git_dirty=False,
+        sources=("colliers",), page_cap=0, concurrency=1)
+    manifest["preflight"]["database_target"] = {"algorithm": "sha256", "value": "c" * 64}
+    def write_report(argv, _log, env):
+        _write(Path(argv[argv.index("--out") + 1]), after)
+        return 0
+    monkeypatch.setattr(refresh, "run_command", write_report)
+    monkeypatch.setattr(refresh, "colliers_partial_candidate", lambda *args: True)
+    monkeypatch.setattr(refresh, "colliers_partial_readback", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(refresh, "verify_validation_readback",
+        lambda *args, **kwargs: {"ok": True, "failed_sources": []})
+    monkeypatch.setattr(cre_colliers_image_transition, "verified_checkpoint", lambda *args: None)
+    options = {"sources": ["colliers"], "evidence_dir": evidence, "before_path": baseline,
+               "historical_colliers_producer_sha": "a" * 40, "persist_manifest": False}
+    if colliers_regression:
+        with pytest.raises(refresh.GlobalStageError, match="final validation"):
+            refresh.run_final_validation(run, manifest, None, **options)
+    else:
+        result = refresh.run_final_validation(run, manifest, None, **options)
+        assert result["quality_no_regression"] is True
+    saved = json.loads((evidence / "validation.json").read_text())
+    global_quality = saved["colliers_recovery_global_quality_diagnostic"]
+    assert global_quality["ok"] is False
+    assert any("nai-global" in item and "0->92" in item for item in global_quality["failures"])
+    source_quality = saved["colliers_recovery_source_quality"]
+    assert source_quality["ok"] is not colliers_regression
+    if case in {"colliers", "duplicate", "child_collapse"}:
+        assert any("colliers" in item for item in source_quality["failures"])
+    elif case == "missing_metric":
+        assert source_quality["failures"] == ["Colliers recovery quality rows are incomplete or malformed"]
+    assert manifest["validation"]["readback_ok"] is True
+
+
 @pytest.mark.parametrize("mismatch", ["postimage", "held_partition", "target"])
 def test_actual_historical_readback_mismatch_is_source_local_except_target(incident, monkeypatch, mismatch):
     from types import SimpleNamespace

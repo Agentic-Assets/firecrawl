@@ -23,6 +23,10 @@ from cre_stop_guarded_tier import StopRefused, _read_at, _safe_stat
 class SourceEvidenceRefusal(ValueError):
     """Settled Colliers-specific evidence cannot qualify; hold only this source."""
 
+    def __init__(self, message, *, code="source_evidence_refused"):
+        super().__init__(message)
+        self.code = code
+
 
 def _digest(path: Path, limit: int) -> tuple[bytes, str]:
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -254,7 +258,9 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
                 and completed["rc"] == 0
                 and completed.get("query_execution_ok") is True
                 and (completed.get("quality_no_regression") is False or completed.get("readback_ok") is False)):
-            raise SourceEvidenceRefusal("Colliers recovery readback or quality refused") from exc
+            code = ("quality_regression" if completed.get("quality_no_regression") is False
+                    else "readback_mismatch")
+            raise SourceEvidenceRefusal("Colliers recovery readback or quality refused", code=code) from exc
         raise
     except refresh.LockHeldError:
         raise
@@ -267,7 +273,7 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
         if (refresh.database_target_fingerprint(env_file) != {"algorithm": "sha256", "value": expected_target}
                 or refresh.git_identity() != (verifier_sha, False)):
             raise refresh.GlobalStageError("Colliers recovery owner, verifier or target changed") from exc
-        raise SourceEvidenceRefusal("Colliers historical source evidence refused") from exc
+        raise SourceEvidenceRefusal("Colliers historical source evidence refused", code="historical_readback_refused") from exc
     proof = child["sources"]["colliers"]["readback"]["observation"]
     validation_path = evidence_dir / "validation.json"
     validation_raw, validation_sha = _digest(validation_path, 32 * 1024 * 1024)
