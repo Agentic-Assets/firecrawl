@@ -1,6 +1,8 @@
 """Synthetic multi-window pipeline against an isolated real PostgreSQL schema."""
+import copy
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -12,8 +14,8 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-def command(*args, text=None, check=True):
-    return subprocess.run(args, input=text, text=True, capture_output=True, check=check, timeout=120)
+def command(*args, text=None, check=True, env=None):
+    return subprocess.run(args, input=text, text=True, capture_output=True, check=check, timeout=120, env=env)
 
 
 def main():
@@ -23,27 +25,59 @@ def main():
     )
 
     name = "colliers-multi-" + uuid.uuid4().hex[:12]
-    # Only this synthetic directory is shared with the networkless container.
+    # Synthetic artifacts stay on the host; SQL is streamed into the container.
     root = Path(tempfile.mkdtemp(prefix="colliers-multi-"))
     os.environ["TMPDIR"] = str(root)
     tempfile.tempdir = str(root)
     print(f"synthetic fixture evidence: {root}", flush=True)
+    # The daemon is outside the test network namespace. Pin a local Unix socket,
+    # an empty private Docker config and a local image; never contact a registry.
+    docker_config = root / "docker-config"
+    docker_config.mkdir(mode=0o700)
+    docker_env = {"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": str(docker_config),
+                  "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    docker_binary = Path("/usr/bin/docker").resolve(strict=True)
+    binary_info = docker_binary.stat()
+    if (not stat.S_ISREG(binary_info.st_mode) or binary_info.st_uid != 0 or binary_info.st_gid != 0
+            or binary_info.st_mode & stat.S_IWOTH or not os.access(docker_binary, os.X_OK)):
+        raise RuntimeError("Docker executable ownership or permissions are unsafe")
+    label_value = uuid.uuid4().hex
+    label = "agentic-assets.colliers-fixture=" + label_value
+    container_id = None
+
+    def docker(*args, text=None, check=True):
+        return command(str(docker_binary), *args, text=text, check=check, env=docker_env)
 
     def sql(query):
-        result = command("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
+        result = docker("exec", "-i", container_id, "psql", "-U", "postgres", "-X", "-q", "-tA",
                          "-v", "ON_ERROR_STOP=1", text=query, check=False)
         if result.returncode:
             raise RuntimeError(result.stderr)
         return result.stdout.strip()
 
     try:
-        command("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
-                "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
-                "--mount", f"type=bind,src={root},dst={root}",
-                "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
+        socket_path = Path("/var/run/docker.sock")
+        socket_info = socket_path.lstat()
+        if not stat.S_ISSOCK(socket_info.st_mode):
+            raise RuntimeError("local Docker daemon socket is not a Unix socket")
+        image_id = docker("image", "inspect", "--format", "{{.Id}}", "postgres:17").stdout.strip()
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+            raise RuntimeError("local PostgreSQL image identity is invalid")
+        try:
+            created = docker("run", "-d", "--rm", "--pull=never", "--name", name, "--label", label,
+                    "--network=none", "--cpus=0.5", "--memory=512m", "--pids-limit=128",
+                    "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+                    "-e", "POSTGRES_PASSWORD=synthetic-only", image_id)
+        except (subprocess.SubprocessError, OSError):
+            print(f"Container creation outcome unknown; possible orphan name={name} label={label}", flush=True)
+            raise
+        candidate_id = created.stdout.strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", candidate_id):
+            raise RuntimeError(f"container ID unknown; possible orphan name={name} label={label}")
+        container_id = candidate_id
         for _ in range(100):
-            logs = command("docker", "logs", name, check=False)
-            ready = command("docker", "exec", name, "pg_isready", "-U", "postgres", check=False).returncode == 0
+            logs = docker("logs", container_id, check=False)
+            ready = docker("exec", container_id, "pg_isready", "-U", "postgres", check=False).returncode == 0
             if ready and (logs.stdout + logs.stderr).count("database system is ready to accept connections") >= 2:
                 break
             time.sleep(.2)
@@ -88,11 +122,61 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
         env_file.chmod(0o600)
         shim = root / "psql"
-        shim.write_text("#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\n"
-            "if '-f' in args and args[args.index('-f')+1] != '-':\n"
-            " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n"
-            "os.execvp('docker',['docker','exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(name) + ",'psql','-U','postgres',*args])\n",
-            encoding="utf8")
+        # psql's validation \o target is a host-only private file. Keep the
+        # container mount-free: write that one result to a random container
+        # file, then stream it back into the already-open host file.
+        shim.write_text(f"""#!/usr/bin/env python3
+import os, re, stat, subprocess, sys, uuid
+from pathlib import Path
+args = sys.argv[1:]
+root = Path({str(root)!r})
+result_fd = None
+for i, arg in enumerate(args):
+    if arg.startswith("CRE_VALIDATION_RESULTS="):
+        if i == 0 or args[i - 1] != "-v" or result_fd is not None:
+            raise SystemExit("invalid validation result argument")
+        path = Path(arg.split("=", 1)[1])
+        if path.parent.parent != root or path.name != "query-results.tsv" or not re.fullmatch(
+                r"cre-validate-results-[a-z0-9_]+", path.parent.name):
+            raise SystemExit("validation result outside private fixture root")
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(directory)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise SystemExit("validation result directory is not private")
+            result_fd = os.open(path.name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory)
+            info = os.fstat(result_fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise SystemExit("validation result file is not private and owned")
+            os.ftruncate(result_fd, 0)
+        finally:
+            os.close(directory)
+        remote = "/tmp/colliers-validation-" + uuid.uuid4().hex
+        args[i] = "CRE_VALIDATION_RESULTS=" + remote
+if "-f" in args and args[args.index("-f") + 1] != "-":
+    i = args.index("-f") + 1
+    fd = os.open(args[i], os.O_RDONLY)
+    os.dup2(fd, 0)
+    os.close(fd)
+    args[i] = "-"
+env = {docker_env!r}
+docker = {str(docker_binary)!r}
+identity = {container_id!r}
+base = [docker, "exec", "-i", "--user", str(os.getuid()) + ":" + str(os.getgid()), identity]
+run = subprocess.run(base + ["psql", "-U", "postgres", *args], env=env)
+if run.returncode != 0:
+    raise SystemExit(run.returncode)
+if result_fd is not None:
+    try:
+        with os.fdopen(result_fd, "wb") as output:
+            result_fd = None
+            copy = subprocess.run(base + ["cat", remote], env=env, stdout=output)
+        if copy.returncode != 0:
+            raise SystemExit(copy.returncode)
+    finally:
+        if result_fd is not None:
+            os.close(result_fd)
+""", encoding="utf8")
         shim.chmod(0o700)
         database = {"target": ingest.database_target_fingerprint_from_url(db_url), "psql": shim, "env_file": env_file}
         (root / "fixture").mkdir()
@@ -102,9 +186,37 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id LIKE 'id%' AND status IS NOT NULL") == "0"
         windows = database["manifest"]["sources"]["colliers"]["partial_windows"]
         assert [window["state"] for window in windows] == ["verified", "verified", "settled_no_write"]
-        print("Two real database windows and settled rotation: PASS")
+        # Reuse the actual saved claims and source artifact from the first committed
+        # window while a different, clean verifier is current. The claim rederiver
+        # and read-only PostgreSQL query are real; no source context is mocked.
+        import cre_checkpoint_refresh as refresh
+        historical = copy.deepcopy(database["manifest"])
+        historical["sources"]["colliers"] = copy.deepcopy(windows[0]["checkpoint"])
+        original = historical["collector_git_sha"]
+        verifier = "9" * 40 if original != "9" * 40 else "8" * 40
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(refresh, "git_identity", lambda: (verifier, False))
+            patch.setattr(ingest, "find_psql", lambda: str(shim))
+            proof = refresh.colliers_partial_readback(
+                root / "fixture" / "generation", historical, str(env_file),
+                historical_producer_sha=original)
+        assert proof["ok"] is True and proof["outcome"] == "exact_commit"
+        assert proof["expected"] == 100
+        print("Two real database windows, settled rotation and historical readback: PASS")
     finally:
-        command("docker", "rm", "-f", name, check=False)
+        if container_id is not None:
+            inspected = docker("inspect", "--format",
+                '{{.Id}} {{.Name}} {{index .Config.Labels "agentic-assets.colliers-fixture"}}',
+                container_id, check=False)
+            expected = f"{container_id} /{name} {label_value}"
+            if inspected.returncode != 0 or inspected.stdout.strip() != expected:
+                raise RuntimeError("refusing cleanup: created container identity cannot be confirmed")
+            docker("rm", "-f", container_id)
+            absent = docker("inspect", container_id, check=False)
+            if absent.returncode == 0 or "no such object" not in absent.stderr.lower():
+                raise RuntimeError("cannot confirm owned synthetic container is absent")
+            docker("info", "--format", "{{.ID}}")
+            print(f"confirmed cleanup of synthetic container {container_id}", flush=True)
 
 
 if __name__ == "__main__":
