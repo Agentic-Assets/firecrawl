@@ -19,7 +19,7 @@ const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
 async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json"
-  | "missing-id" | "unsafe-id" | "duplicate-id" | "mapping-error") {
+  | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -56,6 +56,7 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
                   : "record 0123456789abcdef0123456789abcdef extra" }
             : ordinaryFailure === "missing-id" ? { ...bad, id: null }
             : ordinaryFailure === "unsafe-id" ? { ...bad, id: Number.MAX_SAFE_INTEGER + 1 }
+            : ordinaryFailure === "bad-object-id" ? { ...bad, id: { toString: null, valueOf: null }, order_id: null }
             : ordinaryFailure === "duplicate-id" ? { ...row, order_id: 17000 }
             : ordinaryFailure === "mapping-error" ? { ...bad, team_member_ids: [{ toString: null }] }
             : bad, row] : [] }),
@@ -127,7 +128,7 @@ for (const reason of ["encoded-key", "bad-row-json"] as const) {
   });
 }
 
-for (const mode of ["missing-id", "unsafe-id", "mapping-error"] as const) {
+for (const mode of ["missing-id", "unsafe-id", "bad-object-id", "mapping-error"] as const) {
   test(`a selected ${mode} row retains its ordinal and permits a valid peer`, async () => {
     const { source, failure, observed, outcomes, calls } = await runCase(false, mode);
     assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
@@ -137,8 +138,9 @@ for (const mode of ["missing-id", "unsafe-id", "mapping-error"] as const) {
     assert.equal(outcomes[0].sourceOrdinal, 0);
     assert.equal(outcomes[1].sourceOrdinal, 1);
     assert.equal(outcomes[0].id, mode === "mapping-error" ? "17000" : null);
-    assert.equal(JSON.parse(outcomes[0].feedObservation.sourceRowJson).id,
-      mode === "missing-id" ? null : mode === "unsafe-id" ? Number.MAX_SAFE_INTEGER + 1 : 17000);
+    assert.deepEqual(JSON.parse(outcomes[0].feedObservation.sourceRowJson).id,
+      mode === "missing-id" ? null : mode === "unsafe-id" ? Number.MAX_SAFE_INTEGER + 1
+        : mode === "bad-object-id" ? { toString: null, valueOf: null } : 17000);
     assert.ok(!calls.includes(badUrl));
   });
 }

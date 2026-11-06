@@ -408,7 +408,9 @@ export function indexAvisonYoungOfficialFeedUrls(websiteRows: readonly any[]): M
     const key = avisonYoungOfficialUrlKey(row?.external_url);
     if (!key) continue;
     const rowIds = rowsByUrl.get(key) ?? [];
-    const rowId = row?.id == null ? "" : String(row.id);
+    let rowId = "";
+    try { rowId = row?.id == null ? "" : String(row.id); }
+    catch { /* An unconvertible ID remains an unknown URL owner. */ }
     // Repeated copies of the same literal feed identity do not create a second owner.
     // Preserve each empty-ID occurrence because it cannot be safely deduplicated.
     if (!rowId || !rowIds.includes(rowId)) rowIds.push(rowId);
@@ -2793,16 +2795,22 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     "avison_young_sharplaunch_inventory",
     requireLiveDetails ? "live" : "generation_cache"
   );
+  const partialRowMode = requireLiveDetails && !strict;
+  const sortValue = (row: any) => {
+    try { return Number(row.order_id ?? row.id ?? 0); }
+    catch { return 0; }
+  };
   const rows = websiteRows.map((row, sourceOrdinal) => ({ row, sourceOrdinal }))
     .filter(({ row }) => row?.status === "active")
     .filter(({ row }) => isAvisonYoungUsCompatible(row))
     .filter(({ row }) => avisonYoungMatchesTx(row, tx))
-    .sort((a, b) => Number(a.row.order_id ?? a.row.id ?? 0) - Number(b.row.order_id ?? b.row.id ?? 0));
+    .sort((a, b) => partialRowMode
+      ? sortValue(a.row) - sortValue(b.row)
+      : Number(a.row.order_id ?? a.row.id ?? 0) - Number(b.row.order_id ?? b.row.id ?? 0));
   const want = Math.min(max, rows.length);
   const selected = rows.slice(0, want);
   const selectedRows = selected.map(({ row }) => row);
   const truncated = avisonYoungTruncated(max, selectedRows.length, rows.length);
-  const partialRowMode = requireLiveDetails && !strict;
   const preparationErrors: Array<string | null> = selectedRows.map(() => null);
   const selectedProviderIds: Array<string | null> = partialRowMode
     ? selectedRows.map((row, index) => {
