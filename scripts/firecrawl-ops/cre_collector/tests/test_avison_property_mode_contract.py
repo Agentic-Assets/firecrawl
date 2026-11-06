@@ -58,10 +58,13 @@ globalThis.fetch=async(input,options)=>{
   if(entity==='website'){
     websiteFetches++;
     if(mode==='website403'||mode==='website429')
-      return new Response('denied',{status:mode==='website403'?403:429});
+      return new Response('denied',{status:mode==='website403'?403:429,headers:{'Retry-After':'3600'}});
+    if(mode==='website-challenge')return new Response('<html><title>Just a moment...</title></html>');
+    if(mode==='first-website500-team403' && websiteFetches===1)
+      return new Response('unavailable',{status:500});
     if(mode==='second-inventory-bad-json' && websiteFetches===2)return new Response('{bad json');
   }
-  if(entity==='team_member' && mode==='team403'){
+  if(entity==='team_member' && (mode==='team403'||mode==='first-website500-team403')){
     calls.push({feed:'team'});
     return new Response('denied',{status:403,headers:{'Retry-After':'3600'}});
   }
@@ -91,7 +94,7 @@ https.request=(url,options,callback)=>{
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
     if(mode.startsWith('missing-url-'))status=200;
-    if(mode==='second-inventory-bad-json'||mode==='team403')status=200;
+    if(mode==='second-inventory-bad-json'||mode==='team403'||mode==='first-website500-team403')status=200;
     if(mode==='one-empty-direct' && index===1){status=200;body='';}
     if(mode==='one-bad-identity' && index===1){
       status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
@@ -753,7 +756,7 @@ def test_terminal_access_denial_does_not_publish_standalone_receipt(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["bootstrap403", "bootstrap429", "bootstrap-challenge",
-                                  "website403", "website429"])
+                                  "website403", "website429", "website-challenge"])
 def test_feed_access_denials_never_publish_standalone_receipt(tmp_path, case):
     preload, started, env = prepare(tmp_path, case)
     state = custody.prepare(tmp_path, 1, "avison-young")
@@ -799,3 +802,22 @@ def test_optional_team_denial_preserves_inventory_and_is_not_retried(tmp_path):
     assert all("Retry-After: 3600" in row["avisonTeamFeedStatus"]["reason"] for row in data["listings"])
     calls = json.loads((tmp_path / "calls.json").read_text())
     assert sum(item.get("feed") == "team" for item in calls) == 1
+
+
+def test_optional_denial_is_remembered_when_website_fails_concurrently(tmp_path):
+    preload, started, env = prepare(tmp_path, "first-website500-team403")
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    calls = json.loads((tmp_path / "calls.json").read_text())
+    assert sum(item.get("feed") == "team" for item in calls) == 1
+    records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
+    assert any(record["kind"] == "validated_detail" and record["transaction"] == "lease"
+               for record in records)
+    detail = next(record["documents"][0] for record in records if record["kind"] == "validated_detail")
+    assert "HTTP 403" in detail["avisonTeamFeedStatus"]["reason"]
+    assert "Retry-After: 3600" in detail["avisonTeamFeedStatus"]["reason"]

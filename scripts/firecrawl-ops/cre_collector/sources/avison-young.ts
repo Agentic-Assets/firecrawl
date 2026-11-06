@@ -251,7 +251,15 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string, tim
       ? new AvisonYoungAccessDeniedError(`Avison Young SharpLaunch ${entity} API HTTP ${status}`, retryAfter)
       : new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
   if (captureDir) publishAvisonNativePage(captureDir, text, apiKey, startedAt, observationNow());
-  const data = JSON.parse(text);
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    if (entity === "website" && /<title[^>]*>\s*(?:just a moment|access denied)/i.test(text)) {
+      throw new AvisonYoungAccessDeniedError("Avison Young SharpLaunch website returned a challenge");
+    }
+    throw error;
+  }
   return avisonYoungEntityItems(data, entity);
 }
 
@@ -299,12 +307,11 @@ export async function getAvisonYoungFeed(timeoutMs = 30_000): Promise<{
       : fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
   ]);
   assertAvisonYoungTransportSettled();
-  if (website.status === "rejected") throw website.reason;
   if (team.status === "rejected" && team.reason instanceof AvisonYoungAccessDeniedError) {
-    // Optional team data does not invalidate inventory; do not request the
-    // denied endpoint again in this collector process.
+    // Record this even if the concurrent website fetch failed too.
     avisonYoungOptionalTeamDenial = team.reason;
   }
+  if (website.status === "rejected") throw website.reason;
   const websiteRows = website.value;
   const rawTeamState = team.status === "fulfilled"
     ? avisonYoungTeamFeedState(team.value)

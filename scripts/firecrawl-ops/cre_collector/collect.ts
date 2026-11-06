@@ -367,11 +367,14 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof AvisonYoungAccessDeniedError && err.retryAfter
+            ? { providerRetryAfter: err.retryAfter } : {}),
           ...(err instanceof AvisonYoungPartialDetailError || isAvisonYoungTerminalSourceError(err) || err instanceof AvisonYoungAccessDeniedError
             || err instanceof AvisonYoungUnsettledError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
         if (key === "avison-young" && err instanceof AvisonYoungAccessDeniedError) {
+          if (err.retryAfter) console.error(`  avison-young: provider Retry-After: ${err.retryAfter}`);
           avisonAccessDenied = true;
           if (!MONITOR && requestedSources.length === 1) avisonTerminalExit = AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
           break;
