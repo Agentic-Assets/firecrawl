@@ -1485,6 +1485,12 @@ def run_bounded_pipeline(
                             "generation_id": manifest["run_id"],
                             "artifact_sha256": checkpoint["artifact"]["sha256"],
                         }
+                        if refresh.admitted_count_hold(checkpoint):
+                            state["source_results"][source].update(
+                                qualification="additive_coverage_hold", partial=True,
+                                whole_source_coverage=False,
+                                baseline_hold_reason=checkpoint["gate"]["raw_reason"],
+                            )
                         if refresh.verified_subset_candidate(manifest, source):
                             binding = checkpoint.get("gate", {}).get("current_inventory_proof", {})
                             state["source_results"][source].update(

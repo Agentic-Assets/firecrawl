@@ -1181,21 +1181,27 @@ def _child_succeeded(
             or (config.get("automatic_source_evidence") is not None
                 and child_manifest.get("automatic_source_evidence_status") != "settled")):
         return False
-    if config.get("admit_baseline_hold_additively") is True:
-        from cre_checkpoint_refresh import subset_gate_can_admit
+    if (config.get("admit_baseline_hold_additively") is True
+            or child_manifest.get("status") == "additive_scope_complete_coverage_hold"):
+        from cre_checkpoint_refresh import additive_coverage_hold_enabled, subset_gate_can_admit
 
-        checkpoint = (child_manifest.get("sources") or {}).get("savills") or {}
+        sources = config.get("sources") or []
+        if not isinstance(sources, list) or len(sources) != 1:
+            return False
+        source = sources[0]
+        checkpoint = (child_manifest.get("sources") or {}).get(source) or {}
         gate = checkpoint.get("gate") or {}
         aggregate = child_manifest.get("aggregate_gate") or {}
         scope = child_manifest.get("scope") or {}
         bound = (
-            config.get("sources") == ["savills"]
+            (config.get("admit_baseline_hold_additively") is not True or source == "savills")
             and config.get("transactions") == ["sale", "lease"]
             and not config.get("pipeline")
             and config.get("source_workers") == 1
             and not config.get("current_inventory_admission")
             and not config.get("current_inventory_admissions")
-            and _exact_json_equal(child_manifest.get("config"), _expected_child_config("savills", config))
+            and _exact_json_equal(child_manifest.get("config"), _expected_child_config(source, config))
+            and additive_coverage_hold_enabled(child_manifest.get("config") or {})
             and aggregate.get("hold_sources") == []
             and aggregate.get("non_ok_sources") == []
             and type(aggregate.get("rc")) is int and aggregate["rc"] in (0, 2)
@@ -1214,7 +1220,7 @@ def _child_succeeded(
             and subset_gate_can_admit({"verdict": gate.get("raw_verdict"), "reason": gate.get("raw_reason")})
             and gate.get("mark_missing_safe") is False
             and gate.get("admission_scope") == "additive_coverage_hold"
-            and aggregate.get("baseline_advisory_holds") == ["savills"]
+            and aggregate.get("baseline_advisory_holds") == [source]
             and aggregate.get("mark_missing_safe_brokerages") == []
         )
     if nai_post_partial_child(child_manifest):
@@ -1288,7 +1294,7 @@ def _reconciled_state(
         return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+        return "qualified_partial_subset" if status == "additive_scope_complete_coverage_hold" or current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -1953,6 +1959,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict, *, publish: bool
     if child.get("status") not in {
         SUCCESS_STATUS,
         "additive_scope_complete_current_inventory",
+        "additive_scope_complete_coverage_hold",
         "qualified_partial_subset",
         "failed",
         "interrupted",
@@ -1984,7 +1991,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict, *, publish: bool
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) or count_hold_pipeline_member(child, key) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -2162,6 +2169,32 @@ def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:
                 and _parse_utc_timestamp(last.get("finished_at"), field="attempt finished_at")
                     < _parse_utc_timestamp(last.get("started_at"), field="attempt started_at"))
     except (KeyError, TypeError, ValueError, AttributeError, SeriesError):
+        return False
+
+
+def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
+    """Recognize the source and its own unit's retained count-only admission."""
+    from cre_checkpoint_refresh import additive_coverage_hold_enabled, admitted_count_hold
+
+    try:
+        checkpoint = child["sources"][source]
+        result = child["pipeline"]["source_results"][source]
+        unit = next(unit for unit in child["pipeline"]["units"]
+                    if unit["unit_id"] == result["unit_id"])
+        aggregate = unit["aggregate_gate"]
+        return (
+            additive_coverage_hold_enabled(child["config"])
+            and admitted_count_hold(checkpoint)
+            and result.get("qualification") == "additive_coverage_hold"
+            and result.get("partial") is True
+            and result.get("whole_source_coverage") is False
+            and result.get("baseline_hold_reason") == checkpoint["gate"]["raw_reason"]
+            and source in unit["sources"]
+            and source in aggregate.get("baseline_advisory_holds", [])
+            and aggregate.get("mark_missing_safe_brokerages") == []
+            and aggregate.get("non_ok_sources") == []
+        )
+    except (KeyError, TypeError, StopIteration):
         return False
 
 
@@ -2597,6 +2630,10 @@ def pipeline_source_qualified(
             colliers_partial = key == "colliers" and colliers_partial_child(child)
             lyon_partial = key == "lyon-stahl" and lyon_partial_child(child)
             nai_partial = key == "nai-global" and nai_post_partial_child(child)
+            count_partial = count_hold_pipeline_member(child, key)
+            from cre_checkpoint_refresh import admitted_count_hold
+            if admitted_count_hold(checkpoint) and not count_partial:
+                return False
             if ((checkpoint.get("artifact") or {}).get("nai_post_partial") is True
                     or binding.get("schema") == "nai-public-post-partial-v1"
                     or binding.get("scope") == "nai_public_post_partial_v1") and not nai_partial:
@@ -2642,7 +2679,7 @@ def pipeline_source_qualified(
                         for key in ("incomplete_count", "transition_count", "missing_field_counts")
                     ):
                         return False
-            elif proof.get("partial") is True:
+            elif proof.get("partial") is True and not count_partial:
                 return False
             artifact = checkpoint["artifact"]
             artifact_digest = artifact["sha256"]
@@ -2883,7 +2920,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) or count_hold_pipeline_member(child, key) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -3247,7 +3284,7 @@ def run_series(
                 save_manifest(series_dir, manifest)
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+                checkpoint["state"] = "qualified_partial_subset" if child_manifest.get("status") == "additive_scope_complete_coverage_hold" or current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
                 if nai_post_partial_child(child_manifest):
                     binding = child_manifest["sources"]["nai-global"]["gate"]["current_inventory_proof"]
                     checkpoint["partial_counts"] = {key: binding[key] for key in ("emitted_count", "held_count")}
