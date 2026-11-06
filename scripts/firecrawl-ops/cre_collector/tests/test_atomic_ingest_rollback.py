@@ -54,10 +54,16 @@ def test_atomic_rollback_binds_real_evidence(tmp_path, source, fault):
     assert outcome.verified_rollback(tmp_path, manifest, source) is (fault == "valid")
 
 
-def test_special_partial_and_guarded_sources_are_not_demoted():
-    manifest = {"config": {"sources": ["colliers"]}, "sources": {"colliers": {"artifact": {"colliers_partial": True}}}}
-    assert not outcome.eligible(manifest, "colliers")
-    assert not outcome.eligible(manifest, "jll")
+@pytest.mark.parametrize("source,flag", [
+    ("colliers", "colliers_partial"), ("jll-investor", "jll_partial"),
+    ("franklin-street", "franklin_partial"), ("lyon-stahl", "lyon_partial"),
+    ("nai-global", "nai_post_partial"), ("jll", None), ("colliers-main", None),
+    ("transwestern", None), ("pyramid-brokerage", None),
+])
+def test_special_partial_and_guarded_sources_are_not_demoted(source, flag):
+    artifact = {flag: True} if flag else {}
+    manifest = {"config": {"sources": [source]}, "sources": {source: {"artifact": artifact}}}
+    assert not outcome.eligible(manifest, source)
 
 
 @pytest.mark.parametrize("outcome_kind", ["settled", "bad_attempt", "unknown_cleanup", "committed"])
