@@ -89,16 +89,15 @@ def drain(path: Path, *, launch, qualify) -> bool:
     ``launch`` must invoke the real foreground launcher using the request's
     preallocated locator. ``qualify`` must independently verify all settlement
     and write fences; an exception preserves the uncertain intent and stops.
-    A busy owner returns False after enqueue rather than starting a second.
+    A busy owner waits after enqueue, so an intent arriving during owner exit
+    cannot be stranded by a lost wakeup. This can leave a scheduled task
+    instance waiting; it does not reconstruct triggers suppressed by Windows.
     """
     directory = _directory(path)
     lock = os.open(".owner.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     try:
         _safe_stat(lock, private=True)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return False
+        fcntl.flock(lock, fcntl.LOCK_EX)
         names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
         records = [(name, _read(directory, name)) for name in names]
         # No newer due slot can leapfrog a prior potentially active writer.
