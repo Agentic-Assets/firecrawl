@@ -77,7 +77,7 @@ from cre_resource_recovery import (
     SeriesOwnershipLock,
     wait_for_cpu_recovery,
 )
-from cre_series_control import SeriesControlError, SeriesWorkStopped
+from cre_series_control import SeriesControlError, SeriesWorkStopped, validate_fresh_series_id
 from reporting.partial_qualification import (
     _exact_json_equal,
     colliers_partial_child,
@@ -3344,6 +3344,10 @@ def run_controlled_series(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", default=None)
+    parser.add_argument(
+        "--fresh-series-id",
+        help="preallocated fresh series locator; never authorizes resume or continuation",
+    )
     parser.add_argument("--work-deadline-seconds", type=int, default=None)
     parser.add_argument("--expected-sha", default=None)
     parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
@@ -3440,6 +3444,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--daum-subset-policy", choices=("tenure-only-v1", "tenure-and-empty-title-v2"), default=None)
     parser.add_argument("--nice", type=int, default=10)
     args = parser.parse_args(argv)
+    if args.fresh_series_id is not None:
+        if args.resume is not None:
+            parser.error("fresh-series-id cannot be combined with resume")
+        try:
+            validate_fresh_series_id(args.fresh_series_id)
+        except SeriesControlError as exc:
+            parser.error(str(exc))
     import cre_current_inventory_admission as current_inventory
     try:
         args.daum_subset_policy = current_inventory.invocation_subset_policy(
@@ -3577,7 +3588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         series_dir = manifest_path.parent
     else:
-        series_dir = Path(args.out_root).expanduser().resolve() / _run_id()
+        series_dir = Path(args.out_root).expanduser().resolve() / (args.fresh_series_id or _run_id())
         if series_dir.exists():
             raise SeriesError(f"series directory already exists: {series_dir}")
         series_dir.mkdir(parents=True)

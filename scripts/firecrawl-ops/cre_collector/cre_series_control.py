@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
@@ -22,6 +23,19 @@ class SeriesControlError(RuntimeError):
 
 class SeriesWorkStopped(KeyboardInterrupt):
     """Typed control interruption survives legacy Git cleanup."""
+
+
+def validate_fresh_series_id(value):
+    """Validate an intent-owned locator; it carries no continuation authority."""
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}", value
+    ):
+        raise SeriesControlError("invalid fresh series identifier")
+    try:
+        datetime.strptime(value[:18], "%Y-%m-%dT%H%M%SZ")
+    except ValueError as exc:
+        raise SeriesControlError("invalid fresh series timestamp") from exc
+    return value
 
 
 def validate_control_budget(seconds):
@@ -91,6 +105,68 @@ def read_receipt(series_dir, invocation_id):
     finally:
         os.close(private)
         os.close(root)
+
+
+def verify_preallocated_receipt(
+    series_root, series_id, invocation_id, *, expected_sha, expected_target, expected_config
+):
+    """Read an exact terminal locator; this never authorizes another dispatch."""
+    validate_fresh_series_id(series_id)
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+        raise SeriesControlError("invalid expected collector identity")
+    if not isinstance(expected_target, dict) or not isinstance(expected_config, dict):
+        raise SeriesControlError("invalid expected series binding")
+    safe = _evidence()
+    root_fd = os.open(series_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        safe._safe_stat(root_fd, directory=True)
+        series_fd = os.open(series_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            directory_stat = safe._safe_stat(series_fd, directory=True)
+            manifest_fd = os.open("manifest.json", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=series_fd)
+            try:
+                before = safe._safe_stat(manifest_fd, private=True)
+                with os.fdopen(os.dup(manifest_fd), "r", encoding="utf-8") as stream:
+                    manifest = json.load(stream)
+                after = os.fstat(manifest_fd)
+                named = os.stat("manifest.json", dir_fd=series_fd, follow_symlinks=False)
+                def identity(item):
+                    return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
+
+                if identity(before) != identity(after) or identity(after) != identity(named):
+                    raise SeriesControlError("series manifest changed")
+            finally:
+                os.close(manifest_fd)
+            receipt = read_receipt(Path(series_root) / series_id, invocation_id)
+            if receipt["stop_owner"]["series_directory_identity"] != safe._identity(directory_stat):
+                raise SeriesControlError("series locator directory changed")
+            control = manifest.get("latest_invocation_control") if isinstance(manifest, dict) else None
+            def exact(left, right):
+                return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == json.dumps(
+                    right, sort_keys=True, separators=(",", ":"), allow_nan=False
+                )
+            status = receipt.get("status")
+            expected_status = "interrupted" if status == "deadline_interrupted" else status
+            if (manifest.get("series_id") != series_id or manifest.get("collector_git_sha") != expected_sha
+                    or manifest.get("collector_git_dirty") is not False
+                    or not exact(manifest.get("database_target"), expected_target)
+                    or not exact(manifest.get("config"), expected_config)
+                    or not isinstance(control, dict) or control.get("invocation_id") != invocation_id
+                    or control.get("receipt") != f".series-control/{invocation_id}.json"
+                    or control.get("work_deadline_seconds") != receipt.get("work_deadline_seconds")
+                    or status not in {"complete", "complete_with_source_failures", "qualified_partial_subset",
+                                      "failed", "interrupted", "deadline_interrupted", "resource_guard_interrupted"}
+                    or manifest.get("status") != expected_status
+                    or not isinstance(manifest.get("finished_at"), str)
+                    or receipt.get("local_settlement") not in {"confirmed", "not_started"}
+                    or type(receipt.get("finished_unix_ms")) is not int):
+                raise SeriesControlError("terminal series receipt binding differs")
+            return {"series_id": series_id, "invocation_id": invocation_id, "status": status,
+                    "local_settlement": receipt["local_settlement"], "continuation_authorized": False}
+        finally:
+            os.close(series_fd)
+    finally:
+        os.close(root_fd)
 
 
 def validate_live_owner(series_dir, receipt):

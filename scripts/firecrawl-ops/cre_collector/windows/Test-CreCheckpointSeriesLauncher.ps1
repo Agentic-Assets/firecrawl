@@ -41,6 +41,7 @@ $admission = @($ast.FindAll({ param($node) $node -is [Management.Automation.Lang
 $readiness = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi' }, $true))[0]
 $sha = 'a' * 40
 $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '3600', '-AcknowledgeDatabaseWrites')
+$freshSeriesId = '2026-11-06T010203Z-012345abcdef'
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
@@ -61,6 +62,10 @@ $cases = @(
     @{ Name = 'pyramid-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'pyramid-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
+    @{ Name = 'fresh-series-locator'; Args = $series + @('-FreshSeriesId', $freshSeriesId); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId },
+    @{ Name = 'fresh-invalid-date'; Args = $series + @('-FreshSeriesId', '2026-02-30T010203Z-012345abcdef'); Exit = 1; Dispatch = $false },
+    @{ Name = 'fresh-invalid-id'; Args = $series + @('-FreshSeriesId', '../bad'); Exit = 1; Dispatch = $false },
+    @{ Name = 'fresh-nonseries'; Args = @('-Tier', 'monitor', '-Source', 'hanley', '-ExpectedSha', $sha, '-FreshSeriesId', $freshSeriesId); Exit = 1; Dispatch = $false },
     @{ Name = 'interra-current'; Args = @('-Tier', 'series', '-Source', 'interra-realty', '-AdmitCurrentInventorySource', 'interra-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'buildout-current'; Args = @('-Tier', 'series', '-Source', 'faris-lee', '-AdmitCurrentInventorySource', 'faris-lee', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'buildout-wrong-source'; Args = @('-Tier', 'series', '-Source', 'faris-lee', '-AdmitCurrentInventorySource', 'kiser-group', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
@@ -221,6 +226,12 @@ foreach ($case in $cases) {
         $jllDetailConcurrency = @{ 1 = 1; 2 = 2; 6 = 2 }[$resolvedConcurrency]
         foreach ($expected in @("JLL_DETAIL_CONCURRENCY=$jllDetailConcurrency", "JLL_INVESTOR_DETAIL_CONCURRENCY=$jllDetailConcurrency", 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1', 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000', 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1', 'python3', ($expectedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py'))) {
             Assert-True ($forwarded -contains $expected) ('Missing conservative profile argv: ' + $expected)
+        }
+        if ($case.ContainsKey('FreshSeriesId')) {
+            Assert-True (($forwarded -join '|').Contains('--fresh-series-id|' + $case.FreshSeriesId)) 'Fresh locator must cross the native boundary exactly.'
+            Assert-True ($admissionAudit.freshSeriesId -ceq $case.FreshSeriesId) 'The requested locator must be recorded before dispatch.'
+        } else {
+            Assert-True (-not ($forwarded -contains '--fresh-series-id')) 'Omitted locator must retain existing invocation behavior.'
         }
         $resolvedAttempts = if ($case.ContainsKey('Attempts')) { [int]$case.Attempts } else { 3 }
         $resolvedPageCap = if ($case.ContainsKey('PageCap')) { [int]$case.PageCap } else { 0 }

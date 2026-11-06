@@ -23,6 +23,7 @@ param(
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
+    [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$FreshSeriesId,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
@@ -59,6 +60,14 @@ if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
 }
 if ($PSBoundParameters.ContainsKey('PageCap') -and $Tier -ne 'series') { throw '-PageCap requires series.' }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
+if ($PSBoundParameters.ContainsKey('FreshSeriesId')) {
+    if ($Tier -ne 'series' -or $CheckOnly) { throw '-FreshSeriesId requires a series invocation.' }
+    $locatorDate = [DateTime]::MinValue
+    if (-not [DateTime]::TryParseExact($FreshSeriesId.Substring(0, 18), "yyyy-MM-dd'T'HHmmss'Z'",
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$locatorDate)) {
+        throw '-FreshSeriesId timestamp is invalid.'
+    }
+}
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
     throw '-SourceWorkers requires -Pipeline.'
 }
@@ -878,6 +887,7 @@ $record = [ordered]@{
 if ($DaumSubsetPolicy -cne 'tenure-only-v1') { $record['daumSubsetPolicy'] = $DaumSubsetPolicy }
 if ($Tier -eq 'series') {
     $record['workDeadlineSeconds'] = $WorkDeadlineSeconds
+    if ($PSBoundParameters.ContainsKey('FreshSeriesId')) { $record['freshSeriesId'] = $FreshSeriesId }
     $record['acknowledgeDatabaseWrites'] = [bool]$AcknowledgeDatabaseWrites
 }
 try {
@@ -969,6 +979,7 @@ try {
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
+            if ($FreshSeriesId) { $arguments += @('--fresh-series-id', $FreshSeriesId) }
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }

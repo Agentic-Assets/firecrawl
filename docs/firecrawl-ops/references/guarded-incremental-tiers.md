@@ -461,7 +461,15 @@ capability. New opt-in controlled series use the separate
 [series control contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md).
 Missing pidfd support,
 stale or malformed evidence, ownership changes and permission failures refuse
-the request. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
+the request. A future dispatcher may pass an optional preallocated
+`-FreshSeriesId` to a fresh Windows series invocation, binding the requested
+locator to the Windows audit before dispatch. The corresponding read-only
+`verify_preallocated_receipt` checks the exact series identity, producer SHA,
+target, full configuration and terminal local-settlement receipt. A locator or
+a terminal local receipt does not authorize another dispatch or prove a
+database outcome. Durable due intents, automatic continuation and scheduled
+task integration are not implemented by this locator phase; existing tasks
+omit the option. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
 ## Windows Task Scheduler installation and acceptance
