@@ -582,8 +582,9 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         if source == "nai-global" and checkpoint["artifact"].get("nai_coverage_partial") is True:
             import copy
             from nai_partial.coverage_candidate import ORIGINAL
-            report_manifest = copy.deepcopy(manifest)
-            report_manifest["sources"][source]["artifact"]["path"] = ORIGINAL
+            if artifact == run_dir / ORIGINAL:
+                report_manifest = copy.deepcopy(manifest)
+                report_manifest["sources"][source]["artifact"]["path"] = ORIGINAL
         refresh.current_inventory.validate_report_scope(
             report, report_manifest, source, artifact
         )

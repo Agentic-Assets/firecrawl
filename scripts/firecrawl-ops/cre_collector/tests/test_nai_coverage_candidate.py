@@ -98,7 +98,7 @@ def test_real_preseal_preserves_original_transition_and_peer(tmp_path, monkeypat
         out = Path(argv[argv.index("--out") + 1])
         out.write_text(json.dumps({"summary": {"mode": "live", "torow_errors": 0,
             "baseline_updated": False, "baseline_update_sources": [], "hold_sources": ["nai-global"]},
-            "generated_for_artifact": str(path), "per_source": {"nai-global": {
+            "generated_for_artifact": argv[argv.index("--in") + 1], "per_source": {"nai-global": {
                 "current_active": 1, "verdict": "hold", "mark_missing_safe": False,
                 "reason": "current_active 1 below floor 100"}}}))
         return 2
@@ -136,6 +136,10 @@ def test_real_preseal_preserves_original_transition_and_peer(tmp_path, monkeypat
                 assert manifest["sources"]["nai-global"]["state"] == "gate_blocked"
             else:
                 assert manifest["sources"]["nai-global"]["gate"]["verdict"] == "ok_additive_verified_subset"
+            # Simulate a stop after the candidate pointer was saved: the next
+            # preseal gate observes the marked candidate, not the original.
+            assert pipeline.preseal_source_gate(root, manifest, "nai-global", None) is (not probe_hold)
+            assert path.read_bytes() == original and manifest["sources"]["peer"] == peer_before
         finally:
             pipeline._OWNER_CHECK.reset(owner_token)
             pipeline._OWNER_LEASE.reset(lease_token)

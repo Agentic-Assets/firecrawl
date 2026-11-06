@@ -240,9 +240,13 @@ def admit(artifact_path, manifest, report, *, code_sha, dirty, phase):
     if phase == "source" and manifest["sources"][SOURCE]["artifact"].get("nai_coverage_partial") is True:
         import copy
         from nai_partial.coverage_candidate import ORIGINAL
-        report_manifest = copy.deepcopy(manifest)
-        report_manifest["sources"][SOURCE]["artifact"]["path"] = ORIGINAL
-        report_path = report_path.parent.parent / ORIGINAL
+        original_path = report_path.parent.parent / ORIGINAL
+        reported = report.get("generated_for_artifact")
+        reported_paths = [reported] if isinstance(reported, str) else reported
+        if isinstance(reported_paths, list) and str(original_path) in reported_paths:
+            report_manifest = copy.deepcopy(manifest)
+            report_manifest["sources"][SOURCE]["artifact"]["path"] = ORIGINAL
+            report_path = original_path
     validate_report_scope(report, report_manifest, SOURCE, report_path)
     summary, gate = report["summary"], report["per_source"][SOURCE]
     recovery = manifest["sources"][SOURCE]["artifact"].get("nai_inventory_recovery") is True
