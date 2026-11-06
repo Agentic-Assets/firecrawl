@@ -1027,6 +1027,48 @@ def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path
             i for i, event in enumerate(events) if event[0] == "partial_worker")
 
 
+def test_unavailable_legacy_series_is_reported_and_fresh_window_continues(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    monkeypatch.setattr(recovery, "recover_prior_generation", lambda actual, **kwargs: {
+        "history_unavailable": True, "generation": "2026-11-06T030006Z-123456789abc", "position": 1565})
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert "colliers" not in failures
+    assert any(event[0] == "partial_worker" for event in events)
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert manifest["sources"]["colliers"]["cursor_recovery"] == {
+        "state": "prior_cursor_history_unavailable",
+        "generation": "2026-11-06T030006Z-123456789abc", "position": 1565,
+        "prior_window_qualified": False, "whole_source_coverage": False,
+    }
+
+
+def test_unavailable_legacy_series_does_not_bypass_target_change(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    monkeypatch.setattr(recovery, "recover_prior_generation", lambda actual, **kwargs: {
+        "history_unavailable": True, "generation": "2026-11-06T030006Z-123456789abc", "position": 1565})
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "f" * 64})
+    with pytest.raises(refresh.GlobalStageError, match="target changed"):
+        run_schedule(tmp_path, monkeypatch, 2, sources=("colliers", "savills"),
+            owner_check=owner._require_authority, colliers_partial="accepted", colliers_failure_nonzero=True)
+
+
 @pytest.mark.parametrize("failure", [KeyError("missing field"), FileNotFoundError("missing file")])
 def test_malformed_prior_evidence_holds_colliers_but_continues_peer(tmp_path, monkeypatch, failure):
     import recovery.colliers_cursor as recovery

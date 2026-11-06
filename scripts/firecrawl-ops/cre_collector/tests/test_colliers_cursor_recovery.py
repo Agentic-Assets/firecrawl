@@ -183,6 +183,28 @@ def test_normal_discovery_uses_only_current_cursor_generation(incident, monkeypa
         if seen:
             assert seen[0][0][0] == series_dir
 
+def test_missing_entire_legacy_series_reports_unavailable_without_recovery(incident, monkeypatch, tmp_path):
+    series_dir, _, owner, _, cursor, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    target = child["preflight"]["database_target"]["value"]
+    series_dir.rename(series_dir.with_name("retained-fixture"))
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not recover"))
+    result = recovery.recover_prior_generation(owner, expected_target=target, env_file=None,
+        before_publish=lambda: pytest.fail("must not publish"), after_publish=lambda: pytest.fail("must not publish"))
+    assert result == {"history_unavailable": True, "generation": cursor["generation"],
+                      "position": cursor["position"]}
+
+
+def test_missing_legacy_series_never_bypasses_lost_owner(incident, monkeypatch, tmp_path):
+    series_dir, _, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    series_dir.rename(series_dir.with_name("retained-fixture"))
+    owner._require_authority.side_effect = refresh.LockHeldError("owner lost")
+    with pytest.raises(refresh.LockHeldError):
+        recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+            env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+
+
 @pytest.mark.parametrize("damage", ["missing_parent", "missing_child", "bad_child", "cursor_mismatch"])
 def test_discovery_holds_unusable_existing_cursor_history(incident, monkeypatch, tmp_path, damage):
     series_dir, run, owner, _, _, child = incident

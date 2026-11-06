@@ -314,8 +314,9 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
                              before_publish, after_publish):
     """Discover only a pending window in the cursor's exact source generation.
 
-    Absence means no action. This deliberately does not discover an interrupted
-    first window whose cursor still names a different generation.
+    An absent legacy series is reported for fresh collection; it does not
+    qualify any old window. Re-observation can append a distinct history entry.
+    This does not discover a first window whose cursor names another generation.
     """
     _check_owner(owner)
     position, cursor = read_cursor(owner.path, "colliers", expected_target)
@@ -328,6 +329,24 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
     base = Path(refresh.__file__).resolve().parent / "out" / "checkpoint-series"
     series_dir = base / match.group(1)
     run_dir = series_dir / "runs" / run_id
+    # A retained cursor can outlive an entirely removed legacy series. This
+    # does not establish whether a subsequent old window committed: continue
+    # with fresh source evidence, never claim historical reconciliation.
+    # An existing but incomplete series is still a refusal.
+    try:
+        directory = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True)
+            try:
+                os.stat(match.group(1), dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                _check_owner(owner)
+                return {"history_unavailable": True, "generation": run_id, "position": position}
+        finally:
+            os.close(directory)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, StopRefused) as exc:
+        _check_owner(owner)
+        raise SourceEvidenceRefusal("Colliers cursor history root is unavailable") from exc
     try:
         parent = json.loads(_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0])
         child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])

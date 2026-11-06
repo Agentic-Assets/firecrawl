@@ -1246,7 +1246,17 @@ def run_bounded_pipeline(
             terminal_source_holds.add("colliers")
             refresh.save_manifest(run_dir, manifest)
             return False
-        if recovered is not None:
+        if recovered is not None and recovered.get("history_unavailable") is True:
+            require_pipeline_owner(manifest, lease)
+            if refresh.database_target_fingerprint(env_file) != manifest["preflight"]["database_target"]:
+                raise refresh.GlobalStageError("Colliers recovery target changed")
+            manifest["sources"]["colliers"]["cursor_recovery"] = {
+                "state": "prior_cursor_history_unavailable",
+                "generation": recovered["generation"], "position": recovered["position"],
+                "prior_window_qualified": False, "whole_source_coverage": False,
+            }
+            refresh.save_manifest(run_dir, manifest)
+        elif recovered is not None:
             manifest["sources"]["colliers"]["cursor_recovery"] = {
                 "generation": recovered["generation"], "attempt_id": recovered["attempt_id"],
                 "artifact_sha256": recovered["artifact_sha256"], "position": recovered["next_cursor"],
