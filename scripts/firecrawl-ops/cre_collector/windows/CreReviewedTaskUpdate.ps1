@@ -198,6 +198,25 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     $native=[IO.Path]::GetFullPath([string]$Release.roots.native)
     if([IO.Path]::GetFullPath($workdirs[0].InnerText) -ine $native) {throw 'Task working directory differs'}
     $argv=[string[]][CreReviewedArgs.Parser]::Parse($arguments[0].InnerText)
+    if($Row.key -cin @('dispatcher-snapshot','dispatcher-drain')) {
+        $dispatcher=[IO.Path]::GetFullPath((Join-Path $native 'scripts/firecrawl-ops/cre_collector/windows/Invoke-CreDispatcherWake.ps1'))
+        $selected=Join-Path (ConvertTo-CreHandoffPath ([string]$Release.roots.development)) 'scripts/firecrawl-ops/cre_collector/windows/Invoke-CreDispatcherWake.ps1'
+        $expectedCount=if($Row.key -ceq 'dispatcher-drain'){7}else{6}
+        if($argv.Count -ne $expectedCount -or $argv[0] -ine '-NoProfile' -or $argv[1] -ine '-NonInteractive' -or
+           $argv[2] -ine '-File' -or [IO.Path]::GetFullPath($argv[3]) -ine $dispatcher -or
+           $argv[4] -ine '-ExpectedSha' -or $argv[5] -cne $OldSha -or
+           ($expectedCount -eq 7 -and $argv[6] -ine '-DrainOnly') -or
+           -not (Test-Path -LiteralPath $selected -PathType Leaf)) {throw 'Dispatcher task action differs'}
+        foreach($candidate in @($dispatcher,$selected)) {
+            $tokens=$null;$errors=$null
+            $ast=[Management.Automation.Language.Parser]::ParseFile($candidate,[ref]$tokens,[ref]$errors)
+            if(@($errors).Count -ne 0 -or $null -eq $ast.ParamBlock) {throw 'Dispatcher metadata unavailable'}
+            $parameters=@{};foreach($parameter in @($ast.ParamBlock.Parameters)) {$parameters[[string]$parameter.Name.VariablePath.UserPath]=$parameter.StaticType}
+            if(-not $parameters.ContainsKey('ExpectedSha') -or $parameters['ExpectedSha'] -ne [string] -or
+               -not $parameters.ContainsKey('DrainOnly') -or $parameters['DrainOnly'] -ne [Management.Automation.SwitchParameter]) {throw 'Dispatcher metadata differs'}
+        }
+        return
+    }
     $launcher=[IO.Path]::GetFullPath((Join-Path $native 'scripts/firecrawl-ops/cre_collector/windows/Invoke-CreGuardedTier.ps1'))
     if($argv.Count -lt 4 -or $argv[0] -ine '-NoProfile' -or $argv[1] -ine '-NonInteractive' -or $argv[2] -ine '-File' -or
        [IO.Path]::GetFullPath($argv[3]) -ine $launcher) {throw 'Unsupported guarded task launcher'}
@@ -283,6 +302,8 @@ function Assert-CreReviewedFleetRowSet([object[]]$Rows) {
         $key=[string]$row.key
         if($key -ceq 'daum-subset') {$name='DAUM Verified Subset'}
         elseif($key -ceq 'colliers-partial') {$name='Colliers Partial Refresh'}
+        elseif($key -ceq 'dispatcher-snapshot') {$name='Dispatcher Snapshot'}
+        elseif($key -ceq 'dispatcher-drain') {$name='Dispatcher Drain'}
         elseif($key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {$name='Enrichment - '+$Matches[1]}
         elseif($expected.ContainsKey($key)) {$name=$expected[$key]}
         else {throw 'Unexpected task identity'}
@@ -302,6 +323,10 @@ function Add-CreReviewedOptionalTasks($Release) {
         } elseif($identity -ceq '\Agentic Assets\CRE\Colliers Partial Refresh') {
             if('colliers' -cnotin @($Release.supported_sources)) {throw 'Unsupported Colliers source'}
             $rows+=@{key='colliers-partial';task_path='\Agentic Assets\CRE\';task_name='Colliers Partial Refresh'}
+        } elseif($identity -ceq '\Agentic Assets\CRE\Dispatcher Snapshot') {
+            $rows+=@{key='dispatcher-snapshot';task_path='\Agentic Assets\CRE\';task_name='Dispatcher Snapshot'}
+        } elseif($identity -ceq '\Agentic Assets\CRE\Dispatcher Drain') {
+            $rows+=@{key='dispatcher-drain';task_path='\Agentic Assets\CRE\';task_name='Dispatcher Drain'}
         } elseif($identity -cmatch '^\\Agentic Assets\\CRE\\Enrichment - ([a-z0-9]+(?:-[a-z0-9]+)*)$') {
             $source=$Matches[1]
             if($source -cnotin @($Release.supported_sources)) {throw 'Unsupported enrichment source'}

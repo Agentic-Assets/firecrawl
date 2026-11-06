@@ -1,6 +1,7 @@
 <# Uninstalled WIP: discover current series tasks and submit due policy snapshots. #>
 [CmdletBinding()]
-param([string]$VerifyTaskPath,[string]$VerifyTaskName,[string]$ExpectedTaskSha256,[switch]$DrainOnly)
+param([string]$VerifyTaskPath,[string]$VerifyTaskName,[string]$ExpectedTaskSha256,[switch]$DrainOnly,
+      [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'CreReviewedTaskUpdate.ps1')
@@ -140,6 +141,7 @@ function Invoke-CreDispatcherWake {
             }
             $args=$actions[0].SelectSingleNode('t:Arguments',$ns).InnerText
             $policy=ConvertFrom-CreWakeAction $args $launcher ([string]$defaults['LinuxRepo']) $defaults
+            if($policy.expected_sha -cne $ExpectedSha) {throw 'Task revision differs from dispatcher'}
             $policy.task_path=[string]$task.TaskPath; $policy.task_name=[string]$task.TaskName
             $policy.task_xml_sha256=Get-CreWakeHash $xmlText
             $schedule=Get-CreWakeDue $xml $now
@@ -167,11 +169,18 @@ if($MyInvocation.InvocationName -ne '.') {
         if($task.State -eq 'Disabled') {throw 'Task disabled'}
         $xml=Export-ScheduledTask -TaskPath $VerifyTaskPath -TaskName $VerifyTaskName -ErrorAction Stop
         if((Get-CreWakeHash $xml) -cne $ExpectedTaskSha256) {throw 'Task policy changed'}
-    } elseif($DrainOnly) {
+    } else {
+        if(-not $ExpectedSha) {throw 'Exact dispatcher revision required'}
         $launcher=Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'
         $defaults=Get-CreWakeDefaults $launcher
-        & wsl.exe -d ([string]$defaults['Distro']) -u ([string]$defaults['LinuxUser']) --exec python3 -B `
-            ([string]$defaults['LinuxRepo']+'/scripts/firecrawl-ops/cre_collector/cre_local_dispatcher.py') --wake
-        if($LASTEXITCODE -ne 0) {throw 'Dispatcher drain failed'}
-    } else { Invoke-CreDispatcherWake }
+        $head=& wsl.exe -d ([string]$defaults['Distro']) -u ([string]$defaults['LinuxUser']) --exec git -C ([string]$defaults['LinuxRepo']) rev-parse HEAD
+        if($LASTEXITCODE -ne 0 -or @($head).Count -ne 1 -or $head -cne $ExpectedSha) {throw 'Dispatcher runtime revision differs'}
+        $dirty=@(& wsl.exe -d ([string]$defaults['Distro']) -u ([string]$defaults['LinuxUser']) --exec git -C ([string]$defaults['LinuxRepo']) status --porcelain --untracked-files=no)
+        if($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) {throw 'Dispatcher runtime has tracked changes'}
+        if($DrainOnly) {
+            & wsl.exe -d ([string]$defaults['Distro']) -u ([string]$defaults['LinuxUser']) --exec python3 -B `
+                ([string]$defaults['LinuxRepo']+'/scripts/firecrawl-ops/cre_collector/cre_local_dispatcher.py') --wake
+            if($LASTEXITCODE -ne 0) {throw 'Dispatcher drain failed'}
+        } else { Invoke-CreDispatcherWake }
+    }
 }

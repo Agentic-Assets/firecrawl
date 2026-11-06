@@ -28,4 +28,12 @@ $refused=$false
 try { $null=ConvertFrom-CreWakeAction ($prefix+'-Source colliers -UnknownOption value') $launcher ([string]$defaults['LinuxRepo']) $defaults }
 catch { $refused=$true }
 Assert-Wake $refused 'Unknown action options must be refused.'
+$preview=@(& (Join-Path $PSScriptRoot 'Install-CreDispatcherTasks.ps1') -ExpectedSha ('a'*40))
+Assert-Wake ($preview.Count -eq 2) 'Preview must contain separate scanner and drain tasks.'
+foreach($item in $preview) {
+    $doc=[xml]$item.Xml
+    Assert-Wake ($doc.Task.Settings.Enabled -ceq 'false') 'Preview must leave each task disabled.'
+    Assert-Wake ($doc.Task.Triggers.CalendarTrigger.Repetition.Interval -ceq 'PT5M') 'Preview must repeat periodically.'
+    Assert-Wake (([string]$doc.Task.Actions.Exec.Arguments).Contains('-ExpectedSha')) 'Preview must retain the exact code pin.'
+}
 Write-Output 'CreDispatcherWake synthetic calendar checks passed.'
