@@ -29,7 +29,7 @@ class SourcePolicyRefusal(ValueError):
 
 def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> dict:
     """Build both launcher arguments and expected policy from one input."""
-    keys = {"sources", "admissions", "daum_subset", "concurrency", "workers", "page_cap",
+    keys = {"pipeline", "sources", "admissions", "daum_subset", "concurrency", "workers", "page_cap",
             "attempts", "deadline_seconds", "expected_sha", "env_file", "windows_launcher",
             "windows_launcher_sha256", "windows_repo", "distro", "linux_user", "alert_file", "notification_mode"}
     if not isinstance(policy, dict) or set(policy) != keys:
@@ -49,6 +49,11 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
                    for value in [*raw_sources, *admissions])
             or len(set(raw_sources)) != len(raw_sources) or len(set(admissions)) != len(admissions)):
         raise SourcePolicyRefusal("invalid source policy")
+    if type(policy["pipeline"]) is not bool:
+        raise SourcePolicyRefusal("invalid pipeline policy")
+    if not policy["pipeline"] and (len(raw_sources) != 1 or raw_sources == ["all"]
+            or policy["workers"] != 1 or len(admissions) > 1):
+        raise SourcePolicyRefusal("serial policy requires one source and worker")
     if type(policy["daum_subset"]) is not bool:
         raise SourcePolicyRefusal("invalid DAUM policy")
     for key, low, high in (("concurrency", 1, 6), ("workers", 1, 4), ("page_cap", 0, 2147483647),
@@ -79,7 +84,7 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
             memory_sustain_seconds=20, memory_sample_seconds=2, nice=15, recovery=recovery,
             admit_current_inventory_source=admissions, admit_daum_verified_subset=policy["daum_subset"],
             daum_subset_policy="tenure-and-empty-title-v2" if policy["daum_subset"] else "tenure-only-v1",
-            pipeline=True, source_workers=policy["workers"])
+            pipeline=policy["pipeline"], source_workers=policy["workers"])
     except (ValueError, TypeError, KeyError) as exc:
         raise SourcePolicyRefusal("source or admission policy refused") from exc
     target = refresh.database_target_fingerprint(policy["env_file"])
@@ -110,11 +115,11 @@ def validate_request(request: dict) -> None:
 
 def launcher_arguments(request: dict) -> list[str]:
     policy = request["policy"]
-    selection = (["-Source", "all"] if policy["sources"] == ["all"] else
+    selection = (["-Source", policy["sources"][0]] if not policy["pipeline"] or policy["sources"] == ["all"] else
                  ["-Sources", ",".join(policy["sources"])])
     argv = ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile", "-NonInteractive", "-File", policy["windows_launcher"],
-        "-Tier", "series", "-Pipeline", *selection,
-        "-Concurrency", str(policy["concurrency"]), "-SourceWorkers", str(policy["workers"]),
+        "-Tier", "series", *(["-Pipeline"] if policy["pipeline"] else []), *selection,
+        "-Concurrency", str(policy["concurrency"]), *(["-SourceWorkers", str(policy["workers"])] if policy["pipeline"] else []),
         "-PageCap", str(policy["page_cap"]), "-AttemptsPerSource", str(policy["attempts"]),
         "-ExpectedSha", policy["expected_sha"], "-FreshSeriesId", request["series_id"],
         "-ExpectedTargetSha256", request["target"]["value"],
@@ -122,7 +127,8 @@ def launcher_arguments(request: dict) -> list[str]:
         "-LinuxRepo", policy["windows_repo"], "-LinuxEnvFile", policy["env_file"],
         "-Distro", policy["distro"], "-LinuxUser", policy["linux_user"], "-NotificationMode", policy["notification_mode"]]
     if policy["admissions"]:
-        argv += ["-AdmitCurrentInventorySources", ",".join(policy["admissions"])]
+        argv += (["-AdmitCurrentInventorySources", ",".join(policy["admissions"])] if policy["pipeline"]
+                 else ["-AdmitCurrentInventorySource", policy["admissions"][0]])
     if policy["daum_subset"]:
         argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", "tenure-and-empty-title-v2"]
     if policy["alert_file"] is not None:

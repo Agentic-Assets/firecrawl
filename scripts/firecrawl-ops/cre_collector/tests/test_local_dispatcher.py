@@ -16,7 +16,7 @@ from scheduling import dispatch_settlement
 @pytest.fixture
 def policy(monkeypatch):
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "b" * 64})
-    return {"sources": ["colliers"], "admissions": [], "daum_subset": False,
+    return {"pipeline": True, "sources": ["colliers"], "admissions": [], "daum_subset": False,
         "concurrency": 1, "workers": 1, "page_cap": 0, "attempts": 1,
         "deadline_seconds": 1800, "expected_sha": "a" * 40, "env_file": "/synthetic/env",
         "windows_launcher": r"C:\synthetic\Invoke-CreGuardedTier.ps1", "windows_launcher_sha256": "c" * 64,
@@ -40,6 +40,27 @@ def test_full_registry_uses_supported_native_all_selection(policy):
     assert argv[argv.index("-Source") + 1] == "all"
     assert "-Sources" not in argv
     assert request["config"]["sources"] == list(dispatcher.series.SOURCE_KEYS)
+
+
+def test_serial_policy_preserves_native_source_admission_and_notification(policy):
+    policy.update(pipeline=False, sources=["interra-realty"], workers=1,
+                  admissions=["interra-realty"], notification_mode="StartFinish")
+    request = dispatcher.policy_request(policy, "20261106T042000Z_interra")
+    argv = dispatcher.launcher_arguments(request)
+    assert request["config"]["pipeline"] is False
+    assert "-Pipeline" not in argv and "-SourceWorkers" not in argv
+    assert argv[argv.index("-Source") + 1] == "interra-realty"
+    assert argv[argv.index("-AdmitCurrentInventorySource") + 1] == "interra-realty"
+    assert argv[argv.index("-NotificationMode") + 1] == "StartFinish"
+
+
+def test_serial_policy_refuses_multiple_sources_and_workers(policy):
+    policy.update(pipeline=False, sources=["colliers", "interra-realty"])
+    with pytest.raises(dispatcher.SourcePolicyRefusal, match="serial"):
+        dispatcher.policy_request(policy, "20261106T042000Z_bad")
+    policy.update(sources=["colliers"], workers=2)
+    with pytest.raises(dispatcher.SourcePolicyRefusal, match="serial"):
+        dispatcher.policy_request(policy, "20261106T042000Z_bad")
 
 
 def test_native_no_work_marker_must_bind_exact_completed_launch(policy):

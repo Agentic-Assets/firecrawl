@@ -8639,7 +8639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     lock_dir = checkpoint_lock_dir(args.lock_dir)
     database_target = database_target_fingerprint(args.env_file)
     if args.expected_parent_db_target_sha256 is not None:
-        if (not args.pipeline or args.resume
+        if ((not args.pipeline and len(sources) != 1) or args.resume
                 or re.fullmatch(r"[a-f0-9]{64}", args.expected_parent_db_target_sha256) is None
                 or database_target != {"algorithm": "sha256", "value": args.expected_parent_db_target_sha256}):
             raise RefreshError("preallocated dispatch child database target differs")

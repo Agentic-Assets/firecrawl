@@ -3160,6 +3160,8 @@ def run_series(
                 resume_run=resume_run,
                 fresh_run_id=fresh_run_id,
             )
+            if manifest.get("preallocated_expected_target_sha256") is not None:
+                argv.extend(["--expected-parent-db-target-sha256", manifest["preallocated_expected_target_sha256"]])
             if control is not None:
                 control.prepare_checkpoint(child_run, git_sha)
                 argv.extend(
@@ -3747,7 +3749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     database_target = database_target_fingerprint(args.env_file)
     if args.expected_database_target_sha256 is not None:
-        if (args.fresh_series_id is None or not args.pipeline
+        if (args.fresh_series_id is None or (not args.pipeline and len(sources) != 1)
                 or re.fullmatch(r"[a-f0-9]{64}", args.expected_database_target_sha256) is None
                 or database_target != {"algorithm": "sha256", "value": args.expected_database_target_sha256}):
             raise SeriesError("preallocated dispatch database target differs")
