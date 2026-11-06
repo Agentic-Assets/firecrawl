@@ -467,6 +467,18 @@ try:
                 {"postId": "50000", "cardTitle": "Observed fallback", "documentTitle": "Observed fallback – Daum Commercial"}]
             fallback_claims["fallbackMembers"] = fallback_members
             fallback_claims["fallbackPartition"] = partition
+            identity = [{key: member[key] for key in ("native_id", "external_id", "source_url")}
+                        for member in fallback_claims["members"]]
+            identity_result = sql(identity_partition_query(identity) + ";", db).stdout.strip().split("|", 1)
+            assert identity_result[0] == str(len(identity))
+            identity_partition = json.loads(identity_result[1])
+            assert {item["native_id"] for item in identity_partition if item["conflicted"]} == (
+                {"50000"} if fallback_case == "conflict" else set())
+            fallback_claims.update(identityMembers=identity, identityPartition=identity_partition)
+            fallback_claims["binding"]["identity_partition_sha256"] = _sha(identity_partition)
+            if fallback_case == "conflict":
+                fallback_claims["binding"].update(source_emitted_count=100, source_held_count=2,
+                                                  emitted_count=99, held_count=3)
             fallback_claims["binding"]["title_fallback_observations_sha256"] = _sha(fallback_claims["titleFallbackObservations"])
             fallback_claims["binding"]["fallback_partition_sha256"] = _sha(partition)
             incoming = [candidate] + [row(index) for index in range(1, 100)]
