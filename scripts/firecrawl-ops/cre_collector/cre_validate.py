@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from cre_ingest import (
     assert_expected_database_target,
     find_psql,
     load_db_url,
+    lifecycle_transaction_lock_sql,
     psql_connection_args,
     psql_connection_env,
     source_key_sql,
@@ -368,6 +370,21 @@ def artifact_run_jobs_query(artifact_run_key):
 SELECT count(*)::text AS matching_jobs
 FROM credeals.cre_scrape_jobs
 WHERE artifact_run_key = {_sql_literal(artifact_run_key)};
+"""
+
+
+def atomic_settlement_query(artifact_run_key, source, generation):
+    """Count both footprints in one statement after acquiring the writer lock."""
+    artifact_run_jobs_query(artifact_run_key)  # Apply the shared exact-key validator.
+    if source not in load_source_policy() or not isinstance(generation, str) or not generation or len(generation) > 256:
+        raise ValueError("invalid atomic settlement source or generation")
+    generation_sql = QUERIES["freshness_generations"].strip().removesuffix(";")
+    return f"""
+WITH generations AS ({generation_sql})
+SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs
+        WHERE artifact_run_key = {_sql_literal(artifact_run_key)})::text AS matching_jobs,
+       (SELECT count(*) FROM generations WHERE source_key = {_sql_literal(source)}
+        AND generation_id = {_sql_literal(generation)})::text AS matching_generations;
 """
 
 
@@ -1321,6 +1338,8 @@ def require_full_validation_report(report):
         expected = set(QUERIES)
         if isinstance(queries, dict) and "artifact_run_jobs" in queries:
             expected.add("artifact_run_jobs")
+        if isinstance(queries, dict) and "atomic_settlement" in queries:
+            expected.add("atomic_settlement")
         _require_query_families(queries, expected)
         historical = report.get("historical_primary_child_conflicts")
         if not isinstance(historical, list) or any(
@@ -1639,6 +1658,13 @@ def _build_query_batch_script(queries):
         PIN_STRING_LITERALS,
     ]
     for ordinal, (name, sql) in enumerate(queries.items()):
+        if name == "atomic_settlement":
+            # Finish the ordinary consistent snapshot. A new READ COMMITTED
+            # transaction takes a fresh statement snapshot *after* the lock.
+            statements.extend(("ROLLBACK;", "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;",
+                               PIN_STRING_LITERALS, "SET LOCAL lock_timeout = '30s';",
+                               rf"\o {os.devnull}", lifecycle_transaction_lock_sql(),
+                               r"\o :CRE_VALIDATION_RESULTS"))
         frame_id = _query_frame_id(ordinal, name)
         statements.extend(
             (
@@ -1814,6 +1840,8 @@ def main():
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--expected-ingest-attempt", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--expected-settlement-source", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--expected-settlement-generation", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out", default=None, help="optional output path")
     parser.add_argument("--transwestern-image-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
@@ -1830,6 +1858,10 @@ def main():
         or args.profile != FULL_VALIDATION_PROFILE
     ):
         parser.error("ingest attempt requires bound full validation")
+    if (args.expected_settlement_source is None) != (args.expected_settlement_generation is None):
+        parser.error("settlement source and generation must be supplied together")
+    if args.expected_settlement_source is not None and args.expected_ingest_attempt is None:
+        parser.error("atomic settlement requires a bound ingest attempt")
     if args.transwestern_image_state and (
         args.profile != FULL_VALIDATION_PROFILE or not args.expected_artifact_run_key
         or not args.expected_db_target_sha256
@@ -1839,6 +1871,10 @@ def main():
         queries = queries_for_profile(
             args.profile, expected_artifact_run_key=args.expected_artifact_run_key
         )
+        if args.expected_settlement_source is not None:
+            queries["atomic_settlement"] = atomic_settlement_query(
+                args.expected_artifact_run_key, args.expected_settlement_source,
+                args.expected_settlement_generation)
         if args.transwestern_image_state:
             from cre_transwestern_image_sql import image_state_query
             queries["transwestern_image_state"] = image_state_query() + ";"
@@ -1863,6 +1899,11 @@ def main():
             "database_target_sha256": args.expected_db_target_sha256,
             "artifact_run_key_sha256": hashlib.sha256(args.expected_artifact_run_key.encode("utf-8")).hexdigest(),
             "attempt_id": args.expected_ingest_attempt,
+        }
+    if args.expected_settlement_source is not None:
+        report["atomic_settlement_probe"] = {
+            **report["artifact_run_probe"], "source": args.expected_settlement_source,
+            "generation_id": args.expected_settlement_generation,
         }
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries

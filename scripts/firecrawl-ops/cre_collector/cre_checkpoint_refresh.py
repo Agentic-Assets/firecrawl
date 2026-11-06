@@ -2651,6 +2651,8 @@ def build_validate_argv(
     expected_db_target_sha256: str | None = None,
     expected_artifact_run_key: str | None = None,
     expected_ingest_attempt: str | None = None,
+    expected_settlement_source: str | None = None,
+    expected_settlement_generation: str | None = None,
     profile: str = FULL_VALIDATION_PROFILE,
     transwestern_image_state: bool = False,
 ) -> list[str]:
@@ -2681,6 +2683,13 @@ def build_validate_argv(
         if not expected_artifact_run_key or not expected_db_target_sha256:
             raise ValueError("ingest attempt requires bound recovery validation")
         argv.extend(["--expected-ingest-attempt", expected_ingest_attempt])
+    if (expected_settlement_source is None) != (expected_settlement_generation is None):
+        raise ValueError("settlement source and generation must be supplied together")
+    if expected_settlement_source is not None:
+        if expected_ingest_attempt is None:
+            raise ValueError("settlement requires a bound ingest attempt")
+        argv.extend(["--expected-settlement-source", expected_settlement_source,
+                     "--expected-settlement-generation", expected_settlement_generation])
     if profile != FULL_VALIDATION_PROFILE:
         argv.extend(["--profile", profile])
     if transwestern_image_state:
@@ -6753,6 +6762,9 @@ def recover_interrupted_ingest(
             expected_db_target_sha256=manifest_database_target_sha256(manifest),
             expected_artifact_run_key=artifact_run_key,
             **({"expected_ingest_attempt": guard_attempt} if guard_attempt is not None else {}),
+            **({"expected_settlement_source": source,
+                "expected_settlement_generation": manifest["run_id"]}
+               if prior_recovery.get("reason") == "settled_ingest_failure" else {}),
         ),
         log,
         env=safe_process_env(),
@@ -6788,6 +6800,16 @@ def recover_interrupted_ingest(
     try:
         validation = _load_json(output)
         require_full_validation_report(validation)
+        if recovery["reason"] == "settled_ingest_failure":
+            from recovery.atomic_ingest_rollback import fenced_counts
+            expected_probe = {
+                "database_target_sha256": manifest_database_target_sha256(manifest),
+                "artifact_run_key_sha256": hashlib.sha256(artifact_run_key.encode()).hexdigest(),
+                "attempt_id": guard_attempt,
+            }
+            if (validation.get("artifact_run_probe") != expected_probe
+                    or fenced_counts(validation, source, manifest["run_id"], expected_probe) is None):
+                raise ValueError("atomic settlement fence is unavailable or unbound")
         probe_manifest = {
             "config": {"sources": [source]},
             "sources": {
@@ -6859,6 +6881,9 @@ def recover_interrupted_ingest(
             validation,
             expected_matching_jobs=0,
         )
+        if recovery["reason"] == "settled_ingest_failure":
+            exact_rollback_job_probe = (exact_rollback_job_probe
+                and fenced_counts(validation, source, manifest["run_id"], expected_probe) == (0, 0))
         if not generation_matches and exact_rollback_job_probe:
             recovery.update(
                 {

@@ -10,7 +10,7 @@ from cre_validate import FULL_VALIDATION_PROFILE, QUERIES, VALIDATION_AUDIT_SCOP
 
 
 @pytest.mark.parametrize("source", ["daum-commercial", "cbre"])
-@pytest.mark.parametrize("fault", ["valid", "artifact", "target", "attempt", "job", "generation", "report_hash", "rollback_unknown", "time"])
+@pytest.mark.parametrize("fault", ["valid", "artifact", "target", "attempt", "job", "generation", "report_hash", "rollback_unknown", "time", "fence_missing", "fence_jobs", "fence_generation", "fence_binding"])
 def test_atomic_rollback_binds_real_evidence(tmp_path, source, fault):
     for name in ("sources", "logs", "recovery"):
         (tmp_path / name).mkdir()
@@ -35,6 +35,13 @@ def test_atomic_rollback_binds_real_evidence(tmp_path, source, fault):
               "historical_primary_child_conflicts": [], "generated_at": "2026-11-03T00:00:03Z",
               "artifact_run_probe": {"database_target_sha256": "c" * 64,
                                      "artifact_run_key_sha256": run_key_hash, "attempt_id": "d" * 32}}
+    report["queries"]["atomic_settlement"] = [{"matching_jobs": "0", "matching_generations": "0"}]
+    report["atomic_settlement_probe"] = {**report["artifact_run_probe"], "source": source,
+                                         "generation_id": manifest["run_id"]}
+    if fault == "fence_missing": report["queries"].pop("atomic_settlement")
+    if fault == "fence_jobs": report["queries"]["atomic_settlement"][0]["matching_jobs"] = "1"
+    if fault == "fence_generation": report["queries"]["atomic_settlement"][0]["matching_generations"] = "1"
+    if fault == "fence_binding": report["atomic_settlement_probe"]["attempt_id"] = "f" * 32
     recovery = {"reason": "settled_ingest_failure", "outcome": "exact_rollback", "replay_safe": True,
                 "readback_ok": False, "artifact_run_job_match_ok": False, "rc": 0, "subprocess_rc": 1,
                 "probe_started_at": "2026-11-03T00:00:02Z", "probe_finished_at": "2026-11-03T00:00:04Z",
@@ -105,6 +112,12 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
                   "artifact_run_probe": {"database_target_sha256": target["value"],
                     "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
                     "attempt_id": "a" * 32 if outcome_kind == "bad_attempt" else attempt}}
+        assert argv[argv.index("--expected-settlement-source") + 1] == source
+        assert argv[argv.index("--expected-settlement-generation") + 1] == manifest["run_id"]
+        report["queries"]["atomic_settlement"] = [{"matching_jobs": "1" if outcome_kind == "committed" else "0",
+                                                    "matching_generations": "1" if outcome_kind == "committed" else "0"}]
+        report["atomic_settlement_probe"] = {**report["artifact_run_probe"], "source": source,
+                                             "generation_id": manifest["run_id"]}
         path = Path(argv[argv.index("--out") + 1])
         path.write_text(json.dumps(report))
         return 0
@@ -177,3 +190,22 @@ def test_changed_code_during_recovery_cannot_accept_either_outcome(tmp_path, mon
     assert checkpoint["state"] == "ingest_recovery_required"
     assert checkpoint["ingest_recovery"]["readback_ok"] is False
     assert "outcome" not in checkpoint["ingest_recovery"]
+
+
+def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
+    import cre_validate
+    import cre_ingest
+
+    query = cre_validate.atomic_settlement_query("ingest:v1:" + "a" * 64,
+                                                  "daum-commercial", "2026-11-03T000000Z")
+    script = cre_validate._build_query_batch_script({"ordinary": "SELECT 1;", "atomic_settlement": query})
+    read_committed = script.index("BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;")
+    lock = script.index(cre_ingest.lifecycle_transaction_lock_sql(), read_committed)
+    count = script.index("AS matching_jobs", lock)
+    assert script.index("ROLLBACK;") < read_committed < lock < count
+    assert "AS matching_generations" in script[count:]
+    assert "SET LOCAL lock_timeout = '30s';" in script[read_committed:lock]
+    with pytest.raises(ValueError):
+        cre_validate.atomic_settlement_query("bad-key", "daum-commercial", "gen")
+    with pytest.raises(ValueError):
+        cre_validate.atomic_settlement_query("ingest:v1:" + "a" * 64, "foreign-source", "gen")
