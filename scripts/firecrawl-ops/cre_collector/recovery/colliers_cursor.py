@@ -331,35 +331,71 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
     if cursor is None:
         return None
     run_id = cursor["generation"]
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{6}Z)-[a-f0-9]{12}", run_id)
-    if match is None:
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z-[a-f0-9]{12}", run_id) is None:
         raise SourceEvidenceRefusal("Colliers cursor generation has no supported history")
     base = Path(refresh.__file__).resolve().parent / "out" / "checkpoint-series"
-    series_dir = base / match.group(1)
-    run_dir = series_dir / "runs" / run_id
-    # A retained cursor can outlive an entirely removed legacy series. This
-    # does not establish whether a subsequent old window committed: continue
-    # with fresh source evidence, never claim historical reconciliation.
-    # An existing but incomplete series is still a refusal.
+    # Series and child IDs are generated independently and can differ by a
+    # second. Bind the exact child path in the parent, not its timestamp.
     try:
         directory = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             _safe_stat(directory, directory=True)
-            try:
-                os.stat(match.group(1), dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                _check_owner(owner)
-                return {"history_unavailable": True, "generation": run_id, "position": position}
+            names = os.listdir(directory)
         finally:
             os.close(directory)
-    except (FileNotFoundError, NotADirectoryError, PermissionError, StopRefused) as exc:
-        _check_owner(owner)
-        raise SourceEvidenceRefusal("Colliers cursor history root is unavailable") from exc
-    try:
-        parent = json.loads(_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        if len(names) > 4096:
+            raise SourceEvidenceRefusal("Colliers cursor history search exceeds limit")
+        matches = []
+        for name in names:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", name) is None:
+                continue
+            candidate = base / name
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            child_path = candidate / "runs" / run_id
+            child_exists = child_path.exists() or child_path.is_symlink()
+            try:
+                parent = json.loads(_digest(candidate / "manifest.json", 4 * 1024 * 1024)[0])
+                bound = parent.get("sources", {}).get("colliers", {}).get("checkpoint_run") == f"runs/{run_id}"
+            except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
+                    AttributeError, StopRefused):
+                if child_exists:
+                    matches.append((candidate, None, False))
+                continue
+            if bound or child_exists:
+                matches.append((candidate, parent, bound))
+        if not matches:
+            _check_owner(owner)
+            return {"history_unavailable": True, "generation": run_id, "position": position}
+        # An ambiguous location must not hide an independently readable
+        # unsettled write in any candidate history.
+        for candidate, _, _ in matches:
+            candidate_run = candidate / "runs" / run_id
+            if candidate_run.is_symlink() or (candidate / "runs").is_symlink():
+                raise SourceEvidenceRefusal("Colliers cursor child path is not owned")
+            try:
+                candidate_child = json.loads(_digest(candidate_run / "manifest.json", 4 * 1024 * 1024)[0])
+                candidate_source = candidate_child["sources"]["colliers"]
+                candidate_pipeline = candidate_child["pipeline"]
+                if (candidate_source.get("state") in {"ingesting", "ingest_recovery_required"}
+                        or candidate_pipeline.get("commit_outcome_unknown") is not False):
+                    raise refresh.GlobalStageError("Colliers prior write settlement remains unknown")
+            except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
+                    KeyError, AttributeError, StopRefused):
+                pass  # The selected history is classified below; duplicates are held.
+        if len(matches) != 1 or not matches[0][2]:
+            raise SourceEvidenceRefusal("Colliers cursor history is ambiguous or unbound")
+        series_dir, parent, _ = matches[0]
+        run_dir = series_dir / "runs" / run_id
+        if run_dir.is_symlink() or (series_dir / "runs").is_symlink():
+            raise SourceEvidenceRefusal("Colliers cursor child path is not owned")
         child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        if not isinstance(child, dict) or child.get("run_id") != run_id:
+            raise SourceEvidenceRefusal("Colliers cursor child identity differs")
     except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError, StopRefused) as exc:
         _check_owner(owner)
+        if isinstance(exc, SourceEvidenceRefusal):
+            raise
         raise SourceEvidenceRefusal("Colliers cursor history is missing or malformed") from exc
     try:
         source = (child.get("sources") or {}).get("colliers") or {}

@@ -183,6 +183,54 @@ def test_normal_discovery_uses_only_current_cursor_generation(incident, monkeypa
         if seen:
             assert seen[0][0][0] == series_dir
 
+
+def test_discovery_finds_parent_with_different_timestamp(incident, monkeypatch, tmp_path):
+    series_dir, _, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    moved = series_dir.rename(series_dir.with_name("2026-11-06T030005Z"))
+    seen = []
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: seen.append(args[0]) or {"done": True})
+    result = recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+        env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+    assert result == {"done": True}
+    assert seen == [moved]
+
+
+@pytest.mark.parametrize("damage", ["duplicate", "unbound", "wrong_child"])
+def test_discovery_holds_ambiguous_or_unbound_child(incident, monkeypatch, tmp_path, damage):
+    import shutil
+
+    series_dir, run, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    if damage == "duplicate":
+        shutil.copytree(series_dir, series_dir.with_name("2026-11-06T030005Z"))
+    elif damage == "unbound":
+        parent = json.loads((series_dir / "manifest.json").read_text())
+        parent["sources"]["colliers"]["checkpoint_run"] = "runs/other"
+        _write(series_dir / "manifest.json", parent)
+    else:
+        child["run_id"] = "other"
+        _write(run / "manifest.json", child)
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not recover"))
+    with pytest.raises(recovery.SourceEvidenceRefusal):
+        recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+            env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+
+
+
+def test_ambiguous_history_does_not_hide_unknown_write(incident, monkeypatch, tmp_path):
+    import shutil
+
+    series_dir, run, owner, _, _, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    shutil.copytree(series_dir, series_dir.with_name("2026-11-06T030005Z"))
+    child["pipeline"]["commit_outcome_unknown"] = True
+    _write(run / "manifest.json", child)
+    with pytest.raises(refresh.GlobalStageError, match="unknown"):
+        recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+            env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+
+
 def test_missing_entire_legacy_series_reports_unavailable_without_recovery(incident, monkeypatch, tmp_path):
     series_dir, _, owner, _, cursor, child = incident
     monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
