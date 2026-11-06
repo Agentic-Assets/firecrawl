@@ -23,6 +23,7 @@ param(
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedTargetSha256,
     [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$FreshSeriesId,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
@@ -67,6 +68,9 @@ if ($PSBoundParameters.ContainsKey('FreshSeriesId')) {
             [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$locatorDate)) {
         throw '-FreshSeriesId timestamp is invalid.'
     }
+}
+if ($PSBoundParameters.ContainsKey('ExpectedTargetSha256') -and -not $FreshSeriesId) {
+    throw '-ExpectedTargetSha256 requires a preallocated series.'
 }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
     throw '-SourceWorkers requires -Pipeline.'
@@ -980,6 +984,7 @@ try {
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
             if ($FreshSeriesId) { $arguments += @('--fresh-series-id', $FreshSeriesId) }
+            if ($ExpectedTargetSha256) { $arguments += @('--expected-database-target-sha256', $ExpectedTargetSha256) }
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }

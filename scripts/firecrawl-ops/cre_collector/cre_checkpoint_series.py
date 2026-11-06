@@ -3460,6 +3460,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--work-deadline-seconds", type=int, default=None)
     parser.add_argument("--expected-sha", default=None)
+    parser.add_argument("--expected-database-target-sha256", default=None,
+                        help="internal preallocated-dispatch target binding")
     parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
     parser.add_argument(
         "--reconcile-stale-series",
@@ -3690,6 +3692,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_document_acquisition=source_document_acquisition,
     )
     database_target = database_target_fingerprint(args.env_file)
+    if args.expected_database_target_sha256 is not None:
+        if (args.fresh_series_id is None
+                or re.fullmatch(r"[a-f0-9]{64}", args.expected_database_target_sha256) is None
+                or database_target != {"algorithm": "sha256", "value": args.expected_database_target_sha256}):
+            raise SeriesError("preallocated dispatch database target differs")
 
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()

@@ -105,6 +105,7 @@ def launch(request: dict) -> None:
         "-Concurrency", str(policy["concurrency"]), "-SourceWorkers", str(policy["workers"]),
         "-PageCap", str(policy["page_cap"]), "-AttemptsPerSource", str(policy["attempts"]),
         "-ExpectedSha", policy["expected_sha"], "-FreshSeriesId", request["series_id"],
+        "-ExpectedTargetSha256", request["target"]["value"],
         "-WorkDeadlineSeconds", str(policy["deadline_seconds"]), "-AcknowledgeDatabaseWrites",
         "-LinuxRepo", policy["windows_repo"], "-LinuxEnvFile", policy["env_file"],
         "-Distro", policy["distro"], "-LinuxUser", policy["linux_user"], "-NotificationMode", policy["notification_mode"]]

@@ -27,6 +27,17 @@ def test_fresh_locator_cannot_be_combined_with_resume(tmp_path, monkeypatch):
     assert not (tmp_path / "old").exists()
 
 
+def test_preallocated_dispatch_refuses_wrong_target_before_series_creation(tmp_path, monkeypatch):
+    monkeypatch.setattr(series, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(series, "admit_series_invocation", lambda *_: None)
+    monkeypatch.setattr(series, "database_target_fingerprint", lambda *_: {"algorithm": "sha256", "value": "b" * 64})
+    with pytest.raises(series.SeriesError, match="database target differs"):
+        series.main(["--sources", "cbre", "--out-root", str(tmp_path / "out"),
+                     "--fresh-series-id", "2026-11-06T010203Z-012345abcdef",
+                     "--expected-database-target-sha256", "c" * 64])
+    assert not (tmp_path / "out").exists()
+
+
 def test_preallocated_controlled_series_receipt_is_bound_and_never_authorizes_continuation(
     tmp_path, monkeypatch, capsys
 ):

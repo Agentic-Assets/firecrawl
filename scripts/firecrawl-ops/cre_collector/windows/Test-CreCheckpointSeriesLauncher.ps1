@@ -63,6 +63,8 @@ $cases = @(
     @{ Name = 'pyramid-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
     @{ Name = 'fresh-series-locator'; Args = $series + @('-FreshSeriesId', $freshSeriesId); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId },
+    @{ Name = 'fresh-series-target'; Args = $series + @('-FreshSeriesId', $freshSeriesId, '-ExpectedTargetSha256', ('b' * 64)); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId; TargetHash = ('b' * 64) },
+    @{ Name = 'target-without-fresh'; Args = $series + @('-ExpectedTargetSha256', ('b' * 64)); Exit = 1; Dispatch = $false },
     @{ Name = 'fresh-invalid-date'; Args = $series + @('-FreshSeriesId', '2026-02-30T010203Z-012345abcdef'); Exit = 1; Dispatch = $false },
     @{ Name = 'fresh-invalid-id'; Args = $series + @('-FreshSeriesId', '../bad'); Exit = 1; Dispatch = $false },
     @{ Name = 'fresh-nonseries'; Args = @('-Tier', 'monitor', '-Source', 'hanley', '-ExpectedSha', $sha, '-FreshSeriesId', $freshSeriesId); Exit = 1; Dispatch = $false },
@@ -229,6 +231,7 @@ foreach ($case in $cases) {
         }
         if ($case.ContainsKey('FreshSeriesId')) {
             Assert-True (($forwarded -join '|').Contains('--fresh-series-id|' + $case.FreshSeriesId)) 'Fresh locator must cross the native boundary exactly.'
+            if ($case.ContainsKey('TargetHash')) { Assert-True (($forwarded -join '|').Contains('--expected-database-target-sha256|' + $case.TargetHash)) 'Target must cross the native boundary exactly.' }
             Assert-True ($admissionAudit.freshSeriesId -ceq $case.FreshSeriesId) 'The requested locator must be recorded before dispatch.'
         } else {
             Assert-True (-not ($forwarded -contains '--fresh-series-id')) 'Omitted locator must retain existing invocation behavior.'
