@@ -171,9 +171,15 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=Tru
                 eligible = item["request"].get("eligible_unix_ms", due)
                 if "policy" in item["request"] and (type(eligible) is not int or eligible < due):
                     raise DispatchRefused("dispatch eligibility is invalid")
+                result = item.get("result")
+                if item["state"] == "queued" and isinstance(result, dict) and result.get("outcome") == "settled_no_work":
+                    if (type(result.get("retry_after_unix_ms")) is not int
+                            or result["retry_after_unix_ms"] < item["request"].get("due_unix_ms", 0)):
+                        raise DispatchRefused("native no-work retry time is invalid")
             now_ms = int(time.time() * 1000)
             records = [item for item in records if item[1]["state"] == "dispatch_uncertain"
-                       or item[1]["request"].get("eligible_unix_ms", item[1]["request"].get("due_unix_ms", 0)) <= now_ms]
+                       or max(item[1]["request"].get("eligible_unix_ms", item[1]["request"].get("due_unix_ms", 0)),
+                              (item[1].get("result") or {}).get("retry_after_unix_ms", 0)) <= now_ms]
             if not records:
                 break
             # Uncertain writes fence everything; fresh due work precedes continuations.
@@ -205,6 +211,22 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=Tru
                                  else launch(record["request"]))
             else:
                 launch_result = None
+            if isinstance(launch_result, dict) and launch_result.get("outcome") == "settled_no_work":
+                # The completed native process proved no dispatch. Persist that
+                # observation before making the same locator eligible again.
+                now_ms = int(time.time() * 1000)
+                result = dict(launch_result)
+                result["observed_unix_ms"] = now_ms
+                result["retry_after_unix_ms"] = max(now_ms + 300_000, record["request"].get("due_unix_ms", 0))
+                audit = {"schema": "cre-dispatch-native-no-work/v1", "slot": record["slot"],
+                         "series_id": record["request"].get("series_id"), "result": result}
+                audit_name = ".refusal-" + hashlib.sha256(record["slot"].encode()).hexdigest() + "-" + secrets.token_hex(12) + ".audit"
+                _write(directory, audit_name, audit, create=True)
+                record.update(state="queued", result=result)
+                _write(directory, name, record, create=False)
+                if result.get("scope") == "shared":
+                    raise DispatchRefused("shared native preflight refused; due peers remain queued")
+                continue
             result = (launch_result if isinstance(launch_result, dict)
                       and launch_result.get("outcome") == "settled_no_work"
                       else qualify(record["request"]))
