@@ -8,6 +8,7 @@ old swap usage and Docker's cache-adjusted memory display are not stop signals.
 from __future__ import annotations
 
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -35,6 +36,10 @@ class MemoryTelemetryError(RuntimeError):
 
 class MemoryEvidenceError(MemoryTelemetryError):
     """A required memory safety journal record could not be saved."""
+
+
+def windows_wsl() -> bool:
+    return sys.platform.startswith("linux") and "microsoft" in os.uname().release.lower()
 
 
 def memory_guard_config(
@@ -67,6 +72,8 @@ def memory_guard_config(
     }
     if sys.platform.startswith("linux"):
         config.update(memory_policy())
+    if windows_wsl():
+        config["telemetry_failure_action"] = "diagnostic_only"
     return config
 
 
@@ -112,6 +119,9 @@ class HostMemoryGuard:
     sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS
     sampler: Callable[[], int] | None = None
     context_provider: Callable[[], Mapping[str, Any]] | None = None
+    advisory_failures: bool | None = None
+    failure_reported: bool = field(default=False, init=False)
+    failure_reports: int = field(default=0, init=False)
     high_since: float | None = field(default=None, init=False)
     previous_observed: float | None = field(default=None, init=False)
     tripped: bool = field(default=False, init=False)
@@ -123,6 +133,10 @@ class HostMemoryGuard:
     telemetry_failure: dict[str, Any] | None = field(default=None, init=False)
     sample_read_seconds: float | None = field(default=None, init=False)
     sample_gap_seconds: float | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.advisory_failures is None:
+            self.advisory_failures = windows_wsl()
 
     def config(self) -> dict[str, Any]:
         return memory_guard_config(self.sustain_seconds, self.sample_seconds)
@@ -187,6 +201,8 @@ class HostMemoryGuard:
             and self.linux_sample_evidence["pressure_level"] == pressure
         ):
             diagnostics["linux_memory_sample"] = self.linux_sample_evidence
+        elif pressure == PRESSURE_CRITICAL and self.linux_sampler.partial_critical_cause:
+            diagnostics["partial_critical_cause"] = self.linux_sampler.partial_critical_cause
         _append_record(
             self.log_path,
             {
@@ -251,19 +267,27 @@ class HostMemoryGuard:
         linux_sample = self.sampler is None and sys.platform.startswith("linux")
         if linux_sample:
             self.linux_sampler.last_sample = None
+            self.linux_sampler.partial_critical = False
+            self.linux_sampler.partial_critical_cause = None
         started = time.monotonic()
         self.telemetry_failure = None
         self.sample_read_seconds = None
         self.sample_gap_seconds = None
         try:
-            pressure = (
-                self.sampler()
-                if self.sampler
-                else read_memory_pressure(
-                    timeout=min(1.0, self.sample_seconds),
-                    linux_sampler=self.linux_sampler,
+            try:
+                pressure = (
+                    self.sampler()
+                    if self.sampler
+                    else read_memory_pressure(
+                        timeout=min(1.0, self.sample_seconds),
+                        linux_sampler=self.linux_sampler,
+                    )
                 )
-            )
+            except Exception:
+                if not (self.advisory_failures and linux_sample and self.linux_sampler.partial_critical):
+                    raise
+                self._trip("host_memory_critical", pressure=PRESSURE_CRITICAL, telemetry_valid=False)
+                return PRESSURE_CRITICAL
         finally:
             observed = time.monotonic()
             elapsed = observed - started
@@ -277,6 +301,10 @@ class HostMemoryGuard:
                 gap if gap is not None and math.isfinite(gap) else None
             )
         if not math.isfinite(elapsed) or elapsed < 0 or elapsed > min(1.0, self.sample_seconds):
+            if self.advisory_failures and type(pressure) is int and pressure == PRESSURE_CRITICAL:
+                self.linux_sample_evidence = self.linux_sampler.last_sample if linux_sample else None
+                self._trip("host_memory_critical", pressure=pressure, telemetry_valid=False)
+                return pressure
             raise MemoryTelemetryError("host memory pressure read stale")
         code = self.observe(
             pressure, observed_monotonic=observed, started_monotonic=started
@@ -351,11 +379,34 @@ class HostMemoryGuard:
             "sample_gap_seconds": self.sample_gap_seconds,
         }
 
+    def _degrade(self, exc: Exception) -> None:
+        self._record_failure(exc)
+        # Reset once per degradation episode; repeated journal failures must not
+        # prevent continuous valid warning samples from triggering a stop.
+        if not isinstance(exc, MemoryEvidenceError) or not self.failure_reported:
+            self.high_since = None
+        if not isinstance(exc, MemoryEvidenceError):
+            self.previous_observed = None
+        if not self.failure_reported and self.failure_reports < 5:
+            try:
+                print(f"host memory monitoring degraded: {self.telemetry_failure['category']}",
+                      file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+            self.failure_reports += 1
+        self.failure_reported = True
+
     def _run(self) -> None:
         while not self.stop_event.wait(self.sample_seconds):
             try:
                 self.sample_once()
-            except Exception as exc:  # noqa: BLE001 - every required sampler failure stops work
+                self.failure_reported = False
+            except Exception as exc:  # classify all monitoring failures
+                if self.tripped:
+                    raise
+                if self.advisory_failures:
+                    self._degrade(exc)
+                    continue
                 self._record_failure(exc)
                 self._trip(
                     "host_memory_evidence_failed"
@@ -367,11 +418,16 @@ class HostMemoryGuard:
             if self.tripped:
                 return
 
-    def preflight(self) -> int:
+    def preflight(self) -> int | None:
         self.config()
         try:
             return self.sample_once(admission=True)
         except Exception as exc:
+            if self.tripped:
+                raise
+            if self.advisory_failures:
+                self._degrade(exc)
+                return None
             self._record_failure(exc)
             self._trip(
                 "host_memory_evidence_failed"

@@ -817,10 +817,14 @@ def _expected_child_config(
             key: value for key, value in canonical.items()
             if key not in {"continuity_gap_seconds", "max_sample_gap_seconds"}
         }
-        if not (
-            _exact_json_equal(dict(memory_policy), canonical)
-            or _exact_json_equal(dict(memory_policy), historical)
-        ):
+        # Reconciliation accepts either historical failure action. Resume still
+        # compares the original complete config to the current policy.
+        variants = [canonical, historical]
+        if str(canonical.get("basis", "")).startswith("linux_"):
+            variants = [{**policy, "telemetry_failure_action": action}
+                        for policy in variants
+                        for action in ("interrupt_and_checkpoint", "diagnostic_only")]
+        if not any(_exact_json_equal(dict(memory_policy), policy) for policy in variants):
             raise TypeError("host memory guard policy is not canonical")
         expected["host_memory_guard"] = dict(memory_policy)
     return expected

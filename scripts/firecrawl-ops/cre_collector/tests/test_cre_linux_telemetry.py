@@ -348,3 +348,21 @@ def test_linux_policy_scope_and_darwin_policy_unchanged(monkeypatch):
         == "darwin_dispatch_pressure_level_1_normal_2_warning_4_critical"
     )
     assert "telemetry_scope" not in config
+
+
+@pytest.mark.parametrize("component", ["host", "cgroup"])
+def test_partial_critical_is_not_lost_when_later_input_fails(kernel, tmp_path, component):
+    sampler, group = kernel
+    if component == "host":
+        write(sampler.proc / "meminfo", "MemTotal: 1000000 kB\nMemAvailable: 40000 kB\nSwapTotal: 200000 kB\nSwapFree: 200000 kB\n")
+        (sampler.proc / "pressure/memory").unlink()
+    else:
+        write(group / "memory.current", "960000000\n")
+        (group / "memory.pressure").unlink()
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw), advisory_failures=True)
+    guard.linux_sampler = sampler
+    assert guard.preflight() == 4
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert trips[0]["telemetry_valid"] is False
