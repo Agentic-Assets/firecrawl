@@ -384,6 +384,10 @@ function Test-CreSourceSubsetSummary {
             $Summary.qualification -cne 'qualified_partial_subset' -or
             $Summary.partial -isnot [bool] -or -not $Summary.partial -or
             $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage) { return $false }
+        $terminal = $Summary.PSObject.Properties['terminal_stop']
+        if ($null -ne $terminal -and
+            ($SourceKey -cne 'colliers' -or $terminal.Value -isnot [string] -or
+             @('worker_failed','source_stopped') -cnotcontains $terminal.Value)) { return $false }
         foreach ($field in @('emitted_count','held_count','verified_listings')) {
             $limit = if ($field -ceq 'held_count') { [long]::MaxValue } else { 500000 }
             if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
@@ -486,6 +490,7 @@ function Get-CreVerifiedSummary {
             $verifiedKeys = @()
             $subsetKeys = @()
             foreach ($entry in @($summary.per_source_summaries)) {
+                if ($null -ne $entry.PSObject.Properties['terminal_stop'] -and $entry.source_key -cne 'colliers') { return $null }
                 if ($selectedSourceKeys -cnotcontains $entry.source_key -or
                     -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
                     $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
@@ -498,6 +503,7 @@ function Get-CreVerifiedSummary {
                     ($subsetMarked -and $entry.source_key -ceq 'jll-investor') -or
                     ($subsetMarked -and @('colliers','lyon-stahl','franklin-street') -ccontains $entry.source_key)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
+                if ($null -ne $entry.PSObject.Properties['terminal_stop'] -and -not $expectsSubset) { return $null }
                 if ($expectsSubset) {
                     if ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
