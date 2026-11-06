@@ -1027,6 +1027,29 @@ def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path
             i for i, event in enumerate(events) if event[0] == "partial_worker")
 
 
+def test_quality_refusal_records_safe_reason_and_keeps_peer(tmp_path, monkeypatch):
+    import recovery.colliers_cursor as recovery
+
+    class Owner(refresh.SharedLock):
+        def _require_authority(self):
+            pass
+
+    owner = object.__new__(Owner)
+    def refuse(*args, **kwargs):
+        raise recovery.SourceEvidenceRefusal("untrusted detail not recorded", code="quality_regression")
+    monkeypatch.setattr(recovery, "recover_prior_generation", refuse)
+    monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
+    assert "colliers" in failures
+    assert any(event[:2] == ("start", "savills") for event in events)
+    assert manifest["pipeline"]["source_results"]["colliers"] == {
+        "state": "failed", "reason": "prior cursor recovery refused", "refusal_code": "quality_regression"}
+    assert "untrusted detail" not in json.dumps(manifest)
+
+
 def test_unavailable_legacy_series_is_reported_and_fresh_window_continues(tmp_path, monkeypatch):
     import recovery.colliers_cursor as recovery
 

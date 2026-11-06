@@ -1235,14 +1235,20 @@ def run_bounded_pipeline(
             recovered = recover_prior_generation(owner,
                 expected_target=refresh.manifest_database_target_sha256(manifest), env_file=env_file,
                 before_publish=lambda: publication_state(True), after_publish=lambda: publication_state(False))
-        except SourceEvidenceRefusal:
+        except SourceEvidenceRefusal as refusal:
             if state.get("cursor_recovery_outcome_unknown") is True:
                 raise
             require_pipeline_owner(manifest, lease)
             if refresh.database_target_fingerprint(env_file) != manifest["preflight"]["database_target"]:
                 raise refresh.GlobalStageError("Colliers recovery target changed")
             manifest["sources"]["colliers"].update(state="gate_blocked", pipeline_stage="failed")
-            state["source_results"]["colliers"] = {"state": "failed", "reason": "prior cursor recovery refused"}
+            # Record only a small, controlled classification, never raw
+            # exception text or provider data.
+            refusal_code = refusal.code if refusal.code in {
+                "quality_regression", "readback_mismatch", "historical_readback_refused"
+            } else "source_evidence_refused"
+            state["source_results"]["colliers"] = {"state": "failed", "reason": "prior cursor recovery refused",
+                                                   "refusal_code": refusal_code}
             terminal_source_holds.add("colliers")
             refresh.save_manifest(run_dir, manifest)
             return False
