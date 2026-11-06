@@ -467,11 +467,15 @@ $stoppedSource.per_source_summaries[0].terminal_stop = 'source_stopped'
 Save-Summary $stoppedSource
 $stoppedText = Get-CreNotificationText (New-Record) 'Terminal' 1 (Get-CreVerifiedSummary (New-Record) 'source-stopped')
 Assert-Cre ($stoppedText.Contains('Source detail collection stopped; earlier verified windows were retained.')) 'A settled source stop is reported alongside verified windows.'
-foreach ($badStop in @('bogus', 0, $false, @('worker_failed'), $null)) {
+foreach ($case in @(
+    @{name='text'; value='bogus'}, @{name='number'; value=0},
+    @{name='boolean'; value=$false}, @{name='array'; value=@('worker_failed')},
+    @{name='null'; value=$null}
+)) {
     $badSummary = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
-    $badSummary.per_source_summaries[0].terminal_stop = $badStop
+    $badSummary.per_source_summaries[0].terminal_stop = $case.value
     Save-Summary $badSummary
-    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'invalid-colliers-stop')) 'Invalid terminal stop must be refused.'
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('invalid-colliers-stop-' + $case.name))) 'Invalid terminal stop must be refused.'
 }
 $foreignStop = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
 $foreignStop.per_source_summaries[1] | Add-Member -NotePropertyName terminal_stop -NotePropertyValue 'worker_failed'
