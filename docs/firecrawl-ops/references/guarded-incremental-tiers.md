@@ -148,12 +148,11 @@ is refused before claims. Cleanup
 has the checkpoint's separate grace/join budgets; the work deadline does not
 preempt a blocked kernel call or certify cancellation of remote work.
 
-The PowerShell launcher measures whole-Windows CPU and physical memory using
-Microsoft's native APIs. It refuses admission at90% CPU or below8GiB available
-physical memory, and refuses missing, invalid, stale or unsupported-topology
-evidence. These are conservative local admission settings, not Microsoft
-standards. The Linux owner rejects stale/future Windows admission timestamps
-before work. This is start-time host admission. Later native Windows load is
+The PowerShell launcher measures available whole-Windows physical memory using
+Microsoft's native API. It refuses admission below 8 GiB or when that memory
+reading is unavailable or invalid; CPU is not sampled at admission. The Linux
+owner validates the Windows timestamp and records stale/future timing as a
+diagnostic without calling the observation fresh. This is start-time host admission. Later native Windows load is
 not monitored; Linux watchdogs observe the VM and visible cgroups. Retain the
 current WSL ceiling and reassess from measured runs.
 
@@ -468,10 +467,8 @@ End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
 Before dispatch, the launcher shares one 90-second startup budget between
 anonymous HTTP 200 readiness at `http://127.0.0.1:3002/` (two-second request
-limit) and fresh Windows CPU/memory admission. Valid CPU pressure may wait and
-recheck both readiness and telemetry within that same budget; low memory or
-invalid/stale telemetry refuses immediately. A CPU sample cannot admit after
-the deadline. The existing audit records wait reasons, attempt counts and
+limit) and Windows available-memory admission. Low memory or invalid telemetry
+refuses immediately. The admission cannot succeed after the deadline. The existing audit records wait reasons, attempt counts and
 elapsed time. API failure records `local_api_not_ready_no_dispatch`; exhausted
 startup admission records `startup_admission_deadline_no_dispatch`. Neither
 starts Linux work or Docker. Once dispatch begins, this startup wait never

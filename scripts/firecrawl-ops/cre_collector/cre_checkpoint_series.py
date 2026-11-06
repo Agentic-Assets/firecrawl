@@ -1910,18 +1910,20 @@ def admit_series_invocation(
     ):
         raise SeriesError("expected SHA must be a lowercase full40 revision")
     verify_reviewed_checkout(expected_sha)
+    windows_timing = None
     if windows_unix_ms is not None:
         from cre_guarded_tier import GuardedTierError, validate_windows_admission
 
         try:
-            validate_windows_admission(windows_unix_ms)
+            windows_timing = validate_windows_admission(windows_unix_ms)
         except (GuardedTierError, OverflowError, TypeError, ValueError):
-            raise SeriesError("Windows startup admission is stale or invalid") from None
+            raise SeriesError("Windows startup admission timestamp is invalid") from None
     return {
         "expected_sha": expected_sha,
         "checked_at": utc_now(),
         "origin_tracking": "matching_local_tip_not_remote_freshness",
         "windows_admission_unix_ms": windows_unix_ms,
+        **({"windows_admission_timing": windows_timing} if windows_unix_ms is not None else {}),
         "windows_scope": "startup_only"
         if windows_unix_ms is not None
         else "not_supplied",

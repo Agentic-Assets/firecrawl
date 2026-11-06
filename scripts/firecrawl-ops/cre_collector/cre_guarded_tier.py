@@ -48,15 +48,20 @@ class TierDeadline(KeyboardInterrupt):
     """The foreground run exhausted its wall-clock work budget."""
 
 
-def validate_windows_admission(admitted_unix_ms: int | None) -> None:
-    """Reject stale Windows startup evidence; this is not a continuous guard."""
+def validate_windows_admission(admitted_unix_ms: int | None) -> str | None:
+    """Validate the timestamp and classify its timing without claiming freshness."""
     if admitted_unix_ms is None:
-        return
-    if type(admitted_unix_ms) is not int:
-        raise GuardedTierError("Windows host admission is stale or invalid")
+        return None
+    if type(admitted_unix_ms) is not int or not 0 <= admitted_unix_ms <= 253402300799999:
+        raise GuardedTierError("Windows host admission timestamp is invalid")
     age = time.time() * 1000 - admitted_unix_ms
-    if not math.isfinite(age) or not 0 <= age <= 15000:
-        raise GuardedTierError("Windows host admission is stale or invalid")
+    if not math.isfinite(age):
+        return "clock_unavailable"
+    if age < 0:
+        return "future"
+    if age > 15000:
+        return "stale"
+    return "within_15_seconds"
 
 
 @contextmanager
@@ -317,7 +322,7 @@ def run_guarded_tier(
     if args.env_file and any(ord(c) < 32 or ord(c) == 127 for c in args.env_file):
         raise GuardedTierError("invalid environment file path")
     windows_admission = getattr(args, "windows_admission_unix_ms", None)
-    validate_windows_admission(windows_admission)
+    admission_timing = validate_windows_admission(windows_admission)
 
     runner = checkpoint.run_command if _runner is None else _runner
     verifier = verify_checkout if _verify_checkout is None else _verify_checkout
@@ -337,6 +342,7 @@ def run_guarded_tier(
             "expected_sha": args.expected_sha,
             "deadline_seconds": args.deadline_seconds,
             "windows_admission_unix_ms": windows_admission,
+            **({"windows_admission_timing": admission_timing} if windows_admission is not None else {}),
             "started_at": checkpoint.utc_now(),
             "status": "running",
             "phase": "preflight",
@@ -403,7 +409,9 @@ def run_guarded_tier(
             )
             persist()
             if not phase.startswith("git_") and not tier_worker_started:
-                validate_windows_admission(windows_admission)
+                if windows_admission is not None:
+                    receipt["windows_admission_timing"] = validate_windows_admission(windows_admission)
+                    persist()
                 tier_worker_started = True
             native_work_started = True
             native_command_active = True

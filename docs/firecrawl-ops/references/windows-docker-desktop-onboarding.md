@@ -336,7 +336,8 @@ Mac/manual invocation defaults are unchanged.
 
 The SHA check binds clean deployed code and a matching local origin tracking
 tip; it does not perform a remote fetch or prove remote freshness. Windows
-admission must reach Linux within 15 seconds and applies only at startup.
+admission applies only at startup; Linux records whether its timestamp is stale
+or in the future without treating it as a fresh observation.
 Subsequent Linux CPU/RAM evidence covers the VM and visible cgroups, not
 continuous whole-Windows load. The independent Linux work deadline requests
 cooperative cleanup; cleanup may extend past the budget and remains unverified

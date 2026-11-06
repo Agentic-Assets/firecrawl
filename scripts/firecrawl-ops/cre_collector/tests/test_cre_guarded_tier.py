@@ -534,36 +534,37 @@ def test_resource_trip_after_native_dispatch_never_clears_fence(tmp_path):
     assert_fenced(tmp_path)
 
 
-@pytest.mark.parametrize("age", [0, 14999, 15000])
-def test_fresh_windows_admission_is_accepted(monkeypatch, age):
+@pytest.mark.parametrize(("age", "expected"), [(0, "within_15_seconds"), (15000, "within_15_seconds"), (15001, "stale"), (-1, "future")])
+def test_windows_admission_timing_is_diagnostic(monkeypatch, age, expected):
     monkeypatch.setattr(tier.time, "time", lambda: 1000)
-    tier.validate_windows_admission(1000000 - age)
+    assert tier.validate_windows_admission(1000000 - age) == expected
 
 
-@pytest.mark.parametrize("stamp", [984999, 1000001, True, "1000000"])
-def test_stale_future_or_malformed_windows_admission_is_refused(monkeypatch, stamp):
+@pytest.mark.parametrize("stamp", [-1, 253402300800000, True, "1000000"])
+def test_malformed_windows_admission_is_refused(monkeypatch, stamp):
     monkeypatch.setattr(tier.time, "time", lambda: 1000)
     with pytest.raises(tier.GuardedTierError):
         tier.validate_windows_admission(stamp)
 
 
-def test_windows_evidence_is_rechecked_before_first_tier_worker(tmp_path, monkeypatch):
+def test_delayed_windows_evidence_is_recorded_and_tier_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(tier.time, "time", lambda: 1000)
 
     def verifier(_sha, _execute, _run_dir):
         monkeypatch.setattr(tier.time, "time", lambda: 1016)
 
-    assert (
-        execute(
-            options(windows_admission_unix_ms=1000000),
-            tmp_path,
-            _verify_checkout=verifier,
-            _runner=lambda *_a, **_kw: pytest.fail("stale worker dispatch"),
-        )
-        == 1
-    )
-    assert receipt(tmp_path)["tier_worker_started"] is False
-    assert_fenced(tmp_path)
+    def runner(_argv, log, *, env):
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(json.dumps(monitor_artifact()))
+        return 0
+
+    assert execute(options(tier="monitor", windows_admission_unix_ms=1000000),
+                   tmp_path, _verify_checkout=verifier, _runner=runner) == 0
+    evidence = receipt(tmp_path)
+    assert evidence["windows_admission_unix_ms"] == 1000000
+    assert evidence["windows_admission_timing"] == "stale"
+    assert evidence["tier_worker_started"] is True
+    assert_released(tmp_path)
 
 
 def test_existing_overlap_never_creates_successor_evidence(tmp_path):

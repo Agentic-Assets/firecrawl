@@ -34,8 +34,6 @@ def config():
         ("a" * 39, None),
         ("not-a-sha", None),
         (None, 100000),
-        (SHA, 84999),
-        (SHA, 100001),
         (SHA, -1),
         (SHA, "nan"),
         (SHA, True),
@@ -243,14 +241,15 @@ def test_direct_optional_windows_validator_rejects_wrong_types(monkeypatch, stam
         series.admit_series_invocation(SHA, stamp)
 
 
-def test_windows_freshness_checked_after_git_inspection(monkeypatch):
+def test_windows_timing_recorded_after_git_inspection(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(series.time, "time", lambda: clock[0])
     monkeypatch.setattr(
         series, "verify_reviewed_checkout", lambda *_a: clock.__setitem__(0, 116)
     )
-    with pytest.raises(series.SeriesError, match="stale or invalid"):
-        series.admit_series_invocation(SHA, 100000)
+    admission = series.admit_series_invocation(SHA, 100000)
+    assert admission["windows_admission_unix_ms"] == 100000
+    assert admission["windows_admission_timing"] == "stale"
 
 
 def test_legacy_resume_removes_old_invocation_observation_without_config_drift(
@@ -495,3 +494,12 @@ def test_reviewed_identity_drift_after_cpu_cooldown_prevents_retry(
     assert parent["resource_recovery"]["total_recoveries"] == 1
     assert len(parent["sources"]["cbre"]["attempts"]) == 1
     assert parent["sources"]["cbre"]["state"] == "failed_global"
+
+
+@pytest.mark.parametrize(("stamp", "timing"), [(84999, "stale"), (100001, "future")])
+def test_series_records_out_of_window_windows_observation(monkeypatch, stamp, timing):
+    monkeypatch.setattr(series.time, "time", lambda: 100)
+    monkeypatch.setattr(series, "verify_reviewed_checkout", lambda *_a: None)
+    result = series.admit_series_invocation(SHA, stamp)
+    assert result["windows_admission_unix_ms"] == stamp
+    assert result["windows_admission_timing"] == timing
