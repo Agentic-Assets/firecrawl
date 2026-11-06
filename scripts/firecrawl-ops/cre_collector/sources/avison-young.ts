@@ -117,7 +117,20 @@ type AvisonRedirectObservation = { requestedUrl: string | null; finalUrl: string
 export class AvisonYoungRecordDetailError extends Error {
   constructor(message: string, readonly redirectObservations: AvisonRedirectObservation[] = []) { super(message); }
 }
-export class AvisonYoungAccessDeniedError extends Error {}
+export class AvisonYoungAccessDeniedError extends Error {
+  readonly retryAfter: string | null;
+  constructor(message: string, retryAfter: string | null = null) {
+    super(message);
+    const value = retryAfter?.trim() ?? "";
+    this.retryAfter = /^(?:[0-9]{1,9}|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), .{20,35} GMT)$/.test(value)
+      && (value.length <= 9 || Number.isFinite(Date.parse(value))) ? value : null;
+  }
+}
+
+let avisonYoungOptionalTeamDenial: AvisonYoungAccessDeniedError | null = null;
+export function avisonYoungTeamDenialObserved(): boolean {
+  return avisonYoungOptionalTeamDenial !== null;
+}
 class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
   constructor(readonly heldIds: string[]) {
@@ -211,8 +224,8 @@ export async function fetchAvisonYoungApiKey(timeoutMs = 30_000): Promise<string
   try {
     const html = await fetchAvisonYoungText(AVISON_YOUNG_PAGE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 CRE collector" },
-    }, timeoutMs, (status) => [401, 403, 429].includes(status)
-      ? new AvisonYoungAccessDeniedError(`Avison Young bootstrap returned HTTP ${status}`)
+    }, timeoutMs, (status, retryAfter) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young bootstrap returned HTTP ${status}`, retryAfter)
       : new Error(`HTTP ${status}`));
     if (/<title[^>]*>\s*(?:just a moment|access denied)/i.test(html)) {
       throw new AvisonYoungAccessDeniedError("Avison Young bootstrap returned a challenge");
@@ -234,8 +247,8 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string, tim
   const captureDir = entity === "website" ? process.env.CRE_AVISON_NATIVE_CAPTURE_DIR : undefined;
   const startedAt = captureDir ? observationNow() : "";
   const text = await fetchAvisonYoungText(url, { headers: { "X-Api-Key": apiKey } }, timeoutMs,
-    (status) => [401, 403, 429].includes(status)
-      ? new AvisonYoungAccessDeniedError(`Avison Young SharpLaunch ${entity} API HTTP ${status}`)
+    (status, retryAfter) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young SharpLaunch ${entity} API HTTP ${status}`, retryAfter)
       : new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
   if (captureDir) publishAvisonNativePage(captureDir, text, apiKey, startedAt, observationNow());
   const data = JSON.parse(text);
@@ -259,7 +272,9 @@ export function avisonYoungTeamFeedState(
   error: unknown = null
 ): { rows: any[]; complete: boolean; reason: string | null } {
   if (error) {
-    return { rows: [], complete: false, reason: `team_member request failed: ${String(error)}` };
+    const retryAfter = error instanceof AvisonYoungAccessDeniedError ? error.retryAfter : null;
+    return { rows: [], complete: false, reason: `team_member request failed: ${String(error)}`
+      + (retryAfter ? `; Retry-After: ${retryAfter}` : "") };
   }
   if (!rows.length) {
     return { rows: [], complete: false, reason: "team_member API returned no items" };
@@ -279,13 +294,17 @@ export async function getAvisonYoungFeed(timeoutMs = 30_000): Promise<{
   const apiKey = await fetchAvisonYoungApiKey(timeoutMs);
   const [website, team] = await Promise.allSettled([
     fetchAvisonYoungEntity("website", apiKey, timeoutMs),
-    fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
+    avisonYoungOptionalTeamDenial
+      ? Promise.reject(avisonYoungOptionalTeamDenial)
+      : fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
   ]);
   assertAvisonYoungTransportSettled();
-  for (const result of [website, team]) {
-    if (result.status === "rejected" && result.reason instanceof AvisonYoungAccessDeniedError) throw result.reason;
-  }
   if (website.status === "rejected") throw website.reason;
+  if (team.status === "rejected" && team.reason instanceof AvisonYoungAccessDeniedError) {
+    // Optional team data does not invalidate inventory; do not request the
+    // denied endpoint again in this collector process.
+    avisonYoungOptionalTeamDenial = team.reason;
+  }
   const websiteRows = website.value;
   const rawTeamState = team.status === "fulfilled"
     ? avisonYoungTeamFeedState(team.value)
@@ -2815,6 +2834,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     const enriched = await enrichAvisonYoungListing(
       {
         ...listing,
+        avisonTeamFeedStatus: teamFeedComplete ? undefined : { state: "unavailable", reason: teamFeedReason },
         preserveChildCollections: teamFeedComplete ? undefined : true,
       },
       strict,

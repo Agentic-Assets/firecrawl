@@ -13,6 +13,7 @@ import {
   AVISON_YOUNG_UNSETTLED_EXIT_CODE,
   AvisonYoungAccessDeniedError,
   AvisonYoungPartialDetailError,
+  avisonYoungTeamDenialObserved,
   isAvisonYoungTerminalSourceError,
   isExclusiveAvisonYoungTerminal404Failure,
   srcAvisonYoung,
@@ -414,7 +415,8 @@ async function main() {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
           receipt, startedAt, observationNow(),
-          avisonOnlyRecordLocalFailures ? "record_local_error" : "unclassified_source_error");
+          avisonOnlyRecordLocalFailures && !avisonYoungTeamDenialObserved()
+            ? "record_local_error" : "unclassified_source_error");
       } catch {
         // The ordinary artifact/peer path remains independent; a missing
         // receipt must never qualify the spool without the main artifact.

@@ -55,7 +55,7 @@ export async function fetchAvisonYoungText(
   url: string | URL,
   init: RequestInit,
   timeoutMs: number,
-  httpError: (status: number) => Error
+  httpError: (status: number, retryAfter: string | null) => Error
 ): Promise<string> {
   assertAvisonYoungTransportSettled();
   const controller = new AbortController();
@@ -74,7 +74,7 @@ export async function fetchAvisonYoungText(
   const consume = async (): Promise<string> => {
     const res = await headers;
     controller.signal.throwIfAborted();
-    if (!res.ok) throw httpError(res.status);
+    if (!res.ok) throw httpError(res.status, res.headers?.get?.("retry-after") ?? null);
     if (!res.body) return "";
     reader = res.body.getReader();
     const decoder = new TextDecoder();
