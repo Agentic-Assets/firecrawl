@@ -1234,7 +1234,7 @@ test("Avison strict mapper treats undefined rejection as a failure", async () =>
   await assert.rejects(mixed, (error: unknown) => error === undefined);
 });
 
-test("Avison reserved source exit is limited to an exclusive complete terminal failure", () => {
+test("Avison reserved source exit remains exclusive to settled 404-only failure", () => {
   const requestedSources = ["avison-young"];
   const transactions = ["sale", "lease"];
   assert.equal(AVISON_YOUNG_TERMINAL_404_EXIT_CODE, 78);
@@ -1251,12 +1251,15 @@ test("Avison reserved source exit is limited to an exclusive complete terminal f
   for (const input of [
     { requestedSources: ["cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
     { requestedSources: ["avison-young", "cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
-    { requestedSources, transactions, listingsCollected: 1, terminalFailureTransactions: 2, otherFailureCount: 0 },
-    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 1, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 0, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 3, otherFailureCount: 0 },
     { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 1 },
   ]) {
     assert.equal(isExclusiveAvisonYoungTerminal404Failure(input), false);
   }
+  assert.equal(isExclusiveAvisonYoungTerminal404Failure({
+    requestedSources, transactions, listingsCollected: 1, terminalFailureTransactions: 1, otherFailureCount: 0,
+  }), true);
 });
 
 test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {

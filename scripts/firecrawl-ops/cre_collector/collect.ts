@@ -363,7 +363,7 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
-          ...(err instanceof AvisonYoungPartialDetailError || err instanceof AvisonYoungAccessDeniedError
+          ...(err instanceof AvisonYoungPartialDetailError || isAvisonYoungTerminalSourceError(err) || err instanceof AvisonYoungAccessDeniedError
             || err instanceof AvisonYoungUnsettledError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
@@ -426,12 +426,7 @@ async function main() {
     && requestedSources[0] === "avison-young";
   const terminalAvisonUnsettled = avisonUnsettled && !MONITOR && requestedSources.length === 1
     && requestedSources[0] === "avison-young";
-  if (listings.length === 0) {
-    if ((terminalAvisonDenial || terminalAvisonUnsettled) && !evidenceOnly) {
-      process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
-      return;
-    }
-    if (
+  if (
       !MONITOR
       && isExclusiveAvisonYoungTerminal404Failure({
         requestedSources,
@@ -441,10 +436,8 @@ async function main() {
         otherFailureCount: avisonOtherFailures,
       })
     ) {
-      // This exit is reserved for the typed direct-HTTP 404 path. It carries no
-      // accepted artifact and is used only when every selected transaction failed
-      // with that terminal response. If a private spool captured validated peers,
-      // write a rejected evidence-only artifact before returning the same code.
+      // A typed 404 with no other source failures is terminal for this source.
+      // Any completed peers remain private evidence, never a complete artifact.
       console.error(JSON.stringify({
         event: "avison_young_terminal_required_detail_failure",
         code: "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404",
@@ -460,11 +453,16 @@ async function main() {
       avisonTerminal404 = true;
       avisonTerminalExit = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
       const capture = sources.find(source => source.sourceKey === "avison-young" && source.partialCapture)?.partialCapture;
-      if (!capture || !["sealed", "sealed_partial"].includes(capture.state)
-          || capture.observationRecords < 1) {
+      if (listings.length === 0 && (!capture || !["sealed", "sealed_partial"].includes(capture.state)
+          || capture.observationRecords < 1)) {
         process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
         return;
       }
+  }
+  if (listings.length === 0) {
+    if ((terminalAvisonDenial || terminalAvisonUnsettled) && !evidenceOnly) {
+      process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
+      return;
     }
     // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that

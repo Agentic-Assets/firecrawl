@@ -117,8 +117,8 @@ validated, typed terminal
 404, failed for another reason, or not attempted. This records only selected
 rows, not a complete inventory or a database-admission proof. Other failures
 include denial and uncertain cleanup; they are not reclassified as missing.
-In fresh property-detail mode, settled identity/structure refusals hold selected
-rows while eligible peers continue into the private
+In fresh property-detail mode, settled identity/structure refusals, empty
+responses and required direct-HTTP 404s hold selected rows while eligible peers continue into the private
 spool. The source then returns an error marked truncated; these observations
 are not admitted to Supabase, do not prove full coverage, and cannot authorize
 retirement. Settled direct timeouts, source 5xx responses and recognized error
@@ -126,6 +126,9 @@ shells also hold the row. A local Firecrawl API 5xx does not prove its scrape
 settled and stops the source without another attempt. Access denial, challenge, uncertain settlement and unclassified
 errors stop the pass. Strict full-detail mode retains its existing stop behavior. A crash
 before spool settlement does not establish a complete outcome record.
+An exclusive source with required 404s and no other failures emits the reserved
+terminal 404 outcome after draining peers, so the runner does not retry it. Mixed
+failures retain their distinct incomplete outcome instead of claiming 404-only.
 
 ## Fix shared failure families
 

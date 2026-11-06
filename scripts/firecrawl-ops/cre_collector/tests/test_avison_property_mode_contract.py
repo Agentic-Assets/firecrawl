@@ -29,12 +29,12 @@ const mode=process.env.AVISON_CONTRACT_CASE;
 const calls=[];
 globalThis.fetch=async(input,options)=>{
   const u=new URL(String(input));
-  if(mode==='non-direct-drain' && u.pathname==='/v2/scrape'){
+  if((mode==='non-direct-drain'||mode==='one-empty-nondirect') && u.pathname==='/v2/scrape'){
     const target=new URL(JSON.parse(options.body).url);
     const index=Number((target.hostname+target.pathname).match(/fixture-(?:sale|lease)-(\d)/)?.[1]);
     calls.push({native:target.hostname.endsWith('.sharplaunch.com'),index});
     if(index===1)await new Promise(resolve=>setTimeout(resolve,150));
-    const html=index===0
+    const html=mode==='one-empty-nondirect' && index===1 ? '' : mode==='non-direct-drain' && index===0
       ? '<html><h1>Access denied</h1><p>captcha</p></html>'
       : '<html><main class="property-detail"><h1>Fixture Property</h1><p>Current property details.</p></main></html>';
     return new Response(JSON.stringify({success:true,data:{rawHtml:html,metadata:{statusCode:200,sourceURL:target.href}}}),
@@ -64,6 +64,7 @@ https.request=(url,options,callback)=>{
     let status=native?200:404;
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
+    if(mode==='one-empty-direct' && index===1){status=200;body='';}
     if(mode==='one-bad-identity' && index===1){
       status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
@@ -73,6 +74,7 @@ https.request=(url,options,callback)=>{
     }
     if(mode==='reverse-partial')status=native?404:200;
     if(mode==='one-good-404' && index===1)status=404;
+    if(mode==='first-404' && index===0)status=404;
     if(mode==='one-good-403' && index===1)status=403;
     if(mode==='sale-good-lease-denied' && (url.hostname+url.pathname).includes('fixture-lease-'))status=403;
 
@@ -134,7 +136,7 @@ def prepare(tmp_path, case):
     # Keep transient controls fast without changing their attempt budget.
     env["AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS"] = "0"
     env.pop("AVISON_YOUNG_DETAIL_CONCURRENCY", None)
-    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404"}:
+    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404", "one-empty-direct", "one-empty-nondirect", "first-404"}:
         env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
     if case == "explicit-strict":
         env["CRE_REQUIRE_FRESH_DETAILS"] = "1"
@@ -197,6 +199,27 @@ def test_valid_alternate_does_not_hide_a_failed_transport(tmp_path):
     assert not output.exists()
 
 
+@pytest.mark.parametrize("case", ["one-empty-direct", "one-empty-nondirect"])
+def test_settled_empty_detail_holds_row_and_continues_to_peer(tmp_path, case):
+    preload, started, env = prepare(tmp_path, case)
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    if case == "one-empty-nondirect":
+        env["AVISON_YOUNG_DETAIL_TRANSPORT"] = "nondirect"
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    assert all(entry.get("truncated") and entry.get("error") for entry in data["sources"])
+    records = [json.loads(line) for line in (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    for tx in ("sale", "lease"):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        assert [item["state"] for item in outcome["documents"]] == ["validated", "failed", "validated"]
+
+
 def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_path):
     preload, started, env = prepare(tmp_path, "one-bad-identity")
     attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
@@ -225,14 +248,14 @@ def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_p
                    and str(record["documents"][0]["id"]) == peer for record in records)
 
 
-def test_actual_default_all404_is_terminal_without_artifact_or_new_queued_details(
+def test_actual_default_all404_is_terminal_without_artifact(
     tmp_path,
 ):
     result, output, _started, calls = collect(tmp_path, "both-404")
     assert result.returncode == refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
     assert not output.exists()
-    assert len(calls) == 8  # two active rows, two endpoints, two transaction passes
-    assert {call["index"] for call in calls} == {0, 1}
+    assert len(calls) == 12  # three rows, two endpoints, two transaction passes
+    assert {call["index"] for call in calls} == {0, 1, 2}
 
 
 def test_identity_hold_does_not_disguise_mixed_failure_as_terminal_404(tmp_path):
@@ -240,7 +263,26 @@ def test_identity_hold_does_not_disguise_mixed_failure_as_terminal_404(tmp_path)
     assert result.returncode == 1
     assert result.returncode != refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
     assert not output.exists()
-    assert {call["index"] for call in calls} == {0, 1}
+    assert {call["index"] for call in calls} == {0, 1, 2}
+
+
+def test_first_404_keeps_later_peers_and_uses_terminal_exit(tmp_path):
+    preload, started, env = prepare(tmp_path, "first-404")
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True and data["listings"] == []
+    records = [json.loads(line) for line in (tmp_path / attempt["avison-young_partial"]["path"]).read_text().splitlines()[1:]]
+    for tx in ("sale", "lease"):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        assert [item["state"] for item in outcome["documents"]] == ["required_detail_404", "validated", "validated"]
+    assert refresh.has_terminal_collection_failure("avison-young", {"terminal_collection_failure": {
+        "code": refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE}})
 
 
 @pytest.mark.parametrize("case", ["mixed-schema", "mixed-503", "mixed-undefined"])
@@ -478,7 +520,9 @@ def test_actual_failed_collector_preserves_validated_peers_in_private_custody(tm
         assert states["9002" if entry["transaction"] == "sale" else "9005"] == (
             "required_detail_404" if case == "one-good-404" else "failed"
         )
-        assert states["9003" if entry["transaction"] == "sale" else "9006"] == "unattempted"
+        assert states["9003" if entry["transaction"] == "sale" else "9006"] == (
+            "validated" if case == "one-good-404" else "unattempted"
+        )
         assert set(states.values()) <= {"validated", "required_detail_404", "failed", "unattempted"}
         detail_ids = {str(record["documents"][0]["id"]) for record in details
                       if record["transaction"] == entry["transaction"]}
@@ -532,7 +576,7 @@ def test_all_missing_details_still_fail_and_publish_only_private_outcomes(tmp_pa
     assert all(record["kind"] == "detail_outcomes" for record in records)
     for record in records:
         assert [item["state"] for item in record["documents"]] == [
-            "required_detail_404", "unattempted", "unattempted"
+            "required_detail_404", "required_detail_404", "required_detail_404"
         ]
 
 

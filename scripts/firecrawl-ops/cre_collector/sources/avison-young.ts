@@ -149,8 +149,9 @@ export function isExclusiveAvisonYoungTerminal404Failure(input: {
     input.requestedSources.length === 1
     && input.requestedSources[0] === "avison-young"
     && input.transactions.length > 0
-    && input.listingsCollected === 0
-    && input.terminalFailureTransactions === input.transactions.length
+    && Number.isSafeInteger(input.listingsCollected) && input.listingsCollected >= 0
+    && input.terminalFailureTransactions > 0
+    && input.terminalFailureTransactions <= input.transactions.length
     && input.otherFailureCount === 0
   );
 }
@@ -1702,7 +1703,7 @@ export async function fetchAvisonYoungDirectDoc(
     throw new AvisonYoungHttpStatusError(currentUrl.toString(), response.status);
   }
   if (!rawHtml.trim()) {
-    throw new Error("Avison Young direct detail returned an empty body");
+    throw new AvisonYoungSettledDetailError("Avison Young direct detail returned an empty body");
   }
   const $ = cheerio.load(rawHtml);
   const links = $("a[href]")
@@ -2450,6 +2451,7 @@ export async function enrichAvisonYoungListing(
               waitFor: 1000,
               timeout: 60000,
               ...(requireLiveDetails ? { singleAttempt: true } : {}),
+              ...(requireLiveDetails ? { allowEmptyBody: true } : {}),
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
       try {
@@ -2482,6 +2484,8 @@ export async function enrichAvisonYoungListing(
       }
       const knownSettledFailure = err instanceof AvisonYoungDeadlineError
         || err instanceof AvisonYoungSettledDetailError
+        || (process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct" && err instanceof Error
+            && err.cause instanceof AvisonYoungSettledDetailError)
         || (process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct" && err instanceof Error
             && err.cause instanceof AvisonYoungHttpStatusError && err.cause.status >= 500);
       if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
@@ -2751,6 +2755,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   };
   const outcomes = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
   const heldIds: string[] = [];
+  const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
     outcomes[index]!.state = "started";
     try {
@@ -2761,6 +2766,10 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
       if (requireLiveDetails && !strict && error instanceof AvisonYoungRecordDetailError) {
         heldIds.push(selectedProviderIds[index]!);
+        return undefined;
+      }
+      if (requireLiveDetails && !strict && error instanceof AvisonYoungTerminalDetailError) {
+        missingDetails.push(error.failure);
         return undefined;
       }
       throw error;
@@ -2793,6 +2802,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
   }
   if (heldIds.length) throw new AvisonYoungPartialDetailError(heldIds.sort());
+  if (missingDetails.length) throw new AvisonYoungTerminalSourceError(missingDetails);
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
   assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
   if (requireLiveDetails) {
