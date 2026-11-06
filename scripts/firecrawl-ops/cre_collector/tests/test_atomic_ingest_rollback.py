@@ -142,3 +142,38 @@ def test_pipeline_reconciliation_revalidates_singleton_hold(tmp_path, monkeypatc
     if fault == "unknown_commit": pipeline["commit_outcome_unknown"] = True
     monkeypatch.setattr(outcome, "verified_rollback", lambda *_: fault != "bad_receipt")
     assert series.settled_atomic_hold(child, source, tmp_path) is (fault == "valid")
+
+
+@pytest.mark.parametrize("job_count", [0, 1])
+def test_changed_code_during_recovery_cannot_accept_either_outcome(tmp_path, monkeypatch, job_count):
+    import cre_checkpoint_refresh as refresh
+
+    root = tmp_path / "2026-11-03T000000Z"
+    root.mkdir()
+    source = "daum-commercial"
+    target = {"algorithm": "sha256", "value": "c" * 64}
+    manifest = refresh.new_manifest(root, git_sha="e" * 40, git_dirty=False,
+                                    sources=(source,), page_cap=400, concurrency=1,
+                                    database_target=target)
+    checkpoint = manifest["sources"][source]
+    checkpoint.update(state="ingesting", artifact={"sha256": "b" * 64},
+                      ingest={"attempt_id": "d" * 32},
+                      ingest_recovery={"reason": "settled_ingest_failure"})
+    identity = {"value": ("e" * 40, False)}
+    monkeypatch.setattr(refresh, "git_identity", lambda: identity["value"])
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    monkeypatch.setattr(refresh, "verify_validation_readback",
+                        lambda *_args, **_kwargs: pytest.fail("readback must not be accepted"))
+    def command(argv, _log, **_kwargs):
+        from pathlib import Path
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps({"queries": {"artifact_run_jobs": [{"matching_jobs": str(job_count)}]}})
+        )
+        identity["value"] = ("f" * 40, False)
+        return 0
+    monkeypatch.setattr(refresh, "run_command", command)
+    with pytest.raises(refresh.GlobalStageError, match="code changed during"):
+        refresh.recover_interrupted_ingest(root, manifest, source, None)
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest_recovery"]["readback_ok"] is False
+    assert "outcome" not in checkpoint["ingest_recovery"]

@@ -6774,6 +6774,11 @@ def recover_interrupted_ingest(
     if prior_recovery.get("subprocess_rc") is not None:
         recovery["subprocess_rc"] = prior_recovery["subprocess_rc"]
     checkpoint["ingest_recovery"] = recovery
+    if (recovery["reason"] == "settled_ingest_failure"
+            and git_identity() != (manifest.get("collector_git_sha"), False)):
+        checkpoint["state"] = "ingest_recovery_required"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("collector code changed during ingest reconciliation")
     if rc != 0:
         checkpoint["state"] = "ingest_recovery_required"
         save_manifest(run_dir, manifest)
