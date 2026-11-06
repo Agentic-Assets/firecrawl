@@ -61,6 +61,7 @@ CHILD_STATES = {
     "dry_run_passed",
     "ingesting",
     "ingest_recovery_required",
+    "settled_ingest_failed",
     "pyramid_historical_guard_refused",
     "transwestern_image_guard_refused", "jll_image_guard_refused",
     "ingested",

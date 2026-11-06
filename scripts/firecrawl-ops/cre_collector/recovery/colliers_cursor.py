@@ -141,14 +141,62 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     checked = verify_worker_artifact(run_dir / prior_worker["artifact_path"], projected,
         current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"])
     worker_receipt = checked["receipt"]
+    # The cursor is a position to resume scanning, not necessarily an
+    # observed card. Bind the actual first evidence position and require it
+    # to lie in the forward rotated interval ending at the committed cursor.
+    from cre_colliers_partial_checkpoint import _read_private_file
+
+    data = checked["data"]
+    total, start, end = data.get("total"), last_window.get("cursor"), last_window.get("next_cursor")
+    first = worker_receipt.get("firstPosition")
+    if (any(type(value) is not int for value in (total, start, end, first))
+            or total < 1 or start < 1 or not all(1 <= value <= total for value in (end, first))
+            or data.get("cursor") != start or data.get("proposedCursor") != end):
+        raise ValueError("Colliers prior rotation interval differs")
+    # The selector orders every position before an out-of-range cursor,
+    # starting at position 1 after a source inventory shrinks.
+    rotation_start = start if start <= total else 1
+    distance = (end - rotation_start) % total
+    # A cursor beyond a shrunken inventory starts scanning at 1. Reaching
+    # cursor 1 after processing the tail is a full rotation, not zero work.
+    if start > total and end == 1:
+        distance = total
+    if (first - rotation_start) % total >= distance:
+        raise ValueError("Colliers prior rotation interval differs")
+    evidence_raw = _read_private_file(run_dir / prior_worker["evidence_path"], 128 * 1024 * 1024)
+    evidence = worker_receipt.get("evidence") or {}
+    if (len(evidence_raw) != evidence.get("bytes")
+            or hashlib.sha256(evidence_raw).hexdigest() != evidence.get("sha256")):
+        raise ValueError("Colliers prior rotation evidence changed")
+    lines = evidence_raw.splitlines()
+    if len(lines) < 2:
+        raise ValueError("Colliers prior rotation evidence is empty")
+    header, first_record, last_record = (json.loads(lines[0]), json.loads(lines[1]), json.loads(lines[-1]))
+    if header != {"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
+                  "generation": run_id, "attempt": prior_worker["attempt"]}:
+        raise ValueError("Colliers prior rotation evidence differs")
+
+    def evidence_position(record):
+        if not isinstance(record, dict):
+            raise ValueError("Colliers prior rotation record invalid")
+        source = record.get("source") if record.get("kind") == "detail" else (
+            record.get("candidate") if record.get("kind") == "held" else None)
+        if (not isinstance(source, dict) or type(source.get("start")) is not int
+                or type(source.get("offset")) is not int):
+            raise ValueError("Colliers prior rotation position invalid")
+        return source["start"] + source["offset"]
+
+    if evidence_position(first_record) != first:
+        raise ValueError("Colliers prior first evidence position differs")
+    if evidence_position(last_record) != (end - 2) % total + 1:
+        raise ValueError("Colliers prior last evidence position differs")
     completion = prior_worker.get("completion")
     if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
             "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
             or completion != {key: worker_receipt[key] for key in completion}
             or worker_receipt.get("sourceStopped") is not False or worker_receipt.get("rotationComplete") is not False
             or worker_receipt.get("proposedCursor") != last_window["next_cursor"]
-            or worker_receipt.get("firstPosition") != last_window["cursor"]
-            or (len(windows) == 1 and last_window.get("first_position") != last_window["cursor"])
+            or (len(windows) == 1 and last_window.get("first_position") != first)
             or (len(windows) > 1 and worker_receipt.get("stopBeforePosition") != last_window.get("first_position"))
             or worker.get("stop_before_position") != last_window.get("first_position")):
         raise ValueError("Colliers prior worker completion differs")
@@ -331,35 +379,76 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
     if cursor is None:
         return None
     run_id = cursor["generation"]
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{6}Z)-[a-f0-9]{12}", run_id)
-    if match is None:
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z-[a-f0-9]{12}", run_id) is None:
         raise SourceEvidenceRefusal("Colliers cursor generation has no supported history")
     base = Path(refresh.__file__).resolve().parent / "out" / "checkpoint-series"
-    series_dir = base / match.group(1)
-    run_dir = series_dir / "runs" / run_id
-    # A retained cursor can outlive an entirely removed legacy series. This
-    # does not establish whether a subsequent old window committed: continue
-    # with fresh source evidence, never claim historical reconciliation.
-    # An existing but incomplete series is still a refusal.
+    # Series and child IDs are generated independently and can differ by a
+    # second. Bind the exact child path in the parent, not its timestamp.
     try:
         directory = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             _safe_stat(directory, directory=True)
-            try:
-                os.stat(match.group(1), dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                _check_owner(owner)
-                return {"history_unavailable": True, "generation": run_id, "position": position}
+            names = os.listdir(directory)
         finally:
             os.close(directory)
-    except (FileNotFoundError, NotADirectoryError, PermissionError, StopRefused) as exc:
-        _check_owner(owner)
-        raise SourceEvidenceRefusal("Colliers cursor history root is unavailable") from exc
-    try:
-        parent = json.loads(_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        if len(names) > 4096:
+            raise SourceEvidenceRefusal("Colliers cursor history search exceeds limit")
+        matches = []
+        unsafe_child = False
+        for name in names:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", name) is None:
+                continue
+            candidate = base / name
+            if candidate.is_symlink():
+                # Unowned links are not history and are never followed.
+                continue
+            if not candidate.is_dir():
+                continue
+            child_path = candidate / "runs" / run_id
+            child_exists = child_path.exists() or child_path.is_symlink()
+            try:
+                parent = json.loads(_digest(candidate / "manifest.json", 4 * 1024 * 1024)[0])
+                bound = parent.get("sources", {}).get("colliers", {}).get("checkpoint_run") == f"runs/{run_id}"
+            except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
+                    AttributeError, StopRefused):
+                if child_exists:
+                    matches.append((candidate, None, False))
+                continue
+            if bound or child_exists:
+                matches.append((candidate, parent, bound))
+        if not matches:
+            _check_owner(owner)
+            return {"history_unavailable": True, "generation": run_id, "position": position}
+        # An ambiguous location must not hide an independently readable
+        # unsettled write in any candidate history.
+        for candidate, _, _ in matches:
+            candidate_run = candidate / "runs" / run_id
+            if candidate_run.is_symlink() or (candidate / "runs").is_symlink():
+                unsafe_child = True
+                continue
+            try:
+                candidate_child = json.loads(_digest(candidate_run / "manifest.json", 4 * 1024 * 1024)[0])
+                candidate_source = candidate_child["sources"]["colliers"]
+                candidate_pipeline = candidate_child["pipeline"]
+                if (candidate_source.get("state") in {"ingesting", "ingest_recovery_required"}
+                        or candidate_pipeline.get("commit_outcome_unknown") is not False):
+                    raise refresh.GlobalStageError("Colliers prior write settlement remains unknown")
+            except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
+                    KeyError, AttributeError, StopRefused):
+                pass  # The selected history is classified below; duplicates are held.
+        if unsafe_child or len(matches) != 1 or not matches[0][2]:
+            raise SourceEvidenceRefusal("Colliers cursor history is ambiguous or unbound")
+        series_dir, parent, _ = matches[0]
+        run_dir = series_dir / "runs" / run_id
+        if run_dir.is_symlink() or (series_dir / "runs").is_symlink():
+            raise SourceEvidenceRefusal("Colliers cursor child path is not owned")
         child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        if not isinstance(child, dict) or child.get("run_id") != run_id:
+            raise SourceEvidenceRefusal("Colliers cursor child identity differs")
     except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError, StopRefused) as exc:
         _check_owner(owner)
+        if isinstance(exc, SourceEvidenceRefusal):
+            raise
         raise SourceEvidenceRefusal("Colliers cursor history is missing or malformed") from exc
     try:
         source = (child.get("sources") or {}).get("colliers") or {}

@@ -679,6 +679,7 @@ def test_invalid_utf8_manifest_reports_read_failure_without_traceback(tmp_path, 
 @pytest.mark.parametrize(
     "phase",
     [
+        "settled_ingest_failed",
         "collect_infrastructure_failed",
         "collect_failed",
         "artifact_rejected",

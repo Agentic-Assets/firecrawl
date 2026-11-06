@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -19,12 +20,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cre_ingest import (
+    FOLDED_SOURCE_PREFIXES,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     MAX_NORMALIZED_SALE_PRICE_USD,
     MIN_PLAUSIBLE_CAP_RATE,
+    SOURCE_TO_BROKERAGE,
     assert_expected_database_target,
     find_psql,
     load_db_url,
+    lifecycle_transaction_lock_sql,
     psql_connection_args,
     psql_connection_env,
     source_key_sql,
@@ -368,6 +372,43 @@ def artifact_run_jobs_query(artifact_run_key):
 SELECT count(*)::text AS matching_jobs
 FROM credeals.cre_scrape_jobs
 WHERE artifact_run_key = {_sql_literal(artifact_run_key)};
+"""
+
+
+def atomic_settlement_query(artifact_run_key, source, generation):
+    """Count a job and the existence of its source generation under the lock."""
+    artifact_run_jobs_query(artifact_run_key)  # Apply the shared exact-key validator.
+    if (source not in SOURCE_TO_BROKERAGE or source not in load_source_policy()
+            or not isinstance(generation, str) or not generation or len(generation) > 256):
+        raise ValueError("invalid atomic settlement source or generation")
+    # source_key_sql may return the brokerage slug itself or a folded source
+    # under its mapped brokerage. Include both possible slugs; never infer a
+    # narrower external-id prefix from the source.
+    slugs = {source, SOURCE_TO_BROKERAGE[source][0]}
+    slugs.update(slug for slug, _prefix, key in FOLDED_SOURCE_PREFIXES if key == source)
+    slug_sql = ", ".join(_sql_literal(slug) for slug in sorted(slugs))
+    source_sql = source_key_sql("decoded")
+    return f"""
+SELECT (SELECT count(*) FROM credeals.cre_scrape_jobs
+        WHERE artifact_run_key = {_sql_literal(artifact_run_key)})::text AS matching_jobs,
+       (EXISTS (
+         SELECT 1 FROM credeals.cre_listings l
+         JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+         CROSS JOIN LATERAL (
+           SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data OFFSET 0
+         ) AS decoded
+         CROSS JOIN LATERAL (
+           SELECT {FRESHNESS_PAYLOAD_SQL} AS payload OFFSET 0
+         ) AS persisted
+         CROSS JOIN LATERAL jsonb_to_record(coalesce(persisted.payload, '{{}}'::jsonb))
+           AS observed("inventoryObservedAt" text, "detailObservedAt" text, "freshnessProvenance" jsonb)
+         CROSS JOIN LATERAL jsonb_to_record(coalesce(observed."freshnessProvenance", '{{}}'::jsonb))
+           AS provenance("generationId" text, "detailScope" text, "cacheDisposition" text)
+         WHERE l.deleted_at IS NULL
+           AND b.slug IN ({slug_sql})
+           AND ({source_sql}) = {_sql_literal(source)}
+           AND NULLIF(provenance."generationId", '') = {_sql_literal(generation)}
+       ))::int::text AS matching_generations;
 """
 
 
@@ -1321,6 +1362,8 @@ def require_full_validation_report(report):
         expected = set(QUERIES)
         if isinstance(queries, dict) and "artifact_run_jobs" in queries:
             expected.add("artifact_run_jobs")
+        if isinstance(queries, dict) and "atomic_settlement" in queries:
+            expected.add("atomic_settlement")
         _require_query_families(queries, expected)
         historical = report.get("historical_primary_child_conflicts")
         if not isinstance(historical, list) or any(
@@ -1639,6 +1682,13 @@ def _build_query_batch_script(queries):
         PIN_STRING_LITERALS,
     ]
     for ordinal, (name, sql) in enumerate(queries.items()):
+        if name == "atomic_settlement":
+            # Finish the ordinary consistent snapshot. A new READ COMMITTED
+            # transaction takes a fresh statement snapshot *after* the lock.
+            statements.extend(("ROLLBACK;", "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;",
+                               PIN_STRING_LITERALS, "SET LOCAL lock_timeout = '30s';",
+                               lifecycle_transaction_lock_sql().removesuffix(";")
+                               + rf" \g {os.devnull}"))
         frame_id = _query_frame_id(ordinal, name)
         statements.extend(
             (
@@ -1779,6 +1829,7 @@ def render_markdown(report):
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
         "artifact_run_jobs": "Artifact Run Jobs",
+        "atomic_settlement": "Atomic Settlement Fence",
     }
     for key in report["queries"]:
         parts.extend(
@@ -1814,6 +1865,8 @@ def main():
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--expected-ingest-attempt", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--expected-settlement-source", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--expected-settlement-generation", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out", default=None, help="optional output path")
     parser.add_argument("--transwestern-image-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
@@ -1830,6 +1883,10 @@ def main():
         or args.profile != FULL_VALIDATION_PROFILE
     ):
         parser.error("ingest attempt requires bound full validation")
+    if (args.expected_settlement_source is None) != (args.expected_settlement_generation is None):
+        parser.error("settlement source and generation must be supplied together")
+    if args.expected_settlement_source is not None and args.expected_ingest_attempt is None:
+        parser.error("atomic settlement requires a bound ingest attempt")
     if args.transwestern_image_state and (
         args.profile != FULL_VALIDATION_PROFILE or not args.expected_artifact_run_key
         or not args.expected_db_target_sha256
@@ -1839,6 +1896,10 @@ def main():
         queries = queries_for_profile(
             args.profile, expected_artifact_run_key=args.expected_artifact_run_key
         )
+        if args.expected_settlement_source is not None:
+            queries["atomic_settlement"] = atomic_settlement_query(
+                args.expected_artifact_run_key, args.expected_settlement_source,
+                args.expected_settlement_generation)
         if args.transwestern_image_state:
             from cre_transwestern_image_sql import image_state_query
             queries["transwestern_image_state"] = image_state_query() + ";"
@@ -1863,6 +1924,11 @@ def main():
             "database_target_sha256": args.expected_db_target_sha256,
             "artifact_run_key_sha256": hashlib.sha256(args.expected_artifact_run_key.encode("utf-8")).hexdigest(),
             "attempt_id": args.expected_ingest_attempt,
+        }
+    if args.expected_settlement_source is not None:
+        report["atomic_settlement_probe"] = {
+            **report["artifact_run_probe"], "source": args.expected_settlement_source,
+            "generation_id": args.expected_settlement_generation,
         }
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries

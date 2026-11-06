@@ -193,9 +193,19 @@ if result_fd is not None:
         historical = copy.deepcopy(database["manifest"])
         historical["sources"]["colliers"] = copy.deepcopy(windows[0]["checkpoint"])
         original = historical["collector_git_sha"]
-        verifier = "9" * 40 if original != "9" * 40 else "8" * 40
+        # The pipeline fixture creates an isolated Git repository for the
+        # original producer. Advance it with an empty commit so the verifier
+        # identity and ancestry are real rather than synthetic SHA stubs.
+        synthetic_repo = root / "fixture" / "repo"
+        assert command("git", "-C", str(synthetic_repo), "rev-parse", "HEAD").stdout.strip() == original
+        command("git", "-C", str(synthetic_repo), "-c", "user.name=Synthetic",
+                "-c", "user.email=synthetic@example.test", "commit", "--allow-empty", "-qm", "verifier")
+        verifier = command("git", "-C", str(synthetic_repo), "rev-parse", "HEAD").stdout.strip()
+        assert verifier != original
+        assert command("git", "-C", str(synthetic_repo), "merge-base", original, verifier).stdout.strip() == original
         with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(refresh, "git_identity", lambda: (verifier, False))
+            patch.setattr(refresh, "REPO_ROOT", synthetic_repo)
+            assert refresh.git_identity() == (verifier, False)
             patch.setattr(ingest, "find_psql", lambda: str(shim))
             proof = refresh.colliers_partial_readback(
                 root / "fixture" / "generation", historical, str(env_file),
@@ -203,6 +213,10 @@ if result_fd is not None:
         assert proof["ok"] is True and proof["outcome"] == "exact_commit"
         assert proof["expected"] == 100
         print("Two real database windows, settled rotation and historical readback: PASS")
+        from tests.colliers_controlled_recovery_fixture import run as run_controlled_recovery
+        run_controlled_recovery(root, HERE.parent, env_file, shim,
+                                root / "fixture" / "fake-fetch.mjs", database["target"]["value"],
+                                lambda: sql("SELECT count(*) FROM credeals.cre_scrape_jobs"))
     finally:
         if container_id is not None:
             inspected = docker("inspect", "--format",

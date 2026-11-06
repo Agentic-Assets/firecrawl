@@ -10,6 +10,25 @@ from cre_series_status import _read_regular_file
 from cre_validate import FULL_VALIDATION_PROFILE, VALIDATION_AUDIT_SCOPES
 
 
+def fenced_counts(report, source, generation, artifact_probe):
+    """Validate the target/attempt-bound lock-first footprint, or return None."""
+    if not isinstance(artifact_probe, dict) or report.get("atomic_settlement_probe") != {
+            **artifact_probe, "source": source, "generation_id": generation}:
+        return None
+    fenced = report.get("queries", {}).get("atomic_settlement")
+    if (not isinstance(fenced, list) or len(fenced) != 1 or not isinstance(fenced[0], dict)
+            or set(fenced[0]) != {"matching_jobs", "matching_generations"}):
+        return None
+    values = []
+    for key in ("matching_jobs", "matching_generations"):
+        value = fenced[0][key]
+        if isinstance(value, bool) or not (isinstance(value, int) and value >= 0
+                or isinstance(value, str) and value.isdecimal()):
+            return None
+        values.append(int(value))
+    return tuple(values)
+
+
 def eligible(manifest, source):
     """Only regular atomic writers; special partial writers keep their fences."""
     import cre_checkpoint_refresh as refresh
@@ -71,6 +90,8 @@ def verified_rollback(run_dir, manifest, source):
                     "artifact_run_key_sha256": recovery["artifact_run_key_sha256"],
                     "attempt_id": binding["attempt_id"],
                 }):
+            return False
+        if fenced_counts(report, source, binding["generation_id"], report["artifact_run_probe"]) != (0, 0):
             return False
         times = [refresh.parse_iso8601(value, field="rollback evidence time") for value in (
             ingest["started_at"], ingest["finished_at"], recovery["probe_started_at"],
