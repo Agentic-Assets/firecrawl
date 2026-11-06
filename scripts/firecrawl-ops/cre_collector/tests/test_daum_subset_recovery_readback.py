@@ -66,6 +66,14 @@ def test_recovery_reproves_held_subset_and_real_readback(subset, monkeypatch, re
         validation["queries"] = {
             **{name: [] for name in QUERIES}, **validation["queries"],
             "atomic_settlement": [{"matching_jobs": "1", "matching_generations": "0" if fault == "fence" else "1"}],
+            "inventory_generation_fingerprints": [
+                {"source_key": key, "row_count": "99" if key == daum.SOURCE else "0",
+                 "active_row_count": "99", "classified_row_count": "99",
+                 "unclassified_row_count": "0",
+                 "max_row_updated_at": manifest["started_at"],
+                 "max_observation_at": manifest["started_at"]}
+                for key in refresh.SOURCE_KEYS
+            ],
         }
     def command(argv, _log, **_kwargs):
         Path(argv[argv.index("--out") + 1]).write_text(json.dumps(validation))
