@@ -246,7 +246,8 @@ def run_schedule(
             attempt["colliers_partial"] = {"state": "sealed_local", "outcome": "source_error"}
             return "rejected/colliers.json", "d" * 64
 
-        def worker(root, owner, _lock, _runner, _save):
+        def worker(root, owner, _lock, _runner, _save, *, window_index=1, stop_before_position=None):
+            events.append(("partial_worker", window_index, stop_before_position))
             checkpoint = owner["sources"]["colliers"]
             checkpoint["partial_attempted"] = True
             if colliers_partial == "held":
@@ -256,6 +257,10 @@ def run_schedule(
 
         monkeypatch.setattr(refresh, "archive_rejected_with_evidence", archive)
         monkeypatch.setattr(partial, "run_window_worker", worker)
+        # This scheduler fixture has no real receipt or cursor; end the single
+        # synthetic window here. Receipt-bound continuation is tested separately.
+        monkeypatch.setattr(partial, "archive_verified_pipeline_window", lambda *_args: False)
+        monkeypatch.setattr(partial, "archive_no_write_pipeline_window", lambda *_args: False)
     if lyon_partial:
         import cre_lyon_partial_checkpoint as partial
 
@@ -369,6 +374,7 @@ def test_pipeline_colliers_partial_preserves_other_sources(tmp_path, monkeypatch
         sources=("colliers", "savills"), artifact_failure="colliers", colliers_partial=outcome)
     assert manifest["pipeline"]["status"] == "partial"
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert ("partial_worker", 1, None) in events
     if outcome == "accepted":
         assert failures == []
         assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
@@ -384,6 +390,7 @@ def test_pipeline_settled_nonzero_colliers_evidence_reaches_foreground(tmp_path,
         sources=("colliers", "savills"), colliers_partial=outcome, colliers_failure_nonzero=True)
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
     assert manifest["pipeline"]["status"] == "partial"
+    assert ("partial_worker", 1, None) in events
     if outcome == "accepted":
         assert failures == []
         assert manifest["pipeline"]["source_results"]["colliers"]["partial"] is True
