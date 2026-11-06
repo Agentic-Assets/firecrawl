@@ -274,13 +274,19 @@ def main(argv=None) -> int:
     if not sys.platform.startswith("linux"):
         raise ValueError("this phase requires the WSL/Linux series control contract")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--slot", required=True)
-    parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--slot")
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--wake", action="store_true", help="drain already recorded due intents")
     args = parser.parse_args(argv)
-    if re.fullmatch(r"\d{8}T\d{6}Z_[A-Za-z0-9_-]{1,96}", args.slot) is None:
+    if args.wake and (args.slot is not None or args.policy is not None):
+        parser.error("wake cannot submit a new intent")
+    if not args.wake and (args.slot is None or args.policy is None):
+        parser.error("submission requires slot and policy")
+    if not args.wake and re.fullmatch(r"\d{8}T\d{6}Z_[A-Za-z0-9_-]{1,96}", args.slot) is None:
         raise ValueError("slot must bind a UTC due time and task identity")
     from datetime import datetime
-    datetime.strptime(args.slot[:16], "%Y%m%dT%H%M%SZ")
+    if not args.wake:
+        datetime.strptime(args.slot[:16], "%Y%m%dT%H%M%SZ")
     parent = HERE / "out"
     parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -293,6 +299,9 @@ def main(argv=None) -> int:
     finally:
         os.close(parent_fd)
     path = parent / "local-dispatch"
+    if args.wake:
+        dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify, successor=successor)
+        return 0
     try:
         raw_policy = args.policy.read_bytes()
     except OSError:

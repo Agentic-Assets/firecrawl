@@ -73,6 +73,28 @@ def test_serial_daum_preserves_subset_policy_version(policy, version):
     assert argv[argv.index("-DaumSubsetPolicy") + 1] == version
 
 
+def test_wake_retries_due_intent_through_existing_dispatch_and_qualification(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatcher, "HERE", tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    queue = out / "local-dispatch"
+    queue.mkdir(mode=0o700)
+    dispatch_queue.enqueue(queue, "20261106T042000Z_peer", {"due_unix_ms": 0})
+    calls = []
+    monkeypatch.setattr(dispatcher, "prepare_launch", lambda req: calls.append("prepare") or [])
+    monkeypatch.setattr(dispatcher, "launch", lambda req, argv: calls.append("launch"))
+    monkeypatch.setattr(dispatcher, "qualify", lambda req: calls.append("qualify") or {"outcome": "qualified"})
+    assert dispatcher.main(["--wake"]) == 0
+    assert calls == ["prepare", "launch", "qualify"]
+    assert dispatcher.main(["--wake"]) == 0
+    assert calls == ["prepare", "launch", "qualify"]
+
+
+def test_wake_cannot_mix_a_new_policy_or_slot():
+    with pytest.raises(SystemExit):
+        dispatcher.main(["--wake", "--slot", "20261106T042000Z_peer"])
+
+
 def test_native_no_work_marker_must_bind_exact_completed_launch(policy):
     request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
     marker = {"schema": "cre-dispatch-no-work/v1", "seriesId": request["series_id"],
