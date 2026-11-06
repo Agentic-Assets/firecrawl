@@ -622,14 +622,12 @@ def test_serial_pyramid_hold_exit_requires_owner_settlement(tmp_path, monkeypatc
 
 
 def test_unknown_cursor_publication_keeps_real_owner_fence(tmp_path, monkeypatch):
-    import cre_refresh_pipeline as pipeline
-
     argv = configure_main(monkeypatch, tmp_path) + ["--pipeline"]
     def interrupted(run_dir, manifest, *args, **kwargs):
         manifest["pipeline"] = {"cursor_recovery_outcome_unknown": True}
         refresh.save_manifest(run_dir, manifest)
         raise OSError("synthetic cursor publication uncertainty")
-    monkeypatch.setattr(pipeline, "run_bounded_pipeline", interrupted)
+    monkeypatch.setattr(refresh, "run_bounded_pipeline", interrupted)
     with pytest.raises(OSError, match="cursor publication uncertainty"):
         refresh.main(argv)
     assert_successor_fenced(tmp_path)
