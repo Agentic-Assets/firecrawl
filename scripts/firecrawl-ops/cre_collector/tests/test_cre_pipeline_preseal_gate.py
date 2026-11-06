@@ -57,7 +57,6 @@ def closed_pipeline(tmp_path, monkeypatch, request):
     real_command = refresh.run_command
     monkeypatch.setattr(refresh, "git_identity", lambda: (SHA, False))
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *args: None)
-
     def start(run, owner, source, **kwargs):
         path = run / "sources" / (source + ".json.tmp")
         path.parent.mkdir(exist_ok=True)
@@ -724,13 +723,27 @@ def test_preseal_accepts_maintained_admission_rewrite_of_raw_hold(
     monkeypatch.setattr(refresh, "run_command", gate_command)
     monkeypatch.setattr(refresh, "run_artifact_compute", admission_worker)
     monkeypatch.setattr(refresh, "artifact_compute_enabled", lambda: True)
+    if subset:
+        import daum.identity_sql as daum_identity
+
+        def identity_probe(path, artifact_sha, generation, producer, target, env_file):
+            assert (path, artifact_sha, generation, producer, target, env_file) == (
+                artifact, digest, manifest["run_id"], SHA, TARGET, None
+            )
+            return {"synthetic": "identity-probe"}
+
+        monkeypatch.setattr(daum_identity, "run_cohort_probe", identity_probe)
     if proof_refused:
         with pytest.raises(
             refresh.GlobalStageError, match="current-inventory admission refused"
         ):
             pipeline.preseal_source_gate(root, manifest, source, None)
+        if subset:
+            assert manifest["sources"][source]["daum_identity_probe"] == {"synthetic": "identity-probe"}
         return
     assert pipeline.preseal_source_gate(root, manifest, source, None) is True
+    if subset:
+        assert manifest["sources"][source]["daum_identity_probe"] == {"synthetic": "identity-probe"}
     gate = manifest["sources"][source]["gate"]
     assert gate["rc"] == 2 and gate["raw_verdict"] == "hold"
     assert gate["verdict"] != "hold"
