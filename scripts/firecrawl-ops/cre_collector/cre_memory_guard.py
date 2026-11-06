@@ -284,8 +284,14 @@ class HostMemoryGuard:
                     )
                 )
             except Exception:
-                if not (self.advisory_failures and linux_sample and self.linux_sampler.partial_critical):
+                if not (self.advisory_failures and linux_sample):
                     raise
+                if not self.linux_sampler.partial_critical:
+                    cause = self.linux_sampler.critical_cgroup_after_failure()
+                    if cause is None:
+                        raise
+                    self.linux_sampler.partial_critical = True
+                    self.linux_sampler.partial_critical_cause = cause
                 self._trip("host_memory_critical", pressure=PRESSURE_CRITICAL, telemetry_valid=False)
                 return PRESSURE_CRITICAL
         finally:
