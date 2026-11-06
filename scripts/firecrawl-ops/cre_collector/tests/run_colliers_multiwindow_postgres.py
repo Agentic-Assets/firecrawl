@@ -2,6 +2,7 @@
 import copy
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13,8 +14,8 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-def command(*args, text=None, check=True):
-    return subprocess.run(args, input=text, text=True, capture_output=True, check=check, timeout=120)
+def command(*args, text=None, check=True, env=None):
+    return subprocess.run(args, input=text, text=True, capture_output=True, check=check, timeout=120, env=env)
 
 
 def main():
@@ -29,22 +30,46 @@ def main():
     os.environ["TMPDIR"] = str(root)
     tempfile.tempdir = str(root)
     print(f"synthetic fixture evidence: {root}", flush=True)
+    # The daemon is outside the test network namespace. Pin a local Unix socket,
+    # an empty private Docker config and a local image; never contact a registry.
+    docker_config = root / "docker-config"
+    docker_config.mkdir(mode=0o700)
+    docker_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                  "DOCKER_CONFIG": str(docker_config), "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    label_value = uuid.uuid4().hex
+    label = "agentic-assets.colliers-fixture=" + label_value
+    container_id = None
+
+    def docker(*args, text=None, check=True):
+        return command("docker", *args, text=text, check=check, env=docker_env)
 
     def sql(query):
-        result = command("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
+        result = docker("exec", "-i", container_id, "psql", "-U", "postgres", "-X", "-q", "-tA",
                          "-v", "ON_ERROR_STOP=1", text=query, check=False)
         if result.returncode:
             raise RuntimeError(result.stderr)
         return result.stdout.strip()
 
     try:
-        command("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
-                "--memory=512m", "--pids-limit=128", "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+        socket_path = Path("/var/run/docker.sock")
+        socket_info = socket_path.lstat()
+        if not stat.S_ISSOCK(socket_info.st_mode):
+            raise RuntimeError("local Docker daemon socket is not a Unix socket")
+        image_id = docker("image", "inspect", "--format", "{{.Id}}", "postgres:17").stdout.strip()
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+            raise RuntimeError("local PostgreSQL image identity is invalid")
+        created = docker("run", "-d", "--rm", "--pull=never", "--name", name, "--label", label,
+                "--network=none", "--cpus=0.5", "--memory=512m", "--pids-limit=128",
+                "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
                 "--mount", f"type=bind,src={root},dst={root}",
-                "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
+                "-e", "POSTGRES_PASSWORD=synthetic-only", image_id)
+        candidate_id = created.stdout.strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", candidate_id):
+            raise RuntimeError("Docker did not return a valid created container ID")
+        container_id = candidate_id
         for _ in range(100):
-            logs = command("docker", "logs", name, check=False)
-            ready = command("docker", "exec", name, "pg_isready", "-U", "postgres", check=False).returncode == 0
+            logs = docker("logs", container_id, check=False)
+            ready = docker("exec", container_id, "pg_isready", "-U", "postgres", check=False).returncode == 0
             if ready and (logs.stdout + logs.stderr).count("database system is ready to accept connections") >= 2:
                 break
             time.sleep(.2)
@@ -92,7 +117,8 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         shim.write_text("#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\n"
             "if '-f' in args and args[args.index('-f')+1] != '-':\n"
             " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n"
-            "os.execvp('docker',['docker','exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(name) + ",'psql','-U','postgres',*args])\n",
+            "os.environ.clear(); os.environ.update(" + repr(docker_env) + ")\n"
+            "os.execvp('docker',['docker','exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(container_id) + ",'psql','-U','postgres',*args])\n",
             encoding="utf8")
         shim.chmod(0o700)
         database = {"target": ingest.database_target_fingerprint_from_url(db_url), "psql": shim, "env_file": env_file}
@@ -121,7 +147,19 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         assert proof["expected"] == 100
         print("Two real database windows, settled rotation and historical readback: PASS")
     finally:
-        command("docker", "rm", "-f", name, check=False)
+        if container_id is not None:
+            inspected = docker("inspect", "--format",
+                '{{.Id}} {{.Name}} {{index .Config.Labels "agentic-assets.colliers-fixture"}}',
+                container_id, check=False)
+            expected = f"{container_id} /{name} {label_value}"
+            if inspected.returncode != 0 or inspected.stdout.strip() != expected:
+                raise RuntimeError("refusing cleanup: created container identity cannot be confirmed")
+            docker("rm", "-f", container_id)
+            absent = docker("inspect", container_id, check=False)
+            if absent.returncode == 0 or "No such object" not in absent.stderr:
+                raise RuntimeError("cannot confirm owned synthetic container is absent")
+            docker("info", "--format", "{{.ID}}")
+            print(f"confirmed cleanup of synthetic container {container_id}", flush=True)
 
 
 if __name__ == "__main__":
