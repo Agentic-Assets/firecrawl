@@ -8435,7 +8435,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
-            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None or jll_guard_binding is not None or args.newmark_page_attempt else []),
+            *(["-X"] if args.checkpoint_ingest_attempt is not None or pyramid_guard_binding is not None or transwestern_image_transition_binding is not None or jll_guard_binding is not None or args.newmark_page_attempt else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
