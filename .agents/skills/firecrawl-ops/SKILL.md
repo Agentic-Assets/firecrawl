@@ -36,9 +36,10 @@ operator guide. For a high-volume listing refresh, do not use raw
 
 The supervised runner supports Darwin Mach/sysctl safety telemetry and Linux
 CPU, memory PSI, available memory/swap and visible cgroup v2 limits/events.
-Unknown platforms or missing evidence fail closed. Under WSL2/Docker Desktop,
-the guards measure the Linux VM and visible cgroups, not aggregate Windows host
-CPU or RAM. Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
+Unknown platforms, missing required memory evidence, and missing required
+non-WSL CPU evidence fail closed. Under WSL2/Docker Desktop, measurements
+cover the Linux VM and visible cgroups, not aggregate Windows host CPU or RAM.
+Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
 for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
 Linux verification does not prove native Windows or native Mac runtime parity.
 Separate Linux and native Mac offline regression proof is recorded on
@@ -59,16 +60,20 @@ CLI API access and checkpoint tenant identity from full-refresh acceptance.
    reapply settings or recreate services before each refresh. For an approved
    resource change, follow the scoped procedure in `START_HERE.md`; browser-only
    changes must not recreate the API or apply a pending model transition.
-2. Run `cre_checkpoint_series.py` with an approved finite source selection,
-   explicit CPU settings, and `nice`; use the commands in `START_HERE.md`.
+2. Run `cre_checkpoint_series.py` with the source scope and settings in
+   `START_HERE.md`. The routine full-registry path uses `--sources all` and
+   unlimited pages; use a bounded selection when the task calls for one.
    Serial mode is the default. Opt-in `--pipeline --source-workers 2` overlaps
    collection with serial database units through the same shared runner on
    macOS and Linux/WSL. Keep exact-key source admissions and provider limits.
-3. The checkpoint guards stop and checkpoint sustained CPU or warning memory
-   pressure, critical memory pressure, or missing required telemetry/evidence.
-   They are not a permanent monitor or auto-resume service. Inspect
-   `host-cpu-guard.jsonl`, `host-memory-guard.jsonl` and, when present,
-   `cpu-incidents.jsonl` after an interruption. Serial resume requires the exact
+3. On macOS and native Linux, the CPU guard stops and checkpoints sustained
+   CPU pressure or missing required CPU telemetry. On Windows/WSL, CPU samples
+   and gaps are diagnostic only and do not block or interrupt collection.
+   The separate memory guard still stops for sustained warning or critical
+   pressure and missing required memory telemetry/evidence. These guards are
+   not a permanent monitor or auto-resume service. Inspect
+   `host-memory-guard.jsonl`, enabled CPU guard logs, and the optional WSL
+   `resource-usage.jsonl` after an interruption. Serial resume requires the exact
    recorded configuration; pipeline resume is unsupported, so reconcile its
    settled generation before any new invocation. Memory stops never qualify
    for automatic CPU-only recovery.
