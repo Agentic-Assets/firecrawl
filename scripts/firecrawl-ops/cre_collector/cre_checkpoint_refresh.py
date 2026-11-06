@@ -7807,6 +7807,14 @@ def run_final_validation(
         lyon_new_missing_canonical=lyon_allowance,
         nai_new_missing_canonical=nai_allowance,
     )
+    if historical_colliers_producer_sha is not None:
+        # The historical baseline predates independent source writes. Preserve
+        # the global result, but do not attribute other sources' later changes
+        # to this already-committed Colliers window.
+        result["colliers_recovery_global_quality_diagnostic"] = quality
+        quality = compare_colliers_recovery_quality(before, result)
+        result["colliers_recovery_source_quality"] = quality
+        atomic_write_json(output, result)
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
         "log": _relative_to_run(log, run_dir),
@@ -7977,6 +7985,55 @@ def compare_validation_quality(
                            _int_value(new_children.get(key, {}).get("count"))):
             outcome["image_transition"] = image_transition
     return outcome
+
+
+def compare_colliers_recovery_quality(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare attributable Colliers measures for an already-settled window.
+
+    The unfiltered comparison is retained separately. Global child/URL and
+    search aggregates have no source key, so cannot establish this window's
+    effect; the partial write does not modify children or source-index rows.
+    """
+    fields = ("bad_source_url", "missing_canonical_url", "bad_canonical_url", "invalid_state",
+              "impossible_lat", "impossible_lng", "sale_price_flags", "sale_psf_flags",
+              "lease_rate_min_flags", "lease_rate_max_flags", "cap_rate_flags")
+
+    def count_valid(value):
+        return (type(value) is int and value >= 0) or (
+            isinstance(value, str) and re.fullmatch(r"[0-9]+", value) is not None)
+
+    def scoped(report):
+        queries = report.get("queries")
+        if not isinstance(queries, dict):
+            raise ValueError("missing quality queries")
+        filtered = dict(queries)
+        for name in ("duplicates", "quality_by_source", "child_counts"):
+            rows = queries.get(name)
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("invalid quality rows")
+            filtered[name] = [row for row in rows if row.get("source_key") == "colliers"]
+        quality_rows = filtered["quality_by_source"]
+        if len(quality_rows) != 1 or any(not count_valid(quality_rows[0].get(key)) for key in fields):
+            raise ValueError("Colliers quality row is incomplete")
+        duplicates = filtered["duplicates"]
+        if (len(duplicates) > 1 or any(row.get("check_name") != "duplicate_source_url_groups"
+                or not count_valid(row.get("groups")) or not count_valid(row.get("rows")) for row in duplicates)):
+            raise ValueError("Colliers duplicate rows are malformed")
+        children = filtered["child_counts"]
+        child_types = [row.get("child_type") for row in children]
+        if (len(child_types) != 5
+                or set(child_types) != {"contacts", "documents", "images", "media", "links"}
+                or any(not count_valid(row.get("count")) for row in children)):
+            raise ValueError("Colliers child counts are malformed")
+        for name in ("bad_child_urls", "primary_child_conflicts", "orphans", "search_smoke"):
+            if isinstance(queries.get(name), list):
+                filtered[name] = []
+        return {**report, "queries": filtered}
+
+    try:
+        return compare_validation_quality(scoped(before), scoped(after))
+    except (AttributeError, TypeError, ValueError):
+        return {"ok": False, "failures": ["Colliers recovery quality rows are incomplete or malformed"]}
 
 
 ABSOLUTE_LISTING_QUALITY_FIELDS = (
