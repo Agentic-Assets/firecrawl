@@ -12,6 +12,11 @@ from test_daum_verified_subset import admit, complete, subset  # noqa: F401
 @pytest.mark.parametrize("malformed", [False, True])
 def test_all_held_compute_result_reaches_preseal_without_write(subset, monkeypatch, malformed):
     run_dir, artifact, _data, manifest, report = subset
+    import test_essex_current_inventory as helpers
+    for entry in _data["sources"]:
+        for key in ("listings", "inventoryObserved", "detailObserved"):
+            entry["freshness"][key] = entry["listingsCollected"]
+    helpers.refresh(artifact, _data, manifest)
     original_report = copy.deepcopy(report)
     admit(subset)
     report.clear()
