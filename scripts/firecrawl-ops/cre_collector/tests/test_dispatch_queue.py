@@ -117,3 +117,29 @@ def test_preparation_failure_remains_queued_and_can_be_retried(tmp_path):
         qualify=lambda _: {"outcome": "qualified"})
     assert events == [["prepared"]]
     assert json.loads((tmp_path / "slot.json").read_text())["state"] == "settled"
+
+
+def test_source_local_preparation_hold_preserves_peer_without_spinning(tmp_path):
+    queue.enqueue(tmp_path, "a_bad", {"kind": "bad"})
+    queue.enqueue(tmp_path, "b_peer", {"kind": "peer"})
+    events = []
+    def prepare(request):
+        events.append(("prepare", request["kind"]))
+        if request["kind"] == "bad":
+            raise queue.LocalPreflightRefused("source-specific")
+        return ["safe"]
+    queue.drain(tmp_path, prepare=prepare, launch=lambda request, _: events.append(("launch", request["kind"])),
+                qualify=lambda _: {"outcome": "qualified"})
+    assert events == [("prepare", "bad"), ("prepare", "peer"), ("launch", "peer")]
+    assert json.loads((tmp_path / "a_bad.json").read_text())["state"] == "held_no_work"
+    assert json.loads((tmp_path / "b_peer.json").read_text())["state"] == "settled"
+
+
+def test_shared_native_refusal_stops_and_preserves_due_peer(tmp_path):
+    queue.enqueue(tmp_path, "a_first", {"kind": "first"})
+    queue.enqueue(tmp_path, "b_peer", {"kind": "peer"})
+    with pytest.raises(queue.DispatchRefused, match="shared native"):
+        queue.drain(tmp_path, launch=lambda _: {"outcome": "settled_no_work", "scope": "shared"},
+                    qualify=lambda _: pytest.fail("must not qualify"))
+    assert json.loads((tmp_path / "a_first.json").read_text())["state"] == "settled"
+    assert json.loads((tmp_path / "b_peer.json").read_text())["state"] == "queued"

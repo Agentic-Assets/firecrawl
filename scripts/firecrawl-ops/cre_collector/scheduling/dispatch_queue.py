@@ -16,6 +16,10 @@ class DispatchRefused(ValueError):
     """An intent or its prior execution cannot safely be advanced."""
 
 
+class LocalPreflightRefused(ValueError):
+    """This source's request was refused before any native process started."""
+
+
 def _directory(path: Path) -> int:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     _safe_stat(fd, directory=True, private=True)
@@ -60,7 +64,7 @@ def _read(directory: int, name: str) -> dict:
     if (not isinstance(value, dict) or set(value) != {"schema", "slot", "request", "state", "result"}
             or value["schema"] != "cre-local-dispatch/v1"
             or _slot(value["slot"]) != name or not isinstance(value["request"], dict)
-            or value["state"] not in {"queued", "dispatch_uncertain", "settled"}):
+            or value["state"] not in {"queued", "dispatch_uncertain", "settled", "held_no_work"}):
         raise DispatchRefused("invalid durable intent")
     if "policy" in value["request"] and value["request"].get("slot") != value["slot"]:
         raise DispatchRefused("durable intent slot differs")
@@ -76,6 +80,26 @@ def enqueue(path: Path, slot: str, request: dict) -> None:
     try:
         record = {"schema": "cre-local-dispatch/v1", "slot": slot, "request": request,
                   "state": "queued", "result": None}
+        try:
+            _write(directory, name, record, create=True)
+        except FileExistsError:
+            old = _read(directory, name)
+            if _encode(old["request"]) != _encode(request):
+                raise DispatchRefused("due slot already has a different request")
+    finally:
+        os.close(directory)
+
+
+def hold_invalid_policy(path: Path, slot: str, policy_sha256: str) -> None:
+    """Keep a source-local rejected due slot without persisting raw policy bytes."""
+    if re.fullmatch(r"[a-f0-9]{64}", policy_sha256 or "") is None:
+        raise DispatchRefused("invalid rejected policy hash")
+    name = _slot(slot)
+    directory = _directory(path)
+    try:
+        request = {"slot": slot, "held_policy_sha256": policy_sha256}
+        record = {"schema": "cre-local-dispatch/v1", "slot": slot, "request": request,
+                  "state": "held_no_work", "result": {"outcome": "held_no_work", "reason": "invalid_source_policy"}}
         try:
             _write(directory, name, record, create=True)
         except FileExistsError:
@@ -104,7 +128,7 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None) -> bool:
         while True:
             names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
             records = [(name, _read(directory, name)) for name in names]
-            records = [item for item in records if item[1]["state"] != "settled"]
+            records = [item for item in records if item[1]["state"] not in {"settled", "held_no_work"}]
             for _, item in records:
                 due = item["request"].get("due_unix_ms")
                 if "policy" in item["request"] and (type(due) is not int or due < 0):
@@ -125,6 +149,11 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None) -> bool:
                 if prepare is not None:
                     try:
                         prepared = prepare(record["request"])
+                    except LocalPreflightRefused as exc:
+                        record.update(state="held_no_work", result={"outcome": "held_no_work",
+                            "reason": "source_preflight_refused", "error_type": type(exc).__name__})
+                        _write(directory, name, record, create=False)
+                        continue
                     except Exception as exc:
                         # Nothing capable of launching the native process has
                         # run. Preserve this intent for a later safe retry.
@@ -149,6 +178,8 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None) -> bool:
                     enqueue(path, *next_intent)
             record.update(state="settled", result=result)
             _write(directory, name, record, create=False)
+            if result.get("scope") == "shared":
+                raise DispatchRefused("shared native preflight refused; due peers remain queued")
         return True
     finally:
         os.close(lock)

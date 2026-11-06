@@ -77,7 +77,7 @@ def test_tampered_derived_scope_refuses_before_native_launcher(policy, monkeypat
     request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
     request["config"]["sources"] = ["savills"]
     monkeypatch.setattr(dispatcher.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
-    with pytest.raises(ValueError, match="intent differs"):
+    with pytest.raises(dispatch_queue.LocalPreflightRefused, match="source-specific"):
         dispatcher.prepare_launch(request)
 
 
@@ -117,6 +117,23 @@ def test_only_one_target_bound_deadline_successor(policy, monkeypatch):
         dispatcher.successor(slot, first, result)
 
 
+def test_deadline_with_settled_no_child_requalifies_and_omits_priority(policy, monkeypatch):
+    slot = "20261106T042000Z_colliers"
+    first = dispatcher.policy_request(policy, slot)
+    result = {"status": "deadline_interrupted", "outcome": "settled_no_work", "unfinished_sources": ["colliers"]}
+    _, successor = dispatcher.successor(slot, first, result)
+    assert successor["predecessor_series_id"] == first["series_id"]
+    assert successor["predecessor_no_work"] is True
+    assert "-PriorityFromSeriesId" not in dispatcher.launcher_arguments(successor)
+    seen = []
+    monkeypatch.setattr(dispatcher, "qualify", lambda request: seen.append(request) or result)
+    dispatcher.verify_no_work_predecessor(successor)
+    assert seen == [first]
+    monkeypatch.setattr(dispatcher, "qualify", lambda _: {"status": "deadline_interrupted", "outcome": "qualified"})
+    with pytest.raises(ValueError, match="did not requalify"):
+        dispatcher.verify_no_work_predecessor(successor)
+
+
 def test_scheduled_task_identity_cannot_collide_with_reserved_successor(policy):
     initial = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, initial)
@@ -141,6 +158,21 @@ def test_real_cli_path_persists_and_drains_synthetic_intent(tmp_path, policy, mo
     assert dispatcher.main(["--slot", slot, "--policy", str(policy_file)]) == 0
     assert [row[0] for row in calls] == ["launch", "qualify"]
     assert json.loads((tmp_path / "out" / "local-dispatch" / (slot + ".json")).read_text())["state"] == "settled"
+
+
+def test_invalid_source_policy_is_held_without_persisting_policy_bytes(tmp_path, policy, monkeypatch):
+    (tmp_path / "out").mkdir()
+    monkeypatch.setattr(dispatcher, "HERE", tmp_path)
+    policy["sources"] = ["not-a-real-source"]
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text(json.dumps(policy))
+    monkeypatch.setattr(dispatcher, "launch", lambda *_: pytest.fail("invalid source must not launch"))
+    slot = "20200101T000000Z_invalid"
+    assert dispatcher.main(["--slot", slot, "--policy", str(policy_file)]) == 0
+    raw = (tmp_path / "out" / "local-dispatch" / (slot + ".json")).read_text()
+    record = json.loads(raw)
+    assert record["state"] == "held_no_work" and record["result"]["reason"] == "invalid_source_policy"
+    assert "not-a-real-source" not in raw
 
 
 def test_queue_controls_real_synthetic_series_child_and_receipt(tmp_path, policy, monkeypatch):
