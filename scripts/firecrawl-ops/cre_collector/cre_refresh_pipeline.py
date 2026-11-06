@@ -229,6 +229,11 @@ def run_artifact_compute(root: Path, action: str, arguments: dict) -> dict:
     if not isinstance(result, dict) or result.get("request_id") != request_id:
         raise refresh.GlobalStageError("pipeline artifact response identity mismatch")
     if result.get("ok") is not True:
+        if (result.get("ok") is False and result.get("daum_all_identities_held") is True
+                and set(result) == {"request_id", "ok", "daum_all_identities_held"}
+                and action == "admit" and arguments.get("source") == "daum-commercial"
+                and arguments.get("phase") == "source"):
+            raise refresh.DaumPartialProbeHold("all emitted DAUM identities are held")
         if result.get("artifact_rejected") is True:
             raise refresh.ArtifactValidationError(
                 result.get("error", "artifact rejected")
