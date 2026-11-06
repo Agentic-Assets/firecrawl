@@ -6847,6 +6847,12 @@ def recover_interrupted_ingest(
     )
     recovery["artifact_run_job_match_ok"] = committed_job_exact
     recovery["readback_ok"] = readback["ok"] and committed_job_exact
+    if (recovery["reason"] == "settled_ingest_failure" and recovery["readback_ok"]
+            and fenced_counts(validation, source, manifest["run_id"], expected_probe) != (1, 1)):
+        checkpoint["state"] = "ingest_recovery_required"
+        recovery["readback_ok"] = False
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("committed ingest and settlement fence disagree")
     if not recovery["readback_ok"] and (jll_partial_candidate(manifest, source)
                                             or franklin_partial_candidate(manifest, source)):
         # The ordinary generation report omits deleted parents. Its absence

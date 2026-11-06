@@ -73,7 +73,7 @@ def test_special_partial_and_guarded_sources_are_not_demoted(source, flag):
     assert not outcome.eligible(manifest, source)
 
 
-@pytest.mark.parametrize("outcome_kind", ["settled", "bad_attempt", "unknown_cleanup", "committed", "fence_jobs", "fence_generation", "fence_missing"])
+@pytest.mark.parametrize("outcome_kind", ["settled", "bad_attempt", "unknown_cleanup", "committed", "fence_jobs", "fence_generation", "fence_missing", "committed_fence_zero"])
 def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_path, monkeypatch, outcome_kind):
     import cre_checkpoint_refresh as refresh
 
@@ -95,7 +95,7 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
                               "freshness_generation_started_at": manifest["started_at"]}
     monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
     monkeypatch.setattr(refresh, "git_identity", lambda: ("e" * 40, False))
-    monkeypatch.setattr(refresh, "verify_validation_readback", lambda *a, **kw: {"ok": outcome_kind == "committed"})
+    monkeypatch.setattr(refresh, "verify_validation_readback", lambda *a, **kw: {"ok": outcome_kind in {"committed", "committed_fence_zero"}})
     run_key = artifact_run_identity_from_digests([digest])[0]
 
     def command(argv, log, **_kwargs):
@@ -107,7 +107,7 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
         attempt = argv[argv.index("--expected-ingest-attempt") + 1]
         report = {"ok": True, "validation_profile": FULL_VALIDATION_PROFILE,
                   "audit_scope": VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE],
-                  "queries": {**{key: [] for key in QUERIES}, "artifact_run_jobs": [{"matching_jobs": "1" if outcome_kind == "committed" else "0"}]},
+                  "queries": {**{key: [] for key in QUERIES}, "artifact_run_jobs": [{"matching_jobs": "1" if outcome_kind in {"committed", "committed_fence_zero"} else "0"}]},
                   "historical_primary_child_conflicts": [], "generated_at": refresh.utc_now(),
                   "artifact_run_probe": {"database_target_sha256": target["value"],
                     "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
@@ -138,6 +138,11 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
         with pytest.raises(refresh.GlobalStageError, match="readback is invalid"):
             refresh.ingest_source(root, manifest, source, artifact, None)
         assert checkpoint["state"] == "ingest_recovery_required"
+    elif outcome_kind == "committed_fence_zero":
+        with pytest.raises(refresh.GlobalStageError, match="settlement fence disagree"):
+            refresh.ingest_source(root, manifest, source, artifact, None)
+        assert checkpoint["state"] == "ingest_recovery_required"
+        assert checkpoint["ingest_recovery"]["readback_ok"] is False
     elif outcome_kind in {"fence_jobs", "fence_generation", "fence_missing"}:
         with pytest.raises(refresh.GlobalStageError):
             refresh.ingest_source(root, manifest, source, artifact, None)
