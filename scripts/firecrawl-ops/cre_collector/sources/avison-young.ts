@@ -2492,6 +2492,7 @@ export async function enrichAvisonYoungListing(
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     assertAvisonYoungTransportSettled();
+    let deniedResponseUrl: string | undefined;
     try {
       const doc =
         process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
@@ -2505,6 +2506,7 @@ export async function enrichAvisonYoungListing(
               ...(requireLiveDetails ? { allowEmptyBody: true } : {}),
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
+      deniedResponseUrl = doc.metadata?.url ?? doc.metadata?.sourceURL;
       try {
         assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
       } catch (error) {
@@ -2518,6 +2520,32 @@ export async function enrichAvisonYoungListing(
       }
       docs.push({ url, doc });
     } catch (err) {
+      // A settled denial on the separately hosted SharpLaunch page does not
+      // authorize another attempt there. The source-owned official URL may
+      // still be checked independently; live partial runs retain this row as held.
+      const denialUrl = err instanceof AvisonYoungHttpStatusError
+        && [401, 403].includes(err.status) ? err.url
+        : err instanceof AvisonYoungAccessDeniedError
+          && err.message === "Avison Young detail returned a challenge" ? deniedResponseUrl
+          : undefined;
+      let independentOfficial = false;
+      try {
+        const requested = new URL(url);
+        const denied = new URL(denialUrl ?? "");
+        const official = new URL(clean(base.externalUrl) ?? "");
+        independentOfficial = !strict && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+          && url === clean(base.sharpLaunchUrl) && requested.protocol === "https:"
+          && requested.hostname.endsWith(".sharplaunch.com")
+          && denied.hostname === requested.hostname && denied.protocol === requested.protocol
+          && official.protocol === "https:" && official.hostname === "www.avisonyoung.us"
+          && !official.username && !official.password && !official.port
+          && detailUrls.includes(official.toString());
+      } catch { /* An unbound denial remains terminal. */ }
+      if (independentOfficial) {
+        recordDetailErrors++;
+        errors.push(url + ": " + String(err));
+        continue;
+      }
       if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
       const classified = classifyPerformanceError(err);
       if (classified.remoteSettlementUnknown) throw refuseUnsettled(err);

@@ -805,7 +805,7 @@ test("Avison detail admission rejects challenge and wrong-property shells", () =
         base.externalUrl,
         base
       ),
-    /challenge or error shell/
+    /detail returned a challenge/
   );
   assert.throws(
     () =>
@@ -1010,7 +1010,7 @@ test("Avison recognizes the observed SharpLaunch property layout only with bound
         nativeUrl,
         base
       ),
-    /challenge or error shell/
+    /detail returned a challenge/
   );
 });
 
@@ -1383,7 +1383,7 @@ test("partial Avison alternate failure preserves children and prior Markdown evi
       )
   );
   assert.equal(listing.detailError, undefined);
-  assert.match(listing.detailWarning, /challenge or error shell/);
+  assert.match(listing.detailWarning, /detail returned a challenge/);
   assert.equal(listing.preserveChildCollections, true);
   assert.equal(listing.detailObservedWithChildPreservation, true);
   assert.match(listing.markdown, /^# 602 N Capitol Ave/m);
@@ -1392,6 +1392,37 @@ test("partial Avison alternate failure preserves children and prior Markdown evi
     listing.detailScrape.markdownDisposition,
     "preserve_existing_or_insert"
   );
+});
+
+test("Avison alternate denial never retries the same provider or a rate limit", async (t) => {
+  const original = process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+  process.env.AVISON_YOUNG_DETAIL_TRANSPORT = "direct";
+  t.after(() => {
+    if (original === undefined) delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    else process.env.AVISON_YOUNG_DETAIL_TRANSPORT = original;
+  });
+  const base = {
+    id: "17808", name: "602 N Capitol Ave", street: "602 N Capitol Ave",
+    sharpLaunchUrl: "https://stale-alias.sharplaunch.com",
+    externalUrl: "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  for (const outcome of ["rate-limit", "redirected-challenge", "official-denial"]) {
+    const calls: string[] = [];
+    await assert.rejects(() => enrichAvisonYoungListing(base, false, async (url) => {
+      calls.push(url);
+      if (outcome === "rate-limit") throw new AvisonYoungHttpStatusError(url, 429);
+      if (outcome === "redirected-challenge") return {
+        ...doc("<html>captcha</html>"),
+        metadata: { sourceURL: base.externalUrl, url: base.externalUrl, statusCode: 200 },
+      };
+      if (url === base.sharpLaunchUrl) return {
+        ...doc("<html>captcha</html>"),
+        metadata: { sourceURL: url, url, statusCode: 200 },
+      };
+      throw new AvisonYoungHttpStatusError(url, 403);
+    }), /HTTP 429|detail returned a challenge|HTTP 403/);
+    assert.equal(calls.length, outcome === "official-denial" ? 2 : 1);
+  }
 });
 
 test("strict Avison detail scrape is uncached, complete, and generation-bound", async (t) => {
