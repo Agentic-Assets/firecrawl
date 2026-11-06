@@ -109,6 +109,8 @@ def test_current_snapshot_records_unknown_history_and_keeps_current_peers(tmp_pa
     dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
     dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
     assert len(list(tmp_path.glob("*.json"))) == 2
+    assert all("_current_" in item.name and not item.name.startswith("20261106T042000Z")
+               for item in tmp_path.glob("*.json"))
     assert len(list(tmp_path.glob(".history-*.audit"))) == 2
     for audit in tmp_path.glob(".history-*.audit"):
         assert json.loads(audit.read_text())["historical_intervals"] == "unknown_not_replayed"
@@ -116,6 +118,18 @@ def test_current_snapshot_records_unknown_history_and_keeps_current_peers(tmp_pa
     changed["tasks"][0]["policy"]["expected_sha"] = "d" * 40
     dispatcher.enqueue_current_snapshot(tmp_path, changed)
     assert len(list(tmp_path.glob("*.json"))) == 3
+
+
+def test_new_due_after_current_policy_observation_is_queued_as_due(tmp_path, policy):
+    policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
+    first = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793938800000,
+             "tasks": [{"task": "colliers", "policy": policy, "due": []}]}
+    dispatcher.enqueue_current_snapshot(tmp_path, first)
+    later = copy.deepcopy(first)
+    later["observed_unix_ms"] = 1793939400000
+    later["tasks"][0]["due"] = ["20261106T042500Z"]
+    dispatcher.enqueue_current_snapshot(tmp_path, later)
+    assert len(list(tmp_path.glob("20261106T042500Z_colliers_*.json"))) == 1
 
 
 def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy):

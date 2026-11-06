@@ -114,7 +114,7 @@ def hold_invalid_policy(path: Path, slot: str, policy_sha256: str | None,
         os.close(directory)
 
 
-def record_unknown_history(path: Path, task: str, policy_sha256: str, observed_unix_ms: int) -> None:
+def record_unknown_history(path: Path, task: str, policy_sha256: str, observed_unix_ms: int) -> int:
     """Durably note an unverified historical policy interval without replaying it."""
     if (not isinstance(task, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,72}", task) is None
             or not isinstance(policy_sha256, str) or re.fullmatch(r"[a-f0-9]{64}", policy_sha256) is None
@@ -126,6 +126,7 @@ def record_unknown_history(path: Path, task: str, policy_sha256: str, observed_u
         value = {"schema": "cre-dispatch-history-unknown/v1", "task": task,
                  "policy_sha256": policy_sha256, "observed_unix_ms": observed_unix_ms,
                  "historical_intervals": "unknown_not_replayed"}
+        first_observed = observed_unix_ms
         try:
             _write(directory, name, value, create=True)
         except FileExistsError:
@@ -133,8 +134,11 @@ def record_unknown_history(path: Path, task: str, policy_sha256: str, observed_u
             old = json.loads(raw)
             if (not isinstance(old, dict) or old.get("schema") != value["schema"]
                     or old.get("task") != task or old.get("policy_sha256") != policy_sha256
-                    or old.get("historical_intervals") != value["historical_intervals"]):
+                    or old.get("historical_intervals") != value["historical_intervals"]
+                    or type(old.get("observed_unix_ms")) is not int or old["observed_unix_ms"] < 0):
                 raise DispatchRefused("historical policy observation differs")
+            first_observed = old["observed_unix_ms"]
+        return first_observed
     finally:
         os.close(directory)
 

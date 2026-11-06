@@ -367,7 +367,9 @@ def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
         seen.add(task["task"])
         raw = json.dumps(task["policy"], sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         digest = hashlib.sha256(raw).hexdigest()
-        dispatch_queue.record_unknown_history(path, task["task"], digest, snapshot["observed_unix_ms"])
+        first_observed = dispatch_queue.record_unknown_history(path, task["task"], digest, snapshot["observed_unix_ms"])
+        due_now = []
+        historical_seen = False
         for due in task["due"]:
             try:
                 if not isinstance(due, str) or re.fullmatch(r"\d{8}T\d{6}Z", due) is None:
@@ -378,7 +380,16 @@ def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
             except (ValueError, OverflowError):
                 dispatch_queue.record_unknown_history(path, "invalid_due_" + digest[:24], digest, snapshot["observed_unix_ms"])
                 continue
-            slot = f"{due}_{task['task']}_{digest[:12]}"
+            if int(timestamp.timestamp() * 1000) < first_observed:
+                historical_seen = True
+                continue
+            due_now.append((due, task["task"]))
+        if historical_seen and first_observed <= snapshot["observed_unix_ms"]:
+            # This is current-policy catchup, not a claim that an old slot ran.
+            current = datetime.fromtimestamp(first_observed / 1000, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            due_now.append((current, task["task"] + "_current"))
+        for due, identity in due_now:
+            slot = f"{due}_{identity}_{digest[:12]}"
             try:
                 if any(task["policy"].get(key) is None for key in ("task_path", "task_name", "task_xml_sha256")):
                     raise SourcePolicyRefusal("current task lacks an exact action binding")
