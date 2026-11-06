@@ -92,6 +92,7 @@ https.request=(url,options,callback)=>{
       }
       if(index===1&&mode==='mixed-503'&&!native)status=503;
       if(index===1&&mode==='mixed-undefined'){
+        // This mock never emits close after destroy, so cleanup is unacknowledged.
         req.emit('error',undefined);return;
       }
     }
@@ -298,7 +299,10 @@ def test_first_404_keeps_later_peers_and_uses_terminal_exit(tmp_path):
 @pytest.mark.parametrize("case", ["mixed-schema", "mixed-503", "mixed-undefined"])
 def test_actual_default_mixed_invalid_detail_is_not_terminal404(tmp_path, case):
     result, output, _started, _calls = collect(tmp_path, case)
-    assert result.returncode == (refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE if case == "mixed-schema" else 1)
+    assert result.returncode == (
+        refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE if case == "mixed-schema" else
+        refresh.AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE if case == "mixed-undefined" else 1
+    )
     assert not output.exists()
 
 

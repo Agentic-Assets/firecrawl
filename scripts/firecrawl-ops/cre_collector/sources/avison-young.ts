@@ -1591,7 +1591,22 @@ export function assertAvisonYoungDetailDoc(
       ? "Avison Young detail identity does not match the requested property"
       : "Avison Young detail structure was not recognized");
   }
-  if (!urlMatches && !contentMatches) {
+  // In fresh mode a matching URL alone does not establish the subject of a
+  // generic page. Require a property-container heading or a URL-bound listing
+  // name, compared with the feed; unrelated body/script text is not a witness.
+  const fresh = requireFreshDetails() || requireFreshPropertyDetails();
+  const feedName = normalizeName(base?.name);
+  const feedStreet = normalizeStreet(base?.street);
+  const headings = $("main h1, .property-detail h1, .property-details h1, .property-page h1");
+  const visibleSubjectMatches = headings.length === 1 && Boolean(
+    (feedName && normalizeName(headings.first().text()) === feedName)
+    || (feedStreet && normalizeStreet(headings.first().text()) === feedStreet)
+  );
+  const structuredName = normalizeName(listing?.name);
+  const structuredSubjectMatches = Boolean(feedName && structuredName === feedName
+    && listing?.url && sameIdentityUrl(listing.url, requestedUrl));
+  if (fresh ? !urlMatches || !(visibleSubjectMatches || structuredSubjectMatches)
+    : !urlMatches && !contentMatches) {
     throw new Error(
       "Avison Young detail identity does not match the requested property"
     );

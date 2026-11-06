@@ -129,6 +129,11 @@ before spool settlement does not establish a complete outcome record.
 An exclusive source with required 404s and no other failures emits the reserved
 terminal 404 outcome after draining peers, so the runner does not retry it. Mixed
 failures retain their distinct incomplete outcome instead of claiming 404-only.
+The final generic fresh-detail fallback needs a matching URL plus a feed-matched
+property heading or URL-bound structured listing name. Unsupported generic
+pages remain held; this may reduce admitted coverage until further source
+evidence establishes their identity. Earlier source-specific families retain
+their own validation rules.
 
 ## Fix shared failure families
 
