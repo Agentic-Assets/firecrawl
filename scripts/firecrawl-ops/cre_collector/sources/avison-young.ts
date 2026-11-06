@@ -2921,6 +2921,9 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       undefined,
       officialFeedIdentity
     );
+    // Enrichment prunes mapped fields recursively. Preserve the original feed
+    // observation separately, including unknown or null transaction values.
+    if (partialRowMode) enriched.rawSharpLaunch = listing.rawSharpLaunch;
     // Classify only successful fresh results as successes in the draining map.
     // Otherwise a concurrent 404 could conceal this ordinary source failure.
     if (requireLiveDetails && (
