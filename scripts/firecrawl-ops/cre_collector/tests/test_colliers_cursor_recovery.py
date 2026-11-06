@@ -60,7 +60,8 @@ def incident(tmp_path, monkeypatch):
     evidence_path.parent.chmod(0o700)
     evidence_raw = (json.dumps({"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
                                 "generation": run_id, "attempt": 1}) + "\n"
-                    + json.dumps({"kind": "detail", "source": {"start": 1401, "offset": 58}}) + "\n").encode()
+                    + json.dumps({"kind": "detail", "source": {"start": 1401, "offset": 58}}) + "\n"
+                    + json.dumps({"kind": "detail", "source": {"start": 1501, "offset": 63}}) + "\n").encode()
     evidence_path.write_bytes(evidence_raw)
     evidence_path.chmod(0o600)
     prior_checkpoint = {"colliers_partial_worker": prior_worker,
@@ -103,7 +104,7 @@ def test_bound_local_evidence_qualifies_without_writing(incident):
 
 
 
-@pytest.mark.parametrize("case", ["gap", "wrap", "shrink_wrap", "no_progress", "evidence_mismatch", "outside_interval", "artifact_cursor"])
+@pytest.mark.parametrize("case", ["gap", "wrap", "shrink_wrap", "no_progress", "evidence_mismatch", "missing_tail", "wrong_tail", "outside_interval", "artifact_cursor"])
 def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     import hashlib
     import cre_colliers_partial_checkpoint as partial
@@ -137,7 +138,13 @@ def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     lines = evidence_path.read_text().splitlines()
     record = json.loads(lines[1])
     record["source"] = {"start": first + (1 if case == "evidence_mismatch" else 0), "offset": 0}
-    raw = (lines[0] + "\n" + json.dumps(record) + "\n").encode()
+    tail = {"kind": "detail", "source": {"start": (end - 2) % total + 1, "offset": 0}}
+    if case == "wrong_tail":
+        tail["source"]["start"] = first
+    records = [lines[0], json.dumps(record)]
+    if case != "missing_tail":
+        records.append(json.dumps(tail))
+    raw = ("\n".join(records) + "\n").encode()
     evidence_path.write_bytes(raw)
     checked["receipt"]["evidence"] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
     _write(run / "manifest.json", child)

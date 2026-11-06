@@ -171,17 +171,25 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     lines = evidence_raw.splitlines()
     if len(lines) < 2:
         raise ValueError("Colliers prior rotation evidence is empty")
-    header, first_record = json.loads(lines[0]), json.loads(lines[1])
-    if (header != {"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
-                   "generation": run_id, "attempt": prior_worker["attempt"]}
-            or not isinstance(first_record, dict)):
+    header, first_record, last_record = (json.loads(lines[0]), json.loads(lines[1]), json.loads(lines[-1]))
+    if header != {"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
+                  "generation": run_id, "attempt": prior_worker["attempt"]}:
         raise ValueError("Colliers prior rotation evidence differs")
-    first_source = first_record.get("source") if first_record.get("kind") == "detail" else (
-        first_record.get("candidate") if first_record.get("kind") == "held" else None)
-    if (not isinstance(first_source, dict) or type(first_source.get("start")) is not int
-            or type(first_source.get("offset")) is not int
-            or first_source["start"] + first_source["offset"] != first):
+
+    def evidence_position(record):
+        if not isinstance(record, dict):
+            raise ValueError("Colliers prior rotation record invalid")
+        source = record.get("source") if record.get("kind") == "detail" else (
+            record.get("candidate") if record.get("kind") == "held" else None)
+        if (not isinstance(source, dict) or type(source.get("start")) is not int
+                or type(source.get("offset")) is not int):
+            raise ValueError("Colliers prior rotation position invalid")
+        return source["start"] + source["offset"]
+
+    if evidence_position(first_record) != first:
         raise ValueError("Colliers prior first evidence position differs")
+    if evidence_position(last_record) != (end - 2) % total + 1:
+        raise ValueError("Colliers prior last evidence position differs")
     completion = prior_worker.get("completion")
     if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
             "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
