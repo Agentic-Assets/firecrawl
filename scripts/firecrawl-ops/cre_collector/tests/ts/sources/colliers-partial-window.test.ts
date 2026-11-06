@@ -13,7 +13,7 @@ import { reverifyColliersWindow } from "../../../sources/colliers-partial-window
 import { buildColliersWindowArtifact } from "../../../sources/colliers-partial-window-worker.js";
 import { produceColliersWindow } from "../../../sources/colliers-partial-window-produce.js";
 import { assertPartialNativeIdentity } from "../../../sources/colliers-partial-native-id.js";
-import { ColliersSettledSourceStop } from "../../../sources/colliers-partial-fetch.js";
+import { ColliersSettledSourceStop, fetchColliersPartialDetail } from "../../../sources/colliers-partial-fetch.js";
 import { ColliersAccessStop, ColliersIdentityError } from "../../../sources/colliers.js";
 import { selectColliersWindow } from "../../../sources/pure/colliers-partial-window.js";
 
@@ -41,6 +41,41 @@ test("rotates a bounded window and reports peers outside it", async () => {
   const shrunk = await selectColliersWindow(open, async () => {}, binding, 100, 1);
   assert.deepEqual(shrunk.eligible.map(x => x.mapProjectId), ["a"]);
 });
+test("retains identity-verified partial peers when map availability differs", async () => {
+  const rows = structuredClone([header, pair, page, hole]) as any[];
+  const rawMap = JSON.parse(rows[1].documents[0].map);
+  rawMap.totalAvail = 4;
+  rows[1].documents[0].map = JSON.stringify(rawMap);
+  const originalMap = rows[1].documents[0].map;
+  const result = await selectColliersWindow(source(rows), async () => {}, binding, 1, 2);
+  assert.deepEqual(result.eligible.map(row => row.mapProjectId), ["a", "b"]);
+  assert.equal(rows[1].documents[0].map, originalMap);
+  assert.equal(JSON.parse(originalMap).totalAvail, 4);
+  assert.equal(JSON.parse(rows[1].documents[0].list).totalAvail, 3);
+
+  // Counts do not relax identity or collision checks.
+  const mismatch = structuredClone(rows);
+  const changed = JSON.parse(mismatch[1].documents[0].map);
+  changed.projectLocations[0].ProjectId = "foreign";
+  mismatch[1].documents[0].map = JSON.stringify(changed);
+  await assert.rejects(selectColliersWindow(source(mismatch), async () => {}, binding, 1, 2), /safely scoped/);
+  const duplicate = await selectColliersWindow(source([...rows.slice(0, 3), ...rows.slice(1)]), async () => {}, binding, 1, 2);
+  assert.equal(duplicate.eligible.length, 0);
+
+  for (const bad of [null, -1, 2, "not-a-count", 3.5]) {
+    const invalid = structuredClone(rows);
+    const body = JSON.parse(invalid[1].documents[0].map);
+    body.totalAvail = bad;
+    invalid[1].documents[0].map = JSON.stringify(body);
+    await assert.rejects(selectColliersWindow(source(invalid), async () => {}, binding, 1, 2), /safely scoped/);
+  }
+  const wrongTotal = structuredClone(rows);
+  const body = JSON.parse(wrongTotal[1].documents[0].map);
+  body.total = 4;
+  wrongTotal[1].documents[0].map = JSON.stringify(body);
+  await assert.rejects(selectColliersWindow(source(wrongTotal), async () => {}, binding, 1, 2), /safely scoped/);
+});
+
 test("holds candidates overlapping another page or a recovery hole", async () => {
   const duplicate = await selectColliersWindow(source([header,pair,page,pair,page,hole]), async () => {}, binding, 1, 1);
   assert.equal(duplicate.eligible.length, 0); assert.equal(duplicate.heldSelected, 1);
@@ -76,6 +111,18 @@ test("holds count-drifted pages while retaining earlier identity-verified peers"
   const conflicts = await selectColliersWindow(source(reordered), async () => {}, binding, 1, 2);
   assert.equal(conflicts.eligible.length, 0);
   assert.equal(conflicts.heldSelected, 2);
+});
+
+test("keeps changed-count pages as conflict witnesses despite map availability disagreement", async () => {
+  const rows = structuredClone(driftRows("a")) as any[];
+  for (const [index, available] of [[1, 4], [3, 5]]) {
+    const body = JSON.parse(rows[index].documents[0].map);
+    body.totalAvail = available;
+    rows[index].documents[0].map = JSON.stringify(body);
+  }
+  const selection = await selectColliersWindow(source(rows), async () => {}, binding, 1, 2);
+  assert.deepEqual(selection.eligible.map(row => row.mapProjectId), ["b"]);
+  assert.equal(selection.heldSelected, 1);
 });
 
 test("accepts only a verified short changed-count final response as held evidence", async () => {
@@ -121,7 +168,13 @@ test("count drift cannot conceal malformed, unmatched or later source evidence",
 test("sealed worker replays a count-drift source without promoting the changed range", async t => {
   const dir = mkdtempSync(join(tmpdir(), "colliers-drift-worker-")); chmodSync(dir, 0o700);
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const bytes = Buffer.from(driftRows("a").map(row => JSON.stringify(row)).join("\n") + "\n");
+  const rows = structuredClone(driftRows("a")) as any[];
+  for (const [index, available] of [[1, 4], [3, 5]]) {
+    const body = JSON.parse(rows[index].documents[0].map);
+    body.totalAvail = available;
+    rows[index].documents[0].map = JSON.stringify(body);
+  }
+  const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
   const path = join(dir, "source"); writeFileSync(path, bytes, { mode: 0o600 });
   const requests: string[] = [];
   const result = await buildColliersWindowArtifact({
@@ -138,6 +191,7 @@ test("sealed worker replays a count-drift source without promoting the changed r
   assert.equal(result.admitted, 1); assert.equal(result.held, 1);
   assert.equal(result.proposedCursor, 3);
   const artifact = JSON.parse(readFileSync(join(dir, "artifact"), "utf8"));
+  assert.deepEqual(readFileSync(path), bytes);
   assert.equal(artifact.coverage, "unverified");
   assert.equal(artifact.sourceOutcome, "source_error");
   assert.deepEqual(artifact.listings.map((row: any) => row.id), ["b"]);
@@ -392,3 +446,53 @@ test("source-shaped clock step binds pages to genuine child finish", async () =>
   assert.equal(result.selected, 2);
   assert.equal(result.eligible.length, 2);
 });
+
+test("verified rotation stops before re-fetching the first witnessed candidate", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-rotation-")); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([header, pair, page, hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sourcePath = join(dir, "source"); writeFileSync(sourcePath, bytes, { mode: 0o600 });
+  const calls: string[] = [];
+  const fetchDetail = async (token: string) => {
+    calls.push(token);
+    const decodedText = JSON.stringify({ ProjectSummary: { ProjectId: token } });
+    return { detail: JSON.parse(decodedText), decodedText, nativeBytes: Buffer.from(decodedText) };
+  };
+  const common = { ...binding, generationStartedAt: binding.startedAt, sourcePath, sourceBytes: bytes.length,
+    sourceSha256: createHash("sha256").update(bytes).digest("hex"), originalSourceMainSha256: "c".repeat(64),
+    producerSha: "a".repeat(40), targetSha256: "b".repeat(64) };
+  const first = await buildColliersWindowArtifact({ ...common, cursor: 1, limit: 1,
+    evidencePath: join(dir, "e1"), artifactPath: join(dir, "a1") }, fetchDetail);
+  assert.equal(first.firstPosition, 1); assert.equal(first.rotationComplete, false);
+  const second = await buildColliersWindowArtifact({ ...common, cursor: first.proposedCursor, limit: 2,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e2"), artifactPath: join(dir, "a2") }, fetchDetail);
+  assert.deepEqual(calls, ["a", "b"]);
+  assert.equal(second.rotationComplete, true); assert.equal(second.admitted, 1);
+  assert.equal(second.unattempted, 1); assert.equal(second.sourceStopped, false);
+  const empty = await buildColliersWindowArtifact({ ...common, cursor: second.proposedCursor, limit: 1,
+    stopBeforePosition: first.firstPosition!, evidencePath: join(dir, "e3"), artifactPath: join(dir, "a3") }, fetchDetail);
+  assert.equal(empty.rotationComplete, true); assert.equal(empty.admitted, 0);
+  assert.equal(empty.evidence.records, 0); assert.deepEqual(calls, ["a", "b"]);
+});
+
+for (const [status, retryAfter] of [[403, false], [429, false], [200, true]] as const) {
+  test(`settled access stop ${status}/${retryAfter} seals earlier peers without further detail calls`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), "colliers-access-stop-")); chmodSync(dir, 0o700);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const bytes = Buffer.from([header, pair, page, hole].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const sourcePath = join(dir, "source"); writeFileSync(sourcePath, bytes, { mode: 0o600 });
+    const calls: string[] = [];
+    const result = await buildColliersWindowArtifact({ ...binding, generationStartedAt: binding.startedAt,
+      cursor: 1, sourcePath, sourceBytes: bytes.length, sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+      originalSourceMainSha256: "c".repeat(64), producerSha: "a".repeat(40), targetSha256: "b".repeat(64),
+      evidencePath: join(dir, "evidence"), artifactPath: join(dir, "artifact") }, async token => {
+      calls.push(token);
+      return fetchColliersPartialDetail(token, async () => token === "b"
+        ? new Response("refused", { status, headers: retryAfter ? { "retry-after": "30" } : {} })
+        : Response.json({ ProjectSummary: { ProjectId: token } }));
+
+    });
+    assert.deepEqual(calls, ["a", "b"]); assert.equal(result.sourceStopped, true);
+    assert.equal(result.admitted, 1); assert.equal(result.held, 1); assert.equal(result.proposedCursor, 2);
+  });
+}

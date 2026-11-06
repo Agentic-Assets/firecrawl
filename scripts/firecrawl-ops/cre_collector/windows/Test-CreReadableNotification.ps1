@@ -444,7 +444,7 @@ $selectedSourceArgument = $selectedSourceKeys -join ','
 $mixedSources = New-Summary
 $mixedSources['selected_source_keys'] = $selectedSourceKeys
 $mixedSources['per_source_summaries'] = @(
-    [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
+    [ordered]@{source_key='colliers';verified_listings=7;emitted_count=7;held_count=2;terminal_stop='worker_failed';measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;transaction_breakdown=[ordered]@{sale=7;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}},
     [ordered]@{source_key='lyon-stahl';verified_listings=3;emitted_count=3;held_count=4;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
     [ordered]@{source_key='franklin-street';verified_listings=0;emitted_count=0;held_count=1;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false;buildout_pending=5;held_observations=2;identity_uncertainty=[ordered]@{siteToBuildout='unresolved';possibleDuplicateProperties=$true;reusedSiteIds=@()}},
     [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
@@ -455,12 +455,32 @@ $sourceRead = Get-CreVerifiedSummary (New-Record) 'mixed-source-partials'
 Assert-Cre ($null -ne $sourceRead) 'Source-bound partials, complete peer and failed peer remain separately qualified.'
 $sourceText = Get-CreNotificationText (New-Record) 'Terminal' 1 $sourceRead
 Assert-Cre ($sourceText.Contains('*Colliers:* Verified subset refreshed; 7 emitted; 2 held') -and
+    $sourceText.Contains('A later partial worker failed; earlier verified windows were retained.') -and
     $sourceText.Contains('*For sale:* 7 | *For lease:* 0 | *Both:* 0') -and
     $sourceText.Contains('*Lyon-Stahl:* Verified subset refreshed; 3 emitted; 4 held') -and
     $sourceText.Contains('*Franklin Street:* Verified subset refreshed; 0 emitted; 1 held') -and
     $sourceText.Contains('*Buildout pending:* 5 | *Source observations held:* 2') -and $sourceText.Contains('properties may overlap') -and
     $sourceText.Contains('*For sale / lease / both:* unavailable') -and
     $sourceText.Contains('*Newmark:* 100 listings verified') -and $sourceText.Contains('*Savills:* Failed')) 'Partial counts and known zero remain distinct from unavailable transaction counts.'
+$stoppedSource = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$stoppedSource.per_source_summaries[0].terminal_stop = 'source_stopped'
+Save-Summary $stoppedSource
+$stoppedText = Get-CreNotificationText (New-Record) 'Terminal' 1 (Get-CreVerifiedSummary (New-Record) 'source-stopped')
+Assert-Cre ($stoppedText.Contains('Source detail collection stopped; earlier verified windows were retained.')) 'A settled source stop is reported alongside verified windows.'
+foreach ($case in @(
+    @{name='text'; value='bogus'}, @{name='number'; value=0},
+    @{name='boolean'; value=$false}, @{name='array'; value=@('worker_failed')},
+    @{name='null'; value=$null}
+)) {
+    $badSummary = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $badSummary.per_source_summaries[0].terminal_stop = $case.value
+    Save-Summary $badSummary
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('invalid-colliers-stop-' + $case.name))) 'Invalid terminal stop must be refused.'
+}
+$foreignStop = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$foreignStop.per_source_summaries[1] | Add-Member -NotePropertyName terminal_stop -NotePropertyValue 'worker_failed'
+Save-Summary $foreignStop
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'foreign-stop')) 'Terminal stop on a foreign source must be refused.'
 $invalidBreakdown = $mixedSources | ConvertTo-Json -Depth 10 | ConvertFrom-Json
 $invalidBreakdown.per_source_summaries[0].transaction_breakdown.sale = 6
 Save-Summary $invalidBreakdown
@@ -493,6 +513,25 @@ $mixedSources['unverifiable_source_keys'] = @('colliers','lyon-stahl','franklin-
 Save-Summary $mixedSources
 $unverifiableSources = Get-CreVerifiedSummary (New-Record) 'mixed-source-unverifiable'
 Assert-Cre ($null -ne $unverifiableSources -and (Get-CreNotificationText (New-Record) 'Terminal' 1 $unverifiableSources).Contains('*Unverifiable:* 3')) 'Unverifiable source summaries retain a complete peer without promoting counts.'
+$selectedSourceKeys = @('nai-global','newmark','savills')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$naiSummary = New-Summary
+$naiSummary['selected_source_keys'] = $selectedSourceKeys
+$naiSummary['per_source_summaries'] = @(
+    [ordered]@{source_key='nai-global';verified_listings=108;emitted_count=108;held_count=6;measurement='generation_exact_verified_subset';qualification='qualified_partial_subset';partial=$true;whole_source_coverage=$false},
+    [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$naiSummary['qualified_subset_source_keys'] = @('nai-global')
+$naiSummary['failed_source_keys'] = @('savills'); $naiSummary['pending_source_keys'] = @(); $naiSummary['complete'] = $false
+Save-Summary $naiSummary
+$naiRead = Get-CreVerifiedSummary (New-Record) 'nai-partial'
+$naiText = Get-CreNotificationText (New-Record) 'Terminal' 1 $naiRead
+Assert-Cre ($null -ne $naiRead -and $naiText.Contains('*NAI Global:* Verified subset refreshed; 108 emitted; 6 held') -and
+    $naiText.Contains('unknown status are excluded') -and $naiText.Contains('*For sale / lease / both:* unavailable') -and
+    $naiText.Contains('*Newmark:* 100 listings verified') -and $naiText.Contains('*Savills:* Failed')) 'NAI post subset preserves peer outcomes and does not invent a transaction breakdown.'
+$naiInvalid = $naiSummary | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$naiInvalid.per_source_summaries[0].whole_source_coverage = $true
+Save-Summary $naiInvalid
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'nai-false-complete')) 'NAI partial must not claim whole-source coverage.'
 $Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true
 $selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
 

@@ -5248,6 +5248,19 @@ DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='lyon-stahl' AND s.raw_data ? 'lyonSearchObservations')
  THEN RAISE EXCEPTION 'Lyon search evidence key collision'; END IF;
 END $$;
+-- Retain source-post observations when a later complete NAI ingest refreshes
+-- the parent. An incoming reserved key is ambiguous and cannot replace them.
+CREATE TEMP TABLE _nai_post_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'naiPublicPostHistory' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='nai-global' AND t.external_id LIKE 'infabode:%'
+ AND jsonb_typeof(t.raw_data)='object' AND t.raw_data ? 'naiPublicPostHistory';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='nai-global'
+    AND s.external_id LIKE 'infabode:%' AND s.raw_data ? 'naiPublicPostHistory')
+ THEN RAISE EXCEPTION 'NAI post evidence key collision'; END IF;
+END $$;
 {targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -5731,6 +5744,15 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('lyonSearchObservations',p.evidence)
 FROM _lyon_search_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _nai_post_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'NAI post evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('naiPublicPostHistory',p.evidence)
+FROM _nai_post_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 -- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
 -- per-source observability plus an optional circuit breaker. Reads the
@@ -7647,6 +7669,7 @@ def main():
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--franklin-site-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--nai-post-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--lyon-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
@@ -7701,6 +7724,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.nai_post_claims:
+        try:
+            from nai_partial.admission import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing NAI post partial ingest: {exc}")
+        return
     if args.franklin_site_claims and args.lyon_partial_claims:
         sys.exit("refusing mixed Franklin and Lyon partial claims")
     if args.franklin_site_claims:
@@ -7911,6 +7941,8 @@ def main():
         except ValueError as exc:
             sys.exit(str(exc))
         is_lyon_partial = data.get("schema") == "lyon-search-partial/v1"
+        if data.get("schema") in {"nai-post-inventory-recovery/v1", "nai-post-coverage-partial/v1"}:
+            sys.exit("refusing NAI partial artifact without guarded checkpoint admission")
         if is_lyon_partial != (lyon_partial_claims is not None):
             sys.exit("refusing Lyon partial artifact without guarded checkpoint admission")
         if (lyon_partial_claims is not None and

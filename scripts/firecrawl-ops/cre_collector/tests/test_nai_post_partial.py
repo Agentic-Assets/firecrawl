@@ -1,0 +1,210 @@
+import base64
+import json
+from decimal import Decimal
+
+import pytest
+
+from nai_partial.partial import partition_posts, stage_post
+
+
+def post(number=1, alias=None, tx="sale"):
+    post_id = str(number)
+    alias = alias or f"https://www.naiglobal.com/listings/?propertyId=post-{post_id}"
+    raw = {"id": number, "title": "Fixture post", "url": f"https://infabode.com/post/{post_id}",
+           "urlOriginal": alias, "contentType": {"id": 4 if tx == "sale" else 10},
+           "listingStatus": ["FOR_SALE_ON_MARKET"], "unusedSourceField": {"x": [1, None]}}
+    return {"sourceKey": "nai-global", "id": f"infabode:{post_id}",
+            "url": f"https://infabode.com/services/listings/{post_id}",
+            "canonicalUrl": alias, "transactionMode": tx, "transactionType": tx.title(),
+            "name": "Fixture post", "feedRow": raw, "publicPost": dict(raw),
+            "inventoryObservedAt": "2026-11-05T10:00:00Z",
+            "detailObservedAt": "2026-11-05T10:00:01Z",
+            "freshnessProvenance": {"generationId": "gen-1", "detailScope": "source_native_public_record",
+                                    "method": "infabode_public_posts_graphql", "cacheDisposition": "live"}}
+
+
+def test_source_post_retains_full_input_without_fabricating_status_or_location():
+    source = post()
+    row = stage_post(source, "gen-1")
+    assert row["external_id"] == "infabode:1"
+    assert row["source_url"] == "https://infabode.com/services/listings/1"
+    assert row["lat"] is None and row["lng"] is None
+    assert "status" not in row
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
+def test_source_observation_retains_decimal_precision_through_partition():
+    from nai_partial.partial import _validated
+
+    original = post()
+    raw = json.dumps(original).replace('"unusedSourceField": {"x": [1, null]}',
+                                       '"unusedSourceField": {"x": [0.12345678901234567890123456789, null]}')
+    ordinary = json.loads(raw)
+    exact = json.loads(raw, parse_float=Decimal)
+    staged = partition_posts([ordinary], "gen-1", exact_listings=[exact])["staged"]
+    _validated(staged)
+    retained = json.loads(base64.b64decode(staged[0]["observation_base64"]), parse_float=Decimal)
+    assert retained["feedRow"]["unusedSourceField"]["x"][0] == Decimal("0.12345678901234567890123456789")
+
+
+def test_identified_inventory_post_survives_missing_detail_and_category():
+    source = post()
+    source.pop("publicPost")
+    source.pop("detailObservedAt")
+    source["freshnessProvenance"]["detailScope"] = "inventory_only"
+    source.pop("canonicalUrl")
+    source.pop("transactionMode")
+    source["feedRow"].pop("contentType")
+    row = stage_post(source, "gen-1")
+    assert row["external_id"] == "infabode:1"
+    assert row["transaction_type"] is None and row["alias_key"] == "https://www.naiglobal.com/listings?propertyId=post-1"
+    assert row["title"] == "Fixture post" and row["lat"] is None and row["lng"] is None
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+
+
+def test_inventory_only_cannot_claim_verified_detail_observation():
+    source = post()
+    source["freshnessProvenance"]["detailScope"] = "inventory_only"
+    assert partition_posts([source, post(2)], "gen-1")["held"] == [
+        {"index": 0, "reason": "unqualified_source_post"}]
+
+
+def test_title_and_coordinate_projection_require_matching_source_witnesses():
+    source = post()
+    source.update(latitude=45.123456789012345, longitude=-117.98765432109876)
+    source["publicPost"]["locations"] = [{"geometry": {"coordinates": [source["longitude"], source["latitude"]]}}]
+    observed = stage_post(source, "gen-1")
+    assert observed["title"] == "Fixture post"
+    assert (observed["lat"], observed["lng"]) == (source["latitude"], source["longitude"])
+    source["publicPost"]["title"] = "Different source title"
+    source["publicPost"]["locations"][0]["geometry"]["coordinates"][0] = -117.0
+    observed = stage_post(source, "gen-1")
+    assert observed["title"] is None and observed["lat"] is None and observed["lng"] is None
+
+
+def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis():
+    sale = post()
+    sale["salePriceUsd"] = 2500000
+    sale["publicPost"].update(price=2500000, currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
+    assert stage_post(sale, "gen-1")["sale_price_usd"] == 2500000
+    assert stage_post(sale, "gen-1")["country"] == "US"
+    sale["publicPost"]["locations"] = [{"path": "Toronto, ON, Canada"}]
+    assert stage_post(sale, "gen-1")["sale_price_usd"] is None
+    assert stage_post(sale, "gen-1")["country"] is None
+    sale["publicPost"]["locations"] = [{"path": "Seattle, WA, United States"}]
+    sale["feedRow"]["contentType"]["id"] = 999
+    assert stage_post(sale, "gen-1")["sale_price_usd"] is None
+    lease = post(2, tx="lease")
+    lease["leaseRateMin"] = 12
+    lease["publicPost"].update(currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
+    assert stage_post(lease, "gen-1")["lease_rate_min"] is None
+
+
+def test_conflicting_building_class_tags_remain_raw_without_projection():
+    source = post()
+    source["buildingClass"] = "A"
+    source["publicPost"]["tags"] = ["BuildingClassA", "BuildingClassB"]
+    staged = stage_post(source, "gen-1")
+    assert staged["building_class"] is None
+    assert json.loads(base64.b64decode(staged["observation_base64"])) == source
+
+
+def test_alias_and_native_id_collisions_hold_only_affected_peers():
+    alias = "https://www.naiglobal.com/listings/?propertyId=collision"
+    records = [post(1, alias), post(2, alias), post(3), post(3), post(4)]
+    part = partition_posts(records, "gen-1")
+    assert [x["external_id"] for x in part["staged"]] == ["infabode:4"]
+    assert [x["reason"] for x in part["held"]] == [
+        "conflicting_source_alias", "conflicting_source_alias", "duplicate_post_id", "duplicate_post_id"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda x: x["publicPost"].update(id=123),
+    lambda x: x["feedRow"].update(url="https://infabode.com/post/other"),
+    lambda x: x["publicPost"]["contentType"].update(id=10),
+    lambda x: x.update(url="https://example.test/1"),
+    lambda x: x["freshnessProvenance"].update(generationId="other"),
+    lambda x: x.update(id="infabode:9007199254740992"),
+])
+def test_unqualified_source_evidence_holds_without_discarding_valid_peer(change):
+    bad = post(1)
+    change(bad)
+    result = partition_posts([bad, post(2)], "gen-1")
+    assert [x["external_id"] for x in result["staged"]] == ["infabode:2"]
+    assert result["held"] == [{"index": 0, "reason": "unqualified_source_post"}]
+
+def test_invalid_peer_still_conflicts_with_valid_source_identity():
+    bad = post(1)
+    bad["publicPost"]["id"] = 99
+    result = partition_posts([bad, post(1), post(2)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:2"]
+    assert [row["reason"] for row in result["held"]] == [
+        "unqualified_source_post", "duplicate_post_id"]
+
+
+def test_incomplete_peer_still_witnesses_its_raw_source_alias():
+    alias = "https://example.test/shared"
+    incomplete = post(1, alias)
+    incomplete.pop("canonicalUrl")
+    result = partition_posts([incomplete, post(2, alias), post(3)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
+    assert [row["reason"] for row in result["held"]] == [
+        "conflicting_source_alias", "conflicting_source_alias"]
+
+
+def test_unqualified_post_source_url_still_witnesses_an_alias_conflict():
+    bad = post(1)
+    bad["publicPost"]["id"] = 99
+    candidate = post(2, bad["url"])
+    result = partition_posts([bad, candidate, post(3)], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
+    assert [row["reason"] for row in result["held"]] == [
+        "unqualified_source_post", "conflicting_source_alias"]
+
+
+
+def test_unwitnessed_and_conflicting_prices_are_not_promoted_and_peers_survive():
+    missing = post(1)
+    missing["salePriceUsd"] = 2500000
+    missing["publicPost"].update(currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    conflicting = post(2)
+    conflicting["salePriceUsd"] = 2500000
+    conflicting["publicPost"].update(price=3000000, currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    peer = post(3)
+    peer["salePriceUsd"] = 1200000
+    peer["publicPost"].update(price=1200000, currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    result = partition_posts([missing, conflicting, peer], "gen-1")
+    assert result["held"] == []
+    assert [row["sale_price_usd"] for row in result["staged"]] == [None, None, 1200000]
+    assert json.loads(base64.b64decode(result["staged"][0]["observation_base64"])) == missing
+
+
+def test_unwitnessed_mapped_fields_remain_raw_and_witnessed_location_survives():
+    source = post()
+    source.update(city="Seattle", state="WA", description="invented", assetType="Office",
+                  yearBuilt=2020, buildingSizeSqft=12345, salePricePerSf=900,
+                  highlights=["invented"])
+    source["publicPost"]["locations"] = [{"path": "Seattle, WA, United States"}]
+    row = stage_post(source, "gen-1")
+    assert (row["city"], row["state"]) == ("Seattle", "WA")
+    for field in ("description", "property_type", "year_built", "size_sf",
+                  "sale_price_per_sf", "highlights"):
+        assert row[field] is None
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+    source["city"] = "Tacoma"
+    source["state"] = "OR"
+    row = stage_post(source, "gen-1")
+    assert row["city"] is None and row["state"] is None
+
+
+
+def test_held_raw_post_identity_holds_matching_valid_post_but_not_peer():
+    invalid = post(1, "https://example.test/invalid")
+    invalid.pop("id")
+    valid = post(1, "https://example.test/valid")
+    peer = post(2)
+    result = partition_posts([invalid, valid, peer], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:2"]
+    assert result["held"] == [
+        {"index": 0, "reason": "unqualified_source_post"},
+        {"index": 1, "reason": "duplicate_post_id"}]

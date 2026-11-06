@@ -281,7 +281,7 @@ Use [START_HERE](START_HERE.md) for the supervised checkpoint path; raw
 ## collect.ts
 
 Flags: `--source=all|csv` `--transaction=sale|lease|both` (default `both`)
-`--max-items` (0 = unlimited) `--page-cap` (default 60; use 400 for full runs)
+`--max-items` (0 = unlimited) `--page-cap` (full mode default 0 = unlimited; monitor default 60; set a positive limit for diagnostics)
 `--concurrency` (1–6, default 3) `--out=path` `--monitor` (enumeration-only pass)
 `--enrich-input` (targeted detail enrichment from `cre_enrich.py` queue batch).
 
@@ -301,8 +301,8 @@ pages, missing progress or malformed responses. Other source-specific limits
 and the pipeline work deadline still apply. A partial result is never evidence
 of whole-source coverage or permission to retire absent records.
 
-The Windows series installer and launcher accept `-PageCap 0`; the launcher
-default remains 400. Deploy the reviewed launcher before registering a task
+The Windows series installer and launcher accept `-PageCap 0`; the series launcher
+default is 0. Deploy the reviewed launcher before registering a task
 with this option, so both current and selected launcher metadata accept it.
 This option is code capability only: production uses unlimited mode only after
 the reviewed code and task/default configuration are deployed and read back.
@@ -561,7 +561,7 @@ Small mechanical edits need a focused review, not a repeated major-phase ceremon
 `cre_daily_update.sh` is retained for explicitly approved legacy recovery; it
 is not the default supervised refresh or scheduled entrypoint. Its behavior is
 healthcheck → full collect (sale+lease, unlimited,
-`CRE_PAGE_CAP` default 400) → observe-only gate [3/4] → ingest → prune (EXIT
+`CRE_PAGE_CAP` default 0, meaning unlimited) → observe-only gate [3/4] → ingest → prune (EXIT
 trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 `out/daily/`). Script default includes `--mark-missing`; use
 `bash cre_daily_update.sh --no-mark-missing` for additive legacy recovery. The

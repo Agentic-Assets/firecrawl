@@ -375,3 +375,69 @@ def test_controlled_deadline_publishes_qualified_units_and_interrupted_peer(tmp_
     receipt = read_receipt(tmp_path, manifest["latest_invocation_control"]["invocation_id"])
     assert receipt["status"] == "deadline_interrupted"
     assert receipt["local_settlement"] == "confirmed"
+
+
+def test_multiple_window_units_requalify_each_receipt_and_fence_unknown_write(tmp_path, monkeypatch):
+    import cre_colliers_partial_checkpoint as partial
+
+    run = tmp_path / RUN_ID
+    child = mixed_child(run)
+    child["collector_git_dirty"] = False
+    child["pipeline"]["units"][0]["sources"] = ["colliers"]
+    first_checkpoint = copy.deepcopy(child["sources"]["colliers"])
+    first_result = copy.deepcopy(child["pipeline"]["source_results"]["colliers"])
+    first_unit = child["pipeline"]["units"][0]
+    second_unit = copy.deepcopy(first_unit)
+    second_unit["unit_id"] = "unit-0002"
+    second_unit["validation_path"] = "pipeline/unit-0002/validation.json"
+    second_unit["validation"]["path"] = second_unit["validation_path"]
+    second_report = run / second_unit["validation_path"]
+    second_report.parent.mkdir(parents=True)
+    second_report.write_bytes((run / first_unit["validation_path"]).read_bytes())
+    child["pipeline"]["units"].append(second_unit)
+    private = run / "colliers-partial"
+    private.mkdir(mode=0o700)
+    windows = []
+    for index, cursor, next_cursor in ((1, 1, 4), (2, 4, 7)):
+        checkpoint = copy.deepcopy(first_checkpoint)
+        checkpoint["artifact"]["path"] = f"colliers-partial/window-1{'-' + str(index) if index > 1 else ''}-artifact.json"
+        checkpoint["gate"]["current_inventory_proof"].update(cursor=cursor, next_cursor=next_cursor)
+        checkpoint["partial_cursor_settlement"].update(cursor=cursor, next_cursor=next_cursor)
+        path = f"colliers-partial/window-1{'-' + str(index) if index > 1 else ''}-receipt.json"
+        receipt = {"artifact": {"sha256": "b" * 64}, "proposedCursor": next_cursor,
+                   "firstPosition": cursor, "sourceStopped": False, "rotationComplete": False,
+                   "admitted": 1, "held": 2, "unattempted": 0}
+        if index > 1:
+            receipt["stopBeforePosition"] = 1
+        raw = json.dumps(receipt).encode()
+        (run / path).write_bytes(raw)
+        (run / path).chmod(0o600)
+        digest = hashlib.sha256(raw).hexdigest()
+        checkpoint["colliers_partial_worker"] = {"attempt": 1, "window_index": index,
+            "cursor": cursor, "receipt_path": path, "receipt_sha256": digest,
+            "artifact_path": checkpoint["artifact"]["path"],
+            "completion": {key: receipt[key] for key in ("firstPosition", "rotationComplete",
+                "sourceStopped", "proposedCursor", "admitted", "held", "unattempted")}}
+        result = copy.deepcopy(first_result)
+        result.update(unit_id=f"unit-{index:04d}",
+                      validation_path=f"pipeline/unit-{index:04d}/validation.json")
+        windows.append({"index": index, "state": "verified", "unit_id": result["unit_id"],
+            "first_position": 1, "cursor": cursor, "next_cursor": next_cursor,
+            "artifact_sha256": "b" * 64, "attempt_id": "e" * 32, "outcome": "exact_commit",
+            "receipt_path": path, "receipt_sha256": digest, "checkpoint": checkpoint, "result": result})
+    child["sources"]["colliers"]["partial_windows"] = windows
+
+    def verified(_path, projected, **_kwargs):
+        worker = projected["sources"]["colliers"]["colliers_partial_worker"]
+        return {"receipt": json.loads((run / worker["receipt_path"]).read_bytes())}
+
+    monkeypatch.setattr(partial, "verify_worker_artifact", verified)
+    assert series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    child["pipeline"]["commit_outcome_unknown"] = True
+    assert not series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    child["pipeline"]["commit_outcome_unknown"] = False
+    windows[1]["cursor"] = 5
+    assert not series.pipeline_source_qualified(child, "colliers", **qualification_context(run))
+    windows[1]["cursor"] = 4
+    windows[0]["receipt_sha256"] = "0" * 64
+    assert not series.pipeline_source_qualified(child, "colliers", **qualification_context(run))

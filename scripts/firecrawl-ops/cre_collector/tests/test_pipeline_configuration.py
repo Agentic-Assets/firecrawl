@@ -243,6 +243,7 @@ def test_single_pipeline_owner_even_with_partial_success(monkeypatch, tmp_path):
             return 0
 
     class Control:
+        pre_acquisition_refusal = False
         invocation_id = "parent"
         child_invocation_id = "child"
 

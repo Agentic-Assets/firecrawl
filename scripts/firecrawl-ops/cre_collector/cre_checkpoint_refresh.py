@@ -240,7 +240,15 @@ class ArtifactValidationError(RefreshError):
 
 
 class LockHeldError(RefreshError):
-    """Another CRE tier owns the shared lock."""
+    """Shared lock acquisition or authority verification refused."""
+
+
+class LockFlockBusyError(LockHeldError):
+    """A nonblocking advisory flock reported contention; retry safety is unknown."""
+
+    def __init__(self, lock_object: str) -> None:
+        super().__init__("CRE lock authority is held by another process")
+        self.lock_object = lock_object
 
 
 class GlobalStageError(RefreshError):
@@ -261,6 +269,10 @@ class DaumPartialProbeHold(SourceGuardRefusal):
 
 class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
+
+
+class NaiPartialProbeHold(SourceGuardRefusal):
+    """Settled NAI source identity output cannot be qualified."""
 
 
 class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
@@ -1103,9 +1115,7 @@ def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise LockHeldError(
-                "CRE lock authority is held by another process"
-            ) from exc
+            raise LockFlockBusyError("recovery_synchronizer") from exc
         named = sync_path.lstat()
         if (
             not stat.S_ISREG(named.st_mode)
@@ -1827,9 +1837,7 @@ class SharedLock:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise LockHeldError(
-                    "CRE lock authority is held by another process"
-                ) from exc
+                raise LockFlockBusyError("authority") from exc
             observed = os.fstat(descriptor)
             self.authority_fd = descriptor
             self.authority_identity = (observed.st_dev, observed.st_ino)
@@ -2418,7 +2426,7 @@ def build_collect_argv(
     source: str,
     output: Path,
     *,
-    page_cap: int = 400,
+    page_cap: int = 0,
     concurrency: int = 3,
     transactions: Sequence[str] = TRANSACTIONS,
 ) -> list[str]:
@@ -2890,14 +2898,21 @@ def lyon_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("lyon_partial") is True)
 
 
+def nai_post_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "nai-global"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("nai_post_partial") is True)
+
+
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
             or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-            or lyon_partial_candidate(manifest, source))
+            or lyon_partial_candidate(manifest, source) or nai_post_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
+    if nai_post_partial_candidate(manifest, source):
+        return "nai_post_claims"
     if lyon_partial_candidate(manifest, source):
         return "lyon_partial_claims"
     if colliers_partial_candidate(manifest, source):
@@ -2969,6 +2984,37 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "nai-post-inventory-recovery/v1":
+        # This is structure only. The source-specific gate rederives every
+        # selected and held row from the owner's sealed original before writes.
+        from nai_partial.inventory_recovery import validate_structure
+
+        try:
+            if expected_source != "nai-global" or tuple(expected_transactions) != TRANSACTIONS:
+                raise ValueError("NAI recovery source differs")
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            generation_start = (expected_generation_started_at.isoformat()
+                                if isinstance(expected_generation_started_at, datetime) else expected_generation_started_at)
+            attempt_start = attempt_started_at.isoformat() if isinstance(attempt_started_at, datetime) else attempt_started_at
+            started, finished = validate_structure(data, expected_generation_id, generation_start,
+                attempt_start, now=current, max_age_hours=max_observation_age_hours)
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["staged_unique"] != len(data["listings"]):
+                raise ValueError("NAI recovery selected staging differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("NAI recovery candidate invalid") from exc
+        digest, size = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": digest, "artifact_bytes": size, "generation_id": expected_generation_id}
+        return {**stats, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
+                "max_observation_age_hours": max_observation_age_hours,
+                "observation_cutoff_at": (current - timedelta(hours=max_observation_age_hours)).isoformat(),
+                "strict_freshness": False, "property_detail_freshness": False,
+                "nai_post_partial": True, "nai_inventory_recovery": True,
+                "freshness_generation_id": expected_generation_id,
+                "freshness_generation_started_at": parse_iso8601(generation_start, field="generation_started_at").isoformat(),
+                "sha256": digest, "bytes": size}
     if isinstance(data, dict) and data.get("schema") == "lyon-search-partial/v1":
         # Structure only: source custody and database identity are independently
         # rechecked at the source-specific subset gate before any write.
@@ -3661,8 +3707,13 @@ def run_command(
     log_path: Path,
     *,
     env: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
-    return run_observed_command(argv, log_path, env=env, runner=_run_logged_command)
+    if not pass_fds:
+        return run_observed_command(argv, log_path, env=env, runner=_run_logged_command)
+    def inherited_runner(command, path, *, env=None):
+        return _run_logged_command(command, path, env=env, pass_fds=pass_fds)
+    return run_observed_command(argv, log_path, env=env, runner=inherited_runner)
 
 
 def _run_logged_command(
@@ -3670,6 +3721,7 @@ def _run_logged_command(
     log_path: Path,
     *,
     env: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
@@ -3690,6 +3742,7 @@ def _run_logged_command(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            pass_fds=pass_fds,
         )
         owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
@@ -5524,6 +5577,9 @@ def _admit_current_inventory(
             pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
+        if nai_post_partial_candidate(manifest, source):
+            from nai_partial.admission import admit as admit_nai_post
+            return admit_nai_post(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty, phase=phase)
         if lyon_partial_candidate(manifest, source):
             from cre_lyon_partial_checkpoint import admit_search
             return admit_search(artifact, manifest, report, current_code_sha=git_sha,
@@ -5553,6 +5609,16 @@ def _admit_current_inventory(
         raise GlobalStageError("current-inventory admission refused") from exc
 
 
+def _partial_window_suffix(checkpoint, source):
+    """Keep per-window evidence distinct without changing ordinary source paths."""
+    if source != "colliers":
+        return ""
+    worker = checkpoint.get("colliers_partial_worker") or {}
+    index = worker.get("window_index", 1)
+    if type(index) is not int or index < 1:
+        raise GlobalStageError("partial window index invalid")
+    return "" if index == 1 else f"-window-{index}"
+
 def gate_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -5565,8 +5631,9 @@ def gate_source(
     additive_hold_enabled = (
         manifest["config"].get("admit_baseline_hold_additively") is True
     )
-    gate_path = run_dir / "gates" / f"{source}.json"
-    log_path = run_dir / "logs" / f"{source}-gate.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    gate_path = run_dir / "gates" / f"{source}{suffix}.json"
+    log_path = run_dir / "logs" / f"{source}{suffix}-gate.log"
     gate_path.parent.mkdir(parents=True, exist_ok=True)
     rc = run_command(
         build_gate_argv(
@@ -5587,9 +5654,32 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
+        if (source == "nai-global" and full_transaction_scope
+                and manifest["config"].get("pipeline") is True
+                and manifest["config"].get("additive") is True
+                and manifest["config"].get("mark_missing") is False
+                and manifest["config"].get("status_activation") is False
+                and manifest["config"].get("max_items") == 0
+                and per_source.get("verdict") == "hold"
+                and subset_gate_can_admit(per_source)):
+            checkpoint["artifact"]["nai_post_partial"] = True
+            if not (checkpoint["artifact"].get("nai_inventory_recovery")
+                    or checkpoint["artifact"].get("nai_coverage_partial")):
+                from cre_refresh_pipeline import _OWNER_CHECK
+                from nai_partial.coverage_candidate import prepare_owned
+                artifact = prepare_owned(run_dir, manifest, getattr(_OWNER_CHECK.get(), "__self__", None))
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or nai_post_partial_candidate(manifest, source)):
+            if nai_post_partial_candidate(manifest, source):
+                from nai_partial.admission import NaiSourceProbeRefusal, run_identity_probe
+                try:
+                    checkpoint["nai_post_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
+                except NaiSourceProbeRefusal as exc:
+                    raise NaiPartialProbeHold("NAI source identity could not be qualified") from exc
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("NAI partial identity classification failed") from exc
             if lyon_partial_candidate(manifest, source):
                 from cre_lyon_partial_checkpoint import LyonSourceProbeRefusal, run_identity_probe
                 try:
@@ -5752,7 +5842,8 @@ def subset_ingest_arguments(run_dir, manifest, source):
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
         raise GlobalStageError("verified subset attempt changed")
-    flag = ("--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
+    flag = ("--nai-post-claims" if nai_post_partial_candidate(manifest, source)
+            else "--lyon-partial-claims" if lyon_partial_candidate(manifest, source)
             else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
@@ -5760,6 +5851,32 @@ def subset_ingest_arguments(run_dir, manifest, source):
     return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
             "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
+
+
+def _run_nai_owned_command(argv, log_path, manifest):
+    """Inherit the actual foreground authority, never authority from claims."""
+    from cre_refresh_pipeline import _OWNER_CHECK, _OWNER_LEASE, require_pipeline_owner
+
+    owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+    if not isinstance(owner, SharedLock):
+        raise GlobalStageError("NAI partial command lacks its coordinator owner")
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    owner._require_authority()
+    directory = owner._owned_directory_fd()
+    os.close(directory)
+    if (owner.path.resolve() != canonical_shared_lock_dir().resolve() or owner.authority_fd < 0
+            or owner.recovery_sync_fd < 0 or not owner.authority_token
+            or owner.authority_generation != owner.lease_token):
+        raise GlobalStageError("NAI partial command authority differs")
+    env = safe_process_env()
+    env.update({"CRE_TIER_LOCK_AUTHORITY_FD": str(owner.authority_fd),
+                "CRE_TIER_LOCK_SYNC_FD": str(owner.recovery_sync_fd),
+                "CRE_TIER_LOCK_TOKEN": owner.authority_token,
+                "CRE_TIER_LOCK_GENERATION": owner.authority_generation,
+                "CRE_TIER_LOCK_OWNER_PID": str(os.getpid())})
+    rc = run_command(argv, log_path, env=env, pass_fds=(owner.authority_fd, owner.recovery_sync_fd))
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    return rc
 
 
 def dry_run_source(
@@ -5774,18 +5891,17 @@ def dry_run_source(
         checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
         save_manifest(run_dir, manifest)
         return True
-    sql_dir = run_dir / "dry-run" / source
-    log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    sql_dir = run_dir / "dry-run" / f"{source}{suffix}"
+    log_path = run_dir / "logs" / f"{source}{suffix}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
-    rc = run_command(
-        build_ingest_dry_run_argv(
+    argv = build_ingest_dry_run_argv(
             artifact,
             sql_dir,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-        ) + subset_ingest_arguments(run_dir, manifest, source),
-        log_path,
-        env=safe_process_env(),
-    )
+        ) + subset_ingest_arguments(run_dir, manifest, source)
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+          else run_command(argv, log_path, env=safe_process_env()))
     sql_path = sql_dir / "ingest.sql"
     sql_info = None
     if sql_path.is_file():
@@ -5813,7 +5929,8 @@ def ingest_source(
     env_file: str | None,
 ) -> None:
     checkpoint = manifest["sources"][source]
-    log_path = run_dir / "logs" / f"{source}-ingest.log"
+    suffix = _partial_window_suffix(checkpoint, source)
+    log_path = run_dir / "logs" / f"{source}{suffix}-ingest.log"
     started = utc_now()
     argv = build_ingest_argv(
         artifact,
@@ -5858,7 +5975,8 @@ def ingest_source(
     }
     checkpoint["state"] = "ingesting"
     save_manifest(run_dir, manifest)
-    rc = run_command(argv, log_path, env=safe_process_env())
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+          else run_command(argv, log_path, env=safe_process_env()))
     checkpoint["ingest"]["finished_at"] = utc_now()
     checkpoint["ingest"]["rc"] = rc
     if rc != 0:
@@ -6258,7 +6376,8 @@ def run_aggregate_gate(
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)):
+                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or nai_post_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
@@ -6467,6 +6586,11 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if nai_post_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_nai_post_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted NAI post partial ingest requires exact readback")
     if lyon_partial_candidate(manifest, source):
         checkpoint["state"] = "ingest_recovery_required"
         checkpoint["ingest_recovery"] = {"reason": "interrupted_lyon_partial_ingest", "readback_ok": False}
@@ -6721,6 +6845,21 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
     return values if len(values) == len(value) and values else None
 
 
+def nai_post_partial_readback(run_dir, manifest, env_file):
+    """Revalidate sealed claims and read the exact post-scoped outcome."""
+    from nai_partial.admission import run_readback
+
+    checkpoint = manifest["sources"]["nai-global"]
+    arguments = subset_ingest_arguments(run_dir, manifest, "nai-global")
+    if len(arguments) < 2:
+        raise GlobalStageError("NAI partial readback claims are missing")
+    result = run_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
+                          target_sha256=manifest_database_target_sha256(manifest),
+                          attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    subset_ingest_arguments(run_dir, manifest, "nai-global")
+    return result
+
+
 def franklin_partial_readback(run_dir, manifest, env_file):
     """Revalidate sealed claims and read exact site-card identities and job."""
     from cre_franklin_site_admission import ingest_subset_context, run_readback
@@ -6906,6 +7045,33 @@ def verify_validation_readback(
     for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        if nai_post_partial_candidate(manifest, source):
+            observed = validation.get("nai_post_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict) and observed.get("ok") is True
+                  and observed.get("whole_source_coverage") is False
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and isinstance(checkpoint.get("subset_ingest_attempt_id"), str)
+                  and re.fullmatch(r"[0-9a-f]{32}", checkpoint["subset_ingest_attempt_id"]) is not None
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("partition_sha256") == binding.get("partition_sha256")
+                  and observed.get("preimage_sha256") == binding.get("preimage_sha256")
+                  and observed.get("children_verified") is True
+                  and type(observed.get("staged_count")) is int
+                  and observed.get("staged_count") == binding.get("staged_count")
+                  and type(observed.get("emitted_count")) is int
+                  and observed.get("emitted_count") == binding.get("emitted_count")
+                  and type(observed.get("held_count")) is int
+                  and observed.get("held_count") == binding.get("held_count")
+                  and type(observed.get("new_missing_canonical_count")) is int
+                  and 0 <= observed["new_missing_canonical_count"] <= observed["emitted_count"])
+            checkpoint["readback"] = {"ok": ok, "kind": "nai_public_post_partial",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
         if lyon_partial_candidate(manifest, source):
             observed = validation.get("lyon_partial_readback")
             binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
@@ -7513,6 +7679,9 @@ def run_final_validation(
     if (sources is None or "jll-investor" in sources) and jll_partial_candidate(manifest, "jll-investor"):
         result["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
+    if (sources is None or "nai-global" in sources) and nai_post_partial_candidate(manifest, "nai-global"):
+        result["nai_post_partial_readback"] = nai_post_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
     if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
@@ -7535,10 +7704,14 @@ def run_final_validation(
     lyon_allowance = 0
     if readback["ok"] and (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         lyon_allowance = result["lyon_partial_readback"].get("new_missing_canonical_count", 0)
+    nai_allowance = 0
+    if readback["ok"] and (sources is None or "nai-global" in sources) and nai_post_partial_candidate(manifest, "nai-global"):
+        nai_allowance = result["nai_post_partial_readback"]["new_missing_canonical_count"]
     quality = compare_validation_quality(
         before, result, image_transition=transition,
         transwestern_image_transition=tw_transition if tw_required else None,
         lyon_new_missing_canonical=lyon_allowance,
+        nai_new_missing_canonical=nai_allowance,
     )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
@@ -7548,6 +7721,7 @@ def run_final_validation(
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
         **({"lyon_new_missing_canonical_count": lyon_allowance} if lyon_allowance else {}),
+        **({"nai_new_missing_canonical_count": nai_allowance} if nai_allowance else {}),
         "image_transition": quality.get("image_transition"),
         **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
            if tw_required else {}),
@@ -7590,11 +7764,13 @@ def _rows_by(
 
 def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
-    transwestern_image_transition=None, lyon_new_missing_canonical=0,
+    transwestern_image_transition=None, lyon_new_missing_canonical=0, nai_new_missing_canonical=0,
 ) -> dict[str, Any]:
     """Reject hard regressions, accounting only for verified new Lyon partial parents."""
     if type(lyon_new_missing_canonical) is not int or lyon_new_missing_canonical < 0:
         raise ValueError("invalid Lyon new-parent quality allowance")
+    if type(nai_new_missing_canonical) is not int or nai_new_missing_canonical < 0:
+        raise ValueError("invalid NAI new-parent quality allowance")
     try:
         if "validation_profile" in before or "audit_scope" in before:
             require_checkpoint_preflight_report(before)
@@ -7663,6 +7839,9 @@ def compare_validation_quality(
                 allowance = (
                     lyon_new_missing_canonical
                     if query == "quality_by_source" and identity == ("lyon-stahl",)
+                    and metric_field == "missing_canonical_url" else
+                    nai_new_missing_canonical
+                    if query == "quality_by_source" and identity == ("nai-global",)
                     and metric_field == "missing_canonical_url" else 0
                 )
                 if new_value > old_value + allowance:
@@ -8156,7 +8335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
     parser.add_argument("--pipeline-dispatch-order", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--page-cap", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
         "--source-workers",
@@ -8498,6 +8677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settlement_unknown = False
     guards_stopped = False
     local_refusal = False
+    pre_acquisition_refusal = False
     local_refusal_settled = False
     details = None
 
@@ -8537,7 +8717,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        ownership.enter_context(lock)
+        try:
+            ownership.enter_context(lock)
+        except LockFlockBusyError as exc:
+            # Only synchronizer contention occurs before any lock ownership or work.
+            pre_acquisition_refusal = exc.lock_object == "recovery_synchronizer" and not args.resume
+            raise
         if args.resume and automatic_source_evidence is not None:
             from source_evidence import automatic
             automatic.prepare_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
@@ -8927,6 +9112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     terminal_evidence_saved=terminal_evidence_saved
                     and not terminal_publication_failed,
+                    pre_acquisition_refusal=pre_acquisition_refusal,
                 )
             if local_refusal and not local_refusal_settled and sys.exception() is None:
                 raise GlobalStageError("source refusal local settlement is unknown")

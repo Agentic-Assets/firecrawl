@@ -316,7 +316,7 @@ def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None
     attempt = checkpoint["attempts"][-1]
     # Franklin may already have archived the original before derivation failed.
     # Keep both that evidence and any derived candidate in their private paths.
-    if source == "franklin-street" and attempt.get("rejected_artifact"):
+    if source in {"franklin-street", "nai-global"} and attempt.get("rejected_artifact"):
         return
     attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
         refresh.archive_rejected_with_evidence(
@@ -361,7 +361,34 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
                 },
             },
         )
-    except refresh.ArtifactValidationError:
+    except refresh.ArtifactValidationError as source_error:
+        if source == "nai-global":
+            from datetime import datetime, timezone
+            from nai_partial.inventory_recovery import _FRESHNESS_ERROR, prepare_owned
+            attempts = checkpoint.get("attempts") or []
+            attempt = attempts[-1] if attempts else {}
+            if (_FRESHNESS_ERROR.fullmatch(str(source_error))
+                    and attempt.get("number") == candidate.get("attempt_number")
+                    and type(attempt.get("rc")) is int and attempt["rc"] == 0
+                    and not attempt.get("rejected_artifact")):
+                original = path.lstat()
+                identity = [original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns, original.st_ctime_ns]
+                if identity != candidate.get("file_identity"):
+                    raise refresh.GlobalStageError("NAI recovery source candidate changed")
+                rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
+                if os.path.lexists(rejected):
+                    raise refresh.GlobalStageError("NAI recovery rejected evidence path occupied")
+                attempt["error"] = str(source_error)
+                relative, digest = refresh.archive_rejected_with_evidence(path, run_dir, manifest, source, attempt)
+                attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = relative, digest
+                refresh.save_manifest(run_dir, manifest)
+                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                recovery = prepare_owned(run_dir, manifest, owner, now=datetime.now(timezone.utc))
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                if recovery is not None:
+                    return prepare_candidate(run_dir, manifest, source)
+                raise source_error
         if source != "franklin-street" or checkpoint.get("franklin_original"):
             raise
         attempts = checkpoint.get("attempts") or []
@@ -516,6 +543,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         )
     try:
         refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    except refresh.NaiPartialProbeHold:
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (source != "nai-global" or refresh.git_identity() != (binding["collector_git_sha"], False)
+                or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
+                or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+            raise refresh.GlobalStageError("NAI held probe owner or target changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
     except refresh.DaumPartialProbeHold:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "daum-commercial" or refresh.git_identity() != (binding["collector_git_sha"], False)
@@ -541,8 +578,15 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
     digest = refresh.sha256_file(path)
     try:
         report = refresh._load_json(path)
+        report_manifest = manifest
+        if source == "nai-global" and checkpoint["artifact"].get("nai_coverage_partial") is True:
+            import copy
+            from nai_partial.coverage_candidate import ORIGINAL
+            if artifact == run_dir / ORIGINAL:
+                report_manifest = copy.deepcopy(manifest)
+                report_manifest["sources"][source]["artifact"]["path"] = ORIGINAL
         refresh.current_inventory.validate_report_scope(
-            report, manifest, source, artifact
+            report, report_manifest, source, artifact
         )
         info = report["per_source"][source]
         summary = report["summary"]
@@ -833,7 +877,8 @@ def run_database_unit(
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
                 or refresh.colliers_partial_candidate(manifest, source)
                 or refresh.franklin_partial_candidate(manifest, source)
-                or refresh.lyon_partial_candidate(manifest, source)):
+                or refresh.lyon_partial_candidate(manifest, source)
+                or refresh.nai_post_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
             refresh._admit_current_inventory(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
@@ -1178,7 +1223,7 @@ def run_bounded_pipeline(
                 # Sealing may occur inside tick's poll callback. Database writes
                 # run only here, on the foreground coordinator's serial lane.
                 refresh.pump_source_evidence(run_dir, manifest)
-                if partial_ready:
+                if partial_ready and not ready:
                     source = partial_ready.pop(0)
                     preparing = (source,)
                     require_pipeline_owner(manifest, _OWNER_LEASE.get())
@@ -1188,14 +1233,37 @@ def run_bounded_pipeline(
                         candidate_path = run_replay_worker(run_dir, manifest, owner, refresh.save_manifest)
                     else:
                         from cre_colliers_partial_checkpoint import run_window_worker
+                        windows = manifest["sources"][source].get("partial_windows", [])
                         candidate_path = run_window_worker(
-                            run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
+                            run_dir, manifest, owner, refresh.run_command, refresh.save_manifest,
+                            window_index=len(windows) + 1,
+                            stop_before_position=windows[0]["first_position"] if windows else None)
                     require_pipeline_owner(manifest, _OWNER_LEASE.get())
                     preparing = ()
                     if candidate_path is not None:
                         ready.append(source)
                     else:
                         checkpoint = manifest["sources"][source]
+                        if source == "colliers":
+                            from cre_colliers_partial_checkpoint import (
+                                archive_no_write_pipeline_window, prepare_next_pipeline_window,
+                                restore_last_verified_pipeline_window,
+                            )
+                            if checkpoint.get("state") == "partial_held_no_write":
+                                more = archive_no_write_pipeline_window(run_dir, manifest, owner)
+                                refresh.save_manifest(run_dir, manifest)
+                                if more:
+                                    prepare_next_pipeline_window(checkpoint)
+                                    refresh.save_manifest(run_dir, manifest)
+                                    partial_ready.append(source)
+                                    counts()
+                                    continue
+                            previous_result = restore_last_verified_pipeline_window(checkpoint)
+                            if previous_result is not None:
+                                state["source_results"][source] = previous_result
+                                refresh.save_manifest(run_dir, manifest)
+                                counts()
+                                continue
                         terminal_source_holds.add(source)
                         checkpoint["pipeline_stage"] = "failed"
                         state["source_results"][source] = {"state": "failed", "partial": True,
@@ -1203,6 +1271,7 @@ def run_bounded_pipeline(
                         refresh.save_manifest(run_dir, manifest)
                         counts()
                         continue
+
                     counts()
                 if ready:
                     oversized_index = next(
@@ -1227,7 +1296,11 @@ def run_bounded_pipeline(
                     # A Pyramid write owns a singleton unit. Previously
                     # completed siblings therefore use the normal verified
                     # unit/baseline chain before a source-local rollback.
-                    guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll"}), None)
+                    guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll"}
+                                    or refresh.colliers_partial_candidate(manifest, source)
+                                    or (source == "colliers" and
+                                        (manifest["sources"][source].get("attempts") or [{}])[-1]
+                                        .get("colliers_partial", {}).get("outcome") == "source_error")), None)
                     if guarded is not None:
                         index = ready.index(guarded)
                         take = index if index else 1
@@ -1266,23 +1339,11 @@ def run_bounded_pipeline(
                             partial = checkpoint["attempts"][-1].get("colliers_partial") or {}
                             if (source == "colliers" and partial.get("state") == "sealed_local"
                                     and partial.get("outcome") == "source_error"):
-                                from cre_colliers_partial_checkpoint import run_window_worker
-                                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
-                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
-                                candidate_path = run_window_worker(
-                                    run_dir, manifest, owner, refresh.run_command, refresh.save_manifest)
-                                require_pipeline_owner(manifest, _OWNER_LEASE.get())
-                                if candidate_path is not None:
-                                    if not prepare_candidate(run_dir, manifest, source):
-                                        raise refresh.GlobalStageError("partial candidate validation failed")
-                                    prepared.append(source)
-                                    continue
-                                if checkpoint.get("state") == "partial_held_no_write":
-                                    terminal_source_holds.add(source)
-                                    checkpoint["pipeline_stage"] = "failed"
-                                    state["source_results"][source] = {"state": "failed", "partial": True,
-                                        "reason": "partial window held; no listing writes"}
-                                    continue
+                                # Run partial windows on the regular foreground lane,
+                                # after already-ready peers have had their turn.
+                                partial_ready.append(source)
+                                continue
+
                             retry_or_fail(source, "artifact validation failed")
                             continue
                         prepared.append(source)
@@ -1369,6 +1430,9 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "nai-public-post-partial-v1":
+                                state["source_results"][source]["visibility_limitation"] = (
+                                    "new post rows with unknown status are excluded from active listing views")
                             if binding.get("schema") == "franklin-site-partial-v1":
                                 state["source_results"][source].update(
                                     buildout_pending=binding.get("buildout_pending"),
@@ -1382,10 +1446,22 @@ def run_bounded_pipeline(
                                     transition_count=binding.get("transition_count"),
                                     missing_field_counts=binding.get("missing_field_counts"),
                                 )
+                    if sealed == ("colliers",) and refresh.colliers_partial_candidate(manifest, "colliers"):
+                        from cre_colliers_partial_checkpoint import archive_verified_pipeline_window, prepare_next_pipeline_window
+                        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                        owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                        more = archive_verified_pipeline_window(
+                            run_dir, manifest, unit, state["source_results"]["colliers"], owner)
+                        refresh.save_manifest(run_dir, manifest)
+                        if more:
+                            prepare_next_pipeline_window(manifest["sources"]["colliers"])
+                            refresh.save_manifest(run_dir, manifest)
+                            partial_ready.append("colliers")
                     sealed = ()
                     state["active_unit"] = None
                     counts()
                     refresh.save_manifest(run_dir, manifest)
+
                 elif active:
                     time.sleep(0.05)
                 elif pending:
@@ -1410,7 +1486,17 @@ def run_bounded_pipeline(
             checkpoint.get("state") in {"ingesting", "ingest_recovery_required"}
             for checkpoint in manifest["sources"].values()
         )
+        checkpoint = manifest["sources"].get("colliers", {})
+        worker_state = (checkpoint.get("colliers_partial_worker") or {}).get("state")
+        if (checkpoint.get("partial_windows") and checkpoint.get("state") != "ingested"
+                and not state["commit_outcome_unknown"] and not refresh._cleanup_unknown_in_chain(exc)
+                and worker_state not in {"cursor_publishing", "cursor_recovery_required", "settlement_unknown"}):
+            from cre_colliers_partial_checkpoint import restore_last_verified_pipeline_window
+            prior_result = restore_last_verified_pipeline_window(checkpoint)
+            if prior_result is not None:
+                state["source_results"]["colliers"] = prior_result
         state["status"] = "reconciliation_required"
+
         if state["active_unit"]:
             unit = state["units"][-1]
             if unit["state"] == "preparing" and unit["sources"] == []:

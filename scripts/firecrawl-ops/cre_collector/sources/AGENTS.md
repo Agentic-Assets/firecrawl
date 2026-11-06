@@ -1334,7 +1334,7 @@ npx tsx collect.ts --source=<key> --transaction=both --max-items=6 --out=/tmp/pr
 python3 cre_ingest.py --in /tmp/probe.json --dry-run
 # Ordinary unlimited Avison enrichment: AVISON_YOUNG_DETAIL_LIMIT=50 ...
 # Strict Avison refresh requires all selected details; this limit cannot cap it.
-# NAI full inventory: --page-cap=400
+# Full mode defaults to unlimited pages; use --page-cap=400 for a bounded diagnostic.
 # Lee cache assembly: BUILDOUT_ASSEMBLE_FROM_CACHE=1 (after pages 0-332 cached)
 ```
 

@@ -23,6 +23,12 @@ export class ColliersSettledSourceStop extends Error {
   }
 }
 
+/** A denied/delayed response whose body cleanup is confirmed. Never retry here. */
+export class ColliersSettledAccessStop extends ColliersAccessStop {
+  constructor(readonly status: number, readonly retryAfter: boolean) {
+    super("Colliers partial detail refused or delayed");
+  }
+}
 /** Caller must store decoded text privately and bind its digest before admission. */
 export async function fetchColliersPartialDetail(token: string, fetchImpl: typeof fetch = fetch,
   maxBytes: number = MAX_DETAIL_BYTES): Promise<{ detail: any; decodedText: string; nativeBytes: Uint8Array }> {
@@ -37,7 +43,7 @@ export async function fetchColliersPartialDetail(token: string, fetchImpl: typeo
     const stop = [401, 403, 429].includes(response.status) || response.headers.has("retry-after");
     if (stop || !response.ok) {
       if (!await cancelResponseBody(response.body, 1000)) throw new NativeEvidenceTerminalError("Colliers detail response cleanup unsettled");
-      if (stop) throw new ColliersAccessStop("Colliers partial detail refused or delayed");
+      if (stop) throw new ColliersSettledAccessStop(response.status, response.headers.has("retry-after"));
       if ([404, 410].includes(response.status)) throw new ColliersDetailHold("detail_not_found", undefined, response.status);
       throw new ColliersSettledSourceStop("detail_http_failure", response.status);
     }

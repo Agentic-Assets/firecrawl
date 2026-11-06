@@ -1,4 +1,4 @@
-process.argv = [process.argv[0]!, process.argv[1]!, "--page-cap=0"];
+process.argv = [process.argv[0]!, process.argv[1]!];
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,7 +6,7 @@ const { PAGE_CAP } = await import("../../../lib/config.js");
 const { srcJll } = await import("../../../sources/jll.js");
 const { firecrawl } = await import("../../../lib/scrape.js");
 
-test("unlimited page cap is serialized as literal zero", () => {
+test("default page cap is unlimited and serialized as literal zero", () => {
   assert.equal(PAGE_CAP, 0);
   assert.equal(JSON.stringify({ pageCap: PAGE_CAP }), '{"pageCap":0}');
 });

@@ -575,3 +575,23 @@ def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():
         'DISAPPEAR_ONLY_SOURCES="avison-young cbre jll marcus-millichap '
         'newmark savills transwestern"'
     ) in text
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, "0"), ("7", "7")])
+def test_legacy_daily_page_cap_default_and_override(configured, expected):
+    assignment = next(
+        line for line in DAILY.read_text(encoding="utf-8").splitlines()
+        if line.startswith("PAGE_CAP=")
+    )
+    env = os.environ.copy()
+    env.pop("CRE_PAGE_CAP", None)
+    if configured is not None:
+        env["CRE_PAGE_CAP"] = configured
+    result = subprocess.run(
+        ["bash", "-c", assignment + "\nprintf '%s' \"$PAGE_CAP\""],
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout == expected

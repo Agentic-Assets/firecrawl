@@ -164,7 +164,7 @@ def validate_window_artifact(data, source_receipt, evidence_receipt):
         raise ValueError("partial worker owner binding differs")
     if (not isinstance(evidence_receipt, dict) or set(evidence_receipt) != {"bytes", "records", "sha256"}
             or type(evidence_receipt["bytes"]) is not int or evidence_receipt["bytes"] < 1
-            or type(evidence_receipt["records"]) is not int or evidence_receipt["records"] < 1
+            or type(evidence_receipt["records"]) is not int or evidence_receipt["records"] < 0
             or not isinstance(evidence_receipt["sha256"], str) or not _HASH.fullmatch(evidence_receipt["sha256"])):
         raise ValueError("partial worker evidence receipt invalid")
     numeric = ("cursor", "proposedCursor", "selected", "total", "heldOther", "unattempted", "held")
@@ -226,6 +226,13 @@ def _read_private_file(path, maximum):
         os.close(directory)
 
 
+def _window_base(attempt, window_index=1):
+    """Name independent windows without changing the original first-window path."""
+    if type(attempt) is not int or attempt < 1 or type(window_index) is not int or window_index < 1:
+        raise ValueError("partial window identity invalid")
+    suffix = "" if window_index == 1 else f"-{window_index}"
+    return f"colliers-partial/window-{attempt}{suffix}"
+
 def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current_git_dirty, allow_empty=False):
     """Recheck the settled worker and both private artifacts, without DB access."""
     from pathlib import Path
@@ -239,7 +246,8 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
     path = Path(artifact_path)
     run_dir = path.parent.parent
     attempt = worker["attempt"]
-    base = f"colliers-partial/window-{attempt}"
+    window_index = worker.get("window_index", 1)
+    base = _window_base(attempt, window_index)
     if (path != run_dir / f"{base}-artifact.json"
             or checkpoint["artifact"].get("path") != f"{base}-artifact.json"
             or worker.get("receipt_path") != f"{base}-receipt.json"
@@ -251,9 +259,21 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
         raise ValueError("partial worker receipt changed")
     receipt = json.loads(receipt_raw)
     receipt_keys = {"schema", "generation", "attempt", "producerSha", "targetSha256", "artifact", "evidence",
-                    "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted"}
+                    "detailFinishedAt", "proposedCursor", "admitted", "held", "heldOther", "unattempted",
+                    "sourceStopped", "rotationComplete", "firstPosition"}
+    if window_index != 1:
+        receipt_keys.add("windowIndex")
+    stop_before = worker.get("stop_before_position")
+    if stop_before is not None:
+        receipt_keys.add("stopBeforePosition")
     if (not isinstance(receipt, dict) or set(receipt) != receipt_keys
             or receipt["schema"] != "colliers-window-worker-receipt/v1"
+            or (window_index != 1 and receipt.get("windowIndex") != window_index)
+            or (stop_before is not None and receipt.get("stopBeforePosition") != stop_before)
+            or type(receipt.get("sourceStopped")) is not bool
+            or type(receipt.get("rotationComplete")) is not bool
+            or type(receipt.get("firstPosition")) is not int or receipt["firstPosition"] < 1
+            or (receipt["rotationComplete"] and stop_before is None)
             or receipt["generation"] != manifest["run_id"] or receipt["attempt"] != attempt
             or receipt["producerSha"] != current_code_sha
             or receipt["targetSha256"] != source_receipt["database_target_sha256"]):
@@ -269,6 +289,11 @@ def verify_worker_artifact(artifact_path, manifest, *, current_code_sha, current
         raise ValueError("partial worker bytes changed")
     data = json.loads(artifact_raw)
     staged = validate_window_artifact(data, source_receipt, receipt["evidence"])
+    if (receipt["firstPosition"] > data["total"]
+            or (stop_before is not None and (type(stop_before) is not int or not 1 <= stop_before <= data["total"]))
+            or (receipt["evidence"]["records"] == 0 and not receipt["rotationComplete"])
+            or (receipt["sourceStopped"] and receipt["evidence"]["records"] == 0)):
+        raise ValueError("partial worker termination is unverified")
     if ((not staged and not allow_empty) or receipt["admitted"] != len(staged) or receipt["held"] != data["held"]
             or receipt["heldOther"] != data["heldOther"] or receipt["unattempted"] != data["unattempted"]
             or receipt["proposedCursor"] != data["proposedCursor"] or receipt["detailFinishedAt"] != data["detailFinishedAt"]):
@@ -522,7 +547,7 @@ def run_partial_readback(artifact_path, envelope, *, code_sha, target, attempt_i
             "child_collections_verified": False}
 
 
-def run_window_worker(run_dir, manifest, owner, runner, save):
+def run_window_worker(run_dir, manifest, owner, runner, save, *, window_index=1, stop_before_position=None):
     """Run one source-specific child under the existing canonical checkpoint owner."""
     import os
     import secrets
@@ -553,6 +578,10 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
     checkpoint = manifest["sources"]["colliers"]
     if checkpoint.get("colliers_partial_worker") is not None:
         raise ValueError("partial worker already attempted; do not replay")
+    windows = checkpoint.get("partial_windows", [])
+    if not isinstance(windows, list) or len(windows) != window_index - 1:
+        raise ValueError("partial window journal differs")
+
     attempts = checkpoint.get("attempts")
     if not isinstance(attempts, list) or not attempts:
         raise ValueError("partial source attempt missing")
@@ -560,20 +589,45 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
     producer, dirty = refresh.git_identity()
     source = revalidate_source_receipt(run_dir, manifest, attempt, producer, dirty)
     target = source["database_target_sha256"]
-    cursor, _ = read_cursor(owner.path, "colliers", target)
-    base = f"colliers-partial/window-{attempt}"
+    cursor, cursor_proof = read_cursor(owner.path, "colliers", target)
+    if window_index > 1:
+        last, first = windows[-1], windows[0]
+        expected = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": target,
+                    "position": last.get("next_cursor"), "generation": source["generation"],
+                    "artifactSha256": last.get("artifact_sha256"), "attemptId": last.get("attempt_id"),
+                    "outcome": last.get("outcome")}
+        if (last.get("state") not in {"verified", "settled_no_write"} or cursor_proof != expected
+                or cursor != last.get("next_cursor") or first.get("first_position") != stop_before_position
+                or first.get("receipt_path") != _window_base(attempt, 1) + "-receipt.json"):
+            raise ValueError("partial window predecessor is not settled")
+        first_raw = _read_private_file(run_dir / first["receipt_path"], 16384)
+        first_receipt = json.loads(first_raw)
+        if (hashlib.sha256(first_raw).hexdigest() != first.get("receipt_sha256")
+                or first_receipt.get("firstPosition") != stop_before_position
+                or first_receipt.get("generation") != source["generation"]
+                or first_receipt.get("attempt") != attempt
+                or first_receipt.get("targetSha256") != target
+                or first_receipt.get("producerSha") != producer):
+            raise ValueError("partial rotation origin differs")
+    base = _window_base(attempt, window_index)
+    if stop_before_position is not None and (window_index == 1 or type(stop_before_position) is not int or stop_before_position < 1):
+        raise ValueError("partial rotation boundary invalid")
     request_path, receipt_path = run_dir / f"{base}-request.json", run_dir / f"{base}-receipt.json"
     evidence_path, artifact_path = run_dir / f"{base}-evidence.jsonl", run_dir / f"{base}-artifact.json"
     for path in (request_path, receipt_path, evidence_path, artifact_path):
         if path.exists() or path.is_symlink():
             raise ValueError("partial worker output already exists")
-    request = {"generation": source["generation"], "generationStartedAt": source["generation_started_at"],
+    request = {**({"windowIndex": window_index} if window_index != 1 else {}),
+               **({"stopBeforePosition": stop_before_position} if stop_before_position is not None else {}),
+               "generation": source["generation"], "generationStartedAt": source["generation_started_at"],
                "attempt": attempt, "startedAt": source["started_at"], "finishedAt": source["finished_at"],
                "runDir": str(run_dir), "sourceBytes": source["bytes"], "sourceSha256": source["sha256"],
                "originalSourceMainSha256": source["main_sha256"], "producerSha": producer,
                "targetSha256": target, "cursor": cursor, "ownerPid": os.getpid(),
                "lockLease": owner.lease_token, "authorityToken": owner.authority_token}
     checkpoint["colliers_partial_worker"] = {"state": "dispatching", "attempt": attempt, "rc": None,
+        **({"window_index": window_index} if window_index != 1 else {}),
+        **({"stop_before_position": stop_before_position} if stop_before_position is not None else {}),
         "receipt_path": str(receipt_path.relative_to(run_dir)), "evidence_path": str(evidence_path.relative_to(run_dir)),
         "artifact_path": str(artifact_path.relative_to(run_dir)), "cursor": cursor}
     save(run_dir, manifest)
@@ -592,8 +646,9 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
         check_owner()
         env = refresh.safe_process_env()
         env["COLLIERS_PARTIAL_WORKER_REQUEST"] = str(request_path)
+        log_name = "colliers-partial-worker.log" if window_index == 1 else f"colliers-partial-worker-{window_index}.log"
         rc = runner(["node", "--import", "tsx", "sources/colliers-partial-window-entry.ts"],
-                    run_dir / "logs" / "colliers-partial-worker.log", env=env)
+                    run_dir / "logs" / log_name, env=env)
         check_owner()
         if rc != 0:
             checkpoint["colliers_partial_worker"].update(state="failed", rc=rc)
@@ -618,6 +673,8 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
             checkpoint.pop("artifact", None)
             raise ValueError("partial worker source or code changed")
         check_owner()
+        worker["completion"] = {key: receipt[key] for key in (
+            "firstPosition", "rotationComplete", "sourceStopped", "proposedCursor", "admitted", "held", "unattempted")}
         if not verified["staged"]:
             # A fully classified, settled no-write window can advance only to
             # the worker's verified prefix; source-wide stops leave it unchanged.
@@ -655,3 +712,154 @@ def run_window_worker(run_dir, manifest, owner, runner, save):
         except BaseException as save_error:  # noqa: BLE001 - preserve an interrupt and the original failure
             raise BaseExceptionGroup("partial worker failure and checkpoint save failure", [exc, save_error]) from exc
         raise
+
+
+def partial_window_terminal_stop(checkpoint):
+    """Describe a settled terminal stop without treating it as whole-source coverage."""
+    terminal = checkpoint.get("partial_window_terminal", checkpoint)
+    worker = terminal.get("colliers_partial_worker") if isinstance(terminal, dict) else None
+    if not isinstance(worker, dict):
+        return None
+    if worker.get("state") == "failed" and type(worker.get("rc")) is int and worker["rc"] != 0:
+        return "worker_failed"
+    completion = worker.get("completion")
+    if (worker.get("state") in {"settled", "settled_no_write"} and
+            isinstance(completion, dict) and completion.get("sourceStopped") is True):
+        return "source_stopped"
+    return None
+
+
+def archive_verified_pipeline_window(run_dir, manifest, unit, result, owner):
+    """Journal one already-verified pipeline unit before permitting another."""
+    import copy
+
+    import cre_checkpoint_refresh as refresh
+    from cre_partial_cursor import read_cursor
+
+    checkpoint = manifest["sources"]["colliers"]
+    worker = checkpoint["colliers_partial_worker"]
+    completion = worker.get("completion")
+    binding = checkpoint["gate"]["current_inventory_proof"]
+    readback = checkpoint["readback"]
+    settlement = checkpoint["partial_cursor_settlement"]
+    windows = checkpoint.setdefault("partial_windows", [])
+    index = len(windows) + 1
+    if (not isinstance(owner, refresh.SharedLock) or unit.get("state") != "verified"
+            or unit.get("sources") != ["colliers"] or result.get("unit_id") != unit.get("unit_id")
+            or result.get("state") != "verified" or result.get("partial") is not True
+            or result.get("whole_source_coverage") is not False or readback.get("ok") is not True
+            or settlement.get("state") != "settled" or worker.get("state") != "settled"
+            or worker.get("window_index", 1) != index or not isinstance(completion, dict)):
+        raise ValueError("partial window is not verified")
+    verified = verify_worker_artifact(run_dir / checkpoint["artifact"]["path"], manifest,
+        current_code_sha=manifest["collector_git_sha"], current_git_dirty=manifest["collector_git_dirty"])
+    receipt = verified["receipt"]
+    target = binding["database_target_sha256"]
+    cursor, cursor_proof = read_cursor(owner.path, "colliers", target)
+    expected = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": target,
+                "position": binding["next_cursor"], "generation": manifest["run_id"],
+                "artifactSha256": binding["artifact_sha256"], "attemptId": settlement["attempt_id"],
+                "outcome": "exact_commit"}
+    if (cursor_proof != expected or cursor != binding["next_cursor"]
+            or settlement["artifact_sha256"] != binding["artifact_sha256"]
+            or completion != {key: receipt[key] for key in completion}):
+        raise ValueError("partial window cursor proof differs")
+    first = receipt["firstPosition"] if index == 1 else windows[0]["first_position"]
+    if receipt["sourceStopped"]:
+        result["terminal_stop"] = "source_stopped"
+    snapshot = copy.deepcopy({key: value for key, value in checkpoint.items() if key != "partial_windows"})
+    window = {"index": index, "state": "verified", "unit_id": unit["unit_id"],
+              "first_position": first, "cursor": binding["cursor"], "next_cursor": binding["next_cursor"],
+              "artifact_sha256": binding["artifact_sha256"], "attempt_id": settlement["attempt_id"],
+              "outcome": "exact_commit", "receipt_path": worker["receipt_path"],
+              "receipt_sha256": worker["receipt_sha256"], "checkpoint": snapshot,
+              "result": copy.deepcopy(result)}
+    owner._require_authority()
+    windows.append(window)
+    return (not receipt["sourceStopped"] and not receipt["rotationComplete"]
+            and binding["next_cursor"] != binding["cursor"])
+
+
+def prepare_next_pipeline_window(checkpoint):
+    """Clear only the current window slots after their verified snapshot is durable."""
+    windows = checkpoint.get("partial_windows")
+    if not isinstance(windows, list) or not windows or windows[-1].get("state") not in {"verified", "settled_no_write"}:
+        raise ValueError("partial window journal is not settled")
+    for key in ("artifact", "candidate", "gate", "dry_run", "ingest", "readback",
+                "colliers_partial_worker", "colliers_identity_probe", "colliers_partial_claims",
+                "subset_ingest_attempt_id", "partial_cursor_settlement"):
+        checkpoint.pop(key, None)
+    checkpoint["state"] = "partial_window_pending"
+
+
+def archive_no_write_pipeline_window(run_dir, manifest, owner):
+    """Retain a sealed held window and continue only over a committed cursor."""
+    import copy
+
+    import cre_checkpoint_refresh as refresh
+    from cre_partial_cursor import read_cursor
+
+    checkpoint = manifest["sources"]["colliers"]
+    worker = checkpoint["colliers_partial_worker"]
+    windows = checkpoint.setdefault("partial_windows", [])
+    index = len(windows) + 1
+    if (not isinstance(owner, refresh.SharedLock) or worker.get("state") != "settled_no_write"
+            or worker.get("window_index", 1) != index):
+        raise ValueError("partial no-write window is not settled")
+    raw = _read_private_file(run_dir / worker["receipt_path"], 16384)
+    if hashlib.sha256(raw).hexdigest() != worker["receipt_sha256"]:
+        raise ValueError("partial no-write receipt changed")
+    receipt = json.loads(raw)
+    # Reuse the ordinary source, artifact and evidence revalidation on a copy.
+    probe_manifest = copy.deepcopy(manifest)
+    probe_checkpoint = probe_manifest["sources"]["colliers"]
+    probe_checkpoint["colliers_partial_worker"]["state"] = "settled"
+    probe_checkpoint["artifact"] = {"path": worker["artifact_path"], **receipt["artifact"]}
+    verified = verify_worker_artifact(run_dir / worker["artifact_path"], probe_manifest,
+        current_code_sha=manifest["collector_git_sha"], current_git_dirty=manifest["collector_git_dirty"], allow_empty=True)
+    if verified["staged"] or receipt["admitted"] != 0:
+        raise ValueError("partial no-write partition differs")
+    cursor = worker["cursor"]
+    next_cursor = receipt["proposedCursor"]
+    target = verified["source_receipt"]["database_target_sha256"]
+    position, cursor_proof = read_cursor(owner.path, "colliers", target)
+    first = receipt["firstPosition"] if index == 1 else windows[0]["first_position"]
+    if next_cursor != cursor:
+        expected = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": target,
+                    "position": next_cursor, "generation": manifest["run_id"],
+                    "artifactSha256": receipt["artifact"]["sha256"], "attemptId": worker.get("cursor_attempt_id"),
+                    "outcome": "settled_no_write"}
+        if cursor_proof != expected or position != next_cursor:
+            raise ValueError("partial no-write cursor proof differs")
+    elif position != cursor:
+        raise ValueError("partial no-write cursor changed")
+    window = {"index": index, "state": "settled_no_write", "first_position": first,
+              "cursor": cursor, "next_cursor": next_cursor,
+              "artifact_sha256": receipt["artifact"]["sha256"], "attempt_id": worker.get("cursor_attempt_id"),
+              "outcome": "settled_no_write", "receipt_path": worker["receipt_path"],
+              "receipt_sha256": worker["receipt_sha256"],
+              "checkpoint": copy.deepcopy({key: value for key, value in checkpoint.items()
+                                          if key != "partial_windows"})}
+    owner._require_authority()
+    windows.append(window)
+    return (next_cursor != cursor and not receipt["sourceStopped"] and not receipt["rotationComplete"])
+
+
+def restore_last_verified_pipeline_window(checkpoint):
+    """Retain the last verified parent after a later local stop, without replay."""
+    import copy
+
+    windows = checkpoint.get("partial_windows", [])
+    prior = next((entry for entry in reversed(windows) if entry.get("state") == "verified"), None)
+    if prior is None:
+        return None
+    terminal_window = copy.deepcopy({key: value for key, value in checkpoint.items() if key != "partial_windows"})
+    checkpoint.clear()
+    checkpoint.update(copy.deepcopy(prior["checkpoint"]))
+    checkpoint["partial_windows"] = windows
+    checkpoint["partial_window_terminal"] = terminal_window
+    result = copy.deepcopy(prior["result"])
+    terminal_stop = partial_window_terminal_stop(checkpoint)
+    if terminal_stop:
+        result["terminal_stop"] = terminal_stop
+    return result
