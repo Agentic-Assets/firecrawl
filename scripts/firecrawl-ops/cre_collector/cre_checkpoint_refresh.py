@@ -581,6 +581,16 @@ def read_host_cpu_percent() -> float:
     return host_cpu_sampler()()
 
 
+def windows_wsl() -> bool:
+    """WSL uses the Windows host resource policy, not the shared-host veto."""
+    return sys.platform.startswith("linux") and "microsoft" in os.uname().release.lower()
+
+
+def cpu_guard_actions() -> dict[str, str]:
+    action = "diagnostic_only" if windows_wsl() else "interrupt_and_checkpoint"
+    return {"action": action, "telemetry_failure_action": action}
+
+
 @dataclass
 class HostCpuGuard:
     """Fail-closed watchdog for sustained total host CPU saturation.
@@ -616,8 +626,7 @@ class HostCpuGuard:
             "max_host_cpu_percent": self.max_percent,
             "sustain_seconds": self.sustain_seconds,
             "sample_seconds": self.sample_seconds,
-            "action": "interrupt_and_checkpoint",
-            "telemetry_failure_action": "interrupt_and_checkpoint",
+            **cpu_guard_actions(),
         }
         if sys.platform.startswith("linux"):
             config["telemetry_scope"] = "linux_kernel_or_vm_not_windows_host"
@@ -4599,8 +4608,7 @@ def new_manifest(
                 "max_host_cpu_percent": max_host_cpu_percent,
                 "sustain_seconds": cpu_sustain_seconds,
                 "sample_seconds": cpu_sample_seconds,
-                "action": "interrupt_and_checkpoint",
-                "telemetry_failure_action": "interrupt_and_checkpoint",
+                **cpu_guard_actions(),
             },
             "host_memory_guard": memory_guard_config(
                 memory_sustain_seconds, memory_sample_seconds
@@ -4739,8 +4747,7 @@ def load_resume_manifest(
             "max_host_cpu_percent": max_host_cpu_percent,
             "sustain_seconds": cpu_sustain_seconds,
             "sample_seconds": cpu_sample_seconds,
-            "action": "interrupt_and_checkpoint",
-            "telemetry_failure_action": "interrupt_and_checkpoint",
+            **cpu_guard_actions(),
         },
         "host_memory_guard": memory_guard_config(
             memory_sustain_seconds, memory_sample_seconds
@@ -6962,7 +6969,7 @@ def jll_partial_readback(run_dir, manifest, env_file):
                         expected_database_target_sha256=target, env_file=env_file)
 
 
-def colliers_partial_readback(run_dir, manifest, env_file):
+def colliers_partial_readback(run_dir, manifest, env_file, *, historical_producer_sha=None):
     from cre_colliers_partial_checkpoint import run_partial_readback
 
     checkpoint = manifest["sources"]["colliers"]
@@ -6972,9 +6979,11 @@ def colliers_partial_readback(run_dir, manifest, env_file):
     code_sha, dirty = git_identity()
     if dirty:
         raise GlobalStageError("Colliers partial readback code is dirty")
+    source_sha = code_sha if historical_producer_sha is None else historical_producer_sha
     result = run_partial_readback(run_dir / checkpoint["artifact"]["path"], _load_json(Path(arguments[1])),
-        code_sha=code_sha, target=manifest_database_target_sha256(manifest),
-        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+        code_sha=source_sha, target=manifest_database_target_sha256(manifest),
+        attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file,
+        **({"verifier_sha": code_sha} if historical_producer_sha is not None else {}))
     # Recheck the claim file after the query as well as the source artifact.
     subset_ingest_arguments(run_dir, manifest, "colliers")
     return result
@@ -7687,7 +7696,12 @@ def run_final_validation(
     env_file: str | None,
     *, sources: Sequence[str] | None = None, evidence_dir: Path | None = None,
     before_path: Path | None = None,
+    historical_colliers_producer_sha: str | None = None,
+    persist_manifest: bool = True,
 ) -> dict[str, Any]:
+    if ((historical_colliers_producer_sha is not None and (sources != ["colliers"] or persist_manifest))
+            or (not persist_manifest and historical_colliers_producer_sha is None)):
+        raise ValueError("historical Colliers validation must be read-only and source-scoped")
     output = (evidence_dir or run_dir) / "validation.json"
     log = (run_dir / "logs" / f"{evidence_dir.name}-validation.log") if evidence_dir else run_dir / "logs" / "validation.log"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -7751,11 +7765,14 @@ def run_final_validation(
         result["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     if (sources is None or "colliers" in sources) and colliers_partial_candidate(manifest, "colliers"):
-        result["colliers_partial_readback"] = colliers_partial_readback(run_dir, manifest, env_file)
+        result["colliers_partial_readback"] = colliers_partial_readback(
+            run_dir, manifest, env_file, **({"historical_producer_sha": historical_colliers_producer_sha}
+                                           if historical_colliers_producer_sha is not None else {}))
         atomic_write_json(output, result)
     readback = (
-        verify_validation_readback(run_dir, manifest, result)
-        if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources)
+        verify_validation_readback(run_dir, manifest, result, **({"persist_manifest": False} if not persist_manifest else {}))
+        if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources,
+            **({"persist_manifest": False} if not persist_manifest else {}))
     )
     # The exact source-bound post-write readback proves which Lyon parents were
     # absent from its sealed preimage and inserted with an unknown canonical URL.
@@ -7792,7 +7809,8 @@ def run_final_validation(
         "readback_ok": readback["ok"],
         "failed_readback_sources": readback["failed_sources"],
     }
-    save_manifest(run_dir, manifest)
+    if persist_manifest:
+        save_manifest(run_dir, manifest)
     # A bounded source generation must not be prevented from refreshing solely
     # by historical, unrelated database defects. The regression comparison and
     # exact per-source readback above remain admission-critical. The absolute
@@ -8810,43 +8828,53 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "pressure_level": memory_pressure,
                 "log": "logs/host-memory-guard.jsonl",
             }
-            initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
-            manifest["preflight"]["host_cpu_guard"] = {
-                **cpu_guard.config(),
-                "log": _relative_to_run(cpu_guard.log_path, run_dir),
-                "initial_host_cpu_percent": round(initial_host_cpu_percent, 2),
-                "started_at": utc_now(),
-            }
-            save_manifest(run_dir, manifest)
-            if initial_host_cpu_percent >= args.max_host_cpu_percent:
-                reason = (
-                    "host CPU is already at or above the guarded ceiling; "
-                    "refusing to start source work"
-                )
-                _set_cpu_guard_trip(
-                    reason,
-                    reason_code="host_cpu_start_blocked",
-                    telemetry_valid=True,
-                    host_cpu_percent=initial_host_cpu_percent,
-                    context=cpu_guard.incident_context,
-                )
-                try:
-                    cpu_guard._write_record(
-                        state="tripped",
-                        percent=initial_host_cpu_percent,
-                        reason=reason,
+            if windows_wsl():
+                # ResourceUsageSampler is optional and records CPU gaps; CPU
+                # diagnostics must never prevent this Windows-owned run.
+                manifest["preflight"]["host_cpu_guard"] = {
+                    **cpu_guard.config(),
+                    "log": "resource-usage.jsonl",
+                    "started_at": utc_now(),
+                }
+                save_manifest(run_dir, manifest)
+            else:
+                initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
+                manifest["preflight"]["host_cpu_guard"] = {
+                    **cpu_guard.config(),
+                    "log": _relative_to_run(cpu_guard.log_path, run_dir),
+                    "initial_host_cpu_percent": round(initial_host_cpu_percent, 2),
+                    "started_at": utc_now(),
+                }
+                save_manifest(run_dir, manifest)
+                if initial_host_cpu_percent >= args.max_host_cpu_percent:
+                    reason = (
+                        "host CPU is already at or above the guarded ceiling; "
+                        "refusing to start source work"
                     )
-                except CpuTelemetryError:
                     _set_cpu_guard_trip(
                         reason,
-                        reason_code="host_cpu_evidence_failed",
+                        reason_code="host_cpu_start_blocked",
                         telemetry_valid=True,
-                        evidence_valid=False,
                         host_cpu_percent=initial_host_cpu_percent,
                         context=cpu_guard.incident_context,
                     )
-                raise CpuGuardTrip(reason)
-            cpu_guard.start()
+                    try:
+                        cpu_guard._write_record(
+                            state="tripped",
+                            percent=initial_host_cpu_percent,
+                            reason=reason,
+                        )
+                    except CpuTelemetryError:
+                        _set_cpu_guard_trip(
+                            reason,
+                            reason_code="host_cpu_evidence_failed",
+                            telemetry_valid=True,
+                            evidence_valid=False,
+                            host_cpu_percent=initial_host_cpu_percent,
+                            context=cpu_guard.incident_context,
+                        )
+                    raise CpuGuardTrip(reason)
+                cpu_guard.start()
             set_cpu_guard_context(
                 cpu_guard,
                 phase="healthcheck",
@@ -9150,6 +9178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and guards_stopped
                 and not settlement_unknown
                 and not (manifest.get("pipeline") or {}).get("commit_outcome_unknown", False)
+                and not (manifest.get("pipeline") or {}).get("cursor_recovery_outcome_unknown", False)
                 and (details is None or details.owned_processes_reaped)
             ):
                 lock.clear_recovery_requirement()
