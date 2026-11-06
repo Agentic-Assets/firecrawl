@@ -25,7 +25,7 @@ def main():
     )
 
     name = "colliers-multi-" + uuid.uuid4().hex[:12]
-    # Only this synthetic directory is shared with the networkless container.
+    # Synthetic artifacts stay on the host; SQL is streamed into the container.
     root = Path(tempfile.mkdtemp(prefix="colliers-multi-"))
     os.environ["TMPDIR"] = str(root)
     tempfile.tempdir = str(root)
@@ -34,14 +34,19 @@ def main():
     # an empty private Docker config and a local image; never contact a registry.
     docker_config = root / "docker-config"
     docker_config.mkdir(mode=0o700)
-    docker_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                  "DOCKER_CONFIG": str(docker_config), "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    docker_env = {"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": str(docker_config),
+                  "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    docker_binary = Path("/usr/bin/docker").resolve(strict=True)
+    binary_info = docker_binary.stat()
+    if (not stat.S_ISREG(binary_info.st_mode) or binary_info.st_uid != 0 or binary_info.st_gid != 0
+            or binary_info.st_mode & stat.S_IWOTH or not os.access(docker_binary, os.X_OK)):
+        raise RuntimeError("Docker executable ownership or permissions are unsafe")
     label_value = uuid.uuid4().hex
     label = "agentic-assets.colliers-fixture=" + label_value
     container_id = None
 
     def docker(*args, text=None, check=True):
-        return command("docker", *args, text=text, check=check, env=docker_env)
+        return command(str(docker_binary), *args, text=text, check=check, env=docker_env)
 
     def sql(query):
         result = docker("exec", "-i", container_id, "psql", "-U", "postgres", "-X", "-q", "-tA",
@@ -58,14 +63,17 @@ def main():
         image_id = docker("image", "inspect", "--format", "{{.Id}}", "postgres:17").stdout.strip()
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
             raise RuntimeError("local PostgreSQL image identity is invalid")
-        created = docker("run", "-d", "--rm", "--pull=never", "--name", name, "--label", label,
-                "--network=none", "--cpus=0.5", "--memory=512m", "--pids-limit=128",
-                "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
-                "--mount", f"type=bind,src={root},dst={root}",
-                "-e", "POSTGRES_PASSWORD=synthetic-only", image_id)
+        try:
+            created = docker("run", "-d", "--rm", "--pull=never", "--name", name, "--label", label,
+                    "--network=none", "--cpus=0.5", "--memory=512m", "--pids-limit=128",
+                    "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+                    "-e", "POSTGRES_PASSWORD=synthetic-only", image_id)
+        except (subprocess.SubprocessError, OSError):
+            print(f"Container creation outcome unknown; possible orphan name={name} label={label}", flush=True)
+            raise
         candidate_id = created.stdout.strip()
         if not re.fullmatch(r"[a-f0-9]{64}", candidate_id):
-            raise RuntimeError("Docker did not return a valid created container ID")
+            raise RuntimeError(f"container ID unknown; possible orphan name={name} label={label}")
         container_id = candidate_id
         for _ in range(100):
             logs = docker("logs", container_id, check=False)
@@ -118,7 +126,7 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
             "if '-f' in args and args[args.index('-f')+1] != '-':\n"
             " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n"
             "os.environ.clear(); os.environ.update(" + repr(docker_env) + ")\n"
-            "os.execvp('docker',['docker','exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(container_id) + ",'psql','-U','postgres',*args])\n",
+            "os.execv(" + repr(str(docker_binary)) + ",[" + repr(str(docker_binary)) + ",'exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(container_id) + ",'psql','-U','postgres',*args])\n",
             encoding="utf8")
         shim.chmod(0o700)
         database = {"target": ingest.database_target_fingerprint_from_url(db_url), "psql": shim, "env_file": env_file}
