@@ -989,3 +989,76 @@ def test_dispatch_order_keeps_configured_scope_and_runs_every_peer(tmp_path, mon
     assert manifest["config"]["sources"] == list(sources)
     assert set(manifest["pipeline"]["source_results"]) == set(sources)
     assert failures == []
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_finalization_error_preserves_cause_and_settles_peers(tmp_path, monkeypatch, settled):
+    """A closed finalized log must not hide an artifact error or a real cleanup failure."""
+    import io
+
+    sources = ("savills", "transwestern")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = refresh.new_manifest(
+        run_dir, git_sha="a" * 40, git_dirty=False, sources=sources,
+        page_cap=1, concurrency=1, source_workers=2, pipeline=True,
+    )
+    items = []
+    settled_sources = []
+
+    def start(root, owner, source, **_kwargs):
+        attempt, artifact, _log, started = refresh._cohort_attempt(
+            root, owner, source, collector_concurrency=1
+        )
+        artifact.write_text("rejected")
+        process = SimpleNamespace(
+            pid=100 + len(items),
+            returncode=refresh.COHORT_SETTLED_FAILURE_EXIT if not items else None,
+        )
+        process.poll = lambda: process.returncode
+        group = SimpleNamespace(gone=not items, process=process)
+        item = refresh.CohortCollectionProcess(
+            source, process, io.StringIO(), artifact, attempt, started, group
+        )
+        items.append(item)
+        return item
+
+    def settle(groups, **_kwargs):
+        for group in groups:
+            settled_sources.append(group.process.pid)
+            group.process.returncode = refresh.COHORT_SETTLED_INTERRUPT_EXIT
+        return SimpleNamespace(settled=settled, groups=[], errors=[] if settled else ["unknown"])
+
+    def fail_archive(*_args, **_kwargs):
+        assert items[0].log_handle.closed
+        raise refresh.GlobalStageError("synthetic artifact evidence failure")
+
+    monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *_a: None)
+    monkeypatch.setattr(refresh, "_start_cohort_collection", start)
+    monkeypatch.setattr(refresh, "settle_owned_groups", settle)
+    monkeypatch.setattr(refresh, "archive_rejected_with_evidence", fail_archive)
+    monkeypatch.setattr(pipeline, "reconcile_pipeline_ingests", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "pending_disk_bytes", lambda *_a: 0)
+    monkeypatch.setattr(pipeline.shutil, "disk_usage", lambda *_a: SimpleNamespace(free=10 * 1024**3))
+    error = refresh.GlobalStageError if settled else refresh.ProcessCleanupUnknown
+    with pytest.raises(error) as caught:
+        pipeline.run_bounded_pipeline(
+            run_dir, manifest, sources, page_cap=1, concurrency=1,
+            attempts_this_run=1, env_file=None, source_workers=2,
+        )
+    if settled:
+        assert "synthetic artifact evidence failure" in str(caught.value)
+    else:
+        assert refresh._cleanup_unknown_in_chain(caught.value)
+        assert isinstance(caught.value.__context__, refresh.GlobalStageError)
+    assert settled_sources == [item.process.pid for item in items]
+    assert len(items) == 2
+    assert all(item.log_handle.closed for item in items)
+
+
+def test_failed_collection_keeps_eligible_peer_running(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 2, sources=("savills", "transwestern"), failure="savills"
+    )
+    assert failures == ["savills"]
+    assert manifest["pipeline"]["source_results"]["transwestern"]["state"] == "verified"
+    assert any(event[0] == "db_start" and "transwestern" in event[1] for event in events)

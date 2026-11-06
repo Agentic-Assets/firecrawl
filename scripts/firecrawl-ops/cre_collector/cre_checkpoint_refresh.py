@@ -3983,6 +3983,11 @@ class CohortCollectionProcess:
     attempt: dict[str, Any]
     attempt_started_at: str
     owned_group: OwnedProcessGroup | None = None
+    finalization_log_closed: bool = False
+
+    def close_finalization_log(self) -> None:
+        self.log_handle.close()
+        self.finalization_log_closed = True
 
 
 def source_worker_lanes(source: str) -> frozenset[str]:
@@ -4050,6 +4055,8 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
     cleanup_errors: list[Exception] = []
 
     def record_log(item: CohortCollectionProcess, message: str) -> None:
+        if item.finalization_log_closed:
+            return
         try:
             item.log_handle.write(message)
             item.log_handle.flush()
@@ -4319,7 +4326,7 @@ def _finalize_cohort_collection(
         item.log_handle.write(
             f"[{utc_now()}] coordinator rejected stale or unowned completion\n"
         )
-        item.log_handle.close()
+        item.close_finalization_log()
         raise RefreshError(
             "cohort completion does not own the current source attempt: "
             f"{item.source} attempt {item.attempt.get('number')}"
@@ -4330,7 +4337,7 @@ def _finalize_cohort_collection(
         if not clock_expired:
             raise ClockOrderingPending("wall clock precedes attempt start")
         item.log_handle.write(f"[{finished_at}] coordinator refused reversed attempt clock\n")
-        item.log_handle.close()
+        item.close_finalization_log()
         item.attempt.update(rc=rc, finished_at=finished_at, error="wall clock did not reach attempt start",
                             clock_order_refused=True)
         mark_source_document_settlement(manifest, item.attempt)
@@ -4348,7 +4355,7 @@ def _finalize_cohort_collection(
         save_manifest(run_dir, manifest)
         return False
     item.log_handle.write(f"[{finished_at}] coordinator observed rc={rc}\n")
-    item.log_handle.close()
+    item.close_finalization_log()
     item.attempt["rc"] = rc
     item.attempt["finished_at"] = finished_at
     mark_source_document_settlement(manifest, item.attempt)
