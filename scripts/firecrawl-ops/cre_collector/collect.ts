@@ -9,12 +9,14 @@ import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-pro
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
   AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE,
+  AVISON_YOUNG_UNSETTLED_EXIT_CODE,
   AvisonYoungAccessDeniedError,
   AvisonYoungPartialDetailError,
   isAvisonYoungTerminalSourceError,
   isExclusiveAvisonYoungTerminal404Failure,
   srcAvisonYoung,
 } from "./sources/avison-young.js";
+import { AvisonYoungUnsettledError } from "./sources/avison-young-transport.js";
 import { brokerIndex, brokers } from "./lib/broker.js";
 import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
@@ -252,6 +254,7 @@ async function main() {
   }> = [];
   let avisonOtherFailures = 0;
   let avisonAccessDenied = false;
+  let avisonUnsettled = false;
   let terminalCaptureFailure = false;
 
   sourceLoop: for (const key of requestedSources) {
@@ -358,11 +361,16 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
-          ...(err instanceof AvisonYoungPartialDetailError ? { truncated: true } : {}),
+          ...(err instanceof AvisonYoungPartialDetailError || err instanceof AvisonYoungAccessDeniedError
+            || err instanceof AvisonYoungUnsettledError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
         if (key === "avison-young" && err instanceof AvisonYoungAccessDeniedError) {
           avisonAccessDenied = true;
+          break;
+        }
+        if (key === "avison-young" && err instanceof AvisonYoungUnsettledError) {
+          avisonUnsettled = true;
           break;
         }
       }
@@ -394,9 +402,11 @@ async function main() {
   let avisonTerminal404 = false;
   const terminalAvisonDenial = avisonAccessDenied && !MONITOR && requestedSources.length === 1
     && requestedSources[0] === "avison-young";
+  const terminalAvisonUnsettled = avisonUnsettled && !MONITOR && requestedSources.length === 1
+    && requestedSources[0] === "avison-young";
   if (listings.length === 0) {
-    if (terminalAvisonDenial && !evidenceOnly) {
-      process.exitCode = AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
+    if ((terminalAvisonDenial || terminalAvisonUnsettled) && !evidenceOnly) {
+      process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
       return;
     }
     if (
@@ -562,6 +572,9 @@ async function main() {
   if (evidenceOnly) {
     console.error("no listings collected from any source");
     process.exitCode = terminalAvisonDenial ? AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE : avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
+  }
+  if (terminalAvisonDenial || terminalAvisonUnsettled) {
+    process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
   }
 }
 

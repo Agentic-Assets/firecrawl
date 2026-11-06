@@ -18,13 +18,17 @@ export function assertAvisonYoungTransportSettled(): void {
   if (unsettled) throw unsettled;
 }
 
-function refuseUnsettled(cause: unknown): AvisonYoungUnsettledError {
+export function refuseUnsettled(cause: unknown): AvisonYoungUnsettledError {
   unsettled ??= new AvisonYoungUnsettledError(cause);
   return unsettled;
 }
 
+export class AvisonYoungDeadlineError extends Error {
+  constructor() { super("Avison Young request elapsed deadline exceeded"); }
+}
+
 export function avisonYoungDeadlineError(): Error {
-  return new Error("Avison Young request elapsed deadline exceeded");
+  return new AvisonYoungDeadlineError();
 }
 
 export async function withinAvisonYoungDeadline<T>(pending: Promise<T>, deadlineAt: number): Promise<T> {

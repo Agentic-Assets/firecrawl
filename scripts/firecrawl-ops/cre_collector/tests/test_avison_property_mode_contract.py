@@ -72,6 +72,7 @@ https.request=(url,options,callback)=>{
     if(mode==='reverse-partial')status=native?404:200;
     if(mode==='one-good-404' && index===1)status=404;
     if(mode==='one-good-403' && index===1)status=403;
+    if(mode==='sale-good-lease-denied' && (url.hostname+url.pathname).includes('fixture-lease-'))status=403;
 
     if(mode==='partial-503')status=native?200:503;
     if(mode==='both-404'||mode.startsWith('mixed-')){
@@ -259,6 +260,26 @@ def test_denial_worker_and_retry_classifier_remain_terminal(tmp_path, monkeypatc
     checkpoint = {"terminal_collection_failure": {"code": refresh.AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE}}
     assert refresh.has_terminal_collection_failure("avison-young", checkpoint)
     assert not refresh.has_terminal_collection_failure("hanley", checkpoint)
+
+
+def test_sale_success_then_lease_denial_returns_terminal_with_saved_artifact(tmp_path):
+    preload, started, env = prepare(tmp_path, "sale-good-lease-denied")
+    custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == refresh.AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE
+    data = json.loads(output.read_text())
+    assert len(data["listings"]) == 3
+    assert data["sources"][0]["transaction"] == "sale"
+    assert data["sources"][1]["transaction"] == "lease"
+    assert data["sources"][1]["truncated"] is True
+    assert data["sources"][1]["error"]
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh.validate_source_artifact(output, "avison-young", started)
 
 
 def test_actual_explicit_strict_all_urls_requirement_is_unchanged(tmp_path):

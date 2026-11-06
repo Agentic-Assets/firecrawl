@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { firecrawl } from "../../../lib/scrape.js";
+import { SdkError } from "@mendable/firecrawl-js";
+import { AvisonYoungDeadlineError, AvisonYoungUnsettledError } from "../../../sources/avison-young-transport.js";
 
 const fixtures = new URL("../../fixtures/raw_data/", import.meta.url);
 const row = JSON.parse(readFileSync(new URL("avison-young-official-display-role-18194.json", fixtures), "utf8")).feed_row;
@@ -9,7 +11,7 @@ const html = readFileSync(new URL("avison-young-official-display-role-18194.html
 const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
-async function runCase(denied: boolean, ordinaryFailure?: "500" | "timeout") {
+async function runCase(denied: boolean, ordinaryFailure?: "500" | "timeout" | "sdk403") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -32,7 +34,8 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "timeout") {
     };
     firecrawl.scrape = async (url: string) => {
       calls.push(url);
-      if (url === badUrl && ordinaryFailure === "timeout") throw new Error("timeout");
+      if (url === badUrl && ordinaryFailure === "timeout") throw new SdkError("gateway timeout", 504, undefined, undefined);
+      if (url === badUrl && ordinaryFailure === "sdk403") throw new SdkError("Forbidden", 403, undefined, undefined);
       return { rawHtml: html, markdown: "", links: [],
         metadata: { sourceURL: url, url, statusCode: url === badUrl ? (denied ? 403 : ordinaryFailure === "500" ? 500 : 200) : 200 } };
     };
@@ -67,6 +70,13 @@ test("access denial stops before requesting a later peer", async () => {
   assert.deepEqual(calls, [badUrl]);
 });
 
+test("a thrown Firecrawl SDK 403 stops before requesting a later peer", async () => {
+  const { source, failure, observed, calls } = await runCase(false, "sdk403");
+  assert.ok(failure instanceof source.AvisonYoungAccessDeniedError);
+  assert.deepEqual(observed, []);
+  assert.deepEqual(calls, [badUrl]);
+});
+
 for (const failure of ["500", "timeout"] as const) {
   test(`settled ${failure} holds the row while a later peer is retained`, async () => {
     const result = await runCase(false, failure);
@@ -91,7 +101,7 @@ test("a valid first URL cannot conceal a 500 or timeout on the second", async ()
       const calls: string[] = [];
       firecrawl.scrape = async (url: string) => {
         calls.push(url);
-        if (url === base.externalUrl && failure === "timeout") throw new Error("timeout");
+        if (url === base.externalUrl && failure === "timeout") throw new SdkError("gateway timeout", 504, undefined, undefined);
         return { rawHtml: html, markdown: "", links: [], metadata: {
           sourceURL: url, url, statusCode: url === base.externalUrl ? 500 : 200,
         } };
@@ -108,5 +118,29 @@ test("a valid first URL cannot conceal a 500 or timeout on the second", async ()
     else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = previousFresh;
     if (previousTransport === undefined) delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
     else process.env.AVISON_YOUNG_DETAIL_TRANSPORT = previousTransport;
+  }
+});
+
+test("settled direct deadline retains its actual type after retries", async () => {
+  const source = await import("../../../sources/avison-young.js?settled-deadline");
+  await assert.rejects(source.fetchAvisonYoungDirectDocWithRetry(
+    "https://example.sharplaunch.com/", async () => { throw new AvisonYoungDeadlineError(); }, 2, 0,
+  ), AvisonYoungDeadlineError);
+});
+
+test("drained workers select unsettled then denial regardless of completion order", async () => {
+  const source = await import("../../../sources/avison-young.js?priority-test");
+  for (const [first, second] of [
+    [new Error("ordinary"), new source.AvisonYoungAccessDeniedError("denied")],
+    [new source.AvisonYoungAccessDeniedError("denied"), new Error("ordinary")],
+    [new source.AvisonYoungAccessDeniedError("denied"), new AvisonYoungUnsettledError("deadline")],
+    [new AvisonYoungUnsettledError("deadline"), new source.AvisonYoungAccessDeniedError("denied")],
+  ]) {
+    const expected = first instanceof AvisonYoungUnsettledError || second instanceof AvisonYoungUnsettledError
+      ? AvisonYoungUnsettledError : source.AvisonYoungAccessDeniedError;
+    await assert.rejects(source.mapAvisonYoungStrictDetails([first, second], 2, async (error, index) => {
+      if (index === 1) await new Promise(resolve => setTimeout(resolve, 10));
+      throw error;
+    }), expected);
   }
 });

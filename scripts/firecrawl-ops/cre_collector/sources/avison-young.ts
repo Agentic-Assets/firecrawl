@@ -2,11 +2,13 @@ import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
 import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-listing-structure.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
+import { SdkError } from "@mendable/firecrawl-js";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { observationNow } from "../lib/observation-clock.js";
+import { classifyPerformanceError } from "../lib/performance.js";
 import { publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
@@ -24,7 +26,9 @@ import {
 import {
   assertAvisonYoungTransportSettled,
   avisonYoungDeadlineError,
+  AvisonYoungDeadlineError,
   AvisonYoungUnsettledError,
+  refuseUnsettled,
   fetchAvisonYoungText,
   requestAvisonYoungPinned,
   withinAvisonYoungDeadline,
@@ -69,6 +73,7 @@ export const AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS = boundedInt(
 // resource/cancellation exit codes; it is still a failed, unaccepted source.
 export const AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78;
 export const AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE = 74;
+export const AVISON_YOUNG_UNSETTLED_EXIT_CODE = 73;
 const AVISON_YOUNG_TURNDOWN = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
@@ -175,7 +180,9 @@ export async function mapAvisonYoungStrictDetails<T, R>(
         if (error instanceof AvisonYoungTerminalDetailError) {
           terminalFailures.push(error.failure);
         } else {
-          if (!hasOtherError) firstOtherError = error;
+          const priority = (value: unknown) => value instanceof AvisonYoungUnsettledError ? 2
+            : value instanceof AvisonYoungAccessDeniedError ? 1 : 0;
+          if (!hasOtherError || priority(error) > priority(firstOtherError)) firstOtherError = error;
           hasOtherError = true;
         }
       }
@@ -2365,6 +2372,7 @@ export async function fetchAvisonYoungDirectDocWithRetry(
       }
     }
   }
+  if (lastError instanceof AvisonYoungDeadlineError) throw lastError;
   throw new Error(
     `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`
   );
@@ -2438,6 +2446,7 @@ export async function enrichAvisonYoungListing(
           : await scrapeDoc(url, {
               waitFor: 1000,
               timeout: 60000,
+              ...(requireLiveDetails ? { singleAttempt: true } : {}),
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
       try {
@@ -2454,11 +2463,17 @@ export async function enrichAvisonYoungListing(
       docs.push({ url, doc });
     } catch (err) {
       if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
+      const classified = classifyPerformanceError(err);
+      if (classified.remoteSettlementUnknown) throw refuseUnsettled(err);
+      if (err instanceof SdkError && [401, 403, 429].includes(classified.status ?? 0)) {
+        throw new AvisonYoungAccessDeniedError(`Firecrawl API returned HTTP ${classified.status}`);
+      }
       if (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status)) {
         throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${err.status}`);
       }
-      const knownSettledFailure = err instanceof Error &&
-        /\b(?:timeout|timed out|HTTP 5\d\d|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|detail returned an error shell)\b/i.test(err.message);
+      const knownSettledFailure = err instanceof AvisonYoungDeadlineError
+        || (err instanceof SdkError && (classified.status ?? 0) >= 500)
+        || (err instanceof Error && /\b(?:HTTP 5\d\d|detail returned an error shell)\b/i.test(err.message));
       if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
           && !(err instanceof AvisonYoungHttpStatusError && err.status === 404)
           && !knownSettledFailure) throw err;
@@ -2744,7 +2759,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   let enrichedListings: any[];
   try {
     enrichedListings = detailLimit
-    ? requireLiveDetails && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+    ? requireLiveDetails
       ? await mapAvisonYoungStrictDetails(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
