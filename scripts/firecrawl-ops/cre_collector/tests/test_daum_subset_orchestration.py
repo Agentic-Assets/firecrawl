@@ -183,6 +183,8 @@ def test_actual_worker_source_aggregate_claims_and_no_early_sql(subset, monkeypa
         for key in ("listings", "inventoryObserved", "detailObserved"):
             metrics[key] = count
     helpers.refresh(path, artifact, manifest)
+    from test_daum_verified_subset import install_identity_probe
+    install_identity_probe(subset)
     monkeypatch.setattr(
         refresh, "git_identity", lambda: (manifest["collector_git_sha"], False)
     )
@@ -286,6 +288,8 @@ def test_pipeline_subset_claims_pass_real_dryrun_reader_under_umask_022(
         for key in ("listings", "inventoryObserved", "detailObserved"):
             metrics[key] = count
     helpers.refresh(path, artifact, manifest)
+    from test_daum_verified_subset import install_identity_probe
+    install_identity_probe(subset)
 
     source_report = copy.deepcopy(raw)
     source_result = worker.compute(

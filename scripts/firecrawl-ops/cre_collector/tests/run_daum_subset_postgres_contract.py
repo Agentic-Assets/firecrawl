@@ -127,6 +127,15 @@ def row(
 
 
 def generated(rows, claims=None):
+    if claims is not None and "identityMembers" not in claims:
+        from cre_daum_current_inventory import _sha
+        claims = copy.deepcopy(claims)
+        identity = [{key: member[key] for key in ("native_id", "external_id", "source_url")}
+                    for member in claims["members"]]
+        partition = [{**member, "conflicted": False} for member in identity]
+        claims["identityMembers"] = identity
+        claims["identityPartition"] = partition
+        claims["binding"]["identity_partition_sha256"] = _sha(partition)
     return ingest.build_sql(
         rows,
         [
@@ -272,6 +281,99 @@ try:
             (directory / "016_cre_listing_lifecycle.sql").read_text(),
         ]
     )
+    # Exercise the real generated transaction with one changed path sharing a
+    # native ID and an already source-held conflicting member.  All rows and
+    # target state here are synthetic and live only in this owned container.
+    from cre_daum_current_inventory import _sha
+    from daum.identity_sql import identity_partition_query
+    db = "identity_partition"
+    sql("CREATE DATABASE " + db + ";")
+    sql(schema, db)
+    sql(generated([row(i) for i in range(103)]), db)
+    sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50000\"') "
+        "WHERE external_id='property/Synthetic-101';", db)
+    ids = [{key: item[key] for key in ("native_id", "external_id", "source_url")} for item in members]
+    result = sql(identity_partition_query(ids) + ";", db).stdout.strip().split("|", 1)
+    assert result[0] == "102"
+    part = json.loads(result[1])
+    assert {item["native_id"] for item in part if item["conflicted"]} == {"50000", "50101"}
+    bound_claims = copy.deepcopy(claims)
+    bound_claims.update(identityMembers=ids, identityPartition=part)
+    bound_claims["binding"].update(identity_partition_sha256=_sha(part), source_emitted_count=100,
+                                    source_held_count=2, emitted_count=99, held_count=3)
+    before = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
+                 "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
+    child_tables = ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents",
+                    "cre_listing_media", "cre_listing_links")
+    def protected_identity_snapshot():
+        snapshots = {"index": sql("SELECT coalesce(jsonb_agg(to_jsonb(si) ORDER BY si.id)::text,'[]') "
+                                 "FROM credeals.cre_source_index si WHERE external_id IN "
+                                 "('property/Synthetic-0','property/Synthetic-101');", db).stdout}
+        for table in child_tables:
+            snapshots[table] = sql("SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id)::text,'[]') "
+                                   "FROM credeals." + table + " c JOIN credeals.cre_listings l "
+                                   "ON l.id=c.listing_id WHERE l.external_id IN "
+                                   "('property/Synthetic-0','property/Synthetic-101');", db).stdout
+        return snapshots
+    protected_before = protected_identity_snapshot()
+    incoming_identity = [row(i, fresh=True, name="Changed" if i == 1 else "Synthetic") for i in range(100)]
+    sql(generated(incoming_identity, bound_claims), db)
+    after = sql("SELECT jsonb_agg(to_jsonb(l) ORDER BY external_id)::text FROM credeals.cre_listings l "
+                "WHERE external_id IN ('property/Synthetic-0','property/Synthetic-101');", db).stdout
+    assert after == before
+    assert protected_identity_snapshot() == protected_before
+    assert sql("SELECT status || '|' || listings_saved FROM credeals.cre_scrape_jobs WHERE status='partial' "
+               "ORDER BY completed_at DESC LIMIT 1;", db).stdout.strip() == "partial|99"
+    assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
+    stale = copy.deepcopy(bound_claims)
+    sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50101\"') "
+        "WHERE external_id='property/Synthetic-101';", db)
+    refused = sql(generated([row(i, fresh=True) for i in range(100)], stale), db, check=False)
+    assert refused.returncode and "DAUM identity partition changed" in refused.stderr
+    checks.append("identity_partition_conflict_peer_and_stale")
+    sql("DROP DATABASE " + db + ";")
+    for version, source_held_conflict in ((1, False), (2, False), (1, True), (2, True)):
+        db = f"identity_v{version}_held_{int(source_held_conflict)}"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        sql(generated([row(i) for i in range(103)]), db)
+        if source_held_conflict:
+            sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50101\"') "
+                "WHERE external_id='property/Synthetic-102';", db)
+        classified = json.loads(sql(identity_partition_query(ids) + ";", db).stdout.strip().split("|", 1)[1])
+        assert {item["native_id"] for item in classified if item["conflicted"]} == (
+            {"50101"} if source_held_conflict else set())
+        tested = copy.deepcopy(claims if version == 1 else claims_v2)
+        tested.update(identityMembers=ids, identityPartition=classified)
+        tested["binding"]["identity_partition_sha256"] = _sha(classified)
+        sql(generated([row(i, fresh=True, name="Changed" if i == 1 else "Synthetic")
+                       for i in range(100)], tested), db)
+        job = sql("SELECT status || '|' || listings_saved FROM credeals.cre_scrape_jobs "
+                  "WHERE listings_discovered=100;", db).stdout.strip()
+        assert job == "completed|100", (version, source_held_conflict, job)
+        assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
+        checks.append(f"identity_v{version}_source_held_{int(source_held_conflict)}")
+        sql("DROP DATABASE " + db + ";")
+    for version in (1, 2):
+        db = f"identity_v{version}_no_holds"
+        sql("CREATE DATABASE " + db + ";")
+        sql(schema, db)
+        sql(generated([row(i) for i in range(102)]), db)
+        tested = copy.deepcopy(claims if version == 1 else claims_v2)
+        for member in tested["members"]:
+            member["emitted"] = True
+        tested["binding"].update(emitted_count=102, held_count=0)
+        if version == 2:
+            tested["titleObservations"] = []
+            tested["binding"]["title_observations_sha256"] = _sha([])
+        sql(generated([row(i, fresh=True, name="Changed" if i == 1 else "Synthetic")
+                       for i in range(102)], tested), db)
+        job = sql("SELECT string_agg(status || '|' || listings_saved, ',' ORDER BY status) "
+                  "FROM credeals.cre_scrape_jobs WHERE listings_discovered=102;", db).stdout.strip()
+        assert job == "completed|102,completed|102", (version, job)
+        assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='property/Synthetic-1';", db).stdout.strip() == "Changed"
+        checks.append(f"identity_v{version}_no_holds")
+        sql("DROP DATABASE " + db + ";")
     if unknown_mode:
         # Source producer -> authenticated read-only probe -> both gates ->
         # production staging SQL -> real-schema DB -> freshness readback.
@@ -407,6 +509,18 @@ try:
                 {"postId": "50000", "cardTitle": "Observed fallback", "documentTitle": "Observed fallback – Daum Commercial"}]
             fallback_claims["fallbackMembers"] = fallback_members
             fallback_claims["fallbackPartition"] = partition
+            identity = [{key: member[key] for key in ("native_id", "external_id", "source_url")}
+                        for member in fallback_claims["members"]]
+            identity_result = sql(identity_partition_query(identity) + ";", db).stdout.strip().split("|", 1)
+            assert identity_result[0] == str(len(identity))
+            identity_partition = json.loads(identity_result[1])
+            assert {item["native_id"] for item in identity_partition if item["conflicted"]} == (
+                {"50000"} if fallback_case == "conflict" else set())
+            fallback_claims.update(identityMembers=identity, identityPartition=identity_partition)
+            fallback_claims["binding"]["identity_partition_sha256"] = _sha(identity_partition)
+            if fallback_case == "conflict":
+                fallback_claims["binding"].update(source_emitted_count=100, source_held_count=2,
+                                                  emitted_count=99, held_count=3)
             fallback_claims["binding"]["title_fallback_observations_sha256"] = _sha(fallback_claims["titleFallbackObservations"])
             fallback_claims["binding"]["fallback_partition_sha256"] = _sha(partition)
             incoming = [candidate] + [row(index) for index in range(1, 100)]

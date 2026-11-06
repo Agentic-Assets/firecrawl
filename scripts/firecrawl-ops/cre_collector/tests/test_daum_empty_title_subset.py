@@ -4,6 +4,63 @@ import pytest
 import cre_current_inventory_admission as admission
 
 
+@pytest.mark.parametrize("all_fallback", [True, False], ids=["fallback-only", "mixed-union"])
+def test_all_emitted_target_holds_are_source_local_after_both_probes(tmp_path, monkeypatch, all_fallback):
+    import copy
+    import cre_daum_current_inventory as daum
+    import test_essex_current_inventory as helpers
+    from cre_checkpoint_refresh import git_identity
+    from cre_daum_fallback_partition import staged_fallback_members
+    from test_daum_current_inventory import produce
+    from test_daum_verified_subset import install_identity_probe
+
+    generated = produce(tmp_path, total=101, all_sale=True, empty_title=True,
+                        empty_title_all=all_fallback, corroborated_title=True,
+                        subset_policy="tenure-and-empty-title-v2")
+    monkeypatch.setattr(helpers, "SOURCE", daum.SOURCE)
+    prepared = helpers.setup(tmp_path, generated)
+    artifact, manifest, report = prepared[2], prepared[3], prepared[4]
+    manifest["config"]["current_inventory_admission"] = admission.subset_configuration("tenure-and-empty-title-v2")
+    install_identity_probe(prepared)
+    members = staged_fallback_members(artifact)
+    assert len(members) == (101 if all_fallback else 1)
+    checkpoint = manifest["sources"][daum.SOURCE]
+    checkpoint["daum_fallback_probe"] = {
+        "artifact_sha256": checkpoint["artifact"]["sha256"], "generation_id": manifest["run_id"],
+        "producer_sha": git_identity()[0], "database_target_sha256": manifest["preflight"]["database_target"]["value"],
+        "members_sha256": daum._sha(members),
+        "partition": [{**{key: member[key] for key in ("native_id", "external_id", "source_url")},
+                       "hold_reason": "identity_conflict", "preimage": "f" * 64} for member in members],
+    }
+    fallback_ids = {member["native_id"] for member in members}
+    identity = checkpoint["daum_identity_probe"]["partition"]
+    for item in identity:
+        item["conflicted"] = not all_fallback and item["native_id"] not in fallback_ids
+    def admit(phase="source"):
+        return daum.admit_subset(prepared[1], manifest, copy.deepcopy(report),
+                                 current_code_sha=git_identity()[0], current_git_dirty=False, phase=phase)
+    with pytest.raises(daum.DaumAllIdentitiesHeld):
+        admit()
+    with pytest.raises(ValueError) as aggregate:
+        admit("aggregate")
+    assert type(aggregate.value) is ValueError
+    import cre_checkpoint_refresh as refresh
+    import cre_refresh_pipeline as pipeline
+    monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *_args: None)
+    def gate(run, owner, source, path, _env):
+        refresh._admit_current_inventory(run, owner, copy.deepcopy(report), path, "source", source=source)
+    monkeypatch.setattr(refresh, "gate_source", gate)
+    with pipeline.artifact_compute_scope(prepared[0]):
+        assert pipeline.preseal_source_gate(prepared[0], manifest, daum.SOURCE, None) is False
+    assert checkpoint["state"] == "gate_blocked"
+    assert checkpoint["partial_probe_hold"] == "all_emitted_target_held"
+    assert checkpoint.get("ingest") is None
+    identity[0]["conflicted"] = "invalid"
+    with pytest.raises(ValueError) as malformed:
+        admit()
+    assert type(malformed.value) is ValueError
+
+
 def test_v2_configuration_is_explicit_and_leaves_v1_bytes_unchanged():
     v1 = admission.subset_configuration()
     assert "subset_policy" not in v1

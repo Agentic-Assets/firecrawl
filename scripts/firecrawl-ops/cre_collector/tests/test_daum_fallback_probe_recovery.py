@@ -136,6 +136,7 @@ def test_settled_daum_probe_hold_keeps_verified_peer_running(closed_pipeline, mo
     monkeypatch.setattr(refresh, "gate_source", gate)
     assert case.run() == ["daum-commercial"]
     assert case.manifest["sources"]["daum-commercial"]["state"] == "gate_blocked"
+    assert case.manifest["sources"]["daum-commercial"]["partial_probe_hold"] == "source_identity_partition_invalid"
     assert ("write", "daum-commercial") not in case.events
     assert ("write", "svn") in case.events
     assert case.manifest["sources"]["svn"]["readback"]["ok"] is True
@@ -143,6 +144,7 @@ def test_settled_daum_probe_hold_keeps_verified_peer_running(closed_pipeline, mo
 
 def test_gate_translates_only_typed_daum_source_refusal(tmp_path, monkeypatch, artifact_bytes):
     import test_essex_current_inventory as helpers
+    import daum.identity_sql as identity
 
     data = json.loads(artifact_bytes)
     generation = data["runMeta"]["freshness"]["generationId"]
@@ -159,6 +161,7 @@ def test_gate_translates_only_typed_daum_source_refusal(tmp_path, monkeypatch, a
         return 0
 
     monkeypatch.setattr(refresh, "run_command", gate_command)
+    monkeypatch.setattr(identity, "run_cohort_probe", lambda *_args: {"fixture": "settled"})
     monkeypatch.setattr(daum, "run_identity_probe", lambda *_args: (_ for _ in ()).throw(
         daum.DaumSourceProbeRefusal("source only")))
     with pytest.raises(refresh.DaumPartialProbeHold):
