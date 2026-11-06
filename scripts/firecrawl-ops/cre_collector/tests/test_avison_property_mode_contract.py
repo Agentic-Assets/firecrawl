@@ -55,8 +55,10 @@ globalThis.fetch=async(input,options)=>{
         address:'100 Fixture Street',name:'Fixture Property',transaction:[tx],
         url:`https://fixture-${tx}-${i}.sharplaunch.com/`,
         external_url:`https://www.avisonyoung.us/properties/fixture-${tx}-${i}`,
-        team_member_ids:[], ...(mode==='missing-url-peer' && i===1
-          ? {url:null,external_url:null,extra:'fixture 0123456789abcdef0123456789abcdef value'}
+        team_member_ids:[], ...(mode.startsWith('missing-url-') && i===1
+          ? {url:null,external_url:null,extra:mode==='missing-url-encoded'
+              ? 'fixture '+String.fromCharCode(92)+'u0030'+'123456789abcdef0123456789abcdef'
+              : 'fixture 0123456789abcdef0123456789abcdef value'}
           : {})})))
     : (mode==='explicit-strict'?[{id:1,name:'Synthetic Contact'}]:[]);
   return new Response(JSON.stringify({items}),{headers:{'content-type':'application/json'}});
@@ -72,7 +74,7 @@ https.request=(url,options,callback)=>{
     let status=native?200:404;
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
-    if(mode==='missing-url-peer')status=200;
+    if(mode.startsWith('missing-url-'))status=200;
     if(mode==='one-empty-direct' && index===1){status=200;body='';}
     if(mode==='one-bad-identity' && index===1){
       status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
@@ -103,6 +105,16 @@ https.request=(url,options,callback)=>{
     res.emit('data',Buffer.from(status===200?body:'Not found'));res.emit('end');
   });return req;
 };
+if (mode==='missing-url-bad-json') {
+  const originalParse=JSON.parse;
+  JSON.parse=(text,reviver)=>{
+    const value=originalParse(text,reviver);
+    if(Array.isArray(value?.items)){
+      for(const item of value.items)if(item?.id===9002||item?.id===9005)item.unserializable=BigInt(1);
+    }
+    return value;
+  };
+}
 syncBuiltinESMExports();
 process.on('exit',()=>fs.writeFileSync(process.env.AVISON_CONTRACT_CALLS,
   JSON.stringify(calls),{flag:'wx',mode:0o600}));
@@ -267,6 +279,34 @@ def test_url_less_feed_row_is_retained_as_redacted_unqualified_evidence(tmp_path
         row = json.loads(evidence["sourceRowJson"])
         assert row["id"] == int(held) and row["url"] is None and row["external_url"] is None
         assert row["extra"] == "fixture [REDACTED_API_KEY] value"
+        assert any(record["kind"] == "validated_detail" and record["transaction"] == tx
+                   for record in records)
+
+
+@pytest.mark.parametrize("case", ["missing-url-encoded", "missing-url-bad-json"])
+def test_url_less_feed_retention_failure_does_not_block_peer_or_leak_key(tmp_path, case):
+    preload, started, env = prepare(tmp_path, case)
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                     generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    assert data["listings"] == []
+    rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
+    raw_spool = (tmp_path / attempt["avison-young_partial"]["path"]).read_text()
+    assert "0123456789abcdef0123456789abcdef" not in raw_spool
+    assert "u0030" not in raw_spool
+    records = [json.loads(line) for line in raw_spool.splitlines()[1:]]
+    for tx, held in (("sale", "9002"), ("lease", "9005")):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        item = next(item for item in outcome["documents"] if item["id"] == held)
+        assert item["reason"] == "missing_public_detail_urls"
+        assert item["feedObservation"] == {"state": "retention_failed"}
         assert any(record["kind"] == "validated_detail" and record["transaction"] == tx
                    for record in records)
 
