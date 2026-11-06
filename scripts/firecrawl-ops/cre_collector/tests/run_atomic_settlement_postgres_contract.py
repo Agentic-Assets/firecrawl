@@ -184,13 +184,13 @@ try:
 
     def fence_sql(artifact_key, generation):
         query = cre_validate.atomic_settlement_query(artifact_key, source, generation)
-        return cre_validate._build_query_batch_script({"atomic_settlement": query})
+        return cre_validate._build_query_batch_script({"ordinary": "SELECT 42 AS sentinel;", "atomic_settlement": query})
 
     def fence_result(app):
         data = (root / (app + ".tsv")).read_text()
-        return cre_validate.parse_query_batch(data, {"atomic_settlement": ""})[
-            "atomic_settlement"
-        ]
+        rows = cre_validate.parse_query_batch(data, {"ordinary": "", "atomic_settlement": ""})
+        assert rows["ordinary"] == [{"sentinel": "42"}]
+        return rows["atomic_settlement"]
 
     writer = spawn(
         f"""BEGIN;

@@ -1663,8 +1663,8 @@ def _build_query_batch_script(queries):
             # transaction takes a fresh statement snapshot *after* the lock.
             statements.extend(("ROLLBACK;", "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;",
                                PIN_STRING_LITERALS, "SET LOCAL lock_timeout = '30s';",
-                               rf"\o {os.devnull}", lifecycle_transaction_lock_sql(),
-                               r"\o :CRE_VALIDATION_RESULTS"))
+                               lifecycle_transaction_lock_sql().removesuffix(";")
+                               + rf" \g {os.devnull}"))
         frame_id = _query_frame_id(ordinal, name)
         statements.extend(
             (

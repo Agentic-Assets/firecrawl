@@ -213,11 +213,16 @@ def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
                                                   "daum-commercial", "2026-11-03T000000Z")
     script = cre_validate._build_query_batch_script({"ordinary": "SELECT 1;", "atomic_settlement": query})
     read_committed = script.index("BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;")
-    lock = script.index(cre_ingest.lifecycle_transaction_lock_sql(), read_committed)
+    lock = script.index(cre_ingest.lifecycle_transaction_lock_sql().removesuffix(";"), read_committed)
     count = script.index("AS matching_jobs", lock)
     assert script.index("ROLLBACK;") < read_committed < lock < count
     assert "AS matching_generations" in script[count:]
     assert "SET LOCAL lock_timeout = '30s';" in script[read_committed:lock]
+    assert script.count(r"\o :CRE_VALIDATION_RESULTS") == 1
+    assert r"\g /dev/null" in script[lock:count] or r"\g nul" in script[lock:count]
+    lock_segment = script[lock:count]
+    assert lock_segment.count("pg_advisory_xact_lock") == 1
+    assert ";" not in lock_segment.split(chr(92) + "g", 1)[0]
     with pytest.raises(ValueError):
         cre_validate.atomic_settlement_query("bad-key", "daum-commercial", "gen")
     with pytest.raises(ValueError):
