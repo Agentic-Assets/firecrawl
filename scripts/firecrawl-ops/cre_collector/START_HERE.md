@@ -224,7 +224,7 @@ already at the ceiling and, on sustained pressure or telemetry failure,
 terminates its owned collector process group, releases the canonical lock,
 writes `resource_guard_interrupted`, and exits `75`.
 
-Every checkpoint also requires memory-pressure telemetry. macOS continues to
+Every checkpoint monitors memory pressure. macOS continues to
 use the Darwin userspace dispatch pressure level. Linux requires kernel memory
 PSI, `MemAvailable`, swap totals, and unified cgroup v2 memory-controller
 evidence. A start
@@ -234,9 +234,14 @@ path. A combined journal and scheduling interval longer than the greater of one 
 or 1.5 sample intervals resets the warning window; the one-second floor permits
 ordinary journal overhead at subsecond sampling cadences; the missing interval is not treated as observed pressure. A gap
 longer than the greater of the warning sustain period or three sample intervals
-stops on telemetry failure, except that a fresh critical reading trips immediately.
-Missing, malformed, timed-out or stale pressure readings and failed required
-evidence also stop it. Exceptional sample gaps are recorded in the guard log. `--memory-sustain-seconds` (maximum 30) and
+is a telemetry failure, except that a critical reading trips immediately. On Windows/WSL,
+missing, malformed, timed-out or stale readings and memory-monitor journal failures
+are reported as degraded monitoring and do not stop the run; warning continuity
+resets on a telemetry gap. A persistent journal failure resets the warning window
+once, while valid later readings still trigger a sustained-pressure stop. This
+can leave memory pressure unobserved during a telemetry outage. Other platforms
+continue to stop on these failures. A sampler that cannot settle at shutdown still blocks terminal publication. Exceptional sample gaps are recorded when
+the guard log is available. `--memory-sustain-seconds` (maximum 30) and
 `--memory-sample-seconds` (default 2, maximum 5) are recorded and passed from
 series to children. `logs/host-memory-guard.jsonl` stores compact bounded samples;
 policy and the terminal reason are saved in the manifest. Memory stops never

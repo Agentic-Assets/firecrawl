@@ -379,7 +379,10 @@ def test_cpu_admission_blocks_before_worker(tmp_path, sampler, monkeypatch):
     assert_released(tmp_path)
 
 
-def test_memory_unknown_blocks_before_worker(tmp_path):
+def test_memory_unknown_blocks_before_worker(tmp_path, monkeypatch):
+    import cre_memory_guard as memory
+
+    monkeypatch.setattr(memory, "windows_wsl", lambda: False)
     def unknown():
         raise ValueError("secret invalid telemetry")
 
@@ -800,10 +803,34 @@ def test_windows_tier_does_not_admit_or_stop_on_cpu(tmp_path, monkeypatch, cpu):
     assert_released(tmp_path)
 
 
-def test_windows_tier_memory_failure_remains_fatal(tmp_path, monkeypatch):
+def test_windows_tier_memory_telemetry_failure_is_advisory(tmp_path, monkeypatch):
+    import cre_memory_guard as memory
+
     monkeypatch.setattr(checkpoint, "windows_wsl", lambda: True)
+    monkeypatch.setattr(memory, "windows_wsl", lambda: True)
+
     def unavailable():
         raise ValueError("memory unavailable")
-    assert execute(options(), tmp_path, _memory_sampler=unavailable,
+
+    calls = []
+    def runner(argv, log, *, env):
+        calls.append(log.stem)
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(json.dumps(monitor_artifact()))
+        return 0
+
+    assert execute(options(tier="monitor"), tmp_path, _memory_sampler=unavailable,
+                   _runner=runner) == 0
+    assert calls == ["collect", "monitor_dry_run"]
+    assert receipt(tmp_path)["memory_guard"]["telemetry_failure_action"] == "diagnostic_only"
+    assert_released(tmp_path)
+
+
+def test_windows_tier_observed_critical_memory_still_stops(tmp_path, monkeypatch):
+    import cre_memory_guard as memory
+
+    monkeypatch.setattr(checkpoint, "windows_wsl", lambda: True)
+    monkeypatch.setattr(memory, "windows_wsl", lambda: True)
+    assert execute(options(), tmp_path, _memory_sampler=lambda: 4,
                    _runner=lambda *_a, **_kw: pytest.fail("unexpected work")) == 75
     assert_released(tmp_path)

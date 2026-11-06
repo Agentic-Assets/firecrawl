@@ -188,10 +188,54 @@ class LinuxMemorySampler:
     previous_events: dict[str, dict[str, int]] = field(default_factory=dict, init=False)
     previous_membership: tuple[str, ...] | None = field(default=None, init=False)
     last_sample: dict[str, object] | None = field(default=None, init=False)
+    partial_critical: bool = field(default=False, init=False)
+    partial_critical_cause: str | None = field(default=None, init=False)
+    fallback_membership: tuple[str, ...] | None = field(default=None, init=False)
+    fallback_events: dict[str, dict[str, int]] = field(default_factory=dict, init=False)
+
+    def critical_cgroup_after_failure(self) -> str | None:
+        """Check readable cgroup danger independently; absence stays unknown."""
+        try:
+            directories = cgroup_directories(self.proc, self.filesystem)
+        except LinuxTelemetryError:
+            return None
+        membership = tuple(str(directory) for directory in directories)
+        if self.fallback_membership != membership:
+            self.fallback_events = (
+                {key: dict(value) for key, value in self.previous_events.items()}
+                if self.previous_membership == membership else {}
+            )
+            self.fallback_membership = membership
+        for directory in directories:
+            try:
+                current = _uint(_read(directory / "memory.current").strip())
+                maximum = _read(directory / "memory.max").strip()
+                if maximum != "max":
+                    limit = _uint(maximum)
+                    if limit and current / limit >= CGROUP_USAGE_CRITICAL:
+                        return "cgroup_usage_critical"
+            except LinuxTelemetryError:
+                pass
+            try:
+                events = _key_counters(
+                    _read(directory / "memory.events"), {"high", "max", "oom", "oom_kill"}
+                )
+            except LinuxTelemetryError:
+                continue
+            key = str(directory)
+            previous = self.fallback_events.get(key)
+            self.fallback_events[key] = events
+            if (previous is not None
+                    and all(events[name] >= previous[name] for name in events)
+                    and any(events[name] > previous[name] for name in ("oom", "oom_kill"))):
+                return "cgroup_oom"
+        return None
 
     def __call__(self) -> int:
         # Publish only a complete, validated sample. Failures cannot reuse it.
         self.last_sample = None
+        self.partial_critical = False
+        self.partial_critical_cause = None
         required = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
         rows = []
         for line in _read(self.proc / "meminfo").splitlines():
@@ -206,6 +250,9 @@ class LinuxMemorySampler:
         swap_total, swap_free = info["SwapTotal"], info["SwapFree"]
         if not total or available > total or swap_free > swap_total:
             raise LinuxTelemetryError("Linux memory totals invalid")
+        self.partial_critical = available / total <= AVAILABLE_CRITICAL
+        if self.partial_critical:
+            self.partial_critical_cause = "host_available_critical"
         host_psi_text = _read(self.proc / "pressure/memory")
         level = _psi_level(host_psi_text)
         host_some, host_full = _psi(host_psi_text)
@@ -269,6 +316,9 @@ class LinuxMemorySampler:
                 if limit <= 0:
                     raise LinuxTelemetryError("Linux cgroup memory limit invalid")
                 usage = current / limit
+                if usage >= CGROUP_USAGE_CRITICAL:
+                    self.partial_critical = True
+                    self.partial_critical_cause = "cgroup_usage_critical"
                 level = max(
                     level,
                     4
@@ -300,6 +350,8 @@ class LinuxMemorySampler:
                     )
                 if any(events[name] > previous[name] for name in ("oom", "oom_kill")):
                     level = 4
+                    self.partial_critical = True
+                    self.partial_critical_cause = "cgroup_oom"
                 elif any(events[name] > previous[name] for name in ("high", "max")):
                     level = max(level, 2)
                 group_causes.extend(
@@ -327,6 +379,8 @@ class LinuxMemorySampler:
             causes.extend(group_causes)
         self.previous_membership = membership
         self.previous_events = events_now
+        self.fallback_membership = None
+        self.fallback_events = {}
         self.last_sample = {
             "schema_version": 1,
             "pressure_level": level,
