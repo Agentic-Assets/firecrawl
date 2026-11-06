@@ -76,6 +76,24 @@ def test_serial_settlement_keeps_unknown_writes_fenced(case, monkeypatch, state,
             settlement.qualify(root, series_id, invocation, **options)
 
 
+def test_serial_success_requires_actual_validation(case, monkeypatch):
+    root, series_id, invocation, options, child, _ = case
+    options["expected_config"] = {"pipeline": False, "sources": ["colliers"]}
+    path = root / series_id / "manifest.json"
+    parent = json.loads(path.read_text())
+    parent["sources"]["colliers"].update(state="complete")
+    parent["sources"]["colliers"]["attempts"][-1]["rc"] = 0
+    path.write_text(json.dumps(parent))
+    child["preflight"] = {"database_target": options["expected_target"]}
+    monkeypatch.setattr(settlement.series, "evidence_reconciliation_required", lambda *_: False)
+    monkeypatch.setattr(settlement.series, "document_reconciliation_required", lambda *_: False)
+    monkeypatch.setattr(settlement.series, "_reconciled_state", lambda *_: "complete")
+    with pytest.raises(settlement.DispatchSettlementRefused, match="terminal attempt"):
+        settlement.qualify(root, series_id, invocation, **options)
+    child["validation"] = {"query_execution_ok": True, "quality_no_regression": True, "readback_ok": True}
+    assert settlement.qualify(root, series_id, invocation, **options)["unfinished_sources"] == []
+
+
 @pytest.mark.parametrize("damage", ["unknown_write", "cursor_unknown", "ingested", "deadline", "child"])
 def test_uncertain_or_foreign_child_never_qualifies(case, damage):
     root, series_id, invocation, options, child, control = case

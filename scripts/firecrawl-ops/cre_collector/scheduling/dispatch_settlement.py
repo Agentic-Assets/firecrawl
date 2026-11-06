@@ -118,7 +118,10 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
             raise DispatchSettlementRefused("serial write is unresolved")
         state = series._reconciled_state(child, expected_config)
         if state in {"complete", "qualified_partial_subset"}:
-            if attempts[-1].get("rc") != 0 or checkpoint.get("state") != state:
+            validation = child.get("validation") or {}
+            if (attempts[-1].get("rc") != 0 or checkpoint.get("state") != state
+                    or any(validation.get(key) is not True for key in
+                           ("query_execution_ok", "quality_no_regression", "readback_ok"))):
                 raise DispatchSettlementRefused("serial success is not bound to the terminal attempt")
             unfinished = []
         elif state in {"failed_source", "interrupted"}:
