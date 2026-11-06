@@ -907,7 +907,7 @@ def _admit(
         # A separate identity classification covers the entire source cohort,
         # including source-held members.  Existing fallback classifications
         # remain independent and both held sets are combined exactly once.
-        from cre_daum_identity_sql import cohort_members, validate_partition
+        from daum.identity_sql import cohort_members, validate_partition
 
         identity_members = cohort_members(artifact)
         identity_probe = manifest["sources"][SOURCE].get("daum_identity_probe")
@@ -1046,7 +1046,7 @@ def ingest_subset_context(
             for row in proof["cohort"]
         ],
     }
-    from cre_daum_identity_sql import cohort_members
+    from daum.identity_sql import cohort_members
     result["identityMembers"] = cohort_members(json.loads(raw))
     result["identityPartition"] = manifest["sources"][SOURCE]["daum_identity_probe"]["partition"]
     require(_sha(result["identityPartition"]) == binding["identity_partition_sha256"])

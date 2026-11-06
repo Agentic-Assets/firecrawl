@@ -6,7 +6,7 @@ import pytest
 import cre_daum_current_inventory as daum
 from cre_checkpoint_refresh import git_identity
 from cre_daum_fallback_partition import bound_held_count
-from cre_daum_identity_sql import validate_partition
+from daum.identity_sql import validate_partition
 from cre_ingest import build_sql, merge_rows, to_row
 from test_daum_verified_subset import admit, context, subset, complete  # noqa: F401
 
@@ -87,7 +87,7 @@ def test_probe_refuses_wrong_initial_target_even_if_later_target_would_match(tmp
     import hashlib
     import cre_ingest
     import cre_validate
-    from cre_daum_identity_sql import run_cohort_probe
+    from daum.identity_sql import run_cohort_probe
 
     artifact = tmp_path / "artifact.json"
     artifact.write_bytes(b"{}")

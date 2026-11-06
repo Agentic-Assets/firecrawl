@@ -11,7 +11,7 @@ def guard_sql(claims):
         SUBSET_POLICY_V2, _path_key, _post, _sha,
     )
     from cre_ingest import sql_lit
-    from cre_daum_identity_sql import historical_conflict_sql, validate_partition
+    from daum.identity_sql import historical_conflict_sql, validate_partition
 
     require(isinstance(claims, dict) and claims.get("schema") in {SUBSET_SCHEMA, SUBSET_SCHEMA_V2})
     v2 = claims["schema"] == SUBSET_SCHEMA_V2

@@ -4065,7 +4065,7 @@ def build_sql(
     targeted_queue, targeted_guard, targeted_observation = (
         _matthews_targeted_sql_parts(matthews_targeted_targets) if targeted else ("", "", "")
     )
-    from cre_daum_identity_sql import historical_conflict_sql
+    from daum.identity_sql import historical_conflict_sql
 
     daum_historical_conflict = historical_conflict_sql(
         source_alias="s", target_alias="t", native_sql="s.native_ids[1]"
@@ -4073,7 +4073,7 @@ def build_sql(
     daum_subset_guard = ""
     daum_identity_guard = ""
     if daum_verified_subset_claims is not None:
-        from cre_daum_identity_sql import transaction_partition_sql
+        from daum.identity_sql import transaction_partition_sql
         daum_identity_guard = transaction_partition_sql(
             daum_verified_subset_claims["identityMembers"],
             daum_verified_subset_claims["identityPartition"])
