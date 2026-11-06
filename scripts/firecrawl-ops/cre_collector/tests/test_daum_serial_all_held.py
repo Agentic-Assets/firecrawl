@@ -96,3 +96,55 @@ def test_serial_singleton_classifies_only_rederived_settled_hold_locally(held_so
     else:
         assert rc == 1 and len(started) == 1
         assert parent["sources"]["daum-commercial"]["state"] == "failed_global"
+
+
+@pytest.mark.parametrize("case", ["settled", "missing_receipt", "unsettled", "tampered_gate", "wrong_target", "prefix_spoof"])
+def test_stale_serial_hold_requires_exact_controlled_settlement(held_source, tmp_path, monkeypatch, case):
+    import shutil
+    from cre_series_control import publish_checkpoint_settlement
+
+    old_root, child, _gate = held_source
+    series_dir = tmp_path / "series"
+    runs = series_dir / "runs"
+    runs.mkdir(parents=True)
+    root = runs / old_root.name
+    shutil.move(str(old_root), str(root))
+    gate = root / "gates" / "daum-commercial.json"
+    report = json.loads(gate.read_text())
+    report["generated_for_artifact"] = str(root / "sources" / "daum-commercial.json")
+    gate.write_text(json.dumps(report))
+    config = series.series_config(sources=("daum-commercial",), page_cap=400, concurrency=1,
+                                  attempts_per_source=1, max_resume_age_hours=24,
+                                  max_host_cpu_percent=90, cpu_sustain_seconds=30,
+                                  cpu_sample_seconds=2, nice=10, admit_daum_verified_subset=True)
+    child["config"] = series._expected_child_config("daum-commercial", config)
+    checkpoint = child["sources"]["daum-commercial"]
+    checkpoint["serial_all_held"] = serial_hold.binding(root, child)
+    checkpoint.update(state="gate_blocked", partial_probe_hold="all_emitted_target_held")
+    child.update(status="failed", finished_at=refresh.utc_now(),
+                 error="all emitted DAUM observations held by target checks")
+    if case == "prefix_spoof":
+        child["error"] = "RefreshError: source checkpoints remain incomplete: daum-commercial"
+    (root / "manifest.json").write_text(json.dumps(child))
+    target = copy.deepcopy(child["preflight"]["database_target"])
+    parent = series.new_manifest(series_dir, git_sha=child["collector_git_sha"], config=config, database_target=target)
+    invocation, child_id = "a" * 32, "b" * 32
+    parent["latest_invocation_control"] = {"invocation_id": invocation}
+    outer = parent["sources"]["daum-commercial"]
+    outer.update(state="running", checkpoint_run=f"runs/{root.name}",
+                 attempts=[{"started_at": child["started_at"], "series_control_child_id": child_id}])
+    if case not in {"missing_receipt", "prefix_spoof"}:
+        publish_checkpoint_settlement(root, invocation, child, child_invocation_id=child_id,
+                                      guards_stopped=True, nested_cleanup_confirmed=True,
+                                      terminal_evidence_saved=True)
+    if case == "tampered_gate": gate.write_text("{}")
+    if case == "wrong_target":
+        child["preflight"]["database_target"]["value"] = "c" * 64
+        (root / "manifest.json").write_text(json.dumps(child))
+    monkeypatch.setattr(refresh, "_group_alive", lambda *_: case == "unsettled")
+    if case == "wrong_target":
+        with pytest.raises(series.SeriesError):
+            series.reconcile_stale_running_sources(series_dir, parent)
+    else:
+        series.reconcile_stale_running_sources(series_dir, parent)
+        assert outer["state"] == ("failed_source" if case == "settled" else "failed_global")

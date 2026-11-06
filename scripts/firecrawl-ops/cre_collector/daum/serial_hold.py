@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 
 
@@ -56,5 +58,57 @@ def verified(run_dir, manifest):
         return (checkpoint.get("state") == "gate_blocked"
                 and checkpoint.get("partial_probe_hold") == "all_emitted_target_held"
                 and checkpoint.get("serial_all_held") == binding(run_dir, manifest))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError):
+        return False
+
+
+def verified_stale(series_dir, parent, source, attempt, child_path, child):
+    """Require the exact controlled child receipt and absence of its group."""
+    from cre_checkpoint_refresh import _group_alive
+    from cre_checkpoint_series import _exact_json_equal, _expected_child_config
+    from cre_code_handoff_git import read_file
+    from cre_series_control import _open_directories, _read_private_receipt
+
+    try:
+        config = parent["config"]
+        invocation = parent["latest_invocation_control"]["invocation_id"]
+        child_id = attempt["series_control_child_id"]
+        if (child_path.parent.parent != series_dir / "runs"
+                or source != "daum-commercial" or config.get("pipeline") is True
+                or config.get("sources") != [source]
+                or not re.fullmatch(r"[a-f0-9]{32}", invocation)
+                or not re.fullmatch(r"[a-f0-9]{32}", child_id)
+                or child.get("status") != "failed"
+                or child.get("collector_git_sha") != parent.get("collector_git_sha")
+                or not _exact_json_equal(child.get("config"), _expected_child_config(source, config))
+                or not _exact_json_equal(child.get("preflight", {}).get("database_target"), parent.get("database_target"))
+                or not isinstance(parent.get("database_target"), dict)
+                or not verified(child_path.parent, child)):
+            return False
+        root, private, root_stat, private_stat = _open_directories(child_path.parent)
+        try:
+            raw, _ = _read_private_receipt(private, child_id + ".json")
+            receipt = json.loads(raw)
+            pid = receipt.get("pid")
+            if (receipt.get("schema_version") != 1 or isinstance(receipt.get("schema_version"), bool)
+                    or receipt.get("invocation_id") != invocation or receipt.get("child_invocation_id") != child_id
+                    or receipt.get("run_id") != child_path.parent.name
+                    or receipt.get("collector_git_sha") != child.get("collector_git_sha")
+                    or receipt.get("guards_stopped") is not True or receipt.get("nested_cleanup_confirmed") is not True
+                    or receipt.get("terminal_evidence_saved") is not True
+                    or receipt.get("pre_acquisition_refusal") is not False
+                    or type(pid) is not int or pid <= 1 or pid == os.getpgrp() or _group_alive(pid)):
+                return False
+            root_now = child_path.parent.stat(follow_symlinks=False)
+            private_now = os.stat(".series-control", dir_fd=root, follow_symlinks=False)
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_uid, info.st_mode)
+            return (identity(root_stat) == identity(root_now)
+                    and identity(private_stat) == identity(private_now)
+                    and json.loads(read_file(child_path)) == child
+                    and _read_private_receipt(private, child_id + ".json")[0] == raw
+                    and verified(child_path.parent, child))
+        finally:
+            os.close(private)
+            os.close(root)
     except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError):
         return False

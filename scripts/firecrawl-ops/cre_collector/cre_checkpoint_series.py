@@ -1414,7 +1414,16 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
         path, child = matches[0]
         checkpoint["checkpoint_run"] = str(path.parent.relative_to(series_dir))
         checkpoint["checkpoint_status"] = child.get("status")
-        checkpoint["state"] = _reconciled_state(child, manifest["config"])
+        from daum.serial_hold import verified_stale as verified_daum_stale_hold
+        child_checkpoint = child.get("sources", {}).get(source) or {}
+        held = (child_checkpoint.get("partial_probe_hold") == "all_emitted_target_held"
+                or child_checkpoint.get("serial_all_held") is not None)
+        if held:
+            checkpoint["state"] = ("failed_source" if exact_recorded_child and
+                                   verified_daum_stale_hold(series_dir, manifest, source, attempts[-1], path, child)
+                                   else "failed_global")
+        else:
+            checkpoint["state"] = _reconciled_state(child, manifest["config"])
         if checkpoint["state"] == "qualified_partial_subset" and pyramid_partial_child(child):
             checkpoint["subset_counts"] = pyramid_subset_counts(child)
         checkpoint["error"] = child.get("error")
