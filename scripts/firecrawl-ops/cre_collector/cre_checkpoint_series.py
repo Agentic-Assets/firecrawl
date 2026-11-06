@@ -2172,15 +2172,14 @@ def scheduled_source_rotation(out_root: Path, current_dir: Path, manifest: dict,
                     "previous_manifest_sha256": hashlib.sha256(raw).hexdigest()}
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
-    # The existing qualified deadline ordering remains the initial seed. Once a
-    # rotation is saved it must advance even after repeated failed sources.
-    if priority is not None:
-        return {**priority, "rotation": "source_rotation_v1"}
-    # Missing history is not a hold or an eternal registry-order fallback.
-    # This is an ordering seed only, not proof that any source previously ran.
+    # Day and minute components make the fallback advance for fixed daily
+    # schedules as well as successive same-day generations. This is ordering
+    # only, not proof that any source previously ran.
     timestamp = datetime.strptime(current_dir.name, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC)
-    offset = int(timestamp.timestamp() // 60) % len(sources)
-    return {"order": sources[offset:] + sources[:offset], "rotation": "source_rotation_v1"}
+    offset = (timestamp.toordinal() + timestamp.hour * 60 + timestamp.minute) % len(sources)
+    seed = priority["order"] if priority is not None else sources
+    return {**(priority or {}), "order": seed[offset:] + seed[:offset],
+            "rotation": "source_rotation_v1"}
 
 
 def settled_clock_hold(child: Mapping[str, Any], source: str) -> bool:

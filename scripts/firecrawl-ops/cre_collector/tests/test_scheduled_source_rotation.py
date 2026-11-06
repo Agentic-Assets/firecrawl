@@ -54,7 +54,7 @@ def test_qualified_deadline_is_initial_seed(tmp_path):
     sources = ["a", "b", "c"]
     current = _directory(tmp_path, 1)
     result = series.scheduled_source_rotation(tmp_path, current, _manifest(sources), {"order": ["c", "b", "a"]})
-    assert result["order"] == ["c", "b", "a"]
+    assert result["order"] in (["c", "b", "a"], ["b", "a", "c"], ["a", "c", "b"])
 
 
 def test_corrupt_foreign_and_different_scope_are_not_holds(tmp_path):
@@ -85,3 +85,24 @@ def test_real_registry_scope_is_never_truncated(tmp_path):
     assert len(sources) >= 51
     assert len(dispatch["order"]) == len(sources)
     assert set(dispatch["order"]) == set(sources)
+
+@pytest.mark.parametrize("deadline_seed", [False, True])
+def test_missing_rotation_history_covers_fixed_daily_starts(tmp_path, deadline_seed):
+    sources = [f"source-{number:02d}" for number in range(51)]
+    priority = {"order": list(reversed(sources))} if deadline_seed else None
+    firsts = []
+    for day in range(51):
+        current = _directory(tmp_path, day * 24 * 60)
+        dispatch = series.scheduled_source_rotation(tmp_path, current, _manifest(sources), priority)
+        assert set(dispatch["order"]) == set(sources)
+        firsts.append(dispatch["order"][0])
+    assert set(firsts) == set(sources)
+
+
+def test_missing_rotation_history_changes_during_daily_multiple_generations(tmp_path):
+    sources = [f"source-{number:02d}" for number in range(51)]
+    first = _directory(tmp_path, 60)
+    second = _directory(tmp_path, 61)
+    assert series.scheduled_source_rotation(tmp_path, first, _manifest(sources), None)["order"] != (
+        series.scheduled_source_rotation(tmp_path, second, _manifest(sources), None)["order"]
+    )
