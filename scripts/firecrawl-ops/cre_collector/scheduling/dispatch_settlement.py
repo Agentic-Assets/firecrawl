@@ -229,10 +229,6 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
             # Retry-After whose duration is not present in this receipt.
             held.append(key)
             continue
-        if state == "qualified_partial_subset" and terminal["status"] == "deadline_interrupted":
-            unfinished.append(key)
-            deferred.append(key)
-            continue
         if state in {"complete", "qualified_partial_subset"}:
             continue
         if (state not in {"interrupted", "resource_guard_interrupted"} or checkpoint.get("ingest") is not None

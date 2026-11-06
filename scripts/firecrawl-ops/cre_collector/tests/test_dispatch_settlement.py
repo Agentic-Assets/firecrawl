@@ -205,3 +205,24 @@ def test_current_partial_requires_actual_bound_cursor(case, monkeypatch):
     cursor["attemptId"] = "0" * 32
     with pytest.raises(settlement.DispatchSettlementRefused, match="cursor no longer matches"):
         settlement.qualify(root, series_id, invocation, **options)
+
+@pytest.mark.parametrize("source", ["daum-commercial", "pyramid-brokerage", "jll-investor", "franklin-street", "lyon-stahl", "nai-global"])
+def test_settled_partial_peer_is_not_retried_after_unrelated_deadline(case, monkeypatch, source):
+    root, series_id, invocation, options, child, _ = case
+    path = root / series_id / "manifest.json"
+    parent = json.loads(path.read_text())
+    parent["sources"][source] = parent["sources"].pop("savills")
+    path.write_text(json.dumps(parent))
+    child["sources"][source] = child["sources"].pop("savills")
+    options["expected_config"]["sources"] = ["colliers", source]
+
+    def reconcile(_path, candidate, *, publish):
+        assert publish is False
+        candidate["sources"]["colliers"]["state"] = "interrupted"
+        candidate["sources"][source]["state"] = "qualified_partial_subset"
+
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", reconcile)
+    result = settlement.qualify(root, series_id, invocation, **options)
+    assert result["unfinished_sources"] == ["colliers"]
+    assert source not in result["deferred_sources"]
+    assert source not in result["held_sources"]
