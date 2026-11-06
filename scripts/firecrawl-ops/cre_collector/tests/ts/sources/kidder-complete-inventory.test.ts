@@ -8,6 +8,7 @@ import {
   assertKidderCompleteInventory,
   kidderFetchAll,
   kidderFetchCompleteInventory,
+  srcKidderMathews,
   KIDDER_INVENTORY_TIMEOUT_MS,
   KIDDER_MAX_RESPONSE_BYTES,
   KIDDER_STRICT_MAX_RESULTS,
@@ -204,6 +205,112 @@ test("legacy 50-row request stays unchanged; strict cache is generation-bound an
     bad = false;
     await kidderFetchAll(Infinity);
     assert.equal(calls, 5, "failed proof must never be cached as complete");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("strict transaction passes share a settled denial only within their generation", async () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls++;
+    assert.deepEqual(JSON.parse(String(options?.body)), {
+      startIndex: 0, numResults: 8000, includeAggregations: false,
+    });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return new Response("denied", { status: 403 });
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "kidder-denial-one";
+    const concurrent = await Promise.allSettled([kidderFetchAll(Infinity), kidderFetchAll(Infinity)]);
+    assert.equal(calls, 1);
+    assert(concurrent.every(result => result.status === "rejected" && /HTTP 403/.test(String(result.reason))));
+    await assert.rejects(kidderFetchAll(Infinity), /HTTP 403/);
+    assert.equal(calls, 1, "second transaction must not repeat a settled denial");
+    process.env.CRE_REFRESH_GENERATION = "kidder-denial-two";
+    await assert.rejects(kidderFetchAll(Infinity), /HTTP 403/);
+    assert.equal(calls, 2, "a future generation may try again");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("strict transient and malformed inventory failures are not cached", async () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) return new Response("temporary", { status: 500 });
+    if (calls === 2) return new Response("{broken", { status: 200 });
+    return new Response(JSON.stringify(inventory()));
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "kidder-transient-one";
+    await assert.rejects(kidderFetchAll(Infinity), /HTTP 500/);
+    await assert.rejects(kidderFetchAll(Infinity), SyntaxError);
+    assert.equal((await kidderFetchAll(Infinity)).items.length, 2);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("sale and lease do not repeat the same settled inventory denial", async () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("denied", { status: 403 }); };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "kidder-sale-lease-denial";
+    await assert.rejects(srcKidderMathews("sale", Infinity, false), /HTTP 403/);
+    await assert.rejects(srcKidderMathews("lease", Infinity, false), /HTTP 403/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("a denial with unacknowledged response cleanup is not cached as settled", async () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    const body = new ReadableStream({ cancel() { return Promise.reject(new Error("synthetic cleanup failure")); } });
+    return new Response(body, { status: 403 });
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "kidder-unsettled-denial";
+    await assert.rejects(kidderFetchAll(Infinity), /cleanup was not confirmed/);
+    await assert.rejects(kidderFetchAll(Infinity), /cleanup was not confirmed/);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
