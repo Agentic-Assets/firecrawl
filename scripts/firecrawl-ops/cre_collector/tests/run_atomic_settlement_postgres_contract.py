@@ -226,7 +226,7 @@ try:
         "FROM generate_series(1,2000) n; ANALYZE credeals.cre_listings; ANALYZE credeals.cre_brokerages"
     )
     plan_query = cre_validate.atomic_settlement_query(
-        "ingest:v1:" + "c" * 64, "daum-commercial", "equiv-a"
+        "ingest:v1:" + "c" * 64, "daum-commercial", "benchmark-absent"
     )
     narrow_plan = sql("EXPLAIN (ANALYZE, FORMAT JSON) " + plan_query)
     full_plan = sql("EXPLAIN (ANALYZE, FORMAT JSON) " + generation_report)
