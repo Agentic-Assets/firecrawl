@@ -72,7 +72,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
 ):
     import test_essex_current_inventory as helpers
     from test_daum_current_inventory import produce
-    from test_daum_verified_subset import admit, context, envelope
+    from test_daum_verified_subset import admit, context, envelope, install_identity_probe
 
     import cre_current_inventory_admission as admission
     import cre_daum_current_inventory as daum
@@ -110,6 +110,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
 
     import cre_checkpoint_refresh as refresh
 
+    install_identity_probe(prepared)
     worker_manifest = copy.deepcopy(prepared[3])
     worker_report = copy.deepcopy(prepared[4])
     monkeypatch.setattr(
