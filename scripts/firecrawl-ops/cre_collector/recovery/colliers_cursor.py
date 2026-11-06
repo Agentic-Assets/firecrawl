@@ -346,11 +346,15 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
         if len(names) > 4096:
             raise SourceEvidenceRefusal("Colliers cursor history search exceeds limit")
         matches = []
+        unsafe_series = False
         for name in names:
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", name) is None:
                 continue
             candidate = base / name
-            if candidate.is_symlink() or not candidate.is_dir():
+            if candidate.is_symlink():
+                unsafe_series = True
+                continue
+            if not candidate.is_dir():
                 continue
             child_path = candidate / "runs" / run_id
             child_exists = child_path.exists() or child_path.is_symlink()
@@ -364,7 +368,7 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
                 continue
             if bound or child_exists:
                 matches.append((candidate, parent, bound))
-        if not matches:
+        if not matches and not unsafe_series:
             _check_owner(owner)
             return {"history_unavailable": True, "generation": run_id, "position": position}
         # An ambiguous location must not hide an independently readable
@@ -372,7 +376,8 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
         for candidate, _, _ in matches:
             candidate_run = candidate / "runs" / run_id
             if candidate_run.is_symlink() or (candidate / "runs").is_symlink():
-                raise SourceEvidenceRefusal("Colliers cursor child path is not owned")
+                unsafe_series = True
+                continue
             try:
                 candidate_child = json.loads(_digest(candidate_run / "manifest.json", 4 * 1024 * 1024)[0])
                 candidate_source = candidate_child["sources"]["colliers"]
@@ -383,7 +388,7 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
             except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
                     KeyError, AttributeError, StopRefused):
                 pass  # The selected history is classified below; duplicates are held.
-        if len(matches) != 1 or not matches[0][2]:
+        if unsafe_series or len(matches) != 1 or not matches[0][2]:
             raise SourceEvidenceRefusal("Colliers cursor history is ambiguous or unbound")
         series_dir, parent, _ = matches[0]
         run_dir = series_dir / "runs" / run_id
