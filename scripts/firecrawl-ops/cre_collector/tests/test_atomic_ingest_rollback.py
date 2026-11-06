@@ -414,3 +414,124 @@ def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
         cre_validate.atomic_settlement_query(
             "ingest:v1:" + "a" * 64, "foreign-source", "gen"
         )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "code",
+        "artifact",
+        "target",
+        "attempt",
+        "second_fence",
+        "second_rc",
+        "cleanup_unknown",
+    ],
+)
+def test_late_commit_gets_one_bound_readback_without_write_retry(
+    tmp_path, monkeypatch, fault
+):
+    from pathlib import Path
+    import cre_checkpoint_refresh as refresh
+
+    root = tmp_path / "2026-11-03T000000Z"
+    (root / "sources").mkdir(parents=True)
+    source = "daum-commercial"
+    artifact = root / "sources" / f"{source}.json"
+    artifact.write_bytes(b"bound synthetic artifact")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    target = {"algorithm": "sha256", "value": "c" * 64}
+    manifest = refresh.new_manifest(
+        root,
+        git_sha="e" * 40,
+        git_dirty=False,
+        sources=(source,),
+        page_cap=400,
+        concurrency=1,
+        database_target=target,
+    )
+    checkpoint = manifest["sources"][source]
+    checkpoint["state"] = "dry_run_passed"
+    checkpoint["artifact"] = {
+        "path": f"sources/{source}.json",
+        "sha256": digest,
+        "bytes": artifact.stat().st_size,
+        "freshness_generation_id": manifest["run_id"],
+        "freshness_generation_started_at": manifest["started_at"],
+    }
+    identity = {"sha": "e" * 40}
+    monkeypatch.setattr(refresh, "git_identity", lambda: (identity["sha"], False))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    monkeypatch.setattr(
+        refresh, "verify_validation_readback", lambda *a, **kw: {"ok": True}
+    )
+    run_key = artifact_run_identity_from_digests([digest])[0]
+    calls = {"write": 0, "read": 0}
+
+    def command(argv, _log, **_kwargs):
+        if "cre_validate.py" not in argv:
+            calls["write"] += 1
+            return 1
+        calls["read"] += 1
+        second = calls["read"] == 2
+        if second and fault == "cleanup_unknown":
+            raise refresh.ProcessCleanupUnknown("synthetic unknown")
+        if second and fault == "second_rc":
+            return 1
+        attempt = argv[argv.index("--expected-ingest-attempt") + 1]
+        probe = {
+            "database_target_sha256": "c" * 64,
+            "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
+            "attempt_id": attempt,
+        }
+        queries = {key: [] for key in QUERIES}
+        queries["artifact_run_jobs"] = [{"matching_jobs": "1" if second else "0"}]
+        if second:
+            queries["freshness_generations"] = [
+                {"source_key": source, "generation_id": manifest["run_id"]}
+            ]
+        queries["atomic_settlement"] = [
+            {
+                "matching_jobs": "0" if second and fault == "second_fence" else "1",
+                "matching_generations": "1",
+            }
+        ]
+        report = {
+            "ok": True,
+            "validation_profile": FULL_VALIDATION_PROFILE,
+            "audit_scope": VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE],
+            "queries": queries,
+            "historical_primary_child_conflicts": [],
+            "generated_at": refresh.utc_now(),
+            "artifact_run_probe": probe,
+            "atomic_settlement_probe": {
+                **probe,
+                "source": source,
+                "generation_id": manifest["run_id"],
+            },
+        }
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
+        if second and fault == "code":
+            identity["sha"] = "f" * 40
+        if second and fault == "artifact":
+            artifact.write_bytes(b"changed")
+        if second and fault == "target":
+            manifest["preflight"]["database_target"]["value"] = "f" * 64
+        if second and fault == "attempt":
+            checkpoint["ingest"]["attempt_id"] = "f" * 32
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", command)
+    if fault == "none":
+        refresh.ingest_source(root, manifest, source, artifact, None)
+        assert checkpoint["state"] == "ingested"
+        assert checkpoint["ingest"]["recovered_from_exact_readback"] is True
+        assert checkpoint["ingest_recovery"]["first_validation_sha256"]
+    else:
+        with pytest.raises(refresh.GlobalStageError):
+            refresh.ingest_source(root, manifest, source, artifact, None)
+        assert checkpoint["state"] == "ingest_recovery_required"
+        assert checkpoint["ingest_recovery"]["readback_ok"] is False
+        assert checkpoint["ingest_recovery"].get("outcome") != "exact_rollback"
+    assert calls == {"write": 1, "read": 2}

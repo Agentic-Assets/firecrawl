@@ -6810,6 +6810,55 @@ def recover_interrupted_ingest(
             if (validation.get("artifact_run_probe") != expected_probe
                     or fenced_counts(validation, source, manifest["run_id"], expected_probe) is None):
                 raise ValueError("atomic settlement fence is unavailable or unbound")
+        if recovery["reason"] == "settled_ingest_failure":
+            # A commit can land between the full snapshot and the later fence.
+            # Re-read exactly once; this only runs the read-only validator.
+            rows = validation["queries"].get("freshness_generations")
+            clean_rows = isinstance(rows, list) and all(
+                isinstance(row, dict) and isinstance(row.get("source_key"), str)
+                and row["source_key"] and isinstance(row.get("generation_id"), str)
+                and row["generation_id"] for row in rows)
+            absent_generation = clean_rows and not any(
+                row["source_key"] == source and row["generation_id"] == manifest["run_id"]
+                for row in rows)
+            if (fenced_counts(validation, source, manifest["run_id"], expected_probe) == (1, 1)
+                    and _artifact_run_job_probe_is_exact(validation, expected_matching_jobs=0)
+                    and absent_generation):
+                saved_run_id = manifest["run_id"]
+                saved_artifact = dict(artifact_info)
+                saved_sha = manifest["collector_git_sha"]
+                artifact_path = run_dir / saved_artifact["path"]
+                def binding_unchanged():
+                    return (git_identity() == (saved_sha, False)
+                            and manifest["run_id"] == saved_run_id
+                            and manifest_database_target_sha256(manifest) == expected_probe["database_target_sha256"]
+                            and manifest["sources"].get(source) is checkpoint
+                            and checkpoint.get("artifact") == saved_artifact
+                            and checkpoint.get("ingest", {}).get("attempt_id") == guard_attempt
+                            and sha256_file(artifact_path) == saved_artifact["sha256"])
+                if not binding_unchanged():
+                    raise ValueError("commit readback input changed")
+                recovery["first_validation_path"] = recovery["validation_path"]
+                recovery["first_validation_sha256"] = sha256_file(output)
+                retry_output = run_dir / "recovery" / f"{source}-committed-validation.json"
+                retry_log = run_dir / "logs" / f"{source}-committed-validation.log"
+                recovery["validation_path"] = _relative_to_run(retry_output, run_dir)
+                recovery["log"] = _relative_to_run(retry_log, run_dir)
+                save_manifest(run_dir, manifest)
+                retry_rc = run_command(build_validate_argv(
+                    retry_output, env_file, expected_db_target_sha256=expected_probe["database_target_sha256"],
+                    expected_artifact_run_key=artifact_run_key, expected_ingest_attempt=guard_attempt,
+                    expected_settlement_source=source, expected_settlement_generation=saved_run_id,
+                ), retry_log, env=safe_process_env())
+                recovery["probe_finished_at"] = utc_now()
+                recovery["rc"] = retry_rc
+                if retry_rc != 0 or not binding_unchanged():
+                    raise ValueError("fresh committed readback failed or changed")
+                validation = _load_json(retry_output)
+                require_full_validation_report(validation)
+                if (validation.get("artifact_run_probe") != expected_probe
+                        or fenced_counts(validation, source, saved_run_id, expected_probe) != (1, 1)):
+                    raise ValueError("fresh committed readback fence differs")
         probe_manifest = {
             "config": {"sources": [source]},
             "sources": {
