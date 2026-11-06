@@ -175,6 +175,32 @@ def test_invalid_source_policy_is_held_without_persisting_policy_bytes(tmp_path,
     assert "not-a-real-source" not in raw
 
 
+def test_missing_policy_file_records_held_slot_and_does_not_start(tmp_path, monkeypatch):
+    (tmp_path / "out").mkdir()
+    monkeypatch.setattr(dispatcher, "HERE", tmp_path)
+    monkeypatch.setattr(dispatcher, "launch", lambda *_: pytest.fail("missing policy must not launch"))
+    slot = "20200101T000000Z_missing"
+    assert dispatcher.main(["--slot", slot, "--policy", str(tmp_path / "missing.json")]) == 0
+    record = json.loads((tmp_path / "out" / "local-dispatch" / (slot + ".json")).read_text())
+    assert record["state"] == "held_no_work" and record["result"]["reason"] == "source_policy_unreadable"
+
+
+def test_unavailable_target_records_due_slot_and_stops_shared_drain(tmp_path, policy, monkeypatch):
+    (tmp_path / "out").mkdir()
+    monkeypatch.setattr(dispatcher, "HERE", tmp_path)
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text(json.dumps(policy))
+    def unavailable(_):
+        raise OSError("synthetic target unavailable")
+    monkeypatch.setattr(refresh, "database_target_fingerprint", unavailable)
+    monkeypatch.setattr(dispatcher, "launch", lambda *_: pytest.fail("unknown target must not launch"))
+    slot = "20200101T000000Z_target"
+    with pytest.raises(dispatch_queue.DispatchRefused, match="shared target preflight"):
+        dispatcher.main(["--slot", slot, "--policy", str(policy_file)])
+    record = json.loads((tmp_path / "out" / "local-dispatch" / (slot + ".json")).read_text())
+    assert record["state"] == "held_no_work" and record["result"]["reason"] == "shared_preflight_unavailable"
+
+
 def test_queue_controls_real_synthetic_series_child_and_receipt(tmp_path, policy, monkeypatch):
     """Exercise actual POSIX control/receipt; native Windows launcher is separate."""
     root = tmp_path / "series"

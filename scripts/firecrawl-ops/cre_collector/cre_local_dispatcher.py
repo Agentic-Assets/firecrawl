@@ -271,7 +271,6 @@ def main(argv=None) -> int:
         raise ValueError("slot must bind a UTC due time and task identity")
     from datetime import datetime
     datetime.strptime(args.slot[:16], "%Y%m%dT%H%M%SZ")
-    raw_policy = args.policy.read_bytes()
     parent = HERE / "out"
     parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -285,11 +284,20 @@ def main(argv=None) -> int:
         os.close(parent_fd)
     path = parent / "local-dispatch"
     try:
-        request = policy_request(json.loads(raw_policy), args.slot)
-    except (json.JSONDecodeError, UnicodeDecodeError, SourcePolicyRefusal):
-        dispatch_queue.hold_invalid_policy(path, args.slot, hashlib.sha256(raw_policy).hexdigest())
+        raw_policy = args.policy.read_bytes()
+    except OSError:
+        dispatch_queue.hold_invalid_policy(path, args.slot, None, reason="source_policy_unreadable")
     else:
-        dispatch_queue.enqueue(path, args.slot, request)
+        digest = hashlib.sha256(raw_policy).hexdigest()
+        try:
+            request = policy_request(json.loads(raw_policy), args.slot)
+        except (json.JSONDecodeError, UnicodeDecodeError, SourcePolicyRefusal):
+            dispatch_queue.hold_invalid_policy(path, args.slot, digest)
+        except Exception as exc:
+            dispatch_queue.hold_invalid_policy(path, args.slot, digest, reason="shared_preflight_unavailable")
+            raise dispatch_queue.DispatchRefused("shared target preflight unavailable") from exc
+        else:
+            dispatch_queue.enqueue(path, args.slot, request)
     dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify, successor=successor)
     return 0
 

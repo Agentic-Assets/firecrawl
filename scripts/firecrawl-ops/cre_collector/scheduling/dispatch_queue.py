@@ -90,16 +90,19 @@ def enqueue(path: Path, slot: str, request: dict) -> None:
         os.close(directory)
 
 
-def hold_invalid_policy(path: Path, slot: str, policy_sha256: str) -> None:
-    """Keep a source-local rejected due slot without persisting raw policy bytes."""
-    if re.fullmatch(r"[a-f0-9]{64}", policy_sha256 or "") is None:
+def hold_invalid_policy(path: Path, slot: str, policy_sha256: str | None,
+                        *, reason: str = "invalid_source_policy") -> None:
+    """Keep a no-work due slot without persisting raw policy bytes."""
+    if (reason not in {"invalid_source_policy", "source_policy_unreadable", "shared_preflight_unavailable"}
+            or (policy_sha256 is None and reason != "source_policy_unreadable")
+            or (policy_sha256 is not None and re.fullmatch(r"[a-f0-9]{64}", policy_sha256) is None)):
         raise DispatchRefused("invalid rejected policy hash")
     name = _slot(slot)
     directory = _directory(path)
     try:
         request = {"slot": slot, "held_policy_sha256": policy_sha256}
         record = {"schema": "cre-local-dispatch/v1", "slot": slot, "request": request,
-                  "state": "held_no_work", "result": {"outcome": "held_no_work", "reason": "invalid_source_policy"}}
+                  "state": "held_no_work", "result": {"outcome": "held_no_work", "reason": reason}}
         try:
             _write(directory, name, record, create=True)
         except FileExistsError:
