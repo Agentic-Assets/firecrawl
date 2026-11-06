@@ -11,12 +11,13 @@ const html = readFileSync(new URL("avison-young-official-display-role-18194.html
 const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
-async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url") {
+async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
   const originalFetch = globalThis.fetch;
   const originalScrape = firecrawl.scrape;
+  const originalParse = JSON.parse;
   const observed: any[] = [];
   let outcomes: any[] = [];
   const calls: string[] = [];
@@ -26,11 +27,26 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
     process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
     process.env.CRE_REFRESH_GENERATION = "partial-test";
     process.env.AVISON_YOUNG_DETAIL_CONCURRENCY = "1";
+    if (ordinaryFailure === "bad-row-json") {
+      JSON.parse = ((text: string, reviver?: (this: any, key: string, value: any) => any) => {
+        const value = originalParse(text, reviver);
+        if (Array.isArray(value?.items)) {
+          const held = value.items.find((item: any) => item.id === 17000);
+          if (held) held.unserializable = BigInt(1);
+        }
+        return value;
+      }) as typeof JSON.parse;
+    }
     globalThis.fetch = async input => {
       const url = new URL(String(input));
       if (url.hostname === "www.avisonyoung.us") return new Response("SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')");
       return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website"
-          ? [ordinaryFailure === "missing-url" ? { ...bad, url: null, external_url: null, description: "record 0123456789abcdef0123456789abcdef extra" } : bad, row] : [] }),
+          ? [["missing-url", "encoded-key", "bad-row-json"].includes(ordinaryFailure ?? "")
+            ? { ...bad, url: null, external_url: null,
+                description: ordinaryFailure === "encoded-key"
+                  ? "record " + String.fromCharCode(92) + "u0030" + "123456789abcdef0123456789abcdef"
+                  : "record 0123456789abcdef0123456789abcdef extra" }
+            : bad, row] : [] }),
         { status: 200, headers: { "content-type": "application/json" } });
     };
     firecrawl.scrape = async (url: string) => {
@@ -49,6 +65,7 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
   } finally {
     globalThis.fetch = originalFetch;
     firecrawl.scrape = originalScrape;
+    JSON.parse = originalParse;
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
@@ -82,6 +99,21 @@ test("a URL-less source row is held while a later identified peer is retained", 
   assert.equal(retained.description, "record [REDACTED_API_KEY] extra");
   assert.ok(!calls.includes(badUrl));
 });
+
+for (const reason of ["encoded-key", "bad-row-json"] as const) {
+  test(`URL-less ${reason} evidence refusal retains a later peer`, async () => {
+    const { source, failure, observed, outcomes, calls } = await runCase(false, reason);
+    assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
+    assert.deepEqual((failure as InstanceType<typeof source.AvisonYoungPartialDetailError>).heldIds, ["17000"]);
+    assert.deepEqual(observed.map(item => item.id), ["18194"]);
+    assert.equal(outcomes[0].reason, "missing_public_detail_urls");
+    assert.deepEqual(outcomes[0].feedObservation, { state: "retention_failed" });
+    assert.equal(outcomes[1].state, "validated");
+    assert.ok(!JSON.stringify(outcomes).includes("0123456789abcdef0123456789abcdef"));
+    assert.ok(!JSON.stringify(outcomes).includes("u0030"));
+    assert.ok(!calls.includes(badUrl));
+  });
+}
 
 test("access denial stops before requesting a later peer", async () => {
   const { source, failure, observed, calls } = await runCase(true);
