@@ -19,6 +19,7 @@ type CandidateEnvelope = {
 
 // Observation only: the envelope must be independently rederived before use.
 export async function observeDaumMove(envelope: CandidateEnvelope, transport: DaumPoliteTransport) {
+  envelope = structuredClone(envelope);
   const c = envelope.candidate;
   const m = envelope.member;
   const digest = /^[a-f0-9]{64}$/;
