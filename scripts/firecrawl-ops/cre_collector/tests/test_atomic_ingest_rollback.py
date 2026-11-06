@@ -132,7 +132,7 @@ def test_ingest_failure_requires_actual_bound_recovery_before_local_exit(tmp_pat
         refresh.ingest_source(root, manifest, source, artifact, None)
         assert checkpoint["state"] == "ingested"
     elif outcome_kind == "bad_attempt":
-        with pytest.raises(refresh.GlobalStageError, match="not bound"):
+        with pytest.raises(refresh.GlobalStageError, match="readback is invalid"):
             refresh.ingest_source(root, manifest, source, artifact, None)
         assert checkpoint["state"] == "ingest_recovery_required"
     else:
