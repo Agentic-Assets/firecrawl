@@ -44,6 +44,17 @@ def test_all_emitted_target_holds_are_source_local_after_both_probes(tmp_path, m
     with pytest.raises(ValueError) as aggregate:
         admit("aggregate")
     assert type(aggregate.value) is ValueError
+    import cre_checkpoint_refresh as refresh
+    import cre_refresh_pipeline as pipeline
+    monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *_args: None)
+    def gate(run, owner, source, path, _env):
+        refresh._admit_current_inventory(run, owner, copy.deepcopy(report), path, "source", source=source)
+    monkeypatch.setattr(refresh, "gate_source", gate)
+    with pipeline.artifact_compute_scope(prepared[0]):
+        assert pipeline.preseal_source_gate(prepared[0], manifest, daum.SOURCE, None) is False
+    assert checkpoint["state"] == "gate_blocked"
+    assert checkpoint["partial_probe_hold"] == "all_emitted_target_held"
+    assert checkpoint.get("ingest") is None
     identity[0]["conflicted"] = "invalid"
     with pytest.raises(ValueError) as malformed:
         admit()
