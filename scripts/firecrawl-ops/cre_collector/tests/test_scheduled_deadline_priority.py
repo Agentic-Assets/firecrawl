@@ -142,6 +142,21 @@ def test_order_is_forwarded_to_one_fresh_child_with_full_scope(tmp_path, monkeyp
     assert captured[captured.index("--pipeline-dispatch-order") + 1] == "savills,cbre"
 
 
+def test_preallocated_parent_forwards_exact_target_to_fresh_child(tmp_path, monkeypatch):
+    settings = config(pipeline=True, sources=["cbre", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["preallocated_expected_target_sha256"] = "c" * 64
+    captured = []
+    def stop_after_capture(argv, **kwargs):
+        captured.extend(argv)
+        raise RuntimeError("synthetic stop before child start")
+    monkeypatch.setattr(series.subprocess, "Popen", stop_after_capture)
+    with pytest.raises(RuntimeError, match="synthetic stop"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    assert captured[captured.index("--expected-parent-db-target-sha256") + 1] == "c" * 64
+
+
 @pytest.mark.parametrize("order", ["cbre", "cbre,cbre", "cbre,jll"])
 def test_invalid_order_rejected_before_credentials_or_write(monkeypatch, order):
     import cre_checkpoint_refresh as refresh
