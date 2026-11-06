@@ -4,7 +4,6 @@ import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-list
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { getHeapStatistics } from "node:v8";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { observationNow } from "../lib/observation-clock.js";
@@ -2955,12 +2954,9 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           const raw = JSON.stringify(selectedRows[index]);
           if (typeof raw !== "string" || !apiKey) throw new Error();
           if (containsCredential(raw, apiKey, true)) throw new Error();
-          // Literal replacement can allocate two complete UTF-16 string copies.
-          // Check the actual V8 heap headroom only when replacement is needed.
-          const needsRedaction = raw.includes(apiKey);
-          const heap = getHeapStatistics();
-          if (needsRedaction && raw.length * 4 > heap.heap_size_limit - heap.used_heap_size) throw new Error();
-          const redacted = needsRedaction ? raw.split(apiKey).join("[REDACTED_API_KEY]") : raw;
+          // Replace literals in one pass; serialization and allocation remain
+          // subject to the worker's normal runtime and memory limits.
+          const redacted = raw.replaceAll(apiKey, "[REDACTED_API_KEY]");
           if (containsCredential(redacted, apiKey)) throw new Error();
           outcome.feedObservation = {
             sourceKey: "avison-young", method: "SharpLaunch website inventory",
