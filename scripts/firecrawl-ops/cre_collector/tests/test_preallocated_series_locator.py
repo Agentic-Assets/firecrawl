@@ -79,6 +79,21 @@ def test_preallocated_controlled_series_receipt_is_bound_and_never_authorizes_co
         series.main(args)
     assert (tmp_path / identifier / "manifest.json").read_bytes() == before
 
+    original_read_receipt = control.read_receipt
+    def replace_manifest(*args):
+        path = tmp_path / identifier / "manifest.json"
+        replacement = path.with_name("replacement.json")
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(0o600)
+        replacement.replace(path)
+        return original_read_receipt(*args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(control, "read_receipt", replace_manifest)
+        with pytest.raises(control.SeriesControlError, match="changed"):
+            control.verify_preallocated_receipt(tmp_path, identifier, token, expected_sha="a" * 40,
+                expected_target=target, expected_config=manifest["config"])
+
 
 def test_receipt_status_does_not_allow_running_or_unknown(tmp_path, monkeypatch):
     identifier = "2026-11-06T010203Z-012345abcdef"

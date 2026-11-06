@@ -138,8 +138,12 @@ def verify_preallocated_receipt(
             finally:
                 os.close(manifest_fd)
             receipt = read_receipt(Path(series_root) / series_id, invocation_id)
-            if receipt["stop_owner"]["series_directory_identity"] != safe._identity(directory_stat):
-                raise SeriesControlError("series locator directory changed")
+            named_after = os.stat("manifest.json", dir_fd=series_fd, follow_symlinks=False)
+            directory_after = os.stat(series_id, dir_fd=root_fd, follow_symlinks=False)
+            if (identity(before) != identity(named_after)
+                    or safe._identity(directory_stat) != safe._identity(directory_after)
+                    or receipt["stop_owner"]["series_directory_identity"] != safe._identity(directory_stat)):
+                raise SeriesControlError("series locator or manifest changed")
             control = manifest.get("latest_invocation_control") if isinstance(manifest, dict) else None
             def exact(left, right):
                 return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == json.dumps(
