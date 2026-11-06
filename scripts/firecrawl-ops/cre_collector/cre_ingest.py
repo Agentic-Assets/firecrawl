@@ -5074,7 +5074,7 @@ BEGIN
     SELECT count(*) INTO conflicting_rows
     FROM _daum_identity_claims s
     JOIN _daum_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
-    WHERE {daum_historical_conflict};
+    WHERE """ + daum_historical_conflict + """;
     IF conflicting_rows > 0 THEN
       RAISE EXCEPTION 'DAUM identity contradiction in historical rows; refusing mutation';
     END IF;
@@ -5960,7 +5960,6 @@ END $$;
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
-        .replace("{daum_historical_conflict}", daum_historical_conflict)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace("{daum_fallback_update}", daum_fallback_update)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
