@@ -233,7 +233,7 @@ def run_artifact_compute(root: Path, action: str, arguments: dict) -> dict:
                 and set(result) == {"request_id", "ok", "daum_all_identities_held"}
                 and action == "admit" and arguments.get("source") == "daum-commercial"
                 and arguments.get("phase") == "source"):
-            raise refresh.DaumPartialProbeHold("all emitted DAUM identities are held")
+            raise refresh.DaumAllTargetHeld("all emitted DAUM observations are held")
         if result.get("artifact_rejected") is True:
             raise refresh.ArtifactValidationError(
                 result.get("error", "artifact rejected")
@@ -558,14 +558,16 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
         refresh.save_manifest(run_dir, manifest)
         return False
-    except refresh.DaumPartialProbeHold:
+    except refresh.DaumPartialProbeHold as exc:
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
         if (source != "daum-commercial" or refresh.git_identity() != (binding["collector_git_sha"], False)
                 or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]
                 or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
             raise refresh.GlobalStageError("DAUM held probe owner or target changed")
         checkpoint["state"] = "gate_blocked"
-        checkpoint["partial_probe_hold"] = "source_identity_partition_invalid"
+        checkpoint["partial_probe_hold"] = ("all_emitted_target_held"
+                                            if isinstance(exc, refresh.DaumAllTargetHeld)
+                                            else "source_identity_partition_invalid")
         refresh.save_manifest(run_dir, manifest)
         return False
     except refresh.LyonPartialProbeHold:
@@ -1422,7 +1424,10 @@ def run_bounded_pipeline(
                             qualified.append(source)
                         else:
                             terminal_source_holds.add(source)
-                            retry_or_fail(source, "pre-seal source gate refused")
+                            reason = ("all emitted observations held by target checks"
+                                      if manifest["sources"][source].get("partial_probe_hold") == "all_emitted_target_held"
+                                      else "pre-seal source gate refused")
+                            retry_or_fail(source, reason)
                     sealed = tuple(qualified)
                     preparing = ()
                     unit.update(

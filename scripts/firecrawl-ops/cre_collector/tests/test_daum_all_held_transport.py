@@ -41,7 +41,7 @@ def test_all_held_compute_result_reaches_preseal_without_write(subset, monkeypat
             assert pipeline.preseal_source_gate(run_dir, manifest, daum.SOURCE, None) is False
             checkpoint = manifest["sources"][daum.SOURCE]
             assert checkpoint["state"] == "gate_blocked"
-            assert checkpoint["partial_probe_hold"] == "source_identity_partition_invalid"
+            assert checkpoint["partial_probe_hold"] == "all_emitted_target_held"
             assert checkpoint.get("ingest") is None
     responses = list((run_dir / "pipeline" / "compute").glob("*.response.json"))
     assert len(responses) == 1

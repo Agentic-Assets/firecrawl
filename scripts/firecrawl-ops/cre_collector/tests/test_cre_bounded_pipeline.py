@@ -245,6 +245,7 @@ def run_schedule(
         def preseal(_root, owner, source, _env):
             if source == "daum-commercial":
                 owner["sources"][source]["state"] = "gate_blocked"
+                owner["sources"][source]["partial_probe_hold"] = "all_emitted_target_held"
                 return False
             return True
         monkeypatch.setattr(pipeline, "preseal_source_gate", preseal)
@@ -1153,6 +1154,8 @@ def test_daum_all_held_preseal_keeps_peer_running(tmp_path, monkeypatch):
     assert failures == ["daum-commercial"]
     assert manifest["pipeline"]["status"] == "partial"
     assert manifest["pipeline"]["source_results"]["daum-commercial"]["state"] == "failed"
+    assert manifest["pipeline"]["source_results"]["daum-commercial"]["reason"] == "all emitted observations held by target checks"
+    assert manifest["sources"]["daum-commercial"]["partial_probe_hold"] == "all_emitted_target_held"
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
     assert not any(event[0] == "db_start" and "daum-commercial" in event[1] for event in events)
     assert any(event[0] == "db_start" and "savills" in event[1] for event in events)

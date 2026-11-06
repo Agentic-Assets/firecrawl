@@ -46,7 +46,7 @@ REASON = (
 
 
 class DaumAllIdentitiesHeld(ValueError):
-    """A fully validated source cohort has no identity-safe emitted peers."""
+    """A fully validated source cohort has no admissible emitted peers."""
 
 
 def _sha(value):
@@ -903,7 +903,6 @@ def _admit(
                     lease_count=len(expected["lease"] - target_held_ids),
                     whole_lease_coverage="unknown" if held or target_held_ids else "proved",
                 )
-                require(binding["emitted_count"] > 0)
         # A separate identity classification covers the entire source cohort,
         # including source-held members.  Existing fallback classifications
         # remain independent and both held sets are combined exactly once.
@@ -949,8 +948,8 @@ def _admit(
             whole_lease_coverage="unknown" if held or target_ids else "proved",
         )
         if (binding["emitted_count"] == 0 and phase == "source" and not rechecking
-                and len({item["native_id"] for item in binding["identity_held"]} - held_ids) == emitted_total):
-            raise DaumAllIdentitiesHeld("all emitted DAUM identities are held")
+                and target_ids == {row[0] for row in cohort} - held_ids):
+            raise DaumAllIdentitiesHeld("all emitted DAUM observations are held")
         require(binding["emitted_count"] > 0)
     if phase == "aggregate":
         require(

@@ -547,6 +547,23 @@ def test_staging_stats_reject_unknown_fields(evidence):
     assert "transaction_breakdown" not in result
 
 
+def test_all_held_daum_is_reported_failed_not_complete(evidence):
+    setup = pipeline_evidence(evidence, second_source="daum-commercial")
+    child = evidence["values"]["child"]
+    child["sources"]["daum-commercial"] = {
+        "state": "gate_blocked", "partial_probe_hold": "all_emitted_target_held"
+    }
+    child["pipeline"]["source_results"]["daum-commercial"] = {
+        "state": "failed", "reason": "all emitted observations held by target checks"
+    }
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, setup["source2"]])
+    assert result["complete"] is False
+    assert result["failed_source_keys"] == ["daum-commercial"]
+    assert "daum-commercial" not in result["qualified_subset_source_keys"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+
+
 def test_pipeline_reports_only_qualified_source_from_one_shared_child(evidence):
     setup = pipeline_evidence(evidence)
     result = read_pipeline(evidence)

@@ -115,7 +115,7 @@ def main() -> int:
             request["action"], request["arguments"], args.response
         )
         result["ok"] = True
-    except refresh.DaumPartialProbeHold:
+    except refresh.DaumAllTargetHeld:
         arguments = request.get("arguments") or {}
         if (request.get("action") == "admit" and arguments.get("source") == "daum-commercial"
                 and arguments.get("phase") == "source"):

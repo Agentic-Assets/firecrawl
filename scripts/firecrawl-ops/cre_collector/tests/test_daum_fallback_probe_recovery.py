@@ -136,6 +136,7 @@ def test_settled_daum_probe_hold_keeps_verified_peer_running(closed_pipeline, mo
     monkeypatch.setattr(refresh, "gate_source", gate)
     assert case.run() == ["daum-commercial"]
     assert case.manifest["sources"]["daum-commercial"]["state"] == "gate_blocked"
+    assert case.manifest["sources"]["daum-commercial"]["partial_probe_hold"] == "source_identity_partition_invalid"
     assert ("write", "daum-commercial") not in case.events
     assert ("write", "svn") in case.events
     assert case.manifest["sources"]["svn"]["readback"]["ok"] is True

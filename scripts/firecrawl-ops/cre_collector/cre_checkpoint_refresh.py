@@ -267,6 +267,10 @@ class DaumPartialProbeHold(SourceGuardRefusal):
     """Settled DAUM source identity output cannot be qualified."""
 
 
+class DaumAllTargetHeld(DaumPartialProbeHold):
+    """Every emitted DAUM observation was held by validated target checks."""
+
+
 class LyonPartialProbeHold(SourceGuardRefusal):
     """Settled Lyon source identity output cannot be qualified."""
 
@@ -5671,7 +5675,7 @@ def _admit_current_inventory(
         from cre_daum_current_inventory import DaumAllIdentitiesHeld
         if (isinstance(exc, DaumAllIdentitiesHeld) and source == "daum-commercial"
                 and phase == "source"):
-            raise DaumPartialProbeHold("all emitted DAUM identities are held") from exc
+            raise DaumAllTargetHeld("all emitted DAUM observations are held") from exc
         raise GlobalStageError("current-inventory admission refused") from exc
 
 
