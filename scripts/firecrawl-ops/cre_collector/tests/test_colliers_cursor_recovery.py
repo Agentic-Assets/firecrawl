@@ -6,6 +6,9 @@ from unittest.mock import MagicMock
 import cre_checkpoint_refresh as refresh
 import pytest
 from recovery import colliers_cursor as recovery
+import cre_colliers_partial_checkpoint as partial
+
+_REAL_VERIFY_WORKER_ARTIFACT = partial.verify_worker_artifact
 
 
 def _write(path, value):
@@ -160,6 +163,76 @@ def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     else:
         with pytest.raises(recovery.SourceEvidenceRefusal):
             recovery.qualify(series_dir, owner)
+
+
+
+def test_real_worker_artifact_verifier_with_source_gap(incident, monkeypatch, tmp_path):
+    """Exercise real synthetic Node selection and Python worker verification."""
+    import hashlib
+    import subprocess
+    from pathlib import Path
+
+    series_dir, run, owner, _, cursor, child = incident
+    collector = Path(__file__).resolve().parents[1]
+    fixture_dir = tmp_path / "node-fixture"
+    fixture_dir.mkdir(mode=0o700)
+    env = {**os.environ, "COLLIERS_FIXTURE_DIRECTORY": str(fixture_dir),
+           "COLLIERS_FIXTURE_GENERATION": child["run_id"], "COLLIERS_FIXTURE_GAP": "1",
+           "COLLIERS_FIXTURE_TARGET": "c"}
+    subprocess.run(["node", "--import", "tsx", "tests/ts/fixtures/colliers-window-staging.ts"],
+                   cwd=collector, env=env, capture_output=True, text=True, timeout=30, check=True)
+    artifact_raw = (fixture_dir / "artifact").read_bytes()
+    artifact_data = json.loads(artifact_raw)
+    evidence_raw = (fixture_dir / "evidence").read_bytes()
+    assert (artifact_data["cursor"], artifact_data["proposedCursor"], artifact_data["total"]) == (1, 3, 3)
+    private = run / "colliers-partial"
+    artifact_path = private / "window-1-artifact.json"
+    evidence_path = private / "window-1-evidence.jsonl"
+    artifact_path.write_bytes(artifact_raw)
+    artifact_path.chmod(0o600)
+    evidence_path.write_bytes(evidence_raw)
+    evidence_path.chmod(0o600)
+    artifact_sha = hashlib.sha256(artifact_raw).hexdigest()
+    worker_receipt = {"schema": "colliers-window-worker-receipt/v1", "generation": child["run_id"],
+        "attempt": 1, "producerSha": "a" * 40, "targetSha256": "c" * 64,
+        "artifact": {"bytes": len(artifact_raw), "sha256": artifact_sha},
+        "evidence": artifact_data["evidence"], "detailFinishedAt": artifact_data["detailFinishedAt"],
+        "proposedCursor": 3, "admitted": 1, "held": artifact_data["held"], "heldOther": artifact_data["heldOther"],
+        "unattempted": artifact_data["unattempted"], "sourceStopped": False, "rotationComplete": False,
+        "firstPosition": 2}
+    worker_path = private / "window-1-receipt.json"
+    _write(worker_path, worker_receipt)
+    receipt_sha = hashlib.sha256(worker_path.read_bytes()).hexdigest()
+    source = artifact_data["source"]
+    source_receipt = {"generation": child["run_id"], "generation_started_at": "2026-11-04T14:00:00Z",
+        "attempt": 1, "started_at": "2026-11-04T15:00:00Z", "finished_at": "2026-11-04T16:00:00Z",
+        "bytes": source["bytes"], "sha256": source["sha256"], "main_sha256": "c" * 64,
+        "producer_sha": "a" * 40, "database_target_sha256": "c" * 64}
+    monkeypatch.setattr(partial, "revalidate_source_receipt", lambda *_args: source_receipt)
+    monkeypatch.setattr(partial, "verify_worker_artifact", _REAL_VERIFY_WORKER_ARTIFACT)
+    prior = child["sources"]["colliers"]["partial_windows"][0]
+    worker = prior["checkpoint"]["colliers_partial_worker"]
+    worker.update(state="settled", rc=0, attempt=1, cursor=1,
+        artifact_path="colliers-partial/window-1-artifact.json",
+        evidence_path="colliers-partial/window-1-evidence.jsonl",
+        receipt_path="colliers-partial/window-1-receipt.json", receipt_sha256=receipt_sha,
+        completion={key: worker_receipt[key] for key in
+            ("firstPosition", "rotationComplete", "sourceStopped", "proposedCursor", "admitted", "held", "unattempted")})
+    prior.update(cursor=1, first_position=2, next_cursor=3, artifact_sha256=artifact_sha,
+                 receipt_path=worker["receipt_path"], receipt_sha256=receipt_sha)
+    prior["checkpoint"]["artifact"] = {"path": str(artifact_path.relative_to(run)),
+                                        "bytes": len(artifact_raw), "sha256": artifact_sha}
+    prior["checkpoint"]["gate"]["current_inventory_proof"].update(
+        cursor=1, next_cursor=3, artifact_sha256=artifact_sha)
+    child["sources"]["colliers"]["colliers_partial_worker"].update(cursor=3, stop_before_position=2)
+    child["sources"]["colliers"]["gate"]["current_inventory_proof"]["cursor"] = 3
+    cursor.update(position=3, artifactSha256=artifact_sha)
+    _write(run / "manifest.json", child)
+    monkeypatch.setattr(recovery, "read_cursor", lambda *_args: (3, cursor))
+    assert recovery.qualify(series_dir, owner)["cursor"] == 3
+    evidence_path.write_bytes(evidence_raw + b"tampered")
+    with pytest.raises(recovery.SourceEvidenceRefusal):
+        recovery.qualify(series_dir, owner)
 
 
 @pytest.mark.parametrize("tamper", ["unsettled", "wrong_cursor", "unknown_write", "mark_missing", "before"])
