@@ -69,6 +69,35 @@ def test_changed_candidate_refuses_receipt(tmp_path, monkeypatch):
     assert not output.exists()
 
 
+def test_replaced_private_directory_during_observation_refuses_publication(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    moved = tmp_path / "original"
+    envelope = {"producer_sha": "a" * 40, "candidate": {"oldUrl": "old", "currentUrl": "current"}}
+    page = "evidence"
+    receipt = {
+        "schema": "daum-redirect-observation/v1", "write_authority": False,
+        "candidate": envelope,
+        "redirect": {"status": 301, "oldUrl": "old", "newUrl": "current"},
+        "page": {"url": "current", "shortlink": "https://daumcommercial.com/?p=42734",
+                 "html": page, "sha256": hashlib.sha256(page.encode()).hexdigest()},
+    }
+    monkeypatch.setattr(redirect_candidate, "probe_candidate", lambda *args: envelope)
+    def replace_during_observation(*args, **kwargs):
+        evidence.rename(moved)
+        evidence.mkdir(mode=0o700)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(receipt).encode())
+    monkeypatch.setattr(redirect_candidate.subprocess, "run", replace_during_observation)
+    import cre_checkpoint_refresh
+    monkeypatch.setattr(cre_checkpoint_refresh, "git_identity", lambda: ("a" * 40, False))
+    node = shutil.which("node")
+    assert node is not None
+    with pytest.raises(ValueError, match="changed"):
+        redirect_candidate.collect_receipt(tmp_path, {}, "42734", None, evidence, node_executable=node)
+    assert not (evidence / "daum-redirect-42734.json").exists()
+    assert not (moved / "daum-redirect-42734.json").exists()
+
+
 def test_rejects_missing_and_relative_node_before_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(redirect_candidate, "probe_candidate", lambda *args: pytest.fail("probe ran"))
     with pytest.raises(ValueError, match="absolute"):

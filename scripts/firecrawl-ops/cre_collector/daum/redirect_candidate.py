@@ -225,9 +225,6 @@ def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str
     The result is evidence only. No caller may treat it as permission to map,
     rekey, ingest or retire a listing.
     """
-    from cre_checkpoint_refresh import git_identity
-    from cre_stop_guarded_tier import _read_at
-
     if not isinstance(node_executable, str) or not os.path.isabs(node_executable):
         raise ValueError("DAUM Node executable must be an absolute path")
     node = os.path.realpath(node_executable)
@@ -238,9 +235,17 @@ def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str
     directory, descriptors = _open_evidence_directory(evidence_dir)
     try:
         _check_evidence_directory(directory, descriptors)
+        return _collect_receipt(run_dir, manifest, native_id, env_file, directory, descriptors,
+                                node_executable, node, node_info)
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+def _collect_receipt(run_dir, manifest, native_id, env_file, directory, descriptors,
+                     node_executable, node, node_info):
+    from cre_checkpoint_refresh import git_identity
+    from cre_stop_guarded_tier import _read_at
 
     envelope = probe_candidate(run_dir, manifest, native_id, env_file)
     collector_dir = Path(__file__).resolve().parent.parent
@@ -278,21 +283,16 @@ def collect_receipt(run_dir: Path, manifest: dict, native_id: str, env_file: str
     ):
         raise ValueError("DAUM redirect receipt binding changed")
     payload = json.dumps(receipt, ensure_ascii=False, separators=(",", ":")).encode()
-    directory, descriptors = _open_evidence_directory(evidence_dir)
-    try:
-        _check_evidence_directory(directory, descriptors)
-        name = "daum-redirect-" + native_id + ".json"
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=descriptors[-1])
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.fsync(descriptors[-1])
-        if _read_at(descriptors[-1], name, 6_000_000)[0] != payload:
-            raise ValueError("DAUM receipt readback differs")
-        _check_evidence_directory(directory, descriptors)
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+    _check_evidence_directory(directory, descriptors)
+    name = "daum-redirect-" + native_id + ".json"
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=descriptors[-1])
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.fsync(descriptors[-1])
+    if _read_at(descriptors[-1], name, 6_000_000)[0] != payload:
+        raise ValueError("DAUM receipt readback differs")
+    _check_evidence_directory(directory, descriptors)
     return receipt
