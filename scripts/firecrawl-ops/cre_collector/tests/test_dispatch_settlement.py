@@ -55,6 +55,27 @@ def test_verified_peer_and_unwritten_interruption_can_qualify(case):
     assert settlement.qualify(root, series_id, invocation, **options)["outcome"] == "qualified"
 
 
+@pytest.mark.parametrize("state,write,target_ok,expected", [
+    ("interrupted", False, True, True),
+    ("interrupted", True, True, False),
+    ("interrupted", False, False, False),
+    ("failed_global", False, True, False),
+])
+def test_serial_settlement_keeps_unknown_writes_fenced(case, monkeypatch, state, write, target_ok, expected):
+    root, series_id, invocation, options, child, _ = case
+    options["expected_config"] = {"pipeline": False, "sources": ["colliers"]}
+    child["preflight"] = {"database_target": options["expected_target"] if target_ok else {"value": "f" * 64}}
+    child["sources"]["colliers"] = {"state": "ingested" if write else "collecting"}
+    monkeypatch.setattr(settlement.series, "evidence_reconciliation_required", lambda *_: False)
+    monkeypatch.setattr(settlement.series, "document_reconciliation_required", lambda *_: False)
+    monkeypatch.setattr(settlement.series, "_reconciled_state", lambda *_: state)
+    if expected:
+        assert settlement.qualify(root, series_id, invocation, **options)["unfinished_sources"] == ["colliers"]
+    else:
+        with pytest.raises(settlement.DispatchSettlementRefused):
+            settlement.qualify(root, series_id, invocation, **options)
+
+
 @pytest.mark.parametrize("damage", ["unknown_write", "cursor_unknown", "ingested", "deadline", "child"])
 def test_uncertain_or_foreign_child_never_qualifies(case, damage):
     root, series_id, invocation, options, child, control = case

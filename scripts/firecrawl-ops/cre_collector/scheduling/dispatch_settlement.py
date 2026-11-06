@@ -94,7 +94,46 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     if parent.get("preallocated_expected_target_sha256") != expected_target.get("value"):
         raise DispatchSettlementRefused("preallocated target evidence differs")
     if not expected_config.get("pipeline"):
-        raise DispatchSettlementRefused("only the pipeline series is supported")
+        sources = expected_config.get("sources") or []
+        if len(sources) != 1:
+            raise DispatchSettlementRefused("serial source scope differs")
+        source = sources[0]
+        checkpoint = parent["sources"][source]
+        ref = checkpoint.get("checkpoint_run")
+        last = control.get("last_checkpoint") or {}
+        attempts = checkpoint.get("attempts") or []
+        if (not isinstance(ref, str) or len(Path(ref).parts) != 2
+                or Path(ref).parts[0] != "runs" or Path(ref).name != last.get("run_id")
+                or not attempts or attempts[-1].get("series_control_child_id") != last.get("child_invocation_id")):
+            raise DispatchSettlementRefused("terminal serial child receipt differs")
+        _, child = series._load_child_manifest(path / "runs", before=set(), source=source,
+            git_sha=expected_sha, expected_path=path / ref / "manifest.json",
+            expected_config=series._expected_child_config(source, expected_config))
+        if ((child.get("preflight") or {}).get("database_target") != expected_target
+                or series.evidence_reconciliation_required(child)
+                or series.document_reconciliation_required(child, expected_config)):
+            raise DispatchSettlementRefused("serial target or evidence differs")
+        current = (child.get("sources") or {}).get(source) or {}
+        if current.get("state") in {"ingesting", "ingest_recovery_required"}:
+            raise DispatchSettlementRefused("serial write is unresolved")
+        state = series._reconciled_state(child, expected_config)
+        if state in {"complete", "qualified_partial_subset"}:
+            if attempts[-1].get("rc") != 0 or checkpoint.get("state") != state:
+                raise DispatchSettlementRefused("serial success is not bound to the terminal attempt")
+            unfinished = []
+        elif state in {"failed_source", "interrupted"}:
+            if current.get("ingest") is not None or current.get("state") == "ingested":
+                raise DispatchSettlementRefused("serial incomplete work may include a write")
+            unfinished = [source]
+        else:
+            raise DispatchSettlementRefused("serial outcome is not settled")
+        check_owner()
+        if manifest_path.read_bytes() != parent_bytes or read_receipt(path, invocation_id) != control:
+            raise DispatchSettlementRefused("series evidence changed")
+        verify_preallocated_receipt(root, series_id, invocation_id, expected_sha=expected_sha,
+            expected_target=expected_target, expected_config=expected_config)
+        return {"status": terminal["status"], "outcome": "qualified", "child": ref,
+                "unfinished_sources": unfinished}
     refs = {parent["sources"][key].get("checkpoint_run") for key in expected_config["sources"]}
     if len(refs) != 1:
         raise DispatchSettlementRefused("pipeline child owner differs")
