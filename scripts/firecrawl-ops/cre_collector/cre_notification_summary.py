@@ -726,11 +726,19 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         result.update(subset_fields)
         if inventory_only:
             result["verified_inventory_only"] = inventory_only
-        if config.get("admit_baseline_hold_additively") is True:
+        if child.get("status") == "additive_scope_complete_coverage_hold":
+            from cre_checkpoint_refresh import admitted_count_hold
+
+            result["partial"] = True
             result["whole_source_coverage"] = False
-            result["baseline_hold_retained"] = (
-                child.get("status") == "additive_scope_complete_coverage_hold"
+            result["baseline_hold_retained"] = True
+            result["baseline_hold_reason"] = (
+                (checkpoint["gate"].get("raw_reason") if admitted_count_hold(checkpoint) else None)
+                or child.get("aggregate_gate", {}).get("baseline_advisory_reasons", {}).get(source)
             )
+        elif config.get("admit_baseline_hold_additively") is True:
+            result["whole_source_coverage"] = False
+            result["baseline_hold_retained"] = False
         if transaction_breakdown is not None:
             result["transaction_breakdown"] = transaction_breakdown
         return result

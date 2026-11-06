@@ -456,6 +456,39 @@ def read_pipeline(evidence, source_keys=None):
     return summary.verified_pipeline_summary(**args)
 
 
+@pytest.mark.parametrize("source_hold,aggregate_hold", [(True, True), (True, False), (False, True)])
+def test_serial_count_hold_reports_partial_from_bound_evidence(evidence, source_hold, aggregate_hold):
+    import cre_checkpoint_series as series
+    from test_cre_checkpoint_series import config as series_config
+
+    parent, child = evidence["values"]["parent"], evidence["values"]["child"]
+    cfg = series_config((SOURCE,))
+    reason = "current_active 3 below 70% of baseline median 102 (threshold 72)"
+    parent["config"] = cfg
+    parent["status"] = "qualified_partial_subset"
+    parent["sources"][SOURCE].update(state="qualified_partial_subset",
+                                     checkpoint_status="additive_scope_complete_coverage_hold")
+    evidence["values"]["control"]["status"] = "qualified_partial_subset"
+    child["config"] = series._expected_child_config(SOURCE, cfg)
+    child["status"] = "additive_scope_complete_coverage_hold"
+    child["scope"] = {"kind": "collector_registry_additive_coverage_hold", "whole_source_coverage": False}
+    child["sources"][SOURCE]["gate"] = (
+        {"verdict": "ok_additive_coverage_hold", "raw_verdict": "hold", "raw_reason": reason,
+         "mark_missing_safe": False, "admission_scope": "additive_coverage_hold"}
+        if source_hold else {"verdict": "ok"}
+    )
+    child["aggregate_gate"] = {"rc": 2, "hold_sources": [], "non_ok_sources": [],
+        "baseline_advisory_holds": [SOURCE] if aggregate_hold else [],
+        "baseline_advisory_reasons": {SOURCE: reason} if aggregate_hold else {},
+        "mark_missing_safe_brokerages": []}
+    evidence["save"]()
+    result = read(evidence)
+    assert result["partial"] is True
+    assert result["whole_source_coverage"] is False
+    assert result["baseline_hold_retained"] is True
+    assert result["baseline_hold_reason"] == reason
+
+
 def test_real_private_receipts_prove_only_exact_current_inventory(
     evidence, monkeypatch
 ):

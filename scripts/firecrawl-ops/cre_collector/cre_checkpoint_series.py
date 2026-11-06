@@ -1185,8 +1185,12 @@ def _child_succeeded(
             or child_manifest.get("status") == "additive_scope_complete_coverage_hold"):
         from cre_checkpoint_refresh import SOURCE_TO_BROKERAGE, additive_coverage_hold_enabled, admitted_count_hold, subset_gate_can_admit
 
-        sources = config.get("sources") or []
-        if not isinstance(sources, list) or len(sources) != 1:
+        sources = (child_manifest.get("config") or {}).get("sources")
+        parent_sources = config.get("sources")
+        if (not isinstance(sources, list) or len(sources) != 1 or not isinstance(sources[0], str)
+                or not isinstance(parent_sources, list) or sources[0] not in parent_sources
+                or sources[0] not in SOURCE_TO_BROKERAGE
+                or set(child_manifest.get("sources") or {}) != set(sources)):
             return False
         source = sources[0]
         checkpoint = (child_manifest.get("sources") or {}).get(source) or {}
