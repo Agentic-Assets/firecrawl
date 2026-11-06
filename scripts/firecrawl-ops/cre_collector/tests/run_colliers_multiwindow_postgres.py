@@ -122,12 +122,61 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
         env_file.write_text("POSTGRES_URL_NON_POOLING=" + db_url + "\n", encoding="utf8")
         env_file.chmod(0o600)
         shim = root / "psql"
-        shim.write_text("#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\n"
-            "if '-f' in args and args[args.index('-f')+1] != '-':\n"
-            " i=args.index('-f')+1; fd=os.open(args[i],os.O_RDONLY); os.dup2(fd,0); os.close(fd); args[i]='-'\n"
-            "os.environ.clear(); os.environ.update(" + repr(docker_env) + ")\n"
-            "os.execv(" + repr(str(docker_binary)) + ",[" + repr(str(docker_binary)) + ",'exec','-i','--user',str(os.getuid())+':'+str(os.getgid())," + repr(container_id) + ",'psql','-U','postgres',*args])\n",
-            encoding="utf8")
+        # psql's validation \o target is a host-only private file. Keep the
+        # container mount-free: write that one result to a random container
+        # file, then stream it back into the already-open host file.
+        shim.write_text(f"""#!/usr/bin/env python3
+import os, re, stat, subprocess, sys, uuid
+from pathlib import Path
+args = sys.argv[1:]
+root = Path({str(root)!r})
+result_fd = None
+for i, arg in enumerate(args):
+    if arg.startswith("CRE_VALIDATION_RESULTS="):
+        if i == 0 or args[i - 1] != "-v" or result_fd is not None:
+            raise SystemExit("invalid validation result argument")
+        path = Path(arg.split("=", 1)[1])
+        if path.parent.parent != root or path.name != "query-results.tsv" or not re.fullmatch(
+                r"cre-validate-results-[a-z0-9_]+", path.parent.name):
+            raise SystemExit("validation result outside private fixture root")
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(directory)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise SystemExit("validation result directory is not private")
+            result_fd = os.open(path.name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory)
+            info = os.fstat(result_fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise SystemExit("validation result file is not private and owned")
+            os.ftruncate(result_fd, 0)
+        finally:
+            os.close(directory)
+        remote = "/tmp/colliers-validation-" + uuid.uuid4().hex
+        args[i] = "CRE_VALIDATION_RESULTS=" + remote
+if "-f" in args and args[args.index("-f") + 1] != "-":
+    i = args.index("-f") + 1
+    fd = os.open(args[i], os.O_RDONLY)
+    os.dup2(fd, 0)
+    os.close(fd)
+    args[i] = "-"
+env = {docker_env!r}
+docker = {str(docker_binary)!r}
+identity = {container_id!r}
+base = [docker, "exec", "-i", "--user", str(os.getuid()) + ":" + str(os.getgid()), identity]
+run = subprocess.run(base + ["psql", "-U", "postgres", *args], env=env)
+if run.returncode != 0:
+    raise SystemExit(run.returncode)
+if result_fd is not None:
+    try:
+        with os.fdopen(result_fd, "wb") as output:
+            result_fd = None
+            copy = subprocess.run(base + ["cat", remote], env=env, stdout=output)
+        if copy.returncode != 0:
+            raise SystemExit(copy.returncode)
+    finally:
+        if result_fd is not None:
+            os.close(result_fd)
+""", encoding="utf8")
         shim.chmod(0o700)
         database = {"target": ingest.database_target_fingerprint_from_url(db_url), "psql": shim, "env_file": env_file}
         (root / "fixture").mkdir()
@@ -164,7 +213,7 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
                 raise RuntimeError("refusing cleanup: created container identity cannot be confirmed")
             docker("rm", "-f", container_id)
             absent = docker("inspect", container_id, check=False)
-            if absent.returncode == 0 or "No such object" not in absent.stderr:
+            if absent.returncode == 0 or "no such object" not in absent.stderr.lower():
                 raise RuntimeError("cannot confirm owned synthetic container is absent")
             docker("info", "--format", "{{.ID}}")
             print(f"confirmed cleanup of synthetic container {container_id}", flush=True)
