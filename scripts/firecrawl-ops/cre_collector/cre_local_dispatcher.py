@@ -352,9 +352,10 @@ def main(argv=None) -> int:
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--wake", action="store_true", help="drain already recorded due intents")
     parser.add_argument("--wake-snapshot", action="store_true", help="enqueue current-task snapshot from stdin and wake")
+    parser.add_argument("--snapshot-only", action="store_true", help="enqueue current-task snapshot without owning the drain")
     args = parser.parse_args(argv)
-    waking = args.wake or args.wake_snapshot
-    if args.wake and args.wake_snapshot:
+    waking = args.wake or args.wake_snapshot or args.snapshot_only
+    if sum((args.wake, args.wake_snapshot, args.snapshot_only)) > 1:
         parser.error("choose one wake mode")
     if waking and (args.slot is not None or args.policy is not None):
         parser.error("wake cannot submit a new intent")
@@ -377,11 +378,13 @@ def main(argv=None) -> int:
     finally:
         os.close(parent_fd)
     path = parent / "local-dispatch"
-    if args.wake_snapshot:
+    if args.wake_snapshot or args.snapshot_only:
         raw = sys.stdin.buffer.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise ValueError("current task snapshot is too large")
         enqueue_current_snapshot(path, json.loads(raw))
+        if args.snapshot_only:
+            return 0
     if waking:
         dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify,
                              successor=successor, wait=False)

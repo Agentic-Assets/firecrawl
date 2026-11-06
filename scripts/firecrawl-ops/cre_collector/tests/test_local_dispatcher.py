@@ -1,6 +1,7 @@
 """No-route policy and durable dispatch handoff tests."""
 import copy
 import json
+import io
 import os
 import subprocess
 import sys
@@ -127,6 +128,18 @@ def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy
     dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
     states = [json.loads(item.read_text())["state"] for item in tmp_path.glob("*.json")]
     assert sorted(states) == ["held_no_work", "queued"]
+
+
+def test_snapshot_only_never_becomes_dispatch_owner(tmp_path, monkeypatch, policy):
+    monkeypatch.setattr(dispatcher, "HERE", tmp_path)
+    (tmp_path / "out").mkdir()
+    policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
+    snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
+                "tasks": [{"task": "colliers", "policy": policy, "due": ["20261106T042000Z"]}]}
+    monkeypatch.setattr(dispatcher.sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(snapshot).encode())))
+    monkeypatch.setattr(dispatch_queue, "drain", lambda *args, **kwargs: pytest.fail("scanner cannot dispatch"))
+    assert dispatcher.main(["--snapshot-only"]) == 0
+    assert len(list((tmp_path / "out" / "local-dispatch").glob("*.json"))) == 1
 
 
 def test_native_no_work_marker_must_bind_exact_completed_launch(policy):

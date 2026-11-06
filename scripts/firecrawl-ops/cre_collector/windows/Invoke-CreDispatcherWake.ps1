@@ -1,6 +1,6 @@
 <# Uninstalled WIP: discover current series tasks and submit due policy snapshots. #>
 [CmdletBinding()]
-param([string]$VerifyTaskPath,[string]$VerifyTaskName,[string]$ExpectedTaskSha256)
+param([string]$VerifyTaskPath,[string]$VerifyTaskName,[string]$ExpectedTaskSha256,[switch]$DrainOnly)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'CreReviewedTaskUpdate.ps1')
@@ -113,6 +113,7 @@ function Invoke-CreDispatcherWake {
     $now=[DateTimeOffset]::UtcNow; $tasks=@()
     foreach($task in @(Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -ErrorAction Stop)) {
         if($task.State -eq 'Disabled') { continue }
+        if($task.TaskName -cin @('Dispatcher Snapshot','Dispatcher Drain')) { continue }
         $taskId='t_'+(Get-CreWakeHash ($task.TaskPath+$task.TaskName)).Substring(0,24)
         try {
             $xmlText=Export-ScheduledTask -TaskPath $task.TaskPath -TaskName $task.TaskName -ErrorAction Stop
@@ -153,17 +154,24 @@ function Invoke-CreDispatcherWake {
     $snapshot=@{schema='cre-dispatch-current-snapshot/v1'; observed_unix_ms=$now.ToUnixTimeMilliseconds(); tasks=$tasks}
     $repo=[string]$defaults['LinuxRepo']; $distro=[string]$defaults['Distro']; $user=[string]$defaults['LinuxUser']
     $payload=$snapshot | ConvertTo-Json -Depth 20 -Compress
-    $payload | & wsl.exe -d $distro -u $user --exec python3 -B ($repo+'/scripts/firecrawl-ops/cre_collector/cre_local_dispatcher.py') --wake-snapshot
+    $payload | & wsl.exe -d $distro -u $user --exec python3 -B ($repo+'/scripts/firecrawl-ops/cre_collector/cre_local_dispatcher.py') --snapshot-only
     if($LASTEXITCODE -ne 0) { throw 'Dispatcher wake failed' }
 }
 
 if($MyInvocation.InvocationName -ne '.') {
     if($VerifyTaskPath -or $VerifyTaskName -or $ExpectedTaskSha256) {
+        if($DrainOnly) {throw 'Task verification cannot drain'}
         if($VerifyTaskPath -cne '\Agentic Assets\CRE\' -or -not $VerifyTaskName -or
            $VerifyTaskName -match '[\\/\r\n]' -or $ExpectedTaskSha256 -cnotmatch '^[a-f0-9]{64}$') {throw 'Task verification input differs'}
         $task=Get-ScheduledTask -TaskPath $VerifyTaskPath -TaskName $VerifyTaskName -ErrorAction Stop
         if($task.State -eq 'Disabled') {throw 'Task disabled'}
         $xml=Export-ScheduledTask -TaskPath $VerifyTaskPath -TaskName $VerifyTaskName -ErrorAction Stop
         if((Get-CreWakeHash $xml) -cne $ExpectedTaskSha256) {throw 'Task policy changed'}
+    } elseif($DrainOnly) {
+        $launcher=Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'
+        $defaults=Get-CreWakeDefaults $launcher
+        & wsl.exe -d ([string]$defaults['Distro']) -u ([string]$defaults['LinuxUser']) --exec python3 -B `
+            ([string]$defaults['LinuxRepo']+'/scripts/firecrawl-ops/cre_collector/cre_local_dispatcher.py') --wake
+        if($LASTEXITCODE -ne 0) {throw 'Dispatcher drain failed'}
     } else { Invoke-CreDispatcherWake }
 }
