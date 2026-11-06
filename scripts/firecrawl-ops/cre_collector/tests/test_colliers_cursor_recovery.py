@@ -103,7 +103,7 @@ def test_bound_local_evidence_qualifies_without_writing(incident):
 
 
 
-@pytest.mark.parametrize("case", ["gap", "wrap", "evidence_mismatch", "outside_interval", "artifact_cursor"])
+@pytest.mark.parametrize("case", ["gap", "wrap", "shrink_wrap", "no_progress", "evidence_mismatch", "outside_interval", "artifact_cursor"])
 def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     import hashlib
     import cre_colliers_partial_checkpoint as partial
@@ -116,6 +116,10 @@ def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     start, first, end, total = (1459, 1460, 1565, 2000)
     if case == "wrap":
         start, first, end = 1999, 1, 3
+    elif case == "shrink_wrap":
+        start, first, end = 3000, 1999, 1
+    elif case == "no_progress":
+        first, end = start, start
     elif case == "outside_interval":
         first = 1600
     previous.update(cursor=start, first_position=first, next_cursor=end)
@@ -137,7 +141,7 @@ def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
     evidence_path.write_bytes(raw)
     checked["receipt"]["evidence"] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
     _write(run / "manifest.json", child)
-    if case in {"gap", "wrap"}:
+    if case in {"gap", "wrap", "shrink_wrap"}:
         # Cursor proof and pending binding must follow the modified committed window.
         cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers",
             "targetSha256": child["preflight"]["database_target"]["value"], "position": end,

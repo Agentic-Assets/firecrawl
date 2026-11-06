@@ -156,7 +156,12 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     # The selector orders every position before an out-of-range cursor,
     # starting at position 1 after a source inventory shrinks.
     rotation_start = start if start <= total else 1
-    if (first - rotation_start) % total >= (end - rotation_start) % total:
+    distance = (end - rotation_start) % total
+    # A cursor beyond a shrunken inventory starts scanning at 1. Reaching
+    # cursor 1 after processing the tail is a full rotation, not zero work.
+    if start > total and end == 1:
+        distance = total
+    if (first - rotation_start) % total >= distance:
         raise ValueError("Colliers prior rotation interval differs")
     evidence_raw = _read_private_file(run_dir / prior_worker["evidence_path"], 128 * 1024 * 1024)
     evidence = worker_receipt.get("evidence") or {}
