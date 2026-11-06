@@ -118,7 +118,7 @@ validated, typed terminal
 rows, not a complete inventory or a database-admission proof. Other failures
 include denial and uncertain cleanup; they are not reclassified as missing.
 In fresh property-detail mode, settled identity/structure refusals, responses
-with empty or missing content and required direct-HTTP 404s hold selected rows while eligible peers continue into the private
+with empty, missing or malformed content and required direct-HTTP 404s hold selected rows while eligible peers continue into the private
 spool. The source then returns an error marked truncated; these observations
 are not admitted to Supabase, do not prove full coverage, and cannot authorize
 retirement. Settled direct timeouts, source 5xx responses and recognized error

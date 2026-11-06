@@ -393,6 +393,9 @@ export function assertAvisonYoungDetailDoc(
   if (Number.isFinite(status) && status >= 400) {
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
+  if (typeof doc.rawHtml !== "string" || typeof doc.markdown !== "string") {
+    throw new AvisonYoungSettledDetailError("Avison Young detail has malformed content types");
+  }
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
   if (!combined.trim()) {
     // A missing SDK data envelope is not evidence of an empty source page.
@@ -2785,6 +2788,8 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           outcomes[index]!.reason = "empty_or_missing_content";
         } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
           outcomes[index]!.reason = "unbound_response";
+        } else if (error.message.includes("Avison Young detail has malformed content types")) {
+          outcomes[index]!.reason = "malformed_content_type";
         }
         heldIds.push(selectedProviderIds[index]!);
         return undefined;
