@@ -157,8 +157,11 @@ SELECT json_build_object(
         # An exact owned identity may fill a NULL title and a NULL coordinate
         # pair, but never overwrite a populated field or incomplete pair.
         sql("""
-INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,raw_data)
+-- This parent predates the synthetic 10:00 observation; the schema default
+-- is now(), which would correctly make an otherwise eligible row stale.
+INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,status,title,scraped_at,raw_data)
 SELECT id,'infabode:5','https://infabode.com/services/listings/5','active',NULL,
+ '2026-11-05T09:00:00Z',
  '{"sourceKey":"nai-global","id":"infabode:5"}'::jsonb
 FROM credeals.cre_brokerages WHERE slug='nai-global';
 """)
