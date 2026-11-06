@@ -346,17 +346,13 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
         if len(names) > 4096:
             raise SourceEvidenceRefusal("Colliers cursor history search exceeds limit")
         matches = []
-        unexamined_link = False
         unsafe_child = False
         for name in names:
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", name) is None:
                 continue
             candidate = base / name
             if candidate.is_symlink():
-                # Never follow an unowned series link. It cannot compete with
-                # a uniquely bound real parent, but alone does not prove that
-                # the cursor's history is absent.
-                unexamined_link = True
+                # Unowned links are not history and are never followed.
                 continue
             if not candidate.is_dir():
                 continue
@@ -372,7 +368,7 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
                 continue
             if bound or child_exists:
                 matches.append((candidate, parent, bound))
-        if not matches and not unexamined_link:
+        if not matches:
             _check_owner(owner)
             return {"history_unavailable": True, "generation": run_id, "position": position}
         # An ambiguous location must not hide an independently readable

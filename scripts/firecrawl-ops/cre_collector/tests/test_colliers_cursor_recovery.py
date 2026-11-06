@@ -246,14 +246,17 @@ def test_unrelated_series_symlink_does_not_hold_bound_parent(incident, monkeypat
     assert seen == [series_dir]
 
 
-def test_symlinked_series_is_held_without_treating_history_as_absent(incident, monkeypatch, tmp_path):
-    series_dir, _, owner, _, _, child = incident
+def test_unrelated_link_without_real_parent_reports_history_unavailable(incident, monkeypatch, tmp_path):
+    series_dir, _, owner, _, cursor, child = incident
     monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
-    target_dir = series_dir.rename(series_dir.with_name("hidden-fixture"))
-    series_dir.symlink_to(target_dir, target_is_directory=True)
-    with pytest.raises(recovery.SourceEvidenceRefusal):
-        recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
-            env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+    series_dir.rename(series_dir.with_name("hidden-fixture"))
+    series_dir.with_name("2026-11-06T030005Z").symlink_to(
+        tmp_path / "unrelated", target_is_directory=True)
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not recover"))
+    result = recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+        env_file=None, before_publish=lambda: None, after_publish=lambda: None)
+    assert result == {"history_unavailable": True, "generation": cursor["generation"],
+                      "position": cursor["position"]}
 
 
 def test_missing_entire_legacy_series_reports_unavailable_without_recovery(incident, monkeypatch, tmp_path):
