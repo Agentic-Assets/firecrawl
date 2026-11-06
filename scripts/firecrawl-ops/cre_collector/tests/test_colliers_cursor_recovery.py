@@ -234,7 +234,10 @@ def test_qualification_turns_settled_missing_evidence_into_source_hold(incident,
         recovery.qualify(series_dir, owner)
 
 
-@pytest.mark.parametrize("case", ["nai_only", "colliers", "duplicate", "child_collapse", "missing_metric"])
+@pytest.mark.parametrize("case", ["nai_only", "colliers", "duplicate", "child_collapse", "missing_metric",
+                                  "missing_both_child", "missing_after_small_child", "unknown_child",
+                                  "duplicate_quality", "duplicate_url_rows", "boolean_count",
+                                  "negative_count", "nonnumeric_count"])
 def test_historical_quality_preserves_global_diagnostic_and_scopes_admission(tmp_path, monkeypatch, case):
     from pathlib import Path
     import copy
@@ -257,12 +260,28 @@ def test_historical_quality_preserves_global_diagnostic_and_scopes_admission(tmp
     after["queries"]["quality_by_source"] = [
         {"source_key": "nai-global", "missing_canonical_url": "92"},
         {"source_key": "colliers-main", "missing_canonical_url": "100"}, changed]
-    before["queries"]["child_counts"].append({"source_key": "colliers", "child_type": "images", "count": "100"})
-    after["queries"]["child_counts"].append({"source_key": "colliers", "child_type": "images",
-        "count": "50" if case == "child_collapse" else "100"})
-    if case == "duplicate":
+    for kind in ("contacts", "documents", "images", "media", "links"):
+        if case == "missing_both_child" and kind == "links":
+            continue
+        count = "4" if case == "missing_after_small_child" and kind == "links" else "100"
+        before["queries"]["child_counts"].append({"source_key": "colliers", "child_type": kind, "count": count})
+        if case == "missing_after_small_child" and kind == "links":
+            continue
+        after["queries"]["child_counts"].append({"source_key": "colliers", "child_type": kind,
+            "count": "50" if case == "child_collapse" and kind == "images" else count})
+    if case == "unknown_child":
+        after["queries"]["child_counts"][-1]["child_type"] = "unknown"
+    if case in {"duplicate", "duplicate_url_rows"}:
         after["queries"]["duplicates"].append({"check_name": "duplicate_source_url_groups",
             "source_key": "colliers", "groups": "1", "rows": "2"})
+    if case == "duplicate_url_rows":
+        after["queries"]["duplicates"].append({"check_name": "duplicate_source_url_groups",
+            "source_key": "colliers", "groups": "0", "rows": "0"})
+    if case == "duplicate_quality":
+        after["queries"]["quality_by_source"].append(copy.deepcopy(changed))
+    if case in {"boolean_count", "negative_count", "nonnumeric_count"}:
+        changed["bad_source_url"] = {"boolean_count": True, "negative_count": "-1",
+                                     "nonnumeric_count": "unknown"}[case]
     assert refresh.compare_validation_quality(before, after)["ok"] is False
     colliers_regression = case != "nai_only"
     baseline = run / "before.json"
@@ -296,9 +315,17 @@ def test_historical_quality_preserves_global_diagnostic_and_scopes_admission(tmp
     assert source_quality["ok"] is not colliers_regression
     if case in {"colliers", "duplicate", "child_collapse"}:
         assert any("colliers" in item for item in source_quality["failures"])
-    elif case == "missing_metric":
+    elif case in {"missing_metric", "missing_both_child", "missing_after_small_child", "unknown_child",
+                  "duplicate_quality", "duplicate_url_rows", "boolean_count", "negative_count", "nonnumeric_count"}:
         assert source_quality["failures"] == ["Colliers recovery quality rows are incomplete or malformed"]
     assert manifest["validation"]["readback_ok"] is True
+    if case == "nai_only":
+        # An ordinary single-source run still uses the original global gate.
+        with pytest.raises(refresh.GlobalStageError, match="final validation"):
+            refresh.run_final_validation(run, copy.deepcopy(manifest), None, sources=["colliers"],
+                evidence_dir=run / "ordinary", before_path=baseline)
+
+
 
 
 @pytest.mark.parametrize("mismatch", ["postimage", "held_partition", "target"])

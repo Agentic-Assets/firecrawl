@@ -7999,8 +7999,8 @@ def compare_colliers_recovery_quality(before: Mapping[str, Any], after: Mapping[
             raise ValueError("Colliers duplicate rows are malformed")
         children = filtered["child_counts"]
         child_types = [row.get("child_type") for row in children]
-        if (any(not isinstance(kind, str) or not kind for kind in child_types)
-                or len(set(child_types)) != len(child_types)
+        if (len(child_types) != 5
+                or set(child_types) != {"contacts", "documents", "images", "media", "links"}
                 or any(not count_valid(row.get("count")) for row in children)):
             raise ValueError("Colliers child counts are malformed")
         for name in ("bad_child_urls", "primary_child_conflicts", "orphans", "search_smoke"):
