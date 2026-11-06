@@ -24,7 +24,7 @@ def test_real_source_mapper_inventory_only_is_rejected_before_partial_gate(tmp_p
     observed = (stamp - timedelta(seconds=10)).isoformat()
     script = """
 const [input, generation, observed] = process.argv.slice(1);
-process.argv = [process.argv[0], 'nai-fixture'];
+process.argv = [process.argv[0]];
 const { naiListingFromFeed } = await import('./sources/nai-global.ts');
 const row = JSON.parse(input);
 const mapped = naiListingFromFeed(row, 'sale', null, 'synthetic unavailable detail', true,

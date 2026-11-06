@@ -92,7 +92,7 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
                 if inventory_only:
                     script = """
 const [input, generation, observed] = process.argv.slice(1);
-process.argv = [process.argv[0], 'nai-fixture'];
+process.argv = [process.argv[0]];
 globalThis.fetch = async () => { throw new Error('NETWORK_DENIED'); };
 const { naiListingFromFeed } = await import('./sources/nai-global.ts');
 const row = JSON.parse(input);
