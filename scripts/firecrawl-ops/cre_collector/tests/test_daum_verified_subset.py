@@ -92,9 +92,26 @@ def test_subset_scope_is_explicit_and_exact(subset, mutation):
         daum.subset_source_scope(artifact)
 
 
+def install_identity_probe(prepared):
+    from cre_checkpoint_refresh import git_identity
+    from cre_daum_identity_sql import cohort_members
+    import json
+
+    manifest = prepared[3]
+    members = cohort_members(json.loads(prepared[1].read_bytes()))
+    partition = [{**member, "conflicted": False} for member in members]
+    manifest["sources"][daum.SOURCE]["daum_identity_probe"] = {
+        "artifact_sha256": manifest["sources"][daum.SOURCE]["artifact"]["sha256"],
+        "generation_id": manifest["run_id"], "producer_sha": git_identity()[0],
+        "database_target_sha256": manifest["preflight"]["database_target"]["value"],
+        "members_sha256": daum._sha(members), "partition": partition,
+    }
+
+
 def admit(prepared, phase="source"):
     from cre_checkpoint_refresh import git_identity
 
+    install_identity_probe(prepared)
     return daum.admit_subset(
         prepared[1],
         prepared[3],

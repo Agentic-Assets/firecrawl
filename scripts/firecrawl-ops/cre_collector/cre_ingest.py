@@ -4071,6 +4071,12 @@ def build_sql(
         source_alias="s", target_alias="t", native_sql="s.native_ids[1]"
     )
     daum_subset_guard = ""
+    daum_identity_guard = ""
+    if daum_verified_subset_claims is not None:
+        from cre_daum_identity_sql import transaction_partition_sql
+        daum_identity_guard = transaction_partition_sql(
+            daum_verified_subset_claims["identityMembers"],
+            daum_verified_subset_claims["identityPartition"])
     if daum_verified_subset_claims is not None:
         if targeted or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
             raise ValueError("DAUM subset cannot change lifecycle or inventory-only scope")
@@ -4081,7 +4087,8 @@ def build_sql(
         from cre_daum_fallback_partition import transaction_guard_sql
         daum_fallback_guard = transaction_guard_sql(
             daum_verified_subset_claims["fallbackMembers"],
-            daum_verified_subset_claims["fallbackPartition"], filter_src=True)
+            daum_verified_subset_claims["fallbackPartition"], filter_src=True,
+            identity_held=bool(daum_identity_guard))
     daum_fallback_update = ""
     if daum_fallback_guard:
         daum_fallback_update = """
@@ -4123,8 +4130,17 @@ BEGIN
  IF updated_count <> (SELECT count(*) FROM _daum_fallback_apply)
  THEN RAISE EXCEPTION 'DAUM fallback evidence targets changed'; END IF;
 END $$;
+"""
+    if daum_identity_guard:
+        fallback_held = ("UNION SELECT brokerage_id, external_id FROM _daum_fallback_held"
+                         if daum_fallback_guard else "")
+        daum_fallback_update += f"""
 UPDATE credeals.cre_scrape_jobs j
- SET status='partial', listings_saved=jm.saved-(SELECT count(*) FROM _daum_fallback_held)
+ SET status='partial', listings_saved=jm.saved-(
+   SELECT count(*) FROM (
+     SELECT brokerage_id, external_id FROM _daum_identity_emitted_held
+     {fallback_held}
+   ) held)
  FROM _jobmeta jm
  WHERE jm.slug='daum-commercial' AND j.id=jm.job_id;
 """
@@ -4774,8 +4790,20 @@ WHERE s.slug = e.slug
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
 FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;""")
+    if daum_identity_guard:
+        w(daum_identity_guard)
+        w("""
+CREATE TEMP TABLE _daum_identity_emitted_held ON COMMIT DROP AS
+SELECT h.brokerage_id, h.external_id FROM _daum_identity_held h
+JOIN _src s USING (brokerage_id, external_id);
+""")
     if daum_fallback_guard:
         w(daum_fallback_guard)
+    if daum_identity_guard:
+        w("""
+DELETE FROM _src s USING _daum_identity_held h
+ WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
+""")
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.

@@ -900,6 +900,51 @@ def _admit(
                     whole_lease_coverage="unknown" if held or target_held_ids else "proved",
                 )
                 require(binding["emitted_count"] > 0)
+        # A separate identity classification covers the entire source cohort,
+        # including source-held members.  Existing fallback classifications
+        # remain independent and both held sets are combined exactly once.
+        from cre_daum_identity_sql import cohort_members, validate_partition
+
+        identity_members = cohort_members(artifact)
+        identity_probe = manifest["sources"][SOURCE].get("daum_identity_probe")
+        require(isinstance(identity_probe, dict) and set(identity_probe) == {
+            "artifact_sha256", "generation_id", "producer_sha", "database_target_sha256",
+            "members_sha256", "partition"})
+        require(identity_probe["artifact_sha256"] == digest
+                and identity_probe["generation_id"] == manifest["run_id"]
+                and identity_probe["producer_sha"] == current_code_sha
+                and identity_probe["database_target_sha256"] == target["value"]
+                and identity_probe["members_sha256"] == _sha(identity_members))
+        identity_held = validate_partition(identity_members, identity_probe["partition"])
+        binding["identity_partition_sha256"] = _sha(identity_probe["partition"])
+        binding["identity_source_held"] = sorted(held_ids)
+        binding["identity_held"] = [
+            {"native_id": item["native_id"], "external_id": item["external_id"],
+             "reason": "identity_conflict"} for item in identity_held
+        ]
+        fallback_held = binding.get("target_held", [])
+        by_native = {item["native_id"]: item for item in fallback_held}
+        for item in binding["identity_held"]:
+            # Already source-held members remain in the audit partition but do
+            # not decrement emitted counts a second time.
+            if item["native_id"] not in held_ids:
+                by_native.setdefault(item["native_id"], item)
+        target_held = sorted(by_native.values(), key=lambda item: item["external_id"])
+        target_ids = {item["native_id"] for item in target_held}
+        target_keys = {item["external_id"] for item in target_held}
+        binding.update(
+            source_emitted_count=emitted_total, source_held_count=len(held_ids),
+            source_staged_identities_sha256=_sha(staged_identities), target_held=target_held,
+            emitted_count=emitted_total - len(target_ids),
+            flat_emitted_count=sum(1 for row in listings if row["daumPostId"] not in target_ids),
+            staged_count=len(staged) - len(target_keys),
+            staged_identities_sha256=_sha([row for row in staged_identities if row[0] not in target_keys]),
+            held_count=len(held_ids) + len(target_ids),
+            sale_count=len((expected["sale"] - retained_ids) - target_ids),
+            lease_count=len(expected["lease"] - target_ids),
+            whole_lease_coverage="unknown" if held or target_ids else "proved",
+        )
+        require(binding["emitted_count"] > 0)
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -994,6 +1039,10 @@ def ingest_subset_context(
             for row in proof["cohort"]
         ],
     }
+    from cre_daum_identity_sql import cohort_members
+    result["identityMembers"] = cohort_members(json.loads(raw))
+    result["identityPartition"] = manifest["sources"][SOURCE]["daum_identity_probe"]["partition"]
+    require(_sha(result["identityPartition"]) == binding["identity_partition_sha256"])
     if proof["schema"] == SUBSET_SCHEMA_V2:
         result.update(subset_policy=SUBSET_POLICY_V2, titleObservations=proof["titleObservations"])
         if proof.get("titleFallbackObservations"):
