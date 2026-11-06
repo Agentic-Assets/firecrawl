@@ -66,7 +66,9 @@ def colliers_partial_child(child: Mapping[str, Any]) -> bool:
         binding, settlement = gate["current_inventory_proof"], checkpoint["partial_cursor_settlement"]
         held, history = binding["held"], binding["history_holds"]
         attempt = checkpoint["subset_ingest_attempt_id"]
-        return (child["config"].get("pipeline") is True
+        window_index = (checkpoint.get("colliers_partial_worker") or {}).get("window_index", 1)
+        return (type(window_index) is int and window_index >= 1
+                and child["config"].get("pipeline") is True
                 and isinstance(child.get("run_id"), str) and bool(child["run_id"])
                 and isinstance(child.get("started_at"), str) and bool(child["started_at"])
                 and isinstance(child.get("collector_git_sha"), str)
@@ -89,7 +91,8 @@ def colliers_partial_child(child: Mapping[str, Any]) -> bool:
                         for key in ("artifact_sha256", "database_target_sha256", "staged_sha256",
                                     "evidence_sha256", "source_sha256", "source_main_sha256", "preimage_sha256"))
                 and type(binding.get("attempt")) is int and binding["attempt"] > 0
-                and artifact.get("path") == f"colliers-partial/window-{binding['attempt']}-artifact.json"
+                and artifact.get("path") == (f"colliers-partial/window-{binding['attempt']}"
+                    + ("" if window_index == 1 else f"-{window_index}") + "-artifact.json")
                 and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
                 and isinstance(held, list) and all(isinstance(value, str) and value for value in held)
                 and len(held) == len(set(held)) and isinstance(history, dict)

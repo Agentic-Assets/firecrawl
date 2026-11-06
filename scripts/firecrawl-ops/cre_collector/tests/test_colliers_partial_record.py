@@ -207,7 +207,8 @@ def test_source_bytes_through_node_replay_into_python_staging(tmp_path):
                       "artifact": {"bytes": len(artifact_bytes), "sha256": artifact_sha},
                       "evidence": artifact["evidence"], "detailFinishedAt": artifact["detailFinishedAt"],
                       "proposedCursor": artifact["proposedCursor"], "admitted": 1, "held": artifact["held"],
-                      "heldOther": artifact["heldOther"], "unattempted": artifact["unattempted"]}
+                      "heldOther": artifact["heldOther"], "unattempted": artifact["unattempted"],
+                      "sourceStopped": False, "rotationComplete": False, "firstPosition": 1}
     worker_path = private / "window-1-receipt.json"
     worker_path.write_text(json.dumps(worker_receipt))
     worker_path.chmod(0o600)
