@@ -6745,6 +6745,29 @@ def recover_interrupted_ingest(
                 }
             },
         }
+        if source == "daum-commercial" and current_inventory.is_verified_subset(manifest["config"], source):
+            from cre_daum_current_inventory import ingest_subset_context
+
+            claims_args = subset_ingest_arguments(run_dir, manifest, source)
+            attempt = checkpoint["ingest"]["attempt_id"]
+            if attempt != checkpoint["subset_ingest_attempt_id"]:
+                raise ValueError("DAUM recovery attempt changed")
+            code_sha, dirty = git_identity()
+            if code_sha != manifest["collector_git_sha"] or dirty:
+                raise ValueError("DAUM recovery code identity changed")
+            context = ingest_subset_context(
+                run_dir / artifact_info["path"], _load_json(Path(claims_args[1])),
+                current_code_sha=code_sha, current_git_dirty=dirty,
+                expected_database_target_sha256=manifest_database_target_sha256(manifest),
+                attempt_id=attempt,
+            )
+            binding = context["binding"]
+            if (binding != checkpoint["gate"]["current_inventory_proof"]
+                    or binding["generation_id"] != manifest["run_id"]
+                    or binding["artifact_sha256"] != artifact_info["sha256"]):
+                raise ValueError("DAUM recovery binding changed")
+            probe_manifest["config"] = {**manifest["config"], "sources": [source]}
+            probe_manifest["sources"][source] = {"artifact": artifact_info, "gate": checkpoint["gate"]}
         if jll_partial_candidate(manifest, source):
             validation["jll_partial_readback"] = jll_partial_readback(run_dir, manifest, env_file)
             atomic_write_json(output, validation)
