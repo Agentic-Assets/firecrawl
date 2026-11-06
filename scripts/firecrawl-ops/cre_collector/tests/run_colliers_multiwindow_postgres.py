@@ -12,17 +12,16 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-import cre_ingest as ingest
-from tests.test_colliers_partial_failed_collector_pipeline import (
-    test_evidence_only_collector_failure_reaches_partial_pipeline as exercise_pipeline,
-)
-
-
 def command(*args, text=None, check=True):
     return subprocess.run(args, input=text, text=True, capture_output=True, check=check, timeout=120)
 
 
 def main():
+    import cre_ingest as ingest
+    from tests.test_colliers_partial_failed_collector_pipeline import (
+        test_evidence_only_collector_failure_reaches_partial_pipeline as exercise_pipeline,
+    )
+
     name = "colliers-multi-" + uuid.uuid4().hex[:12]
     # Only this synthetic directory is shared with the networkless container.
     root = Path(tempfile.mkdtemp(prefix="colliers-multi-"))
