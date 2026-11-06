@@ -2984,6 +2984,37 @@ def _validate_source_artifact_local(
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if isinstance(data, dict) and data.get("schema") == "nai-post-inventory-recovery/v1":
+        # This is structure only. The source-specific gate rederives every
+        # selected and held row from the owner's sealed original before writes.
+        from cre_nai_inventory_recovery import validate_structure
+
+        try:
+            if expected_source != "nai-global" or tuple(expected_transactions) != TRANSACTIONS:
+                raise ValueError("NAI recovery source differs")
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            generation_start = (expected_generation_started_at.isoformat()
+                                if isinstance(expected_generation_started_at, datetime) else expected_generation_started_at)
+            attempt_start = attempt_started_at.isoformat() if isinstance(attempt_started_at, datetime) else attempt_started_at
+            started, finished = validate_structure(data, expected_generation_id, generation_start,
+                attempt_start, now=current, max_age_hours=max_observation_age_hours)
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["staged_unique"] != len(data["listings"]):
+                raise ValueError("NAI recovery selected staging differs")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("NAI recovery candidate invalid") from exc
+        digest, size = sha256_file(path), path.stat().st_size
+        if isinstance(stats.get("transaction_breakdown"), dict):
+            stats["transaction_breakdown"] = {**stats["transaction_breakdown"], "source_key": expected_source,
+                "artifact_sha256": digest, "artifact_bytes": size, "generation_id": expected_generation_id}
+        return {**stats, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
+                "max_observation_age_hours": max_observation_age_hours,
+                "observation_cutoff_at": (current - timedelta(hours=max_observation_age_hours)).isoformat(),
+                "strict_freshness": False, "property_detail_freshness": False,
+                "nai_post_partial": True, "nai_inventory_recovery": True,
+                "freshness_generation_id": expected_generation_id,
+                "freshness_generation_started_at": parse_iso8601(generation_start, field="generation_started_at").isoformat(),
+                "sha256": digest, "bytes": size}
     if isinstance(data, dict) and data.get("schema") == "lyon-search-partial/v1":
         # Structure only: source custody and database identity are independently
         # rechecked at the source-specific subset gate before any write.

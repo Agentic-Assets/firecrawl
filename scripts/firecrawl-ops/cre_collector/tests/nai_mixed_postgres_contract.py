@@ -20,7 +20,7 @@ from tests.test_cre_checkpoint_refresh import strict_artifact
 from tests.test_nai_post_partial import post
 
 
-def run_mixed_contract(sql, container_name, shared_tmp):
+def run_mixed_contract(sql, container_name, shared_tmp, *, inventory_only=False):
     with tempfile.TemporaryDirectory(prefix="nai-mixed-contract-", delete=False) as temporary:
         root = Path(temporary)
         print(f"NAI mixed private evidence: {root}", flush=True)
@@ -89,12 +89,33 @@ FROM credeals.cre_brokerages WHERE slug='lee-associates';
                 payload["listings"] = [post(1), post(2, tx="lease")]
                 for row in payload["listings"]:
                     row["freshnessProvenance"]["generationId"] = owner["run_id"]
+                if inventory_only:
+                    script = """
+const [input, generation, observed] = process.argv.slice(1);
+process.argv = [process.argv[0], 'nai-fixture'];
+globalThis.fetch = async () => { throw new Error('NETWORK_DENIED'); };
+const { naiListingFromFeed } = await import('./sources/nai-global.ts');
+const row = JSON.parse(input);
+const mapped = naiListingFromFeed(row, 'sale', null, 'synthetic unavailable detail', true,
+  {generationId:generation, observedAt:observed, method:'infabode_public_posts_graphql', cacheDisposition:'live'});
+console.log(JSON.stringify({...mapped, sourceKey:'nai-global', transactionMode:'sale'}));
+"""
+                    mapped = subprocess.run(["node", "--import", "tsx", "--input-type=module", "-e", script,
+                        json.dumps(payload["listings"][0]["feedRow"]), owner["run_id"], stamp],
+                        cwd=Path(__file__).resolve().parents[1], env=env, check=True,
+                        capture_output=True, text=True, timeout=30)
+                    payload["listings"][0] = json.loads(mapped.stdout)
+                    payload["sources"][0]["freshness"].update(detailErrors=1, detailObserved=0, childPreservationRows=1)
             payload["runMeta"].update(startedAt=stamp, finishedAt=stamp)
             for entry in payload["sources"]:
                 entry.update(totalAvailableOnSource=entry["listingsCollected"],
                     sourceUrl="https://www.savills.us/properties/", method="synthetic-owned-worker")
             for row in payload["listings"]:
-                row.update(inventoryObservedAt=stamp, detailObservedAt=stamp, canonicalUrl=row["url"])
+                row["inventoryObservedAt"] = stamp
+                if (row.get("freshnessProvenance") or {}).get("detailScope") != "inventory_only":
+                    row["detailObservedAt"] = stamp
+                if source == "savills":
+                    row["canonicalUrl"] = row["url"]
             child = ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
                      if source in {"nai-global", "savills"} else f"import sys; sys.exit({refresh.COHORT_SETTLED_FAILURE_EXIT})")
             log_path.parent.mkdir(parents=True, exist_ok=True)

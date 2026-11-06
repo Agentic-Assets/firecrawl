@@ -41,10 +41,11 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
         raise ValueError("NAI partial source path invalid")
     checkpoint = manifest["sources"][SOURCE]
     info = checkpoint["artifact"]
+    recovery = info.get("nai_inventory_recovery") is True
     attempts = checkpoint.get("attempts") or []
     if (info.get("path") != "sources/nai-global.json" or info.get("nai_post_partial") is not True or not attempts
             or type(attempts[-1].get("rc")) is not int or attempts[-1]["rc"] != 0
-            or not attempts[-1].get("finished_at") or attempts[-1].get("error") is not None
+            or not attempts[-1].get("finished_at") or (not recovery and attempts[-1].get("error") is not None)
             or attempts[-1].get("started_at") != info.get("attempt_started_at")):
         raise ValueError("NAI source attempt is not a settled success")
     st = path.lstat()
@@ -81,9 +82,35 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
     if (type(max_age) not in {int, float} or not math.isfinite(max_age) or max_age <= 0
             or capture_finish > now + timedelta(minutes=5)):
         raise ValueError("NAI source freshness bound invalid")
-    partition = partition_posts(data["listings"], manifest["run_id"],
-                                capture_start=max(capture_start, now - timedelta(hours=max_age)),
-                                capture_finish=capture_finish, exact_listings=exact_data["listings"])
+    source_count = len(data["listings"])
+    if recovery:
+        from cre_nai_inventory_recovery import SCHEMA, _FRESHNESS_ERROR, derive
+        attempt = attempts[-1]
+        number = attempt.get("number")
+        if (data.get("schema") != SCHEMA or type(number) is not int or number < 1
+                or not isinstance(attempt.get("error"), str) or not _FRESHNESS_ERROR.fullmatch(attempt["error"])
+                or attempt.get("rejected_artifact") != f"rejected/nai-global-attempt-{number}.json"):
+            raise ValueError("NAI recovery original binding differs")
+        original_path = root / attempt["rejected_artifact"]
+        original_info = original_path.lstat()
+        if (not stat.S_ISREG(original_info.st_mode) or original_info.st_uid != os.getuid()
+                or original_info.st_nlink != 1 or stat.S_IMODE(original_info.st_mode) != 0o600):
+            raise ValueError("NAI recovery original custody differs")
+        original = read_file(original_path)
+        if hashlib.sha256(original).hexdigest() != attempt.get("rejected_artifact_sha256"):
+            raise ValueError("NAI recovery original digest differs")
+        expected, partition = derive(original, manifest["run_id"], manifest["started_at"],
+                                     attempt["started_at"], attempt["finished_at"], now=now,
+                                     max_age_hours=max_age)
+        if expected != raw or read_file(original_path) != original:
+            raise ValueError("NAI recovery candidate or original changed")
+        source_count = data["naiRecovery"]["originalCount"]
+    else:
+        if data.get("schema") == "nai-post-inventory-recovery/v1":
+            raise ValueError("NAI recovery requires a bound checkpoint")
+        partition = partition_posts(data["listings"], manifest["run_id"],
+                                    capture_start=max(capture_start, now - timedelta(hours=max_age)),
+                                    capture_finish=capture_finish, exact_listings=exact_data["listings"])
     if not partition["staged"]:
         raise NaiSourceProbeRefusal("NAI partial has no qualified posts")
     target = manifest["preflight"]["database_target"]
@@ -97,7 +124,7 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
         raise ValueError("NAI source artifact changed during validation")
     return {"artifact_sha256": digest, "producer_sha": code_sha, "generation_id": manifest["run_id"],
             "database_target_sha256": target["value"], "partition_sha256": hashlib.sha256(partition_raw).hexdigest(),
-            "source_count": len(data["listings"]), "source_held": partition["held"],
+            "source_count": source_count, "source_held": partition["held"],
             "staged_count": len(partition["staged"])}, partition
 
 
@@ -198,15 +225,18 @@ def admit(artifact_path, manifest, report, *, code_sha, dirty, phase):
         raise ValueError("NAI source artifact changed during gate")
     validate_report_scope(report, manifest, SOURCE, Path(artifact_path))
     summary, gate = report["summary"], report["per_source"][SOURCE]
+    recovery = manifest["sources"][SOURCE]["artifact"].get("nai_inventory_recovery") is True
     if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
             or summary.get("baseline_updated") is not False or summary.get("baseline_update_sources") != []
-            or gate.get("current_active") != current[SOURCE] or gate.get("mark_missing_safe") is not False):
+            or gate.get("current_active") != current[SOURCE]
+            or (not recovery and gate.get("mark_missing_safe") is not False)):
         raise ValueError("NAI source gate scope invalid")
     if gate.get("verdict") == "ok_additive_verified_subset":
         raw = {"verdict": gate.get("raw_verdict"), "reason": gate.get("raw_reason")}
     else:
         raw = {"verdict": gate.get("verdict"), "reason": gate.get("reason")}
-    if raw["verdict"] != "hold" or not subset_gate_can_admit(raw):
+    if not ((raw["verdict"] == "hold" and subset_gate_can_admit(raw))
+            or (recovery and raw["verdict"] in {"ok", "first_seen"})):
         raise ValueError("NAI gate is not a coverage-only hold")
     proof = {**binding, "schema": "nai-public-post-partial-v1", "scope": "nai_public_post_partial_v1",
              "source_key": SOURCE, "held": held, "preimage_sha256": probe["preimage_sha256"],

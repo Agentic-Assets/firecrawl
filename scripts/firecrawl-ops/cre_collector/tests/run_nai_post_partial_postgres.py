@@ -66,7 +66,7 @@ def main():
             # the direct SQL proof below intentionally pins a historical one.
             nai_admission._utc_now = lambda: datetime.now(timezone.utc)
             from tests.nai_mixed_postgres_contract import run_mixed_contract
-            run_mixed_contract(sql, name, tmp.name)
+            run_mixed_contract(sql, name, tmp.name, inventory_only=os.environ.get("NAI_MIXED_INVENTORY") == "1")
             return
         sql("""
 INSERT INTO credeals.cre_listings (brokerage_id,external_id,source_url,canonical_url,status,title,lat,scraped_at,raw_data)

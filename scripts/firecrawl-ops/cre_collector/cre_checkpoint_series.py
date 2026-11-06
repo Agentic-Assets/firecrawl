@@ -349,7 +349,9 @@ def nai_post_partial_child(child: Mapping[str, Any]) -> bool:
                 and proof["emitted_count"] > 0 and proof["held_count"] == len(held) + len(source_held)
                 and proof["staged_count"] == proof["emitted_count"] + len(held)
                 and proof["source_count"] == proof["staged_count"] + len(source_held)
-                and type(artifact.get("flat_listings")) is int and artifact["flat_listings"] == proof["source_count"])
+                and type(artifact.get("flat_listings")) is int
+                and artifact["flat_listings"] == (proof["staged_count"] if artifact.get("nai_inventory_recovery") is True
+                                                    else proof["source_count"]))
     except (AttributeError, KeyError, TypeError, ValueError):
         return False
 

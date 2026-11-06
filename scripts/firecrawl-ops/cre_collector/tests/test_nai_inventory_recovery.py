@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from cre_nai_inventory_recovery import SCHEMA, derive
+from cre_nai_inventory_recovery import SCHEMA, derive, validate_structure
 from tests.test_cre_checkpoint_refresh import strict_artifact
 from tests.test_nai_post_partial import post
 
@@ -51,6 +51,34 @@ def test_source_denial_and_truncation_are_not_recovery_authority():
     data["listings"][0].pop("detailError")
     data["sources"][0]["truncated"] = True
     with pytest.raises(ValueError, match="source pass"):
+        partition(data)
+
+
+def test_unidentifiable_row_is_held_without_discarding_identified_peers():
+    data = recovery_source()
+    unknown = post(3)
+    unknown.pop("id")
+    data["listings"].append(unknown)
+    data["totalListings"] = 3
+    data["sources"][0]["listingsCollected"] = 2
+    encoded, result = partition(data)
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:1", "infabode:2"]
+    assert result["held"] == [{"index": 2, "reason": "unqualified_source_post"}]
+    assert json.loads(encoded)["naiRecovery"]["originalCount"] == 3
+
+
+def test_candidate_requires_explicit_unlimited_scope_and_valid_partition():
+    data = recovery_source()
+    candidate, _ = partition(data)
+    decoded = json.loads(candidate)
+    validate_structure(decoded, "gen-1", "2026-11-05T09:58:00Z", "2026-11-05T09:58:30Z",
+                       now=datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc), max_age_hours=24)
+    decoded["naiRecovery"]["sourceHeld"] = [{"index": 0, "reason": "unqualified_source_post"}]
+    with pytest.raises(ValueError, match="partition differs"):
+        validate_structure(decoded, "gen-1", "2026-11-05T09:58:00Z", "2026-11-05T09:58:30Z",
+                           now=datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc), max_age_hours=24)
+    data["runMeta"].pop("maxItemsPerSource")
+    with pytest.raises(ValueError, match="source scope"):
         partition(data)
 
 

@@ -316,7 +316,7 @@ def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None
     attempt = checkpoint["attempts"][-1]
     # Franklin may already have archived the original before derivation failed.
     # Keep both that evidence and any derived candidate in their private paths.
-    if source == "franklin-street" and attempt.get("rejected_artifact"):
+    if source in {"franklin-street", "nai-global"} and attempt.get("rejected_artifact"):
         return
     attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
         refresh.archive_rejected_with_evidence(
@@ -361,7 +361,34 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
                 },
             },
         )
-    except refresh.ArtifactValidationError:
+    except refresh.ArtifactValidationError as source_error:
+        if source == "nai-global":
+            from datetime import datetime, timezone
+            from cre_nai_inventory_recovery import _FRESHNESS_ERROR, prepare_owned
+            attempts = checkpoint.get("attempts") or []
+            attempt = attempts[-1] if attempts else {}
+            if (_FRESHNESS_ERROR.fullmatch(str(source_error))
+                    and attempt.get("number") == candidate.get("attempt_number")
+                    and type(attempt.get("rc")) is int and attempt["rc"] == 0
+                    and not attempt.get("rejected_artifact")):
+                original = path.lstat()
+                identity = [original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns, original.st_ctime_ns]
+                if identity != candidate.get("file_identity"):
+                    raise refresh.GlobalStageError("NAI recovery source candidate changed")
+                rejected = run_dir / "rejected" / f"{source}-attempt-{attempt['number']}.json"
+                if os.path.lexists(rejected):
+                    raise refresh.GlobalStageError("NAI recovery rejected evidence path occupied")
+                attempt["error"] = str(source_error)
+                relative, digest = refresh.archive_rejected_with_evidence(path, run_dir, manifest, source, attempt)
+                attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = relative, digest
+                refresh.save_manifest(run_dir, manifest)
+                owner = getattr(_OWNER_CHECK.get(), "__self__", None)
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                recovery = prepare_owned(run_dir, manifest, owner, now=datetime.now(timezone.utc))
+                require_pipeline_owner(manifest, _OWNER_LEASE.get())
+                if recovery is not None:
+                    return prepare_candidate(run_dir, manifest, source)
+                raise source_error
         if source != "franklin-street" or checkpoint.get("franklin_original"):
             raise
         attempts = checkpoint.get("attempts") or []

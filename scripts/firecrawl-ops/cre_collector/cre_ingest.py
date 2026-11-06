@@ -7941,6 +7941,8 @@ def main():
         except ValueError as exc:
             sys.exit(str(exc))
         is_lyon_partial = data.get("schema") == "lyon-search-partial/v1"
+        if data.get("schema") == "nai-post-inventory-recovery/v1":
+            sys.exit("refusing NAI inventory recovery without guarded checkpoint admission")
         if is_lyon_partial != (lyon_partial_claims is not None):
             sys.exit("refusing Lyon partial artifact without guarded checkpoint admission")
         if (lyon_partial_claims is not None and
