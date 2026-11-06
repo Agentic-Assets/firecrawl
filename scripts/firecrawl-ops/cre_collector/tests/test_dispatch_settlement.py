@@ -29,7 +29,7 @@ def case(tmp_path, monkeypatch):
               "sources": {key: {"checkpoint_run": f"runs/{child_id}", "attempts": [
         {"series_control_child_id": child_invocation}]} for key in config["sources"]}}
     (path / "manifest.json").write_text(json.dumps(parent))
-    control = {"work_deadline_seconds": 30, "stop_owner": {
+    control = {"work_deadline_seconds": 30, "finished_unix_ms": 123456, "stop_owner": {
         "series_lock_identity": settlement._identity(series_lock.stat())}, "last_checkpoint": {
         "run_id": child_id, "child_invocation_id": child_invocation}}
     child = {"pipeline": {"commit_outcome_unknown": False}, "sources": {
@@ -168,7 +168,9 @@ def test_current_partial_requires_actual_bound_cursor(case, monkeypatch):
         "position": 1670, "generation": child["run_id"], "artifactSha256": artifact,
         "attemptId": attempt, "outcome": "exact_commit"}
     monkeypatch.setattr(cre_partial_cursor, "read_cursor", lambda *args: (1670, cursor))
-    assert settlement.qualify(root, series_id, invocation, **options)["outcome"] == "qualified"
+    result = settlement.qualify(root, series_id, invocation, **options)
+    assert result["outcome"] == "qualified"
+    assert result["unfinished_sources"] == ["colliers"]
     cursor["attemptId"] = "0" * 32
     with pytest.raises(settlement.DispatchSettlementRefused, match="cursor no longer matches"):
         settlement.qualify(root, series_id, invocation, **options)

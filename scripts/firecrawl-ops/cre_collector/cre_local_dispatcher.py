@@ -34,9 +34,9 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
             "windows_launcher_sha256", "windows_repo", "distro", "linux_user", "alert_file", "notification_mode"}
     if not isinstance(policy, dict) or set(policy) != keys:
         raise SourcePolicyRefusal("dispatch policy fields differ")
-    if type(continuation_depth) is not int or continuation_depth not in {0, 1}:
+    if type(continuation_depth) is not int or continuation_depth < 0:
         raise ValueError("unsupported continuation depth")
-    pattern = r"(\d{8}T\d{6}Z)_[A-Za-z0-9_-]{1,96}" + (r"\.continuation1" if continuation_depth else "")
+    pattern = r"(\d{8}T\d{6}Z)_[A-Za-z0-9_-]{1,96}" + (rf"\.continuation{continuation_depth}" if continuation_depth else "")
     match = re.fullmatch(pattern, slot)
     if match is None:
         raise ValueError("slot must bind a UTC due time and task identity")
@@ -95,7 +95,8 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
     series_id = due.strftime("%Y-%m-%dT%H%M%SZ") + "-" + hashlib.sha256(slot.encode()).hexdigest()[:12]
     return {"slot": slot, "policy": policy, "config": config, "target": target, "series_id": series_id,
             "due_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
-            "continuation_depth": continuation_depth, "predecessor_series_id": None,
+            "continuation_depth": continuation_depth, "eligible_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
+            "predecessor_series_id": None,
             "predecessor_no_work": False}
 
 
@@ -106,12 +107,18 @@ def validate_request(request: dict) -> None:
     depth = request.get("continuation_depth")
     slot = request.get("slot")
     expected = policy_request(request.get("policy"), slot, continuation_depth=depth)
-    if depth == 1:
-        origin = policy_request(request["policy"], slot.removesuffix(".continuation1"))
+    if depth:
+        base = slot.removesuffix(f".continuation{depth}")
+        prior = base + (f".continuation{depth - 1}" if depth > 1 else "")
+        origin = policy_request(request["policy"], prior, continuation_depth=depth - 1)
         expected["predecessor_series_id"] = origin["series_id"]
         if type(request.get("predecessor_no_work")) is not bool:
             raise ValueError("dispatch predecessor outcome differs")
         expected["predecessor_no_work"] = request["predecessor_no_work"]
+        eligible = request.get("eligible_unix_ms")
+        if type(eligible) is not int or eligible < expected["due_unix_ms"]:
+            raise ValueError("continuation eligibility differs")
+        expected["eligible_unix_ms"] = eligible
     if json.dumps(request, sort_keys=True, separators=(",", ":"), allow_nan=False) != json.dumps(
             expected, sort_keys=True, separators=(",", ":"), allow_nan=False):
         raise ValueError("dispatch intent differs")
@@ -225,12 +232,13 @@ def native_no_work_result(returncode: int, stdout: str, request: dict) -> dict |
                     "scope": ("source" if marker["reason"] == "notification_config_refused_no_dispatch" else "shared")}
 
 
-def qualify(request: dict) -> dict:
+def qualify(request: dict, *, validate=True) -> dict:
     """Require an exact controlled receipt and existing write-fence checks."""
     policy = request["policy"]
     if refresh.database_target_fingerprint(policy["env_file"]) != request["target"]:
         raise ValueError("database target changed during dispatch")
-    validate_request(request)
+    if validate:
+        validate_request(request)
     root = HERE / "out" / "checkpoint-series"
     manifest = json.loads((root / request["series_id"] / "manifest.json").read_text())
     invocation = manifest["latest_invocation_control"]["invocation_id"]
@@ -244,29 +252,37 @@ def verify_no_work_predecessor(request: dict) -> None:
     """Only a requalified deadline with no child may omit predecessor ordering."""
     if not request.get("predecessor_no_work"):
         return
-    origin = policy_request(request["policy"], request["slot"].removesuffix(".continuation1"))
+    depth = request["continuation_depth"]
+    base = request["slot"].removesuffix(f".continuation{depth}")
+    prior = base + (f".continuation{depth - 1}" if depth > 1 else "")
+    origin = policy_request(request["policy"], prior, continuation_depth=depth - 1)
     if origin["series_id"] != request["predecessor_series_id"]:
         raise ValueError("no-work predecessor identity differs")
-    previous = qualify(origin)
+    previous = qualify(origin, validate=False)
     if previous.get("status") != "deadline_interrupted" or previous.get("outcome") != "settled_no_work":
         raise ValueError("no-work predecessor did not requalify")
 
 
 def successor(slot: str, request: dict, result: dict):
-    """One bounded follow-on; pending scheduled peers precede it."""
-    if (result.get("status") == "deadline_interrupted" and result.get("unfinished_sources")
-            and request["continuation_depth"] == 1):
-        result["continuation_limit_reached"] = True
+    """Queue another settled deadline wave, yielding to fresh due work."""
+    unfinished = result.get("unfinished_sources")
+    if result.get("status") != "deadline_interrupted" or not unfinished:
         return None
-    if (result.get("status") != "deadline_interrupted"
-            or not result.get("unfinished_sources") or request["continuation_depth"] != 0):
-        return None
-    next_slot = slot + ".continuation1"
-    next_request = policy_request(request["policy"], next_slot, continuation_depth=1)
+    if (not isinstance(unfinished, list) or len(set(unfinished)) != len(unfinished)
+            or not set(unfinished) <= set(request["config"]["sources"])
+            or type(result.get("finished_unix_ms")) is not int):
+        raise ValueError("continuation settlement differs")
+    depth = request["continuation_depth"]
+    base = slot.removesuffix(f".continuation{depth}") if depth else slot
+    next_slot = f"{base}.continuation{depth + 1}"
+    next_request = policy_request(request["policy"], next_slot, continuation_depth=depth + 1)
     if next_request["target"] != request["target"] or next_request["config"] != request["config"]:
         raise ValueError("continuation target or source policy changed")
     next_request["predecessor_series_id"] = request["series_id"]
     next_request["predecessor_no_work"] = result.get("outcome") == "settled_no_work"
+    # No terminal source progress is a scheduling hint, never a coverage proof.
+    delay = 300_000 if set(unfinished) == set(request["config"]["sources"]) else 0
+    next_request["eligible_unix_ms"] = max(next_request["due_unix_ms"], result["finished_unix_ms"] + delay)
     return next_slot, next_request
 
 

@@ -101,6 +101,22 @@ def test_busy_wake_returns_without_dispatch_and_later_wake_retries(tmp_path):
     assert calls == ["launch"]
 
 
+def test_continuation_backoff_yields_to_due_peer_and_wakes_later(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue.time, "time", lambda: 100.0)
+    queue.enqueue(tmp_path, "20261106T000000Z_a.continuation2", {
+        "slot": "20261106T000000Z_a.continuation2", "policy": {}, "due_unix_ms": 1,
+        "eligible_unix_ms": 110000, "continuation_depth": 2})
+    queue.enqueue(tmp_path, "20261106T000001Z_b", {"due_unix_ms": 1, "kind": "peer"})
+    calls = []
+    queue.drain(tmp_path, launch=lambda request: calls.append(request.get("kind", "continuation")),
+                qualify=lambda _: {"outcome": "qualified"})
+    assert calls == ["peer"]
+    monkeypatch.setattr(queue.time, "time", lambda: 110.0)
+    queue.drain(tmp_path, launch=lambda request: calls.append(request.get("kind", "continuation")),
+                qualify=lambda _: {"outcome": "qualified"})
+    assert calls == ["peer", "continuation"]
+
+
 def test_real_process_death_after_prespawn_fences_restart(tmp_path):
     queue.enqueue(tmp_path, "20261106T000000Z_broad", {"kind": "broad"})
     collector = Path(__file__).resolve().parents[1]

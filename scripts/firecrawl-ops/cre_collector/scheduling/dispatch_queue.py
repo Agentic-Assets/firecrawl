@@ -27,7 +27,7 @@ def _directory(path: Path) -> int:
 
 
 def _slot(slot: str) -> str:
-    if (not isinstance(slot, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,112}(?:\.continuation1)?", slot) is None):
+    if (not isinstance(slot, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,112}(?:\.continuation[1-9][0-9]*)?", slot) is None):
         raise DispatchRefused("invalid due slot")
     return slot + ".json"
 
@@ -138,9 +138,12 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=Tru
                 due = item["request"].get("due_unix_ms")
                 if "policy" in item["request"] and (type(due) is not int or due < 0):
                     raise DispatchRefused("dispatch due time is invalid")
+                eligible = item["request"].get("eligible_unix_ms", due)
+                if "policy" in item["request"] and (type(eligible) is not int or eligible < due):
+                    raise DispatchRefused("dispatch eligibility is invalid")
             now_ms = int(time.time() * 1000)
             records = [item for item in records if item[1]["state"] == "dispatch_uncertain"
-                       or item[1]["request"].get("due_unix_ms", 0) <= now_ms]
+                       or item[1]["request"].get("eligible_unix_ms", item[1]["request"].get("due_unix_ms", 0)) <= now_ms]
             if not records:
                 break
             # Uncertain writes fence everything; fresh due work precedes continuations.

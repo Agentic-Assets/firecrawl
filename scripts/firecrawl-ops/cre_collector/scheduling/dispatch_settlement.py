@@ -82,12 +82,15 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     if (type(expected_deadline_seconds) is not int
             or control.get("work_deadline_seconds") != expected_deadline_seconds):
         raise DispatchSettlementRefused("series deadline differs")
+    if type(control.get("finished_unix_ms")) is not int or control["finished_unix_ms"] < 0:
+        raise DispatchSettlementRefused("series finish time differs")
     if terminal["local_settlement"] == "not_started":
         if control.get("last_checkpoint") is not None:
             raise DispatchSettlementRefused("no-work receipt has a child")
         check_owner()
         return {"status": terminal["status"], "outcome": "settled_no_work",
-                "unfinished_sources": list(expected_config.get("sources") or [])}
+                "unfinished_sources": list(expected_config.get("sources") or []),
+                "finished_unix_ms": control["finished_unix_ms"]}
     manifest_path = path / "manifest.json"
     parent_bytes = manifest_path.read_bytes()
     parent = json.loads(parent_bytes)
@@ -136,7 +139,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         verify_preallocated_receipt(root, series_id, invocation_id, expected_sha=expected_sha,
             expected_target=expected_target, expected_config=expected_config)
         return {"status": terminal["status"], "outcome": "qualified", "child": ref,
-                "unfinished_sources": unfinished}
+                "unfinished_sources": unfinished, "finished_unix_ms": control["finished_unix_ms"]}
     refs = {parent["sources"][key].get("checkpoint_run") for key in expected_config["sources"]}
     if len(refs) != 1:
         raise DispatchSettlementRefused("pipeline child owner differs")
@@ -167,6 +170,8 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         checkpoint = (child.get("sources") or {}).get(key) or {}
         if (checkpoint.get("state") in {"ingesting", "ingest_recovery_required"}
                 or (key == "colliers" and (
+                    checkpoint.get("state") == "partial_window_pending"
+                    or
                     (checkpoint.get("colliers_partial_worker") or {}).get("state") in {
                         "cursor_publishing", "cursor_recovery_required", "settlement_unknown"}
                     or (checkpoint.get("partial_cursor_settlement") or {}).get("state") in {
@@ -203,6 +208,11 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                 "attemptId": cursor["attempt_id"], "outcome": "exact_commit"}
             if position != binding["next_cursor"] or cursor_record != expected_cursor:
                 raise DispatchSettlementRefused("Colliers cursor no longer matches settled window")
+        if state == "qualified_partial_subset" and key == "colliers" and terminal["status"] == "deadline_interrupted":
+            from cre_colliers_partial_checkpoint import partial_window_terminal_stop
+            if partial_window_terminal_stop(checkpoint) is None:
+                unfinished.append(key)
+            continue
         if state in {"complete", "qualified_partial_subset", "failed_source"}:
             continue
         if (state != "interrupted" or checkpoint.get("ingest") is not None
@@ -220,4 +230,4 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         expected_sha=expected_sha, expected_target=expected_target,
         expected_config=expected_config)
     return {"status": terminal["status"], "outcome": "qualified", "child": ref,
-            "unfinished_sources": unfinished}
+            "unfinished_sources": unfinished, "finished_unix_ms": control["finished_unix_ms"]}
