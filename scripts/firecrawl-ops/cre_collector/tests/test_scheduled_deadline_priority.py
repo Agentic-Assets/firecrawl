@@ -77,6 +77,23 @@ def test_preallocated_successor_uses_exact_predecessor_even_when_suffix_sorts_fi
     assert result["order"] == ["savills", "colliers", "cbre"]
 
 
+def test_preallocated_first_run_uses_actual_prior_start_not_hash_order(tmp_path, monkeypatch):
+    prior_dir, current_dir, current, prior, child, _receipt = case(tmp_path, monkeypatch)
+    prior_id = "2026-10-15T120000Z-ffffffffffff"
+    current_id = "2026-10-15T120000Z-000000000000"
+    prior_dir.rename(tmp_path / prior_id)
+    current_dir.rename(tmp_path / current_id)
+    prior_dir, current_dir = tmp_path / prior_id, tmp_path / current_id
+    prior.update(series_id=prior_id, finished_at="2026-10-16T00:00:00Z")
+    (prior_dir / "manifest.json").write_text(json.dumps(prior))
+    current["series_id"] = current_id
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw:
+        (prior_dir / "runs" / RUN_ID / "manifest.json", child))
+    result = series.scheduled_deadline_priority(tmp_path, current_dir, current)
+    assert result["previous_series"] == prior_id
+    assert result["order"] == ["savills", "colliers", "cbre"]
+
+
 @pytest.mark.parametrize("tamper", ["unknown_write", "unsettled", "foreign_child", "foreign_target", "altered_report"])
 def test_uncertain_or_tampered_prior_does_not_reorder(tmp_path, monkeypatch, tamper):
     prior_dir, current_dir, current, _prior, child, receipt = case(tmp_path, monkeypatch)

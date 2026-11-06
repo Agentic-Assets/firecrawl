@@ -2043,6 +2043,7 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
     from scheduling.priority import after_deadline
 
     try:
+        snapshots = None
         if predecessor_id is not None:
             validate_fresh_series_id(current_dir.name)
             validate_fresh_series_id(predecessor_id)
@@ -2050,6 +2051,28 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
             if prior_path == current_dir or prior_path.is_symlink() or not prior_path.is_dir():
                 return None
             candidates = [prior_path]
+        elif re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[a-f0-9]{12}", current_dir.name):
+            # Preallocated IDs name a due slot, not process start order. Sort
+            # by the bound parent start time, never by the random suffix.
+            validate_fresh_series_id(current_dir.name)
+            current_start = _parse_utc_timestamp(manifest.get("started_at"), field="current started_at")
+            snapshots = {}
+            ranked = []
+            for path in out_root.iterdir():
+                if (path == current_dir or path.is_symlink() or not path.is_dir()
+                        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z(?:-[a-f0-9]{12})?", path.name) is None):
+                    continue
+                snapshot = _read_regular_file(path / "manifest.json", limit=4 * 1024 * 1024)
+                observed = json.loads(snapshot)
+                started = _parse_utc_timestamp(observed.get("started_at"), field="prior started_at")
+                if started >= current_start:
+                    continue
+                snapshots[path] = snapshot
+                ranked.append((started, path))
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            if any(a[0] == b[0] for a, b in zip(ranked, ranked[1:])):
+                return None
+            candidates = [path for _, path in ranked]
         else:
             if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z", current_dir.name):
                 return None
@@ -2062,8 +2085,10 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
             )
         for prior_dir in candidates:
             raw = _read_regular_file(prior_dir / "manifest.json", limit=4 * 1024 * 1024)
+            if snapshots is not None and raw != snapshots[prior_dir]:
+                return None
             prior = json.loads(raw)
-            if (predecessor_id is not None and _parse_utc_timestamp(prior.get("finished_at"), field="prior finished_at")
+            if ((predecessor_id is not None or snapshots is not None) and _parse_utc_timestamp(prior.get("finished_at"), field="prior finished_at")
                     > _parse_utc_timestamp(manifest.get("started_at"), field="current started_at")):
                 return None
             if (not isinstance(prior, dict) or prior.get("series_id") != prior_dir.name
