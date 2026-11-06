@@ -134,8 +134,8 @@ export function avisonYoungTeamDenialObserved(): boolean {
 class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
   constructor(readonly heldIds: string[], readonly hasRequiredDetail404 = false,
-    readonly unidentifiedCount = 0, readonly duplicateIdCount = 0) {
-    super(`Avison Young partial detail: ${heldIds.length} identified and ${unidentifiedCount} unidentified record(s) held; ${duplicateIdCount} duplicate ID(s): ${heldIds.join(", ")}`);
+    readonly unidentifiedCount = 0, readonly duplicateIdCount = 0, readonly unclassifiedCount = 0) {
+    super(`Avison Young partial detail: ${heldIds.length} identified and ${unidentifiedCount} unidentified record(s) held; ${duplicateIdCount} duplicate ID(s); ${unclassifiedCount} unclassified row(s): ${heldIds.join(", ")}`);
     this.name = "AvisonYoungPartialDetailError";
   }
 }
@@ -2800,10 +2800,43 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     try { return Number(row.order_id ?? row.id ?? 0); }
     catch { return 0; }
   };
+  const unclassified: Array<{ row: any; sourceOrdinal: number }> = [];
   const rows = websiteRows.map((row, sourceOrdinal) => ({ row, sourceOrdinal }))
-    .filter(({ row }) => row?.status === "active")
-    .filter(({ row }) => isAvisonYoungUsCompatible(row))
-    .filter(({ row }) => avisonYoungMatchesTx(row, tx))
+    .filter((entry) => {
+      const { row } = entry;
+      if (!partialRowMode) {
+        return row?.status === "active" && isAvisonYoungUsCompatible(row) && avisonYoungMatchesTx(row, tx);
+      }
+      try {
+        if (!row || typeof row !== "object" || Array.isArray(row)) {
+          unclassified.push(entry);
+          return false;
+        }
+        if (row.status !== "active") {
+          if (row.status !== "inactive") unclassified.push(entry);
+          return false;
+        }
+        if (!isAvisonYoungUsCompatible(row)) {
+          if (!clean(row.country)) unclassified.push(entry);
+          return false;
+        }
+        const values = Array.isArray(row.transaction) ? row.transaction : [row.transaction];
+        let unknown = false;
+        const labels: string[] = [];
+        for (const value of values) {
+          if (typeof value !== "string" || !clean(value)) { unknown = true; continue; }
+          const label = clean(value)!.toLowerCase();
+          if (!label.includes("sale") && !label.includes("lease")) unknown = true;
+          labels.push(label);
+        }
+        if (!labels.length) unknown = true;
+        if (unknown) unclassified.push(entry);
+        return labels.some((label) => tx === "sale" ? label.includes("sale") : label.includes("lease"));
+      } catch {
+        unclassified.push(entry);
+        return false;
+      }
+    })
     .sort((a, b) => partialRowMode
       ? sortValue(a.row) - sortValue(b.row)
       : Number(a.row.order_id ?? a.row.id ?? 0) - Number(b.row.order_id ?? b.row.id ?? 0));
@@ -2922,6 +2955,16 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   const outcomes: Array<{ id: string | null; state: string; sourceOrdinal?: number; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id, index) => ({
     id, state: "unattempted", ...(partialRowMode ? { sourceOrdinal: selected[index]!.sourceOrdinal } : {}),
   }));
+  const evidenceRows = [...selectedRows];
+  for (const entry of unclassified) {
+    let id: string | null = null;
+    try {
+      if (typeof entry.row?.id === "number" && !Number.isSafeInteger(entry.row.id)) throw new Error();
+      id = avisonYoungProviderId(entry.row?.id, "unclassified inventory row");
+    } catch { /* No ID is invented for an unclassifiable row. */ }
+    outcomes.push({ id, state: "failed", sourceOrdinal: entry.sourceOrdinal, reason: "selection_unclassified" });
+    evidenceRows.push(entry.row);
+  }
   const heldIds: string[] = [];
   let unidentifiedCount = 0;
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
@@ -2982,7 +3025,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   } catch (error) {
     // A terminal-only 404 is not authoritative if another record was held
     // for an independent identity/structure failure in the same batch.
-    if ((heldIds.length || unidentifiedCount) && (error instanceof AvisonYoungTerminalSourceError
+    if ((heldIds.length || unidentifiedCount || unclassified.length) && (error instanceof AvisonYoungTerminalSourceError
         || error instanceof AvisonYoungTerminalDetailError)) {
       throw new Error(`Avison Young detail batch has both held records and required 404: ${heldIds.sort().join(", ")}`);
     }
@@ -2995,7 +3038,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
         // Keep every available source row privately, including unattempted
         // rows. A malformed or oversized row affects only its own evidence.
         try {
-          const raw = JSON.stringify(selectedRows[index]);
+          const raw = JSON.stringify(evidenceRows[index]);
           if (typeof raw !== "string" || !apiKey) throw new Error();
           if (containsCredential(raw, apiKey, true)) throw new Error();
           // Replace literals in one pass; serialization and allocation remain
@@ -3014,8 +3057,9 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       onDetailOutcomes(outcomes);
     }
   }
-  if (heldIds.length || unidentifiedCount || duplicateIdCount) {
-    throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0, unidentifiedCount, duplicateIdCount);
+  if (heldIds.length || unidentifiedCount || duplicateIdCount || unclassified.length) {
+    throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0,
+      unidentifiedCount, duplicateIdCount, unclassified.length);
   }
   if (missingDetails.length) throw new AvisonYoungTerminalSourceError(missingDetails);
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];

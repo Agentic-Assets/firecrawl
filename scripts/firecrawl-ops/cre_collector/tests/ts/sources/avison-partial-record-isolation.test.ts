@@ -19,7 +19,8 @@ const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
 async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json"
-  | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error") {
+  | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error"
+  | "bad-transaction" | "unknown-transaction") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -59,6 +60,8 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
             : ordinaryFailure === "bad-object-id" ? { ...bad, id: { toString: null, valueOf: null }, order_id: null }
             : ordinaryFailure === "duplicate-id" ? { ...row, order_id: 17000 }
             : ordinaryFailure === "mapping-error" ? { ...bad, team_member_ids: [{ toString: null }] }
+            : ordinaryFailure === "bad-transaction" ? { ...bad, transaction: ["sale", { toString: null, valueOf: null }] }
+            : ordinaryFailure === "unknown-transaction" ? { ...bad, transaction: [{ toString: null, valueOf: null }] }
             : bad, row] : [] }),
         { status: 200, headers: { "content-type": "application/json" } });
     };
@@ -153,6 +156,21 @@ test("duplicate native IDs preserve both observations without claiming complete 
   assert.deepEqual(outcomes.map(item => [item.id, item.state, item.sourceOrdinal]),
     [["18194", "validated", 0], ["18194", "validated", 1]]);
 });
+
+for (const mode of ["bad-transaction", "unknown-transaction"] as const) {
+  test(`a ${mode} row remains unclassified without stopping a valid peer`, async () => {
+    const { source, failure, observed, outcomes } = await runCase(false, mode);
+    assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
+    assert.deepEqual(observed.map(item => item.id), ["18194"]);
+    const unknown = outcomes.find(item => item.reason === "selection_unclassified");
+    assert.ok(unknown);
+    assert.equal(unknown.sourceOrdinal, 0);
+    assert.equal(unknown.id, "17000");
+    const raw = JSON.parse(unknown.feedObservation.sourceRowJson);
+    assert.deepEqual(raw.transaction.at(-1), { toString: null, valueOf: null });
+    assert.ok(outcomes.some(item => item.id === "18194" && item.state === "validated"));
+  });
+}
 
 test("access denial stops before requesting a later peer", async () => {
   const { source, failure, observed, calls } = await runCase(true);
