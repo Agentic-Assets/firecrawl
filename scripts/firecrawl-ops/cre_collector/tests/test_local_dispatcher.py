@@ -95,6 +95,36 @@ def test_wake_cannot_mix_a_new_policy_or_slot():
         dispatcher.main(["--wake", "--slot", "20261106T042000Z_peer"])
 
 
+def test_current_snapshot_records_unknown_history_and_keeps_current_peers(tmp_path, policy):
+    first = copy.deepcopy(policy)
+    second = copy.deepcopy(policy)
+    second["sources"] = ["savills"]
+    snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
+                "tasks": [{"task": "colliers", "policy": first, "due": ["20261106T042000Z"]},
+                          {"task": "savills", "policy": second, "due": ["20261106T042000Z"]}]}
+    dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
+    dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
+    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert len(list(tmp_path.glob(".history-*.audit"))) == 2
+    for audit in tmp_path.glob(".history-*.audit"):
+        assert json.loads(audit.read_text())["historical_intervals"] == "unknown_not_replayed"
+    changed = copy.deepcopy(snapshot)
+    changed["tasks"][0]["policy"]["expected_sha"] = "d" * 40
+    dispatcher.enqueue_current_snapshot(tmp_path, changed)
+    assert len(list(tmp_path.glob("*.json"))) == 3
+
+
+def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy):
+    bad = copy.deepcopy(policy)
+    bad["pipeline"] = "invalid"
+    snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
+                "tasks": [{"task": "bad", "policy": bad, "due": ["20261106T042000Z"]},
+                          {"task": "good", "policy": policy, "due": ["20261106T042000Z"]}]}
+    dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
+    states = [json.loads(item.read_text())["state"] for item in tmp_path.glob("*.json")]
+    assert sorted(states) == ["held_no_work", "queued"]
+
+
 def test_native_no_work_marker_must_bind_exact_completed_launch(policy):
     request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
     marker = {"schema": "cre-dispatch-no-work/v1", "seriesId": request["series_id"],

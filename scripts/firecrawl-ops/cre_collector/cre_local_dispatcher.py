@@ -286,6 +286,40 @@ def successor(slot: str, request: dict, result: dict):
     return next_slot, next_request
 
 
+def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
+    """Queue current-policy due slots; never replay an unverified old policy."""
+    if (not isinstance(snapshot, dict) or set(snapshot) != {"schema", "observed_unix_ms", "tasks"}
+            or snapshot["schema"] != "cre-dispatch-current-snapshot/v1"
+            or type(snapshot["observed_unix_ms"]) is not int or snapshot["observed_unix_ms"] < 0
+            or not isinstance(snapshot["tasks"], list)):
+        raise ValueError("current task snapshot differs")
+    seen = set()
+    from datetime import datetime, timezone
+    for task in snapshot["tasks"]:
+        if (not isinstance(task, dict) or set(task) != {"task", "policy", "due"}
+                or not isinstance(task["task"], str) or re.fullmatch(r"[A-Za-z0-9_-]{1,72}", task["task"]) is None
+                or task["task"] in seen or not isinstance(task["policy"], dict)
+                or not isinstance(task["due"], list)):
+            raise ValueError("current task entry differs")
+        seen.add(task["task"])
+        raw = json.dumps(task["policy"], sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        dispatch_queue.record_unknown_history(path, task["task"], digest, snapshot["observed_unix_ms"])
+        for due in task["due"]:
+            if not isinstance(due, str) or re.fullmatch(r"\d{8}T\d{6}Z", due) is None:
+                raise ValueError("current task due time differs")
+            timestamp = datetime.strptime(due, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            if int(timestamp.timestamp() * 1000) > snapshot["observed_unix_ms"]:
+                raise ValueError("current task due time is in the future")
+            slot = f"{due}_{task['task']}_{digest[:12]}"
+            try:
+                request = policy_request(task["policy"], slot)
+            except SourcePolicyRefusal:
+                dispatch_queue.hold_invalid_policy(path, slot, digest)
+            else:
+                dispatch_queue.enqueue(path, slot, request)
+
+
 def main(argv=None) -> int:
     if not sys.platform.startswith("linux"):
         raise ValueError("this phase requires the WSL/Linux series control contract")
@@ -293,15 +327,19 @@ def main(argv=None) -> int:
     parser.add_argument("--slot")
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--wake", action="store_true", help="drain already recorded due intents")
+    parser.add_argument("--wake-snapshot", action="store_true", help="enqueue current-task snapshot from stdin and wake")
     args = parser.parse_args(argv)
-    if args.wake and (args.slot is not None or args.policy is not None):
+    waking = args.wake or args.wake_snapshot
+    if args.wake and args.wake_snapshot:
+        parser.error("choose one wake mode")
+    if waking and (args.slot is not None or args.policy is not None):
         parser.error("wake cannot submit a new intent")
-    if not args.wake and (args.slot is None or args.policy is None):
+    if not waking and (args.slot is None or args.policy is None):
         parser.error("submission requires slot and policy")
-    if not args.wake and re.fullmatch(r"\d{8}T\d{6}Z_[A-Za-z0-9_-]{1,96}", args.slot) is None:
+    if not waking and re.fullmatch(r"\d{8}T\d{6}Z_[A-Za-z0-9_-]{1,96}", args.slot) is None:
         raise ValueError("slot must bind a UTC due time and task identity")
     from datetime import datetime
-    if not args.wake:
+    if not waking:
         datetime.strptime(args.slot[:16], "%Y%m%dT%H%M%SZ")
     parent = HERE / "out"
     parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -315,7 +353,12 @@ def main(argv=None) -> int:
     finally:
         os.close(parent_fd)
     path = parent / "local-dispatch"
-    if args.wake:
+    if args.wake_snapshot:
+        raw = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("current task snapshot is too large")
+        enqueue_current_snapshot(path, json.loads(raw))
+    if waking:
         dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify,
                              successor=successor, wait=False)
         return 0

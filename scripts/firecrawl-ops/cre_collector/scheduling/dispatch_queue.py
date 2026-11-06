@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -109,6 +110,31 @@ def hold_invalid_policy(path: Path, slot: str, policy_sha256: str | None,
             old = _read(directory, name)
             if _encode(old["request"]) != _encode(request):
                 raise DispatchRefused("due slot already has a different request")
+    finally:
+        os.close(directory)
+
+
+def record_unknown_history(path: Path, task: str, policy_sha256: str, observed_unix_ms: int) -> None:
+    """Durably note an unverified historical policy interval without replaying it."""
+    if (not isinstance(task, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,72}", task) is None
+            or not isinstance(policy_sha256, str) or re.fullmatch(r"[a-f0-9]{64}", policy_sha256) is None
+            or type(observed_unix_ms) is not int or observed_unix_ms < 0):
+        raise DispatchRefused("invalid historical policy observation")
+    name = ".history-" + hashlib.sha256((task + ":" + policy_sha256).encode()).hexdigest() + ".audit"
+    directory = _directory(path)
+    try:
+        value = {"schema": "cre-dispatch-history-unknown/v1", "task": task,
+                 "policy_sha256": policy_sha256, "observed_unix_ms": observed_unix_ms,
+                 "historical_intervals": "unknown_not_replayed"}
+        try:
+            _write(directory, name, value, create=True)
+        except FileExistsError:
+            raw, _ = _read_at(directory, name, limit=4096)
+            old = json.loads(raw)
+            if (not isinstance(old, dict) or old.get("schema") != value["schema"]
+                    or old.get("task") != task or old.get("policy_sha256") != policy_sha256
+                    or old.get("historical_intervals") != value["historical_intervals"]):
+                raise DispatchRefused("historical policy observation differs")
     finally:
         os.close(directory)
 
