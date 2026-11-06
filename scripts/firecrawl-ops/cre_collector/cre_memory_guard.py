@@ -122,6 +122,7 @@ class HostMemoryGuard:
     advisory_failures: bool | None = None
     failure_reported: bool = field(default=False, init=False)
     failure_reports: int = field(default=0, init=False)
+    last_degradation: dict[str, Any] | None = field(default=None, init=False)
     high_since: float | None = field(default=None, init=False)
     previous_observed: float | None = field(default=None, init=False)
     tripped: bool = field(default=False, init=False)
@@ -212,6 +213,8 @@ class HostMemoryGuard:
                 "pressure_level": pressure,
                 "state": "tripped"
                 if reason_code
+                else "recovered"
+                if self.failure_reported
                 else "warning"
                 if self.high_since is not None
                 else "ok",
@@ -230,6 +233,10 @@ class HostMemoryGuard:
                     else {}
                 ),
                 **diagnostics,
+                **(
+                    {"preceding_telemetry_failure": self.last_degradation}
+                    if self.failure_reported and self.last_degradation else {}
+                ),
                 **(
                     {"telemetry_failure": self.telemetry_failure}
                     if reason_code and self.telemetry_failure
@@ -387,6 +394,21 @@ class HostMemoryGuard:
 
     def _degrade(self, exc: Exception) -> None:
         self._record_failure(exc)
+        self.last_degradation = dict(self.telemetry_failure)
+        if not self.failure_reported:
+            try:
+                _append_record(self.log_path, {
+                    "schema_version": 1,
+                    "kind": "cre_host_memory_guard",
+                    "observed_at": utc_now(),
+                    "pressure_level": None,
+                    "state": "degraded",
+                    "reason_code": None,
+                    "context": {},
+                    "telemetry_failure": self.last_degradation,
+                })
+            except Exception:  # journal itself may be unavailable
+                pass
         # Reset once per degradation episode; repeated journal failures must not
         # prevent continuous valid warning samples from triggering a stop.
         if not isinstance(exc, MemoryEvidenceError) or not self.failure_reported:

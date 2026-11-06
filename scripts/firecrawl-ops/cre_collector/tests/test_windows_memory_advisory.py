@@ -169,3 +169,53 @@ def test_advisory_loop_continues_after_failure_and_trips_on_later_critical(tmp_p
     assert guard.stop_event.count == 3
     assert trips[0]["reason_code"] == "host_memory_critical"
     assert "private" not in guard.log_path.read_text()
+
+
+def test_guard_journal_records_degradation_then_recovery(tmp_path):
+    import json
+
+    class Ticks:
+        def __init__(self):
+            self.count = 0
+
+        def wait(self, _seconds):
+            self.count += 1
+            return self.count > 4
+
+    samples = iter([1, OSError("private"), OSError("private"), 1])
+
+    def sample():
+        value = next(samples)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl", lambda **_: None,
+                                   sampler=sample, advisory_failures=True)
+    guard.stop_event = Ticks()
+    guard._run()
+    rows = [json.loads(line) for line in guard.log_path.read_text().splitlines()]
+    assert [row["state"] for row in rows] == ["ok", "degraded", "recovered"]
+    assert rows[1]["pressure_level"] is None
+    assert rows[1]["telemetry_failure"]["category"] == "read_unavailable"
+    assert rows[2]["preceding_telemetry_failure"]["category"] == "read_unavailable"
+    assert "private" not in guard.log_path.read_text()
+
+
+def test_guard_journal_recovers_after_failed_degradation_write(tmp_path, monkeypatch):
+    import json
+
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl", lambda **_: None,
+                                   sampler=lambda: 1, advisory_failures=True)
+    append = memory._append_record
+    def unavailable(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(memory, "_append_record", unavailable)
+    guard._degrade(memory.MemoryEvidenceError("unavailable"))
+    assert guard.failure_reported and not guard.tripped
+    monkeypatch.setattr(memory, "_append_record", append)
+    guard.sample_once()
+    row = json.loads(guard.log_path.read_text())
+    assert row["state"] == "recovered"
+    assert row["preceding_telemetry_failure"]["category"] == "evidence_write"
