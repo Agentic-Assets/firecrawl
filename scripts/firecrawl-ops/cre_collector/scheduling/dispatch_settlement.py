@@ -123,6 +123,13 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     for key in expected_config["sources"]:
         state = candidate["sources"][key]["state"]
         checkpoint = (child.get("sources") or {}).get(key) or {}
+        if (checkpoint.get("state") in {"ingesting", "ingest_recovery_required"}
+                or (key == "colliers" and (
+                    (checkpoint.get("colliers_partial_worker") or {}).get("state") in {
+                        "cursor_publishing", "cursor_recovery_required", "settlement_unknown"}
+                    or (checkpoint.get("partial_cursor_settlement") or {}).get("state") in {
+                        "publishing", "recovery_required"}))):
+            raise DispatchSettlementRefused("current source has unresolved write or cursor")
         if (key == "colliers" and checkpoint.get("state") == "ingested"
                 and ((checkpoint.get("artifact") or {}).get("colliers_partial") is True
                      or checkpoint.get("partial_windows"))):

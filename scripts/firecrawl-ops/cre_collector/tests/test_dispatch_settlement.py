@@ -86,6 +86,20 @@ def test_prior_verified_partial_does_not_qualify_new_unreadback_window(case, mon
         settlement.qualify(root, series_id, invocation, **options)
 
 
+@pytest.mark.parametrize("worker_state", ["cursor_publishing", "cursor_recovery_required", "settlement_unknown"])
+def test_prior_verified_partial_does_not_hide_current_uncertain_worker(case, monkeypatch, worker_state):
+    root, series_id, invocation, options, child, _ = case
+    child["sources"]["colliers"] = {"state": "partial_window_pending",
+        "partial_windows": [{"state": "verified", "index": 1}],
+        "colliers_partial_worker": {"state": worker_state}}
+    def prior_result(_path, parent, *, publish):
+        parent["sources"]["colliers"]["state"] = "qualified_partial_subset"
+        parent["sources"]["savills"]["state"] = "complete"
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", prior_result)
+    with pytest.raises(settlement.DispatchSettlementRefused, match="unresolved write or cursor"):
+        settlement.qualify(root, series_id, invocation, **options)
+
+
 def test_terminal_receipt_does_not_bypass_live_series_parent_lock(case):
     root, series_id, invocation, options, _, _ = case
     with (root / series_id / ".series.lock").open() as held:
