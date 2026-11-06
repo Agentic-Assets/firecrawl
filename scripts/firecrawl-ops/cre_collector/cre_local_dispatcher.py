@@ -174,7 +174,7 @@ def prepare_launch(request: dict) -> list[str]:
             hold_local(exc)
         try:
             raw = observed.read_bytes()
-        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, PermissionError) as exc:
             hold_local(exc)
         if raw != expected or (observed == launcher and hashlib.sha256(raw).hexdigest() != policy["windows_launcher_sha256"]):
             hold_local(ValueError("Windows launcher custody changed before dispatch"))
