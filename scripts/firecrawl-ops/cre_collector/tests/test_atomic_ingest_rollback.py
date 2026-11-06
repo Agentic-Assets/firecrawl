@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-import cre_atomic_ingest_rollback as outcome
+import recovery.atomic_ingest_rollback as outcome
 from cre_ingest import artifact_run_identity_from_digests
 from cre_validate import FULL_VALIDATION_PROFILE, QUERIES, VALIDATION_AUDIT_SCOPES
 
