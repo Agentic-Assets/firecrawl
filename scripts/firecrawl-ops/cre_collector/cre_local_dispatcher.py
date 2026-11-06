@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Bounded WSL dispatcher for explicitly submitted Windows series intents.
+"""WSL dispatcher for current-policy Windows series intents.
 
-This entry point is not installed as a task. It does not reconstruct missed
-scheduler triggers or preempt an active series for a later due opportunity.
+This WIP is not installed. Snapshot ingestion records unknown prior policy
+history, and never establishes that a historical trigger was executed.
 """
 from __future__ import annotations
 
