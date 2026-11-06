@@ -54,8 +54,10 @@ def verify_receipt(run_dir, attempt, *, now=None):
                 or receipt["sourceKey"] != "avison-young" or receipt["generation"] != root.name
                 or type(receipt["attempt"]) is not int or receipt["attempt"] != number
                 or receipt["sourceOutcome"] not in {"record_local_error", "unclassified_source_error",
-                                                    "terminal_detail_not_found", "mixed_record_local_and_404"}
-                or (rc in {78, 82} and receipt["sourceOutcome"] != "terminal_detail_not_found")
+                                                    "terminal_detail_not_found", "mixed_record_local_and_404",
+                                                    "terminal_404_with_team_denial"}
+                or (rc in {78, 82} and receipt["sourceOutcome"] not in
+                    {"terminal_detail_not_found", "terminal_404_with_team_denial"})
                 or receipt["coverage"] != "unverified"):
             return None
         current = (now or datetime.now(UTC)).astimezone(UTC)

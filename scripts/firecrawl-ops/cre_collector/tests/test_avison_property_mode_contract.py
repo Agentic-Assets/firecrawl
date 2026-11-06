@@ -64,7 +64,7 @@ globalThis.fetch=async(input,options)=>{
       return new Response('unavailable',{status:500});
     if(mode==='second-inventory-bad-json' && websiteFetches===2)return new Response('{bad json');
   }
-  if(entity==='team_member' && (mode==='team403'||mode==='first-website500-team403')){
+  if(entity==='team_member' && (mode==='team403'||mode==='first-website500-team403'||mode==='team403-and-404')){
     calls.push({feed:'team'});
     return new Response('denied',{status:403,headers:{'Retry-After':'3600'}});
   }
@@ -111,7 +111,7 @@ https.request=(url,options,callback)=>{
       if(index===0)body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
     if(mode==='reverse-partial')status=native?404:200;
-    if(mode==='one-good-404' && index===1)status=404;
+    if((mode==='one-good-404'||mode==='team403-and-404') && index===1)status=404;
     if(mode==='first-404' && index===0)status=404;
     if(mode==='one-good-403' && index===1)status=403;
     if(mode==='sale-good-lease-denied' && (url.hostname+url.pathname).includes('fixture-lease-'))status=403;
@@ -865,5 +865,26 @@ def test_mixed_404_and_record_local_receipt_preserves_peers(tmp_path, case):
                "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
     receipt = verify_receipt(tmp_path, attempt)
     assert receipt and receipt["source_outcome"] == "mixed_record_local_and_404"
+    records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
+    assert any(record["kind"] == "validated_detail" for record in records)
+
+
+def test_terminal_404_with_optional_team_denial_retains_partial_receipt(tmp_path):
+    from source_evidence.avison_spool_receipt import verify_receipt
+
+    preload, started, env = prepare(tmp_path, "team403-and-404")
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 78
+    attempt = {"number": 1, "rc": result.returncode, "started_at": started,
+               "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
+    receipt = verify_receipt(tmp_path, attempt)
+    assert receipt and receipt["source_outcome"] == "terminal_404_with_team_denial"
+    calls = json.loads((tmp_path / "calls.json").read_text())
+    assert sum(item.get("feed") == "team" for item in calls) == 1
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
     assert any(record["kind"] == "validated_detail" for record in records)

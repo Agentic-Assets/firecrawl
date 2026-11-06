@@ -418,8 +418,9 @@ async function main() {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
           receipt, startedAt, observationNow(),
-          avisonYoungTeamDenialObserved() ? "unclassified_source_error"
-            : avisonOtherFailures === 0 ? "terminal_detail_not_found"
+          avisonOtherFailures === 0
+            ? avisonYoungTeamDenialObserved() ? "terminal_404_with_team_denial" : "terminal_detail_not_found"
+            : avisonYoungTeamDenialObserved() ? "unclassified_source_error"
               : avisonOnlyRecordLocalFailures && avisonTerminalFailures.length > 0 ? "mixed_record_local_and_404"
                 : avisonOnlyRecordLocalFailures ? "record_local_error" : "unclassified_source_error");
       } catch {
