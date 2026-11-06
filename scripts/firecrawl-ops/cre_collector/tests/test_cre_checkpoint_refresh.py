@@ -4652,7 +4652,8 @@ def test_resume_accepts_legacy_serial_manifest_without_source_workers(tmp_path):
     assert json.loads(path.read_text())["config"]["source_workers"] == 1
 
 
-def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
+def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path, monkeypatch):
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: False)
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -6919,3 +6920,20 @@ def test_resume_preserves_unlimited_page_cap_and_rejects_drift(tmp_path):
         refresh.load_resume_manifest(
             path, git_sha="abc", sources=("svn",), page_cap=400, concurrency=3
         )
+
+
+def test_wsl_refuses_legacy_missing_cpu_guard_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: True)
+    run_dir = tmp_path / "legacy"
+    manifest = refresh.new_manifest(run_dir, git_sha="abc", git_dirty=False,
+                                    sources=("svn",), page_cap=400, concurrency=3)
+    del manifest["config"]["host_cpu_guard"]
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+    with pytest.raises(refresh.RefreshError, match="configuration differs"):
+        refresh.load_resume_manifest(path, git_sha="abc", sources=("svn",),
+            page_cap=400, concurrency=3,
+            max_host_cpu_percent=refresh.LEGACY_MAX_HOST_CPU_PERCENT,
+            cpu_sustain_seconds=refresh.LEGACY_CPU_SUSTAIN_SECONDS,
+            cpu_sample_seconds=refresh.LEGACY_CPU_SAMPLE_SECONDS)
+    assert "host_cpu_guard" not in json.loads(path.read_text())["config"]
