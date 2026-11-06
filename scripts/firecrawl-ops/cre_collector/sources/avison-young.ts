@@ -2481,6 +2481,9 @@ export async function enrichAvisonYoungListing(
     if (strict) {
       throw new Error("Avison Young strict detail requires a public detail URL");
     }
+    if (requireLiveDetails) {
+      throw new AvisonYoungRecordDetailError("missing public detail URLs");
+    }
     return prune({ ...base, detailError: "missing public detail URLs" });
   }
 
@@ -2849,6 +2852,8 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
         if (error.redirectObservations.length) {
           outcomes[index]!.reason = "unbound_final_url";
           outcomes[index]!.redirectObservations = error.redirectObservations;
+        } else if (error.message === "missing public detail URLs") {
+          outcomes[index]!.reason = "missing_public_detail_urls";
         } else if (error.message.includes("Avison Young detail has empty or missing content")) {
           outcomes[index]!.reason = "empty_or_missing_content";
         } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {

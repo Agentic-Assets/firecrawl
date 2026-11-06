@@ -11,7 +11,7 @@ const html = readFileSync(new URL("avison-young-official-display-role-18194.html
 const badUrl = "https://www.avisonyoung.us/properties/unrelated-sale";
 const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: badUrl };
 
-async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403") {
+async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -29,7 +29,8 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403") {
     globalThis.fetch = async input => {
       const url = new URL(String(input));
       if (url.hostname === "www.avisonyoung.us") return new Response("SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')");
-      return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website" ? [bad, row] : [] }),
+      return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website"
+          ? [ordinaryFailure === "missing-url" ? { ...bad, url: null, external_url: null } : bad, row] : [] }),
         { status: 200, headers: { "content-type": "application/json" } });
     };
     firecrawl.scrape = async (url: string) => {
@@ -60,6 +61,16 @@ test("identity mismatch holds the row and retains a later validated peer", async
   assert.deepEqual((failure as InstanceType<typeof source.AvisonYoungPartialDetailError>).heldIds, ["17000"]);
   assert.deepEqual(observed.map(row => row.id), ["18194"]);
   assert.deepEqual(outcomes.map(row => [row.id, row.state]), [["17000", "failed"], ["18194", "validated"]]);
+});
+
+test("a URL-less source row is held while a later identified peer is retained", async () => {
+  const { source, failure, observed, outcomes, calls } = await runCase(false, "missing-url");
+  assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
+  assert.deepEqual((failure as InstanceType<typeof source.AvisonYoungPartialDetailError>).heldIds, ["17000"]);
+  assert.deepEqual(observed.map(item => item.id), ["18194"]);
+  assert.deepEqual(outcomes.map(item => [item.id, item.state]), [["17000", "failed"], ["18194", "validated"]]);
+  assert.equal(outcomes[0].reason, "missing_public_detail_urls");
+  assert.ok(!calls.includes(badUrl));
 });
 
 test("access denial stops before requesting a later peer", async () => {
