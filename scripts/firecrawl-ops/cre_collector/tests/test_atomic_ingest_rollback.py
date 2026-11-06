@@ -421,6 +421,7 @@ def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
     [
         "none",
         "code",
+        "manifest_code",
         "artifact",
         "target",
         "attempt",
@@ -514,6 +515,8 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
         Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
         if second and fault == "code":
             identity["sha"] = "f" * 40
+        if second and fault == "manifest_code":
+            manifest["collector_git_sha"] = "f" * 40
         if second and fault == "artifact":
             artifact.write_bytes(b"changed")
         if second and fault == "target":

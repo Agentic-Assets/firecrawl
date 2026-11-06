@@ -6830,6 +6830,8 @@ def recover_interrupted_ingest(
                 artifact_path = run_dir / saved_artifact["path"]
                 def binding_unchanged():
                     return (git_identity() == (saved_sha, False)
+                            and manifest.get("collector_git_sha") == saved_sha
+                            and manifest.get("collector_git_dirty") is False
                             and manifest["run_id"] == saved_run_id
                             and manifest_database_target_sha256(manifest) == expected_probe["database_target_sha256"]
                             and manifest["sources"].get(source) is checkpoint
