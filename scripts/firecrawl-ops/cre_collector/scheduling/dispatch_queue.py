@@ -62,6 +62,8 @@ def _read(directory: int, name: str) -> dict:
             or _slot(value["slot"]) != name or not isinstance(value["request"], dict)
             or value["state"] not in {"queued", "dispatch_uncertain", "settled"}):
         raise DispatchRefused("invalid durable intent")
+    if "policy" in value["request"] and value["request"].get("slot") != value["slot"]:
+        raise DispatchRefused("durable intent slot differs")
     return value
 
 

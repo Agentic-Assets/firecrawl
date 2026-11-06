@@ -73,6 +73,14 @@ def test_target_change_refuses_before_native_launcher(policy, monkeypatch):
         dispatcher.launch(request)
 
 
+def test_tampered_derived_scope_refuses_before_native_launcher(policy, monkeypatch):
+    request = dispatcher.policy_request(policy, "20261106T042000Z_colliers")
+    request["config"]["sources"] = ["savills"]
+    monkeypatch.setattr(dispatcher.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
+    with pytest.raises(ValueError, match="intent differs"):
+        dispatcher.launch(request)
+
+
 def test_only_one_target_bound_deadline_successor(policy, monkeypatch):
     slot = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, slot)

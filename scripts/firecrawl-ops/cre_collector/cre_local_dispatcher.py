@@ -76,9 +76,24 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
         pipeline=True, source_workers=policy["workers"])
     target = refresh.database_target_fingerprint(policy["env_file"])
     series_id = due.strftime("%Y-%m-%dT%H%M%SZ") + "-" + hashlib.sha256(slot.encode()).hexdigest()[:12]
-    return {"policy": policy, "config": config, "target": target, "series_id": series_id,
+    return {"slot": slot, "policy": policy, "config": config, "target": target, "series_id": series_id,
             "due_unix_ms": int(due.replace(tzinfo=timezone.utc).timestamp() * 1000),
             "continuation_depth": continuation_depth, "predecessor_series_id": None}
+
+
+def validate_request(request: dict) -> None:
+    """Rederive policy, due locator and predecessor before any real dispatch."""
+    if not isinstance(request, dict):
+        raise ValueError("dispatch intent differs")
+    depth = request.get("continuation_depth")
+    slot = request.get("slot")
+    expected = policy_request(request.get("policy"), slot, continuation_depth=depth)
+    if depth == 1:
+        origin = policy_request(request["policy"], slot.removesuffix(".continuation1"))
+        expected["predecessor_series_id"] = origin["series_id"]
+    if json.dumps(request, sort_keys=True, separators=(",", ":"), allow_nan=False) != json.dumps(
+            expected, sort_keys=True, separators=(",", ":"), allow_nan=False):
+        raise ValueError("dispatch intent differs")
 
 
 def launcher_arguments(request: dict) -> list[str]:
@@ -110,6 +125,7 @@ def launch(request: dict) -> dict | None:
     policy = request["policy"]
     if refresh.database_target_fingerprint(policy["env_file"]) != request["target"]:
         raise ValueError("database target changed before dispatch")
+    validate_request(request)
     # The OS executes the exact pinned launcher; never evaluate shell text.
     local = subprocess.run(["wslpath", "-u", policy["windows_launcher"]], check=True,
                            capture_output=True, text=True, timeout=10).stdout.strip()
@@ -160,6 +176,7 @@ def qualify(request: dict) -> dict:
     policy = request["policy"]
     if refresh.database_target_fingerprint(policy["env_file"]) != request["target"]:
         raise ValueError("database target changed during dispatch")
+    validate_request(request)
     root = HERE / "out" / "checkpoint-series"
     manifest = json.loads((root / request["series_id"] / "manifest.json").read_text())
     invocation = manifest["latest_invocation_control"]["invocation_id"]
