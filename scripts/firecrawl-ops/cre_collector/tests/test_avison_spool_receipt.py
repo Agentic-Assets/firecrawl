@@ -24,7 +24,7 @@ spool.record({transaction:'sale',page:1,pass:1,kind:'detail_outcomes',observedAt
   documents:[{id:'1',state:'validated'},{id:'2',state:'failed'}]});
 const receipt = spool.finish();
 if(CRASH_POINT==='before')process.kill(process.pid,'SIGKILL');
-publishAvisonSpoolReceipt(SPOOL,GENERATION,1,receipt,STARTED,new Date().toISOString());
+publishAvisonSpoolReceipt(SPOOL,GENERATION,1,receipt,STARTED,new Date().toISOString(),'record_local_error');
 process.kill(process.pid,'SIGKILL');
 """
 
@@ -51,6 +51,14 @@ def test_process_death_before_or_after_receipt_preserves_only_bound_prefix(tmp_p
         return
     assert result and result["state"] == "sealed_standalone"
     assert result["coverage"] == "unverified"
+    # A crash after link and before unlink leaves two names for one inode.
+    # This state is refused, then accepted only after the extra link is gone.
+    receipt = root / result["receipt_path"]
+    extra = receipt.parent / ".receipt-synthetic.tmp"
+    os.link(receipt, extra)
+    assert verify_receipt(root, attempt) is None
+    extra.unlink()
+    assert verify_receipt(root, attempt) is not None
     rows = [json.loads(line) for line in (root / state["path"]).read_text().splitlines()[1:]]
     assert rows[0]["documents"][0]["id"] == "1"
     assert rows[1]["documents"][1]["state"] == "failed"

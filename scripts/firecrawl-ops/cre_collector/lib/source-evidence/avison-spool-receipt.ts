@@ -14,6 +14,7 @@ export type AvisonSpoolReceipt = {
 export function publishAvisonSpoolReceipt(
   spoolPath: string, generation: string, attempt: number, receipt: AvisonSpoolReceipt,
   sourceStartedAt: string, sourceFinishedAt: string,
+  sourceOutcome: "record_local_error" | "unclassified_source_error",
 ): string {
   const dir = dirname(spoolPath);
   const filename = `attempt-${attempt}.jsonl`;
@@ -22,6 +23,7 @@ export function publishAvisonSpoolReceipt(
       || !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 1
       || !Number.isSafeInteger(receipt.observationRecords) || receipt.observationRecords < 1
       || !/^[a-f0-9]{64}$/.test(receipt.sha256)
+      || !["record_local_error", "unclassified_source_error"].includes(sourceOutcome)
       || !Number.isFinite(Date.parse(sourceStartedAt)) || !Number.isFinite(Date.parse(sourceFinishedAt))
       || Date.parse(sourceStartedAt) > Date.parse(sourceFinishedAt)) throw new Error("invalid source receipt");
   const owner = process.getuid?.();
@@ -35,7 +37,7 @@ export function publishAvisonSpoolReceipt(
   const temporary = join(dir, `.receipt-${randomBytes(16).toString("hex")}.tmp`);
   const payload = Buffer.from(JSON.stringify({
     schema: "avison-young-settled-spool/v1", sourceKey: "avison-young", generation, attempt,
-    sourceOutcome: "ordinary_source_error", coverage: "unverified",
+    sourceOutcome, coverage: "unverified",
     sourceStartedAt, sourceFinishedAt, spool: receipt,
   }) + "\n", "utf8");
   let owned = false;

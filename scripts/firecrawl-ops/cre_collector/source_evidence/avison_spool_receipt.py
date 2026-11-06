@@ -53,7 +53,7 @@ def verify_receipt(run_dir, attempt, *, now=None):
         if (receipt["schema"] != "avison-young-settled-spool/v1"
                 or receipt["sourceKey"] != "avison-young" or receipt["generation"] != root.name
                 or type(receipt["attempt"]) is not int or receipt["attempt"] != number
-                or receipt["sourceOutcome"] != "ordinary_source_error"
+                or receipt["sourceOutcome"] not in {"record_local_error", "unclassified_source_error"}
                 or receipt["coverage"] != "unverified"):
             return None
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -104,7 +104,7 @@ def verify_receipt(run_dir, attempt, *, now=None):
                 != (after_dir.st_dev, after_dir.st_ino, after_dir.st_mode, after_dir.st_uid)):
             return None
         return {"state": "sealed_standalone", "coverage": "unverified",
-                "source_outcome": "ordinary_source_error", "path": str(spool.relative_to(root)),
+                "source_outcome": receipt["sourceOutcome"], "path": str(spool.relative_to(root)),
                 "sha256": declared["sha256"], "bytes": size,
                 "observationRecords": declared["observationRecords"],
                 "receipt_path": str(receipt_path.relative_to(root)),

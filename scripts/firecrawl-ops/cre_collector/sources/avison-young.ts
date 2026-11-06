@@ -211,12 +211,17 @@ export async function fetchAvisonYoungApiKey(timeoutMs = 30_000): Promise<string
   try {
     const html = await fetchAvisonYoungText(AVISON_YOUNG_PAGE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 CRE collector" },
-    }, timeoutMs, (status) => new Error(`HTTP ${status}`));
+    }, timeoutMs, (status) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young bootstrap returned HTTP ${status}`)
+      : new Error(`HTTP ${status}`));
+    if (/<title[^>]*>\s*(?:just a moment|access denied)/i.test(html)) {
+      throw new AvisonYoungAccessDeniedError("Avison Young bootstrap returned a challenge");
+    }
     const key = html.match(/SharpLaunch\.PSE\.create\(\s*['"]([a-f0-9]{32})['"]/i)?.[1];
     if (key) return key;
     console.error("  avison-young: SharpLaunch key not found on page; using documented fallback");
   } catch (err) {
-    if (err instanceof AvisonYoungUnsettledError) throw err;
+    if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
     console.error(`  avison-young: failed to fetch page key (${err}); using documented fallback`);
   }
   return AVISON_YOUNG_FALLBACK_API_KEY;
@@ -229,7 +234,9 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string, tim
   const captureDir = entity === "website" ? process.env.CRE_AVISON_NATIVE_CAPTURE_DIR : undefined;
   const startedAt = captureDir ? observationNow() : "";
   const text = await fetchAvisonYoungText(url, { headers: { "X-Api-Key": apiKey } }, timeoutMs,
-    (status) => new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
+    (status) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young SharpLaunch ${entity} API HTTP ${status}`)
+      : new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
   if (captureDir) publishAvisonNativePage(captureDir, text, apiKey, startedAt, observationNow());
   const data = JSON.parse(text);
   return avisonYoungEntityItems(data, entity);
@@ -275,6 +282,9 @@ export async function getAvisonYoungFeed(timeoutMs = 30_000): Promise<{
     fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
   ]);
   assertAvisonYoungTransportSettled();
+  for (const result of [website, team]) {
+    if (result.status === "rejected" && result.reason instanceof AvisonYoungAccessDeniedError) throw result.reason;
+  }
   if (website.status === "rejected") throw website.reason;
   const websiteRows = website.value;
   const rawTeamState = team.status === "fulfilled"

@@ -408,12 +408,13 @@ async function main() {
     const receipt = spool.finish();
     const failed = sources.find((source) => source.sourceKey === key && source.error);
     const source = failed ?? sources.find((entry) => entry.sourceKey === key);
-    if (key === "avison-young" && failed && avisonOtherFailures > 0 && avisonOnlyRecordLocalFailures
+    if (key === "avison-young" && failed && avisonOtherFailures > 0
         && requestedSources.length === 1 && !avisonAccessDenied && !avisonUnsettled && !terminalCaptureFailure
         && (receipt.state === "sealed" || receipt.state === "sealed_partial")) {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
-          receipt, startedAt, observationNow());
+          receipt, startedAt, observationNow(),
+          avisonOnlyRecordLocalFailures ? "record_local_error" : "unclassified_source_error");
       } catch {
         // The ordinary artifact/peer path remains independent; a missing
         // receipt must never qualify the spool without the main artifact.
