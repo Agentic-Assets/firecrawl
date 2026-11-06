@@ -281,7 +281,7 @@ def successor(slot: str, request: dict, result: dict):
     next_request["predecessor_series_id"] = request["series_id"]
     next_request["predecessor_no_work"] = result.get("outcome") == "settled_no_work"
     # No terminal source progress is a scheduling hint, never a coverage proof.
-    delay = 300_000 if set(unfinished) == set(request["config"]["sources"]) else 0
+    delay = 300_000 if len(request["config"]["sources"]) == 1 and len(unfinished) == 1 else 0
     next_request["eligible_unix_ms"] = max(next_request["due_unix_ms"], result["finished_unix_ms"] + delay)
     return next_slot, next_request
 

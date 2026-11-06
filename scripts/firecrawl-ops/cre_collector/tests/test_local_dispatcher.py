@@ -198,6 +198,16 @@ def test_crash_after_successor_enqueue_reuses_receipt_bound_time(tmp_path, polic
     assert (tmp_path / (slot + ".continuation1.json")).exists()
 
 
+def test_multi_source_wave_does_not_delay_other_unfinished_sources(policy):
+    policy["sources"] = ["colliers", "savills"]
+    first = dispatcher.policy_request(policy, "20261106T042000Z_broad")
+    result = {"status": "deadline_interrupted", "outcome": "qualified",
+              "unfinished_sources": ["colliers", "savills"],
+              "finished_unix_ms": first["due_unix_ms"] + 100}
+    _, following = dispatcher.successor(first["slot"], first, result)
+    assert following["eligible_unix_ms"] == result["finished_unix_ms"]
+
+
 def test_deadline_with_settled_no_child_requalifies_and_omits_priority(policy, monkeypatch):
     slot = "20261106T042000Z_colliers"
     first = dispatcher.policy_request(policy, slot)
