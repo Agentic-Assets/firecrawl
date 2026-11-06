@@ -603,7 +603,9 @@ or lifecycle authority. Follow the source contracts in [START_HERE.md](START_HER
 and [sources/AGENTS.md](sources/AGENTS.md); Buildout details remain in the
 [admission reference](../../../docs/firecrawl-ops/references/buildout-current-inventory-admission.md).
 
-The checkpoint runner has fail-closed Darwin/Linux CPU and memory guards and writes resumable
+The checkpoint runner stops on observed critical or sustained warning memory pressure.
+Windows/WSL memory telemetry failures are diagnostic; other platforms remain fail-closed.
+The runner has platform-specific CPU guards and writes resumable
 evidence. For exact thresholds, resource-profile setup, guard and incident
 logs, full-registry commands, and stale-parent recovery, follow
 `START_HERE.md` rather than duplicating operational settings here. Serial

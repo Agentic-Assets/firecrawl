@@ -6,6 +6,8 @@ import cre_memory_guard as memory
 import pytest
 
 PSI = "some avg10=0.00 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+REAL_READ_MEMORY = memory.read_memory_pressure
+
 EVENTS = "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"
 
 
@@ -348,3 +350,79 @@ def test_linux_policy_scope_and_darwin_policy_unchanged(monkeypatch):
         == "darwin_dispatch_pressure_level_1_normal_2_warning_4_critical"
     )
     assert "telemetry_scope" not in config
+
+
+@pytest.mark.parametrize("component", ["host", "cgroup"])
+def test_partial_critical_is_not_lost_when_later_input_fails(kernel, tmp_path, component, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
+    sampler, group = kernel
+    if component == "host":
+        write(sampler.proc / "meminfo", "MemTotal: 1000000 kB\nMemAvailable: 40000 kB\nSwapTotal: 200000 kB\nSwapFree: 200000 kB\n")
+        (sampler.proc / "pressure/memory").unlink()
+    else:
+        write(group / "memory.current", "960000000\n")
+        (group / "memory.pressure").unlink()
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw), advisory_failures=True)
+    guard.linux_sampler = sampler
+    assert guard.preflight() == 4
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert trips[0]["telemetry_valid"] is False
+
+
+def test_psi_failure_still_checks_critical_cgroup_usage(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
+    sampler, group = kernel
+    (sampler.proc / "pressure/memory").unlink()
+    write(group / "memory.current", "960000000\n")
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw), advisory_failures=True)
+    guard.linux_sampler = sampler
+    assert guard.preflight() == 4
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert trips[0]["telemetry_valid"] is False
+    assert sampler.partial_critical_cause == "cgroup_usage_critical"
+
+
+def test_psi_failure_keeps_event_baseline_and_detects_new_oom(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
+    sampler, group = kernel
+    (sampler.proc / "pressure/memory").unlink()
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw), advisory_failures=True)
+    guard.linux_sampler = sampler
+    assert guard.preflight() is None
+    assert not trips
+    write(group / "memory.events", EVENTS.replace("oom_kill 0", "oom_kill 1"))
+    assert guard.sample_once() == 4
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert sampler.partial_critical_cause == "cgroup_oom"
+
+
+def test_cgroup_psi_failure_does_not_hide_new_oom(kernel, tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "read_memory_pressure", REAL_READ_MEMORY)
+    sampler, group = kernel
+    assert sampler() == 1
+    (group / "memory.pressure").unlink()
+    write(group / "memory.events", EVENTS.replace("oom 0", "oom 1"))
+    trips = []
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl",
+                                   lambda **kw: trips.append(kw), advisory_failures=True)
+    guard.linux_sampler = sampler
+    assert guard.preflight() == 4
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    assert sampler.partial_critical_cause == "cgroup_oom"
+
+
+def test_complete_sample_refreshes_fallback_event_baseline(kernel):
+    sampler, group = kernel
+    (sampler.proc / "pressure/memory").unlink()
+    assert sampler.critical_cgroup_after_failure() is None
+    write(group / "memory.events", EVENTS.replace("oom 0", "oom 1"))
+    write(sampler.proc / "pressure/memory", PSI)
+    assert sampler() == 1
+    (sampler.proc / "pressure/memory").unlink()
+    assert sampler.critical_cgroup_after_failure() is None

@@ -27,6 +27,8 @@ def clear_trip():
 
 
 def guard(tmp_path, **kwargs):
+    # These legacy fault tests assert the non-WSL strict policy explicitly.
+    kwargs.setdefault("advisory_failures", False)
     trips = []
     instance = memory.HostMemoryGuard(
         log_path=tmp_path / "memory.jsonl",
