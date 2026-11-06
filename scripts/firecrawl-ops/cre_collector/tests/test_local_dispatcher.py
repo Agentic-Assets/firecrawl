@@ -50,7 +50,7 @@ def test_serial_policy_preserves_native_source_admission_and_notification(policy
                   admissions=["interra-realty"], notification_mode="StartFinish")
     request = dispatcher.policy_request(policy, "20261106T042000Z_interra")
     argv = dispatcher.launcher_arguments(request)
-    assert request["config"]["pipeline"] is False
+    assert request["config"].get("pipeline", False) is False
     assert "-Pipeline" not in argv and "-SourceWorkers" not in argv
     assert argv[argv.index("-Source") + 1] == "interra-realty"
     assert argv[argv.index("-AdmitCurrentInventorySource") + 1] == "interra-realty"

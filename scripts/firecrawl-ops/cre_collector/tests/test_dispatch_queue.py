@@ -224,5 +224,8 @@ def test_shared_native_refusal_stops_and_preserves_due_peer(tmp_path):
     with pytest.raises(queue.DispatchRefused, match="shared native"):
         queue.drain(tmp_path, launch=lambda _: {"outcome": "settled_no_work", "scope": "shared"},
                     qualify=lambda _: pytest.fail("must not qualify"))
-    assert json.loads((tmp_path / "a_first.json").read_text())["state"] == "settled"
+    first = json.loads((tmp_path / "a_first.json").read_text())
+    assert first["state"] == "queued"
+    assert first["result"]["outcome"] == "settled_no_work"
+    assert first["result"]["retry_after_unix_ms"] >= first["result"]["observed_unix_ms"] + 300_000
     assert json.loads((tmp_path / "b_peer.json").read_text())["state"] == "queued"

@@ -92,8 +92,8 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
         recovery = series.RecoveryConfig(max_recoveries_per_source=0)
         config = series.series_config(sources=sources, page_cap=policy["page_cap"], concurrency=policy["concurrency"],
             attempts_per_source=policy["attempts"], max_resume_age_hours=series.DEFAULT_MAX_RESUME_AGE_HOURS,
-            max_host_cpu_percent=90, cpu_sustain_seconds=30, cpu_sample_seconds=2,
-            memory_sustain_seconds=20, memory_sample_seconds=2, nice=15, recovery=recovery,
+            max_host_cpu_percent=90.0, cpu_sustain_seconds=30.0, cpu_sample_seconds=2.0,
+            memory_sustain_seconds=20.0, memory_sample_seconds=2.0, nice=15, recovery=recovery,
             admit_current_inventory_source=admissions, admit_daum_verified_subset=policy["daum_subset"],
             daum_subset_policy=policy["daum_subset_policy"],
             pipeline=policy["pipeline"], source_workers=policy["workers"])
