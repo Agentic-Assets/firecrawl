@@ -1212,7 +1212,15 @@ def _child_succeeded(
         if child_manifest.get("status") == SUCCESS_STATUS:
             return gate.get("verdict") == "ok" and aggregate.get("baseline_advisory_holds") == []
         source_hold = admitted_count_hold(checkpoint)
-        aggregate_reason = (aggregate.get("baseline_advisory_reasons") or {}).get(source)
+        reasons = aggregate.get("baseline_advisory_reasons") or {}
+        holds = aggregate.get("baseline_advisory_holds") or []
+        legacy_hold = (config.get("admit_baseline_hold_additively") is True
+                       and source_hold and holds == [source] and reasons == {})
+        if (gate.get("verdict") == "ok_additive_coverage_hold" and not source_hold
+                or not isinstance(reasons, Mapping)
+                or (set(reasons) != set(holds) and not legacy_hold)):
+            return False
+        aggregate_reason = reasons.get(source)
         aggregate_hold = (aggregate.get("baseline_advisory_holds") == [source]
                           and aggregate.get("mark_missing_safe_brokerages") == []
                           and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
@@ -2182,7 +2190,12 @@ def count_hold_pipeline_member(child: Mapping[str, Any], source: str) -> bool:
                     if unit["unit_id"] == result["unit_id"])
         aggregate = unit["aggregate_gate"]
         source_reason = checkpoint["gate"].get("raw_reason") if admitted_count_hold(checkpoint) else None
-        aggregate_reason = (aggregate.get("baseline_advisory_reasons") or {}).get(source)
+        reasons = aggregate.get("baseline_advisory_reasons") or {}
+        holds = aggregate.get("baseline_advisory_holds") or []
+        if (checkpoint["gate"].get("verdict") == "ok_additive_coverage_hold" and source_reason is None
+                or not isinstance(reasons, Mapping) or set(reasons) != set(holds)):
+            return False
+        aggregate_reason = reasons.get(source)
         aggregate_hold = (source in aggregate.get("baseline_advisory_holds", [])
                           and aggregate.get("mark_missing_safe_brokerages") == []
                           and subset_gate_can_admit({"verdict": "hold", "reason": aggregate_reason}))
