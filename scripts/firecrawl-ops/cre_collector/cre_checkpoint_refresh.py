@@ -263,6 +263,10 @@ class SourceGuardRefusal(RefreshError):
     """A typed source guard refusal with verified rollback."""
 
 
+class SettledIngestFailure(SourceGuardRefusal):
+    """An ordinary ingest failed but its exact transaction fully rolled back."""
+
+
 class DaumPartialProbeHold(SourceGuardRefusal):
     """Settled DAUM source identity output cannot be qualified."""
 
@@ -6006,6 +6010,14 @@ def ingest_source(
             raise GlobalStageError("verified subset sealed dryrun failed")
         argv.extend(subset_ingest_arguments(run_dir, manifest, source))
     attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
+    from cre_atomic_ingest_rollback import eligible as atomic_failure_eligible
+    target_sha = manifest_database_target_sha256(manifest)
+    code_sha = manifest.get("collector_git_sha")
+    atomic_recovery = (atomic_failure_eligible(manifest, source)
+                       and isinstance(target_sha, str) and re.fullmatch(r"[a-f0-9]{64}", target_sha) is not None
+                       and isinstance(code_sha, str) and re.fullmatch(r"[a-f0-9]{40}", code_sha) is not None)
+    if atomic_recovery and not subset:
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id])
     if source == "pyramid-brokerage":
         from cre_pyramid_rollback_result import expected_binding
         if not subset:
@@ -6026,7 +6038,7 @@ def ingest_source(
         from cre_transwestern_rollback_result import expected_binding
         transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
     checkpoint["ingest"] = {
-        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage", "jll"} or subset else {}),
+        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage", "jll"} or subset or atomic_recovery else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -6048,6 +6060,43 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
+        if atomic_recovery:
+            if git_identity() != (code_sha, False):
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("collector code changed before ingest reconciliation")
+            checkpoint["ingest_recovery"]["reason"] = "settled_ingest_failure"
+            save_manifest(run_dir, manifest)
+            try:
+                recover_interrupted_ingest(run_dir, manifest, source, env_file)
+            except GlobalStageError as exc:
+                if _cleanup_unknown_in_chain(exc):
+                    raise
+                recovery = checkpoint.get("ingest_recovery") or {}
+                if not (recovery.get("outcome") == "exact_rollback"
+                        and recovery.get("replay_safe") is True
+                        and recovery.get("reason") == "settled_ingest_failure"):
+                    raise
+            else:
+                # Existing exact-generation readback established the commit.
+                return
+            from cre_atomic_ingest_rollback import verified_rollback
+            try:
+                recovery["validation_sha256"] = sha256_file(run_dir / recovery["validation_path"])
+            except (OSError, KeyError, TypeError) as exc:
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("ingest rollback report is unavailable") from exc
+            checkpoint["state"] = "settled_ingest_failed"
+            if not verified_rollback(run_dir, manifest, source):
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("ingest rollback evidence is not bound")
+            save_manifest(run_dir, manifest)
+            trip = _peek_cpu_guard_trip()
+            if trip is not None:
+                raise CpuGuardTrip(trip)
+            raise SettledIngestFailure(f"{source} ingest failed; exact rollback verified")
         if (source in {"transwestern", "pyramid-brokerage", "jll"}
                 or franklin_partial_candidate(manifest, source) or poll_hook() is not None):
             checkpoint["state"] = "ingest_recovery_required"
@@ -6146,7 +6195,7 @@ def advance_source(
     checkpoint = manifest["sources"][source]
     transactions = tuple(manifest["config"]["transactions"])
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
-    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused", "jll_image_guard_refused"}:
+    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused", "jll_image_guard_refused", "settled_ingest_failed"}:
         raise GlobalStageError("held source artifact cannot be replayed on resume")
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(
@@ -6599,7 +6648,12 @@ def ingest_admitted_sources(
                     and (source != "jll" or not isinstance(exc, JllImageGuardRefusal))):
                 raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
             owner_check()
-            if not verified_rollback(run_dir, manifest, source):
+            if isinstance(exc, SettledIngestFailure):
+                from cre_atomic_ingest_rollback import verified_rollback as verified_atomic_rollback
+                rollback_verified = verified_atomic_rollback(run_dir, manifest, source)
+            else:
+                rollback_verified = verified_rollback(run_dir, manifest, source)
+            if not rollback_verified:
                 raise GlobalStageError("source-local rollback evidence changed") from exc
             if manifest["config"]["sources"] == [source]:
                 manifest["serial_guard_holds"] = [source]
@@ -6689,7 +6743,7 @@ def recover_interrupted_ingest(
     prior_recovery = checkpoint.get("ingest_recovery") or {}
     guard_attempt = (
         (checkpoint.get("ingest") or {}).get("attempt_id")
-        if prior_recovery.get("reason") in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal"} else None
+        if prior_recovery.get("reason") in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal", "settled_ingest_failure"} else None
     )
     probe_started_at = utc_now()
     rc = run_command(

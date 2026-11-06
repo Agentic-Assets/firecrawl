@@ -55,6 +55,8 @@ def run_schedule(
     pyramid_guard_valid=True,
     transwestern_guard_refusal=False,
     jll_guard_refusal=False,
+    settled_ingest_failure=None,
+    atomic_rollback_valid=True,
     colliers_partial=None,
     colliers_failure_nonzero=False,
     lyon_partial=None,
@@ -219,6 +221,9 @@ def run_schedule(
         if jll_guard_refusal and "jll" in unit["sources"]:
             owner["sources"]["jll"]["state"] = "jll_image_guard_refused"
             raise refresh.JllImageGuardRefusal("JLL image-loss guard refused")
+        if settled_ingest_failure in unit["sources"]:
+            owner["sources"][settled_ingest_failure]["state"] = "settled_ingest_failed"
+            raise refresh.SettledIngestFailure("settled synthetic ingest failure")
         if db_failure:
             raise refresh.GlobalStageError("synthetic DB fault")
         until = clock["now"] + 0.6
@@ -311,6 +316,9 @@ def run_schedule(
             monkeypatch.setattr(refresh, "run_command", gate_command)
             monkeypatch.setattr(pipeline, "preseal_source_gate", lambda root, owner, source, env:
                 actual_preseal(root, owner, source, env) if source == "lyon-stahl" else True)
+    if settled_ingest_failure:
+        import cre_atomic_ingest_rollback as atomic
+        monkeypatch.setattr(atomic, "verified_rollback", lambda *a: atomic_rollback_valid)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
@@ -1135,3 +1143,24 @@ def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, mon
             colliers_partial="accepted", colliers_failure_nonzero=True)
     manifest = json.loads((tmp_path / "2026-10-15T120000Z" / "manifest.json").read_text())
     assert manifest["pipeline"]["cursor_recovery_outcome_unknown"] is True
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_settled_daum_ingest_failure_is_singleton_and_peer_continues(tmp_path, monkeypatch, valid):
+    kwargs = dict(sources=("savills", "daum-commercial", "hanley"),
+                  settled_ingest_failure="daum-commercial", atomic_rollback_valid=valid)
+    if not valid:
+        with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+            run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+        return
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+    assert failures == ["daum-commercial"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["daum-commercial"]["reason"] == "settled_ingest_failure"
+    assert [event[1] for event in events if event[0] == "db_start" and "daum-commercial" in event[1]] == [("daum-commercial",)]
+    prior = next(i for i, event in enumerate(events) if event[0] == "db_end" and "savills" in event[1])
+    failed = next(i for i, event in enumerate(events) if event[0] == "db_start" and "daum-commercial" in event[1])
+    later = next(i for i, event in enumerate(events) if event[0] == "db_end" and "hanley" in event[1])
+    assert prior < failed < later
