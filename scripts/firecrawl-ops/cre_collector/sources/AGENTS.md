@@ -133,7 +133,9 @@ The final generic fresh-detail fallback needs a matching URL plus a feed-matched
 property heading or URL-bound structured listing name. Unsupported generic
 pages remain held; this may reduce admitted coverage until further source
 evidence establishes their identity. Earlier source-specific families retain
-their own validation rules.
+their own validation rules. A supplied final URL on the generic fresh path
+must bind to the requested property; an unbound final URL holds the record and
+records a source-labelled observation with query and fragment removed.
 
 ## Fix shared failure families
 

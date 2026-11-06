@@ -21,6 +21,15 @@ test("fresh generic detail needs a property subject witness, not just its URL", 
       })}</script></head><body><main><h1>Available now</h1></main></body></html>`), url, base));
     assert.throws(() => assertAvisonYoungDetailDoc(doc(
       "<main><h1>Fixture Property</h1></main>", "https://other.sharplaunch.com/"), url, base), /identity/);
+    const redirect = doc(`<html><head><script type="application/ld+json">${JSON.stringify({
+      "@type": "RealEstateListing", name: "Fixture Property", url,
+    })}</script></head><body><main><h1>Fixture Property</h1></main></body></html>`);
+    assert.throws(() => assertAvisonYoungDetailDoc({ ...redirect, metadata: {
+      ...redirect.metadata, url: "https://fixture.sharplaunch.com/other-property?private=1",
+    } }, url, base), /final URL is not bound/);
+    assert.doesNotThrow(() => assertAvisonYoungDetailDoc({ ...redirect, metadata: {
+      ...redirect.metadata, url: "https://fixture.sharplaunch.com",
+    } }, url, base));
   } finally {
     if (previous === undefined) delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = previous;

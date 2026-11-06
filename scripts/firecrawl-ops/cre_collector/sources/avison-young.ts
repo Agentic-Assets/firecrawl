@@ -113,7 +113,10 @@ export class AvisonYoungTerminalDetailError extends Error {
 }
 
 // These holds never authorize a complete source result or a database write.
-export class AvisonYoungRecordDetailError extends Error {}
+type AvisonRedirectObservation = { requestedUrl: string | null; finalUrl: string | null; urlsSanitized: true };
+export class AvisonYoungRecordDetailError extends Error {
+  constructor(message: string, readonly redirectObservations: AvisonRedirectObservation[] = []) { super(message); }
+}
 export class AvisonYoungAccessDeniedError extends Error {}
 class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
@@ -1605,6 +1608,19 @@ export function assertAvisonYoungDetailDoc(
   const structuredName = normalizeName(listing?.name);
   const structuredSubjectMatches = Boolean(feedName && structuredName === feedName
     && listing?.url && sameIdentityUrl(listing.url, requestedUrl));
+  if (fresh && doc.metadata?.url != null && !sameIdentityUrl(doc.metadata.url, requestedUrl)) {
+    const sanitize = (value: unknown): string | null => {
+      try {
+        if (typeof value !== "string") return null;
+        const parsed = new URL(value);
+        if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        return parsed.origin + parsed.pathname;
+      } catch { return null; }
+    };
+    throw new AvisonYoungRecordDetailError("Avison Young detail final URL is not bound to the requested property", [{
+      requestedUrl: sanitize(requestedUrl), finalUrl: sanitize(doc.metadata.url), urlsSanitized: true,
+    }]);
+  }
   if (fresh ? !urlMatches || !(visibleSubjectMatches || structuredSubjectMatches)
     : !urlMatches && !contentMatches) {
     throw new Error(
@@ -2472,6 +2488,7 @@ export async function enrichAvisonYoungListing(
   const errors: string[] = [];
   let recordDetailErrors = 0;
   let settledDetailErrors = 0;
+  const redirectObservations: AvisonRedirectObservation[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     assertAvisonYoungTransportSettled();
@@ -2525,8 +2542,10 @@ export async function enrichAvisonYoungListing(
       if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
           && !(err instanceof AvisonYoungHttpStatusError && err.status === 404)
           && !knownSettledFailure) throw err;
-      if (err instanceof AvisonYoungRecordDetailError) recordDetailErrors++;
-      else if (!(err instanceof AvisonYoungHttpStatusError && err.status === 404)) settledDetailErrors++;
+      if (err instanceof AvisonYoungRecordDetailError) {
+        recordDetailErrors++;
+        redirectObservations.push(...err.redirectObservations);
+      } else if (!(err instanceof AvisonYoungHttpStatusError && err.status === 404)) settledDetailErrors++;
       const error = `${url}: ${String(err)}`;
       if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
         const role =
@@ -2551,7 +2570,7 @@ export async function enrichAvisonYoungListing(
   // A validated alternate must not conceal another URL's ordinary failure.
   // Keep this row held; the complete validated peers can still be spooled.
   if (requireLiveDetails && !strict && (recordDetailErrors || settledDetailErrors)) {
-    throw new AvisonYoungRecordDetailError(errors.join("; "));
+    throw new AvisonYoungRecordDetailError(errors.join("; "), redirectObservations);
   }
   if (!docs.length) {
     if (requireLiveDetails && missingDetails.length === detailUrls.length) {
@@ -2787,7 +2806,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes: Array<{ id: string; state: string; reason?: string }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const outcomes: Array<{ id: string; state: string; reason?: string; redirectObservations?: AvisonRedirectObservation[] }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
   const heldIds: string[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
@@ -2799,7 +2818,10 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     } catch (error) {
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
       if (requireLiveDetails && !strict && error instanceof AvisonYoungRecordDetailError) {
-        if (error.message.includes("Avison Young detail has empty or missing content")) {
+        if (error.redirectObservations.length) {
+          outcomes[index]!.reason = "unbound_final_url";
+          outcomes[index]!.redirectObservations = error.redirectObservations;
+        } else if (error.message.includes("Avison Young detail has empty or missing content")) {
           outcomes[index]!.reason = "empty_or_missing_content";
         } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
           outcomes[index]!.reason = "unbound_response";

@@ -29,7 +29,7 @@ const mode=process.env.AVISON_CONTRACT_CASE;
 const calls=[];
 globalThis.fetch=async(input,options)=>{
   const u=new URL(String(input));
-  if((mode==='non-direct-drain'||mode==='one-empty-nondirect'||mode==='empty-malformed-nondirect'||mode==='missing-content-nondirect'||mode==='redirect-content-nondirect'||mode==='malformed-content-nondirect') && u.pathname==='/v2/scrape'){
+  if((mode==='non-direct-drain'||mode==='one-empty-nondirect'||mode==='empty-malformed-nondirect'||mode==='missing-content-nondirect'||mode==='redirect-content-nondirect'||mode==='malformed-content-nondirect'||mode==='wrong-final-nondirect') && u.pathname==='/v2/scrape'){
     const target=new URL(JSON.parse(options.body).url);
     const index=Number((target.hostname+target.pathname).match(/fixture-(?:sale|lease)-(\d)/)?.[1]);
     calls.push({native:target.hostname.endsWith('.sharplaunch.com'),index});
@@ -43,7 +43,7 @@ globalThis.fetch=async(input,options)=>{
     const html=mode==='one-empty-nondirect' && index===1 ? '' : mode==='non-direct-drain' && index===0
       ? '<html><h1>Access denied</h1><p>captcha</p></html>'
       : '<html><main class="property-detail"><h1>Fixture Property</h1><p>Current property details.</p></main></html>';
-    return new Response(JSON.stringify({success:true,data:{rawHtml:html,metadata:{statusCode:200,sourceURL:target.href}}}),
+    return new Response(JSON.stringify({success:true,data:{rawHtml:html,metadata:{statusCode:200,sourceURL:target.href,...(mode==='wrong-final-nondirect'&&index===1?{url:'https://example.com/different-property?private=1'}:{})}}}),
       {headers:{'content-type':'application/json'}});
   }
   if(u.hostname==='www.avisonyoung.us')return new Response(
@@ -143,7 +143,7 @@ def prepare(tmp_path, case):
     # Keep transient controls fast without changing their attempt budget.
     env["AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS"] = "0"
     env.pop("AVISON_YOUNG_DETAIL_CONCURRENCY", None)
-    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404", "one-empty-direct", "one-empty-nondirect", "first-404", "empty-malformed-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "malformed-content-nondirect"}:
+    if case.startswith("one-good-") or case in {"one-bad-identity", "identity-and-404", "one-empty-direct", "one-empty-nondirect", "first-404", "empty-malformed-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "malformed-content-nondirect", "wrong-final-nondirect"}:
         env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
     if case == "explicit-strict":
         env["CRE_REQUIRE_FRESH_DETAILS"] = "1"
@@ -206,13 +206,13 @@ def test_valid_alternate_does_not_hide_a_failed_transport(tmp_path):
     assert not output.exists()
 
 
-@pytest.mark.parametrize("case", ["one-empty-direct", "one-empty-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "empty-malformed-nondirect", "malformed-content-nondirect"])
+@pytest.mark.parametrize("case", ["one-empty-direct", "one-empty-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "empty-malformed-nondirect", "malformed-content-nondirect", "wrong-final-nondirect"])
 def test_settled_empty_detail_holds_row_and_continues_to_peer(tmp_path, case):
     preload, started, env = prepare(tmp_path, case)
     attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
     env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
                                       generation_started_at=started, attempt_number=1)
-    if case in {"one-empty-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "empty-malformed-nondirect", "malformed-content-nondirect"}:
+    if case in {"one-empty-nondirect", "missing-content-nondirect", "redirect-content-nondirect", "empty-malformed-nondirect", "malformed-content-nondirect", "wrong-final-nondirect"}:
         env["AVISON_YOUNG_DETAIL_TRANSPORT"] = "nondirect"
     output = tmp_path / "artifact.json"
     result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
@@ -227,8 +227,13 @@ def test_settled_empty_detail_holds_row_and_continues_to_peer(tmp_path, case):
         assert [item["state"] for item in outcome["documents"]] == ["validated", "failed", "validated"]
         assert outcome["documents"][1]["reason"] == (
             "unbound_response" if case == "empty-malformed-nondirect" else
-            "malformed_content_type" if case == "malformed-content-nondirect" else "empty_or_missing_content"
+            "malformed_content_type" if case == "malformed-content-nondirect" else
+            "unbound_final_url" if case == "wrong-final-nondirect" else "empty_or_missing_content"
         )
+        if case == "wrong-final-nondirect":
+            observations = outcome["documents"][1]["redirectObservations"]
+            assert observations and all(item["finalUrl"] == "https://example.com/different-property"
+                                        and item["urlsSanitized"] is True for item in observations)
 
 
 def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_path):
