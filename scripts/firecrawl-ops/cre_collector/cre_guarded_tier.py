@@ -364,6 +364,10 @@ def run_guarded_tier(
             ),
         )
         receipt["cpu_guard"] = cpu.config()
+        if checkpoint.windows_wsl():
+            # This tier has no resource-usage observer; do not claim sampling.
+            receipt["cpu_guard"]["action"] = "disabled"
+            receipt["cpu_guard"]["telemetry_failure_action"] = "disabled"
         receipt["memory_guard"] = memory.config()
         checkpoint._clear_cpu_guard_trip()
         previous_sigterm = signal.signal(
@@ -498,15 +502,16 @@ def run_guarded_tier(
                     if memory.tripped:
                         raise checkpoint.CpuGuardTrip
                     memory.start()
-                    if checkpoint.run_cpu_guard_preflight(cpu) >= cpu.max_percent:
-                        checkpoint._set_cpu_guard_trip(
-                            "host CPU prevented incremental tier admission",
-                            reason_code="host_cpu_start_blocked",
-                            telemetry_valid=True,
-                            context=cpu.incident_context,
-                        )
-                        raise checkpoint.CpuGuardTrip
-                    cpu.start()
+                    if not checkpoint.windows_wsl():
+                        if checkpoint.run_cpu_guard_preflight(cpu) >= cpu.max_percent:
+                            checkpoint._set_cpu_guard_trip(
+                                "host CPU prevented incremental tier admission",
+                                reason_code="host_cpu_start_blocked",
+                                telemetry_valid=True,
+                                context=cpu.incident_context,
+                            )
+                            raise checkpoint.CpuGuardTrip
+                        cpu.start()
                     verifier(args.expected_sha, execute, run_dir)
                     try:
                         target = (

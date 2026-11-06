@@ -20,6 +20,8 @@ from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 def test_resource_observer_and_report_follow_checkpoint_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
+    # Exercise mandatory CPU-watchdog lifecycle regardless of the test host.
+    monkeypatch.setattr(refresh, "windows_wsl", lambda: False)
     # This fixture tests ownership/order, not host clock synchronization. Real
     # UTC can step backwards; keep the asserted terminal ordering deterministic.
     clock_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
