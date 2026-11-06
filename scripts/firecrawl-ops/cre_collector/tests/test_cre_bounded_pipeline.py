@@ -1006,20 +1006,25 @@ def test_normal_pipeline_calls_cursor_recovery_and_continues_valid_peer(tmp_path
         calls.append(actual_owner)
         if refuse:
             raise ValueError("synthetic settled source-local refusal")
+        polls = iter([None] * 12 + [0])
+        pipeline.wait_with_poll_hook(SimpleNamespace(poll=lambda: next(polls, 0)))
         return None
     monkeypatch.setattr(recovery, "recover_prior_generation", reconcile)
     monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: None)
     manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
-        sources=("colliers", "savills"), owner_check=owner._require_authority)
+        sources=("colliers", "savills"), owner_check=owner._require_authority,
+        colliers_partial="accepted", colliers_failure_nonzero=True)
     assert calls == [owner]
     assert any(event[:2] == ("start", "savills") for event in events)
     assert ("colliers" in failures) is refuse
     if refuse:
-        assert not any(event[:2] == ("start", "colliers") for event in events)
+        assert not any(event[0] == "partial_worker" for event in events)
         assert manifest["pipeline"]["source_results"]["colliers"]["reason"] == "prior cursor recovery refused"
     else:
         assert any(event[:2] == ("start", "colliers") for event in events)
+        assert next(i for i, event in enumerate(events) if event[:2] == ("published", "savills")) < next(
+            i for i, event in enumerate(events) if event[0] == "partial_worker")
 
 
 def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, monkeypatch):
@@ -1035,6 +1040,7 @@ def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, mon
     monkeypatch.setattr(recovery, "recover_prior_generation", fail_after_arm)
     monkeypatch.setattr(refresh, "manifest_database_target_sha256", lambda _: "c" * 64)
     with pytest.raises(OSError, match="uncertain cursor publication"):
-        run_schedule(tmp_path, monkeypatch, 2, sources=("colliers", "savills"), owner_check=owner._require_authority)
+        run_schedule(tmp_path, monkeypatch, 2, sources=("colliers", "savills"), owner_check=owner._require_authority,
+            colliers_partial="accepted", colliers_failure_nonzero=True)
     manifest = json.loads((tmp_path / "2026-10-15T120000Z" / "manifest.json").read_text())
     assert manifest["pipeline"]["cursor_recovery_outcome_unknown"] is True

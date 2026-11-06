@@ -5,6 +5,7 @@ and continuously verify the real owner before using their result.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -105,10 +106,53 @@ def qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
             or windows[-1].get("state") != "verified"
             or windows[-1].get("next_cursor") != binding.get("cursor")):
         raise ValueError("Colliers prior window chain differs")
-    if not series.pipeline_source_qualified(child, "colliers", run_dir=run_dir,
+    # The already-published cursor identifies the immediately prior window.
+    # Requalify that one original receipt and unit instead of re-reading the
+    # same source spool once for every earlier window in the journal.
+    from cre_colliers_partial_checkpoint import verify_worker_artifact
+
+    last_window = windows[-1]
+    previous = copy.deepcopy(last_window["checkpoint"])
+    if "partial_windows" in previous:
+        raise ValueError("Colliers prior checkpoint is nested")
+    prior_worker = previous["colliers_partial_worker"]
+    prior_binding = previous["gate"]["current_inventory_proof"]
+    prior_settlement = previous["partial_cursor_settlement"]
+    if (last_window.get("index") != len(windows) or prior_worker.get("window_index", 1) != len(windows)
+            or last_window.get("receipt_path") != prior_worker.get("receipt_path")
+            or last_window.get("receipt_sha256") != prior_worker.get("receipt_sha256")
+            or last_window.get("artifact_sha256") != prior_binding.get("artifact_sha256")
+            or last_window.get("attempt_id") != prior_settlement.get("attempt_id")
+            or last_window.get("cursor") != prior_binding.get("cursor")
+            or prior_worker.get("cursor") != last_window.get("cursor")
+            or last_window.get("next_cursor") != prior_binding.get("next_cursor")
+            or last_window.get("outcome") != "exact_commit"):
+        raise ValueError("Colliers prior window binding differs")
+    projected = dict(child)
+    projected["sources"] = {**child["sources"], "colliers": previous}
+    checked = verify_worker_artifact(run_dir / prior_worker["artifact_path"], projected,
+        current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"])
+    receipt = checked["receipt"]
+    completion = prior_worker.get("completion")
+    if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
+            "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
+            or completion != {key: receipt[key] for key in completion}
+            or receipt.get("sourceStopped") is not False or receipt.get("rotationComplete") is not False
+            or receipt.get("proposedCursor") != last_window["next_cursor"]
+            or receipt.get("firstPosition") != last_window["cursor"]
+            or (len(windows) == 1 and last_window.get("first_position") != last_window["cursor"])
+            or (len(windows) > 1 and receipt.get("stopBeforePosition") != last_window.get("first_position"))
+            or worker.get("stop_before_position") != last_window.get("first_position")):
+        raise ValueError("Colliers prior worker completion differs")
+    prior_unit = [unit for unit in child["pipeline"]["units"] if unit.get("unit_id") == last_window.get("unit_id")]
+    if len(prior_unit) != 1 or prior_unit[0].get("sources") != ["colliers"]:
+        raise ValueError("Colliers prior validation unit differs")
+    projected["pipeline"] = {**child["pipeline"], "units": prior_unit,
+        "source_results": {**child["pipeline"]["source_results"], "colliers": last_window["result"]}}
+    if not series.pipeline_source_qualified(projected, "colliers", run_dir=run_dir,
             parent_started_at=parent["started_at"], parent_finished_at=parent["finished_at"],
             parent_attempts=attempts):
-        raise ValueError("Colliers previous windows do not requalify")
+        raise ValueError("Colliers previous window does not requalify")
     target = parent["database_target"]["value"]
     old = windows[-1]
     expected_cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers",

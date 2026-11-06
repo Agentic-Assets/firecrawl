@@ -49,19 +49,34 @@ def incident(tmp_path, monkeypatch):
     binding = {"source_key": "colliers", "whole_source_coverage": False, "generation_id": run_id,
         "producer_sha": sha, "database_target_sha256": target, "artifact_sha256": artifact,
         "cursor": 1565, "next_cursor": 1670}
+    completion = {"firstPosition": 1459, "rotationComplete": False, "sourceStopped": False,
+                  "proposedCursor": 1565, "admitted": 100, "held": 0, "unattempted": 0}
+    prior_worker = {"window_index": 1, "cursor": 1459, "receipt_path": "colliers-partial/old-receipt.json",
+                    "receipt_sha256": "1" * 64, "artifact_path": "colliers-partial/old-artifact.json",
+                    "completion": completion}
+    prior_checkpoint = {"colliers_partial_worker": prior_worker,
+        "gate": {"current_inventory_proof": {"artifact_sha256": "f" * 64, "cursor": 1459, "next_cursor": 1565}},
+        "partial_cursor_settlement": {"attempt_id": old_attempt}}
+    import cre_colliers_partial_checkpoint as partial
+    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: {"receipt": completion})
     checkpoint = {"state": "ingested", "ingest": {"rc": 0, "finished_at": "done", "additive": True,
         "mark_missing": False, "status_activation": False, "attempt_id": attempt},
         "subset_ingest_attempt_id": attempt, "artifact": {"sha256": artifact},
         "gate": {"mark_missing_safe": False, "current_inventory_proof": binding},
-        "colliers_partial_worker": {"state": "settled", "rc": 0, "cursor": 1565, "window_index": 2},
-        "partial_windows": [{"state": "verified", "next_cursor": 1565, "artifact_sha256": "f" * 64,
-            "attempt_id": old_attempt, "outcome": "exact_commit", "result": {
+        "colliers_partial_worker": {"state": "settled", "rc": 0, "cursor": 1565, "window_index": 2,
+                                    "stop_before_position": 1459},
+        "partial_windows": [{"index": 1, "first_position": 1459, "state": "verified", "cursor": 1459, "next_cursor": 1565,
+            "receipt_path": prior_worker["receipt_path"], "receipt_sha256": prior_worker["receipt_sha256"],
+            "artifact_sha256": "f" * 64, "attempt_id": old_attempt, "outcome": "exact_commit",
+            "unit_id": "unit-0053", "checkpoint": prior_checkpoint, "result": {
                 "validation_path": "pipeline/unit-0053/validation.json", "validation_sha256": digest}}]}
     child = {"run_id": run_id, "collector_git_sha": sha, "collector_git_dirty": False,
         "config": {"pipeline": True}, "preflight": {"database_target": parent["database_target"],
             "shared_lock": str(lock)}, "sources": {"colliers": checkpoint}, "pipeline": {
-            "commit_outcome_unknown": False, "units": [{"unit_id": "unit-0054", "state": "failed",
-                "sources": ["colliers"], "before_path": "pipeline/unit-0053/validation.json", "before_sha256": digest}]}}
+            "commit_outcome_unknown": False, "source_results": {}, "units": [
+                {"unit_id": "unit-0053", "state": "verified", "sources": ["colliers"]},
+                {"unit_id": "unit-0054", "state": "failed", "sources": ["colliers"],
+                 "before_path": "pipeline/unit-0053/validation.json", "before_sha256": digest}]}}
     _write(series_dir / "manifest.json", parent)
     _write(run / "manifest.json", child)
     return series_dir, run, owner, receipt, cursor, child
