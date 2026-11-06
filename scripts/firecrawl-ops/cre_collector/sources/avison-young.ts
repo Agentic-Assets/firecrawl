@@ -133,8 +133,9 @@ export function avisonYoungTeamDenialObserved(): boolean {
 }
 class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
-  constructor(readonly heldIds: string[], readonly hasRequiredDetail404 = false) {
-    super(`Avison Young partial detail: ${heldIds.length} record(s) held: ${heldIds.join(", ")}`);
+  constructor(readonly heldIds: string[], readonly hasRequiredDetail404 = false,
+    readonly unidentifiedCount = 0, readonly duplicateIdCount = 0) {
+    super(`Avison Young partial detail: ${heldIds.length} identified and ${unidentifiedCount} unidentified record(s) held; ${duplicateIdCount} duplicate ID(s): ${heldIds.join(", ")}`);
     this.name = "AvisonYoungPartialDetailError";
   }
 }
@@ -2765,7 +2766,7 @@ export async function enrichAvisonYoungListing(
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   onValidatedDetail?: (listing: any, index: number) => void,
-  onDetailOutcomes?: (outcomes: Array<{ id: string; state: string; feedObservation?: unknown }>) => void): Promise<SourceResult> {
+  onDetailOutcomes?: (outcomes: Array<{ id: string | null; state: string; feedObservation?: unknown }>) => void): Promise<SourceResult> {
   const strict = requireFreshDetails();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   if (requireLiveDetails && !refreshGenerationId()) {
@@ -2792,32 +2793,56 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     "avison_young_sharplaunch_inventory",
     requireLiveDetails ? "live" : "generation_cache"
   );
-  const rows = websiteRows
-    .filter((row) => row?.status === "active")
-    .filter(isAvisonYoungUsCompatible)
-    .filter((row) => avisonYoungMatchesTx(row, tx))
-    .sort((a, b) => Number(a.order_id ?? a.id ?? 0) - Number(b.order_id ?? b.id ?? 0));
+  const rows = websiteRows.map((row, sourceOrdinal) => ({ row, sourceOrdinal }))
+    .filter(({ row }) => row?.status === "active")
+    .filter(({ row }) => isAvisonYoungUsCompatible(row))
+    .filter(({ row }) => avisonYoungMatchesTx(row, tx))
+    .sort((a, b) => Number(a.row.order_id ?? a.row.id ?? 0) - Number(b.row.order_id ?? b.row.id ?? 0));
   const want = Math.min(max, rows.length);
-  const selectedRows = rows.slice(0, want);
+  const selected = rows.slice(0, want);
+  const selectedRows = selected.map(({ row }) => row);
   const truncated = avisonYoungTruncated(max, selectedRows.length, rows.length);
-  const selectedProviderIds = avisonYoungSelectedProviderIds(selectedRows);
-  const baseListings = selectedRows.map((row) => ({
-    ...avisonYoungBaseListing(row, teamMembers),
-    inventoryObservedAt: inventoryObservation.observedAt,
-    freshnessProvenance: {
-      detailScope: "inventory_only",
-      generationId: inventoryObservation.generationId,
-      method: inventoryObservation.method,
-      cacheDisposition: inventoryObservation.cacheDisposition,
-      identityMethod: "SharpLaunch website id",
-    },
-  }));
+  const partialRowMode = requireLiveDetails && !strict;
+  const preparationErrors: Array<string | null> = selectedRows.map(() => null);
+  const selectedProviderIds: Array<string | null> = partialRowMode
+    ? selectedRows.map((row, index) => {
+        try {
+          if (typeof row?.id === "number" && !Number.isSafeInteger(row.id)) throw new Error();
+          return avisonYoungProviderId(row?.id, "selected inventory row");
+        } catch { preparationErrors[index] = "missing_or_invalid_native_id"; return null; }
+      })
+    : avisonYoungSelectedProviderIds(selectedRows);
+  const counts = new Map<string, number>();
+  if (partialRowMode) for (const id of selectedProviderIds) {
+    if (id !== null) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const duplicateIdCount = [...counts.values()].filter((count) => count > 1).length;
+  const baseListings = selectedRows.map((row, index) => {
+    if (preparationErrors[index]) return null;
+    try {
+      return {
+        ...avisonYoungBaseListing(row, teamMembers),
+        inventoryObservedAt: inventoryObservation.observedAt,
+        freshnessProvenance: {
+          detailScope: "inventory_only",
+          generationId: inventoryObservation.generationId,
+          method: inventoryObservation.method,
+          cacheDisposition: inventoryObservation.cacheDisposition,
+          identityMethod: "SharpLaunch website id",
+        },
+      };
+    } catch (error) {
+      if (!partialRowMode) throw error;
+      preparationErrors[index] = "mapping_error";
+      return null;
+    }
+  });
   if (monitor) {
     // Monitor mode: emit the SharpLaunch feed base listings only and skip the
     // detail-page enrichment. id/price/cap rate/lastUpdated are all free in the
     // feed; the feed already filters to status=active.
     if (!baseListings.length) throw new Error(`no ${tx} listings found in Avison Young SharpLaunch feed`);
-    assertAvisonYoungOutputIdentity(selectedProviderIds, baseListings);
+    assertAvisonYoungOutputIdentity(selectedProviderIds as string[], baseListings);
     return {
       company: "Avison Young (US)",
       sourceUrl,
@@ -2886,10 +2911,21 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes: Array<{ id: string; state: string; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const outcomes: Array<{ id: string | null; state: string; sourceOrdinal?: number; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id, index) => ({
+    id, state: "unattempted", ...(partialRowMode ? { sourceOrdinal: selected[index]!.sourceOrdinal } : {}),
+  }));
   const heldIds: string[] = [];
+  let unidentifiedCount = 0;
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
+    if (partialRowMode && preparationErrors[index]) {
+      outcomes[index]!.state = "failed";
+      outcomes[index]!.reason = preparationErrors[index]!;
+      const id = selectedProviderIds[index];
+      if (id === null) unidentifiedCount++;
+      else if (id !== undefined) heldIds.push(id);
+      return undefined;
+    }
     outcomes[index]!.state = "started";
     try {
       const result = await enrichSelected(listing, index);
@@ -2938,7 +2974,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   } catch (error) {
     // A terminal-only 404 is not authoritative if another record was held
     // for an independent identity/structure failure in the same batch.
-    if (heldIds.length && (error instanceof AvisonYoungTerminalSourceError
+    if ((heldIds.length || unidentifiedCount) && (error instanceof AvisonYoungTerminalSourceError
         || error instanceof AvisonYoungTerminalDetailError)) {
       throw new Error(`Avison Young detail batch has both held records and required 404: ${heldIds.sort().join(", ")}`);
     }
@@ -2970,10 +3006,12 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       onDetailOutcomes(outcomes);
     }
   }
-  if (heldIds.length) throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0);
+  if (heldIds.length || unidentifiedCount || duplicateIdCount) {
+    throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0, unidentifiedCount, duplicateIdCount);
+  }
   if (missingDetails.length) throw new AvisonYoungTerminalSourceError(missingDetails);
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
-  assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
+  assertAvisonYoungOutputIdentity(selectedProviderIds as string[], listings);
   if (requireLiveDetails) {
     const generationId = refreshGenerationId();
     const incomplete = listings.filter(
