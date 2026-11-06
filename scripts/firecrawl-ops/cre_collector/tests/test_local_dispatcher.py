@@ -17,6 +17,7 @@ from scheduling import dispatch_settlement
 def policy(monkeypatch):
     monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"algorithm": "sha256", "value": "b" * 64})
     return {"pipeline": True, "sources": ["colliers"], "admissions": [], "daum_subset": False,
+        "daum_subset_policy": "tenure-only-v1",
         "concurrency": 1, "workers": 1, "page_cap": 0, "attempts": 1,
         "deadline_seconds": 1800, "expected_sha": "a" * 40, "env_file": "/synthetic/env",
         "windows_launcher": r"C:\synthetic\Invoke-CreGuardedTier.ps1", "windows_launcher_sha256": "c" * 64,
@@ -61,6 +62,15 @@ def test_serial_policy_refuses_multiple_sources_and_workers(policy):
     policy.update(sources=["colliers"], workers=2)
     with pytest.raises(dispatcher.SourcePolicyRefusal, match="serial"):
         dispatcher.policy_request(policy, "20261106T042000Z_bad")
+
+
+@pytest.mark.parametrize("version", ["tenure-only-v1", "tenure-and-empty-title-v2"])
+def test_serial_daum_preserves_subset_policy_version(policy, version):
+    policy.update(pipeline=False, sources=["daum-commercial"], workers=1,
+                  daum_subset=True, daum_subset_policy=version)
+    request = dispatcher.policy_request(policy, "20261106T042000Z_daum")
+    argv = dispatcher.launcher_arguments(request)
+    assert argv[argv.index("-DaumSubsetPolicy") + 1] == version
 
 
 def test_native_no_work_marker_must_bind_exact_completed_launch(policy):

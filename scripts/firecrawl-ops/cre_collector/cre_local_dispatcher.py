@@ -29,7 +29,7 @@ class SourcePolicyRefusal(ValueError):
 
 def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> dict:
     """Build both launcher arguments and expected policy from one input."""
-    keys = {"pipeline", "sources", "admissions", "daum_subset", "concurrency", "workers", "page_cap",
+    keys = {"pipeline", "sources", "admissions", "daum_subset", "daum_subset_policy", "concurrency", "workers", "page_cap",
             "attempts", "deadline_seconds", "expected_sha", "env_file", "windows_launcher",
             "windows_launcher_sha256", "windows_repo", "distro", "linux_user", "alert_file", "notification_mode"}
     if not isinstance(policy, dict) or set(policy) != keys:
@@ -56,6 +56,10 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
         raise SourcePolicyRefusal("serial policy requires one source and worker")
     if type(policy["daum_subset"]) is not bool:
         raise SourcePolicyRefusal("invalid DAUM policy")
+    if (not isinstance(policy["daum_subset_policy"], str)
+            or policy["daum_subset_policy"] not in {"tenure-only-v1", "tenure-and-empty-title-v2"}
+            or (not policy["daum_subset"] and policy["daum_subset_policy"] != "tenure-only-v1")):
+        raise SourcePolicyRefusal("invalid DAUM subset version")
     for key, low, high in (("concurrency", 1, 6), ("workers", 1, 4), ("page_cap", 0, 2147483647),
                            ("attempts", 1, 2147483647), ("deadline_seconds", 30, 86400)):
         if type(policy[key]) is not int or not low <= policy[key] <= high:
@@ -83,7 +87,7 @@ def policy_request(policy: dict, slot: str, *, continuation_depth: int = 0) -> d
             max_host_cpu_percent=90, cpu_sustain_seconds=30, cpu_sample_seconds=2,
             memory_sustain_seconds=20, memory_sample_seconds=2, nice=15, recovery=recovery,
             admit_current_inventory_source=admissions, admit_daum_verified_subset=policy["daum_subset"],
-            daum_subset_policy="tenure-and-empty-title-v2" if policy["daum_subset"] else "tenure-only-v1",
+            daum_subset_policy=policy["daum_subset_policy"],
             pipeline=policy["pipeline"], source_workers=policy["workers"])
     except (ValueError, TypeError, KeyError) as exc:
         raise SourcePolicyRefusal("source or admission policy refused") from exc
@@ -130,7 +134,7 @@ def launcher_arguments(request: dict) -> list[str]:
         argv += (["-AdmitCurrentInventorySources", ",".join(policy["admissions"])] if policy["pipeline"]
                  else ["-AdmitCurrentInventorySource", policy["admissions"][0]])
     if policy["daum_subset"]:
-        argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", "tenure-and-empty-title-v2"]
+        argv += ["-AdmitDaumVerifiedSubset", "-DaumSubsetPolicy", policy["daum_subset_policy"]]
     if policy["alert_file"] is not None:
         argv += ["-AlertWebhookFile", policy["alert_file"]]
     if request["predecessor_series_id"] is not None and not request["predecessor_no_work"]:
