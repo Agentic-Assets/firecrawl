@@ -210,6 +210,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     ]
     checkpoint = child["sources"][daum.SOURCE]
     checkpoint["gate"] = copy.deepcopy(source_gate)
+    checkpoint["daum_identity_probe"] = copy.deepcopy(worker_manifest["sources"][daum.SOURCE]["daum_identity_probe"])
     checkpoint["artifact"].update(
         sha256=worker_binding["artifact_sha256"],
         bytes=prepared[1].stat().st_size,
