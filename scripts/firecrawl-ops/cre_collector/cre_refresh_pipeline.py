@@ -578,8 +578,14 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
     digest = refresh.sha256_file(path)
     try:
         report = refresh._load_json(path)
+        report_manifest = manifest
+        if source == "nai-global" and checkpoint["artifact"].get("nai_coverage_partial") is True:
+            import copy
+            from nai_partial.coverage_candidate import ORIGINAL
+            report_manifest = copy.deepcopy(manifest)
+            report_manifest["sources"][source]["artifact"]["path"] = ORIGINAL
         refresh.current_inventory.validate_report_scope(
-            report, manifest, source, artifact
+            report, report_manifest, source, artifact
         )
         info = report["per_source"][source]
         summary = report["summary"]

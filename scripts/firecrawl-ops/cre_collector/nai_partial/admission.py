@@ -35,15 +35,17 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
         raise ValueError("NAI partial owner or configuration invalid")
     path = Path(artifact_path)
     root = path.parent.parent
-    if (path.name != "nai-global.json" or path.parent.name != "sources"
-            or root.name != manifest.get("run_id") or root.is_symlink() or path.parent.is_symlink()
-            or path.resolve() != root.resolve() / "sources" / "nai-global.json"):
-        raise ValueError("NAI partial source path invalid")
     checkpoint = manifest["sources"][SOURCE]
     info = checkpoint["artifact"]
+    from nai_partial.coverage_candidate import CANDIDATE, ORIGINAL
+    expected_path = CANDIDATE if info.get("nai_coverage_partial") is True else ORIGINAL
+    if (path.parent.name != "sources" or root.name != manifest.get("run_id")
+            or root.is_symlink() or path.parent.is_symlink()
+            or path.resolve() != root.resolve() / expected_path):
+        raise ValueError("NAI partial source path invalid")
     recovery = info.get("nai_inventory_recovery") is True
     attempts = checkpoint.get("attempts") or []
-    if (info.get("path") != "sources/nai-global.json" or info.get("nai_post_partial") is not True or not attempts
+    if (info.get("path") != expected_path or info.get("nai_post_partial") is not True or not attempts
             or type(attempts[-1].get("rc")) is not int or attempts[-1]["rc"] != 0
             or not attempts[-1].get("finished_at") or (not recovery and attempts[-1].get("error") is not None)
             or attempts[-1].get("started_at") != info.get("attempt_started_at")):
@@ -233,7 +235,15 @@ def admit(artifact_path, manifest, report, *, code_sha, dirty, phase):
         raise ValueError("NAI source gate counts differ")
     if candidate(artifact_path, manifest, code_sha=code_sha, dirty=dirty) != (binding, partition):
         raise ValueError("NAI source artifact changed during gate")
-    validate_report_scope(report, manifest, SOURCE, Path(artifact_path))
+    report_manifest = manifest
+    report_path = Path(artifact_path)
+    if phase == "source" and manifest["sources"][SOURCE]["artifact"].get("nai_coverage_partial") is True:
+        import copy
+        from nai_partial.coverage_candidate import ORIGINAL
+        report_manifest = copy.deepcopy(manifest)
+        report_manifest["sources"][SOURCE]["artifact"]["path"] = ORIGINAL
+        report_path = report_path.parent.parent / ORIGINAL
+    validate_report_scope(report, report_manifest, SOURCE, report_path)
     summary, gate = report["summary"], report["per_source"][SOURCE]
     recovery = manifest["sources"][SOURCE]["artifact"].get("nai_inventory_recovery") is True
     if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
