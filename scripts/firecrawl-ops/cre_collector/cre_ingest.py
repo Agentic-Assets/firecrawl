@@ -7726,7 +7726,7 @@ def main():
     args = ap.parse_args()
     if args.nai_post_claims:
         try:
-            from cre_nai_post_admission import run_ingest
+            from nai_partial.admission import run_ingest
             run_ingest(args)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
             sys.exit(f"refusing NAI post partial ingest: {exc}")

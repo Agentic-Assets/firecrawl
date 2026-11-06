@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from cre_code_handoff_git import read_file
-from cre_nai_post_partial import SOURCE, _timestamp, partition_posts
+from nai_partial.partial import SOURCE, _timestamp, partition_posts
 
 
 class NaiSourceProbeRefusal(ValueError):
@@ -84,7 +84,7 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
         raise ValueError("NAI source freshness bound invalid")
     source_count = len(data["listings"])
     if recovery:
-        from cre_nai_inventory_recovery import SCHEMA, _FRESHNESS_ERROR, derive
+        from nai_partial.inventory_recovery import SCHEMA, _FRESHNESS_ERROR, derive
         attempt = attempts[-1]
         number = attempt.get("number")
         if (data.get("schema") != SCHEMA or type(number) is not int or number < 1
@@ -132,7 +132,7 @@ def run_identity_probe(artifact_path, manifest, env_file):
     """Probe the bound target read-only and retain exact numeric preimage bytes."""
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
-    from cre_nai_post_partial import _partition, identity_probe_sql
+    from nai_partial.partial import _partition, identity_probe_sql
     from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
 
     producer, dirty = git_identity()
@@ -201,7 +201,7 @@ def admit(artifact_path, manifest, report, *, code_sha, dirty, phase):
     from cre_checkpoint_refresh import subset_gate_can_admit
     from cre_current_inventory_admission import validate_report_scope
     from cre_gate import count_artifacts
-    from cre_nai_post_partial import _partition
+    from nai_partial.partial import _partition
 
     if phase not in {"source", "aggregate"}:
         raise ValueError("NAI partial gate phase invalid")
@@ -343,7 +343,7 @@ def run_ingest(args):
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import (_status_activation_enabled, assert_expected_database_target,
                             find_psql, load_db_url, psql_connection_args, psql_connection_env)
-    from cre_nai_post_partial import build_partial_sql
+    from nai_partial.partial import build_partial_sql
     from cre_stop_guarded_tier import _read_at, _safe_stat
 
     other_claims = ("franklin_site_claims", "lyon_partial_claims", "colliers_partial_claims",
@@ -417,7 +417,7 @@ def run_readback(artifact_path, envelope, *, target_sha256, attempt_id, env_file
     """Read the exact job, held parents, source index and five child sets."""
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
-    from cre_nai_post_partial import partial_readback_sql
+    from nai_partial.partial import partial_readback_sql
     from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
 
     producer, dirty = git_identity()

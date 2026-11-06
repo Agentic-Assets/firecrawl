@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cre_nai_post_admission import admit, candidate
+from nai_partial.admission import admit, candidate
 from tests.test_nai_post_admission import fixture
 
 

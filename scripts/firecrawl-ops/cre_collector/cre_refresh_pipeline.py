@@ -364,7 +364,7 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
     except refresh.ArtifactValidationError as source_error:
         if source == "nai-global":
             from datetime import datetime, timezone
-            from cre_nai_inventory_recovery import _FRESHNESS_ERROR, prepare_owned
+            from nai_partial.inventory_recovery import _FRESHNESS_ERROR, prepare_owned
             attempts = checkpoint.get("attempts") or []
             attempt = attempts[-1] if attempts else {}
             if (_FRESHNESS_ERROR.fullmatch(str(source_error))

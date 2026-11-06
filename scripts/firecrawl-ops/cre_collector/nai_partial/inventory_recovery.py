@@ -12,7 +12,7 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from cre_nai_post_partial import _encode_json, _timestamp, partition_posts
+from nai_partial.partial import _encode_json, _timestamp, partition_posts
 
 SCHEMA = "nai-post-inventory-recovery/v1"
 _ACCESS = re.compile(r"(?:\b(?:401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|retry.after|challenge|captcha)", re.I)

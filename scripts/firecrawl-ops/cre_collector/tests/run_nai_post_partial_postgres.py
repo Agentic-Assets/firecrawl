@@ -14,9 +14,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import cre_ingest as ingest  # noqa: E402
-import cre_nai_post_admission as nai_admission  # noqa: E402
-from cre_nai_post_admission import admit, candidate, ingest_subset_context  # noqa: E402
-from cre_nai_post_partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
+import nai_partial.admission as nai_admission  # noqa: E402
+from nai_partial.admission import admit, candidate, ingest_subset_context  # noqa: E402
+from nai_partial.partial import build_partial_sql, identity_probe_sql, partial_readback_sql, stage_post  # noqa: E402
 from tests.test_nai_post_partial import post  # noqa: E402
 
 

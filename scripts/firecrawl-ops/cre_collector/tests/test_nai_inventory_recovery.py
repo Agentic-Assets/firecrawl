@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from cre_nai_inventory_recovery import SCHEMA, derive, validate_structure
+from nai_partial.inventory_recovery import SCHEMA, derive, validate_structure
 from tests.test_cre_checkpoint_refresh import strict_artifact
 from tests.test_nai_post_partial import post
 

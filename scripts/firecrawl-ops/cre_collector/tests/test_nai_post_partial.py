@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from cre_nai_post_partial import partition_posts, stage_post
+from nai_partial.partial import partition_posts, stage_post
 
 
 def post(number=1, alias=None, tx="sale"):
@@ -34,7 +34,7 @@ def test_source_post_retains_full_input_without_fabricating_status_or_location()
 
 
 def test_source_observation_retains_decimal_precision_through_partition():
-    from cre_nai_post_partial import _validated
+    from nai_partial.partial import _validated
 
     original = post()
     raw = json.dumps(original).replace('"unusedSourceField": {"x": [1, null]}',

@@ -2987,7 +2987,7 @@ def _validate_source_artifact_local(
     if isinstance(data, dict) and data.get("schema") == "nai-post-inventory-recovery/v1":
         # This is structure only. The source-specific gate rederives every
         # selected and held row from the owner's sealed original before writes.
-        from cre_nai_inventory_recovery import validate_structure
+        from nai_partial.inventory_recovery import validate_structure
 
         try:
             if expected_source != "nai-global" or tuple(expected_transactions) != TRANSACTIONS:
@@ -5578,7 +5578,7 @@ def _admit_current_inventory(
         )
         git_sha, git_dirty = git_identity()
         if nai_post_partial_candidate(manifest, source):
-            from cre_nai_post_admission import admit as admit_nai_post
+            from nai_partial.admission import admit as admit_nai_post
             return admit_nai_post(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty, phase=phase)
         if lyon_partial_candidate(manifest, source):
             from cre_lyon_partial_checkpoint import admit_search
@@ -5668,7 +5668,7 @@ def gate_source(
                 or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
                 or nai_post_partial_candidate(manifest, source)):
             if nai_post_partial_candidate(manifest, source):
-                from cre_nai_post_admission import NaiSourceProbeRefusal, run_identity_probe
+                from nai_partial.admission import NaiSourceProbeRefusal, run_identity_probe
                 try:
                     checkpoint["nai_post_identity_probe"] = run_identity_probe(artifact, manifest, env_file)
                 except NaiSourceProbeRefusal as exc:
@@ -6842,7 +6842,7 @@ def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] 
 
 def nai_post_partial_readback(run_dir, manifest, env_file):
     """Revalidate sealed claims and read the exact post-scoped outcome."""
-    from cre_nai_post_admission import run_readback
+    from nai_partial.admission import run_readback
 
     checkpoint = manifest["sources"]["nai-global"]
     arguments = subset_ingest_arguments(run_dir, manifest, "nai-global")

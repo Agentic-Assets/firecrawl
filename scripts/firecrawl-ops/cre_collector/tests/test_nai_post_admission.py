@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from cre_nai_post_admission import admit, candidate, ingest_subset_context, run_identity_probe
+from nai_partial.admission import admit, candidate, ingest_subset_context, run_identity_probe
 from tests.test_nai_post_partial import post
 
 
 @pytest.fixture(autouse=True)
 def fixed_clock(monkeypatch):
-    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
+    monkeypatch.setattr("nai_partial.admission._utc_now", lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
 
 
 def fixture(tmp_path):
@@ -51,7 +51,7 @@ def test_bound_artifact_partition(tmp_path):
 def test_active_checkpoint_must_match_claims_and_live_write_attempt(tmp_path, monkeypatch):
     import cre_checkpoint_refresh as refresh
     import cre_tier_dispatch as dispatch
-    from cre_nai_post_admission import _require_active_checkpoint
+    from nai_partial.admission import _require_active_checkpoint
 
     path, manifest, sha = fixture(tmp_path)
     lock_path = tmp_path / ".cre.lock"
@@ -86,7 +86,7 @@ def test_active_checkpoint_must_match_claims_and_live_write_attempt(tmp_path, mo
 
 
 def test_inventory_recovery_rederives_exact_original_and_rejects_tampering(tmp_path):
-    from cre_nai_inventory_recovery import derive
+    from nai_partial.inventory_recovery import derive
     from tests.test_nai_inventory_recovery import recovery_source
 
     path, manifest, sha = fixture(tmp_path)
@@ -225,9 +225,9 @@ def test_unbound_source_refused(tmp_path, change):
 
 def test_stale_or_future_claim_is_not_replayed(tmp_path, monkeypatch):
     path, manifest, sha = fixture(tmp_path)
-    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 6, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr("nai_partial.admission._utc_now", lambda: datetime(2026, 11, 6, 12, tzinfo=timezone.utc))
     with pytest.raises(ValueError, match="no qualified posts"):
         candidate(path, manifest, code_sha=sha, dirty=False)
-    monkeypatch.setattr("cre_nai_post_admission._utc_now", lambda: datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("nai_partial.admission._utc_now", lambda: datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc))
     with pytest.raises(ValueError, match="freshness bound"):
         candidate(path, manifest, code_sha=sha, dirty=False)

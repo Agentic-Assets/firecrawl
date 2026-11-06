@@ -163,7 +163,7 @@ while not Path(os.environ['NAI_TEST_STOP']).exists(): time.sleep(.02)
 import os,runpy,sys
 from pathlib import Path
 import cre_checkpoint_refresh as r, cre_tier_dispatch as d
-import cre_ingest as i, cre_nai_post_admission as a, cre_nai_post_partial as p
+import cre_ingest as i, nai_partial.admission as a, nai_partial.partial as p
 r.canonical_shared_lock_dir = d.canonical_shared_lock_dir = lambda: Path(os.environ['NAI_TEST_LOCK'])
 r.git_identity = lambda: ('a'*40, False)
 a.ingest_subset_context = lambda *x,**y: dict(staged=[],held=[],preimage=[],job_id='j',started_at='s',finished_at='f')
