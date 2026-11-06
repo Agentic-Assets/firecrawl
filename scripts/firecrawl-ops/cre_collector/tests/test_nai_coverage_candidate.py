@@ -1,9 +1,9 @@
 """Coverage-held candidate retains original and cannot use generic ingestion."""
 import hashlib
 import json
-import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,11 @@ import cre_checkpoint_refresh as refresh
 from nai_partial.admission import candidate
 from nai_partial.coverage_candidate import CANDIDATE, ORIGINAL, SCHEMA, prepare_owned
 from tests.test_nai_post_admission import fixture
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    monkeypatch.setattr("nai_partial.admission._utc_now", lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
 
 
 def test_owned_marked_candidate_binds_original_and_refuses_unclaimed_cli(tmp_path, monkeypatch):
