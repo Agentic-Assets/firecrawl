@@ -476,6 +476,21 @@ repeated continuations and source scheduling fairness are not reconstructed or
 guaranteed. Existing tasks omit the locator. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
+The uninstalled WSL dispatcher entrypoint is `cre_local_dispatcher.py`: it
+accepts an internal UTC slot (`YYYYMMDDTHHMMSSZ_task`) and a JSON policy file.
+The policy binds `sources`, `admissions`, `daum_subset`, `concurrency`,
+`workers`, `page_cap`, `attempts`, `deadline_seconds`, `expected_sha`,
+`env_file`, `windows_launcher`, `windows_launcher_sha256`, `windows_repo`,
+`distro`, `linux_user`, `alert_file` and `notification_mode`. It stores only
+file references and target fingerprints, not credential values. Before a real
+dispatch, the Windows launcher, its native helpers and source policy files
+must match the pinned commit. Each due slot is retained in the private local
+queue before process creation; an ambiguous attempt blocks later slots rather
+than being replayed. The single automatic follow-on is lower priority than
+already due peer slots and records when its own limit is reached. Future slots
+remain queued until another invocation wakes the dispatcher. The launcher still
+performs its normal startup admission and notification behavior on every run.
+
 ## Windows Task Scheduler installation and acceptance
 
 Before dispatch, the launcher shares one 90-second startup budget between
