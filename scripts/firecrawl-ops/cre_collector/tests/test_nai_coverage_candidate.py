@@ -148,3 +148,82 @@ def test_real_preseal_preserves_original_transition_and_peer(tmp_path, monkeypat
             pipeline._OWNER_CHECK.reset(owner_token)
             pipeline._OWNER_LEASE.reset(lease_token)
             owner.clear_recovery_requirement()
+
+
+@pytest.mark.parametrize("point", ["before_link", "after_link", "before_save", "after_save"])
+@pytest.mark.parametrize("recovery_required", [False, True])
+def test_real_killed_publisher_restarts_from_private_evidence(tmp_path, monkeypatch, point, recovery_required):
+    """Normal lock can resume; the production-style recovery fence stays closed."""
+    import copy
+    import time
+
+    path, manifest, sha = fixture(tmp_path)
+    root = path.parent.parent
+    original = path.read_bytes()
+    manifest["sources"]["peer"] = {"state": "ready", "artifact": {"path": "sources/peer.json"}}
+    peer_before = copy.deepcopy(manifest["sources"]["peer"])
+    checkpoint = root / "manifest.json"
+    checkpoint.write_text(json.dumps(manifest))
+    lock_path = tmp_path / ".cre.lock"
+    ready = tmp_path / "ready"
+    child_code = """
+import json,os,signal,sys
+from pathlib import Path
+import cre_checkpoint_refresh as r
+import nai_partial.coverage_candidate as coverage
+root, lockpath, ready, point = map(Path, sys.argv[1:5])
+phase = point.name
+r.canonical_shared_lock_dir = lambda: lockpath
+original_link = os.link
+def stop():
+    ready.write_text('ready')
+    os.kill(os.getpid(), signal.SIGSTOP)
+def link(*args, **kwargs):
+    if phase == 'before_link': stop()
+    result = original_link(*args, **kwargs)
+    if phase == 'after_link': stop()
+    return result
+def save(directory, data):
+    if phase == 'before_save': stop()
+    r.atomic_write_json(directory / 'manifest.json', data)
+    if phase == 'after_save': stop()
+coverage.os.link = link
+r.save_manifest = save
+manifest = json.loads((root / 'manifest.json').read_text())
+with r.SharedLock(lockpath, recovery_required=(sys.argv[5] == 'true')) as owner:
+    coverage.prepare_owned(root, manifest, owner)
+"""
+    child = subprocess.Popen([sys.executable, "-c", child_code, str(root), str(lock_path), str(ready), point, str(recovery_required).lower()],
+                             cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists():
+            assert child.poll() is None, child.stderr.read().decode(errors="replace")
+            assert time.monotonic() < deadline, "publisher did not reach crash point"
+            time.sleep(.02)
+        child.kill()
+        child.wait(timeout=10)
+        assert path.read_bytes() == original
+        persisted = json.loads(checkpoint.read_text())
+        assert persisted["sources"]["peer"] == peer_before
+        monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock_path)
+        if recovery_required:
+            with pytest.raises(refresh.LockHeldError):
+                refresh.SharedLock(lock_path, recovery_required=True).acquire()
+            return
+        monkeypatch.setattr(refresh, "save_manifest",
+                            lambda directory, data: refresh.atomic_write_json(directory / "manifest.json", data))
+        with refresh.SharedLock(lock_path, recovery_required=False) as owner:
+            if persisted["sources"]["nai-global"]["artifact"].get("nai_coverage_partial"):
+                marked = root / persisted["sources"]["nai-global"]["artifact"]["path"]
+            else:
+                marked = prepare_owned(root, persisted, owner)
+            assert candidate(marked, persisted, code_sha=sha, dirty=False)[0]["staged_count"] == 1
+            assert path.read_bytes() == original
+            assert persisted["sources"]["peer"] == peer_before
+            assert not (path.parent / ".nai-global-coverage-candidate.tmp").exists()
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
