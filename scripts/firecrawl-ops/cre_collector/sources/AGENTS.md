@@ -117,8 +117,13 @@ validated, typed terminal
 404, failed for another reason, or not attempted. This records only selected
 rows, not a complete inventory or a database-admission proof. Other failures
 include denial and uncertain cleanup; they are not reclassified as missing.
-The source still fails normally, and a crash before spool settlement does not
-establish a complete outcome record.
+In fresh property-detail mode, settled identity/structure refusals and typed
+direct-HTTP required 404s hold selected rows while eligible peers continue into the private
+spool. The source then returns an error marked truncated; these observations
+are not admitted to Supabase, do not prove full coverage, and cannot authorize
+retirement. Access denial, challenge, uncertain settlement and other errors stop
+the pass. Strict full-detail mode retains its existing stop behavior. A crash
+before spool settlement does not establish a complete outcome record.
 
 ## Fix shared failure families
 

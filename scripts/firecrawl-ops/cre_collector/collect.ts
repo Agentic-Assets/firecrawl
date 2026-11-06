@@ -8,6 +8,7 @@ import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-pro
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AvisonYoungPartialDetailError,
   isAvisonYoungTerminalSourceError,
   isExclusiveAvisonYoungTerminal404Failure,
   srcAvisonYoung,
@@ -354,6 +355,7 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof AvisonYoungPartialDetailError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
       }

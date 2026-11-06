@@ -107,6 +107,17 @@ export class AvisonYoungTerminalDetailError extends Error {
   }
 }
 
+// Only errors produced by the local detail validator are record-local. Fetch,
+// denial, redirect and unsettled transport failures retain their normal stops.
+export class AvisonYoungRecordDetailError extends Error {}
+export class AvisonYoungAccessDeniedError extends Error {}
+export class AvisonYoungPartialDetailError extends Error {
+  constructor(readonly heldIds: string[]) {
+    super(`Avison Young partial detail: ${heldIds.length} record(s) held: ${heldIds.join(", ")}`);
+    this.name = "AvisonYoungPartialDetailError";
+  }
+}
+
 export class AvisonYoungTerminalSourceError extends Error {
   readonly code = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404";
 
@@ -365,6 +376,9 @@ export function assertAvisonYoungDetailDoc(
   officialFeedIdentity?: AvisonYoungOfficialFeedIdentityContext
 ): any | null {
   const status = Number(doc.metadata?.statusCode);
+  if ([401, 403, 429].includes(status)) {
+    throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${status}`);
+  }
   if (Number.isFinite(status) && status >= 400) {
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
@@ -375,7 +389,7 @@ export function assertAvisonYoungDetailDoc(
       combined
     )
   ) {
-    throw new Error("Avison Young detail returned a challenge or error shell");
+    throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge or error shell");
   }
 
   const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
@@ -2344,7 +2358,7 @@ export async function fetchAvisonYoungDirectDocWithRetry(
       return await fetchDetail(url);
     } catch (error) {
       if (error instanceof AvisonYoungUnsettledError) throw error;
-      if (error instanceof AvisonYoungHttpStatusError && error.status === 404) {
+      if (error instanceof AvisonYoungHttpStatusError && [401, 403, 404, 429].includes(error.status)) {
         throw error;
       }
       lastError = error;
@@ -2412,6 +2426,7 @@ export async function enrichAvisonYoungListing(
 
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
+  let recordDetailErrors = 0;
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     assertAvisonYoungTransportSettled();
@@ -2426,10 +2441,22 @@ export async function enrichAvisonYoungListing(
               timeout: 60000,
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
-      assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
+      try {
+        assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
+      } catch (error) {
+        if (error instanceof Error && [
+          "Avison Young detail identity does not match the requested property",
+          "Avison Young detail structure was not recognized",
+        ].includes(error.message)) {
+          throw new AvisonYoungRecordDetailError(error.message);
+        }
+        throw error;
+      }
       docs.push({ url, doc });
     } catch (err) {
-      if (err instanceof AvisonYoungUnsettledError) throw err;
+      if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError
+          || (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status))) throw err;
+      if (err instanceof AvisonYoungRecordDetailError) recordDetailErrors++;
       const error = `${url}: ${String(err)}`;
       if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
         const role =
@@ -2452,6 +2479,10 @@ export async function enrichAvisonYoungListing(
     }
   }
   if (!docs.length) {
+    if (requireLiveDetails && !strict && recordDetailErrors > 0
+        && recordDetailErrors + missingDetails.length === detailUrls.length) {
+      throw new AvisonYoungRecordDetailError(errors.join("; "));
+    }
     if (requireLiveDetails && missingDetails.length === detailUrls.length) {
       throw new AvisonYoungTerminalDetailError(missingDetails[0]!);
     }
@@ -2686,6 +2717,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     return enriched;
   };
   const outcomes = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const heldIds: string[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
     outcomes[index]!.state = "started";
     try {
@@ -2694,6 +2726,11 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       return result;
     } catch (error) {
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
+      if (requireLiveDetails && !strict && (error instanceof AvisonYoungRecordDetailError
+          || error instanceof AvisonYoungTerminalDetailError)) {
+        heldIds.push(selectedProviderIds[index]!);
+        return undefined;
+      }
       throw error;
     }
   };
@@ -2715,6 +2752,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   } finally {
     if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
   }
+  if (heldIds.length) throw new AvisonYoungPartialDetailError(heldIds.sort());
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
   assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
   if (requireLiveDetails) {
