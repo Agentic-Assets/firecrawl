@@ -48,6 +48,34 @@ def test_bound_artifact_partition(tmp_path):
     assert partition["staged"][0]["external_id"] == "infabode:1"
 
 
+def test_inventory_recovery_rederives_exact_original_and_rejects_tampering(tmp_path):
+    from cre_nai_inventory_recovery import derive
+    from tests.test_nai_inventory_recovery import recovery_source
+
+    path, manifest, sha = fixture(tmp_path)
+    original_data = recovery_source()
+    original_raw = json.dumps(original_data, separators=(",", ":")).encode()
+    rejected = path.parent.parent / "rejected"
+    rejected.mkdir()
+    original = rejected / "nai-global-attempt-1.json"
+    original.write_bytes(original_raw)
+    original.chmod(0o600)
+    candidate_raw, _ = derive(original_raw, "gen-1", "2026-11-05T09:58:00Z", "2026-11-05T09:58:30Z",
+                              "2026-11-05T10:02:00Z", now=datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
+    path.write_bytes(candidate_raw)
+    info = manifest["sources"]["nai-global"]["artifact"]
+    info.update(nai_inventory_recovery=True, bytes=len(candidate_raw), sha256=hashlib.sha256(candidate_raw).hexdigest(),
+                finished_at="2026-11-05T10:01:00Z")
+    manifest["sources"]["nai-global"]["attempts"][-1].update(number=1,
+        error="nai-global/sale freshness metric detailErrors must be zero", finished_at="2026-11-05T10:02:00Z",
+        rejected_artifact="rejected/nai-global-attempt-1.json", rejected_artifact_sha256=hashlib.sha256(original_raw).hexdigest())
+    binding, selected = candidate(path, manifest, code_sha=sha, dirty=False)
+    assert binding["source_count"] == 2 and len(selected["staged"]) == 2
+    original.write_bytes(original_raw + b" ")
+    with pytest.raises(ValueError, match="original digest"):
+        candidate(path, manifest, code_sha=sha, dirty=False)
+
+
 def test_trusted_ancestor_symlink_does_not_break_platform_paths(tmp_path):
     path, manifest, sha = fixture(tmp_path)
     alias = tmp_path / "host-alias"

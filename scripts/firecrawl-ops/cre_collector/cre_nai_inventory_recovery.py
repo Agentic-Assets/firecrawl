@@ -91,7 +91,8 @@ def validate_structure(data, generation, generation_started, attempt_started, *,
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["originalSha256"])
             or type(receipt.get("originalCount")) is not int or receipt["originalCount"] < 1
             or not isinstance(receipt.get("sourceHeld"), list)
-            or not isinstance(meta, dict) or meta.get("mode") != "full"
+            or not isinstance(meta, dict) or not isinstance(meta.get("freshness"), dict)
+            or meta.get("mode") != "full"
             or meta.get("transactions") != ["sale", "lease"] or "maxItemsPerSource" not in meta
             or meta.get("maxItemsPerSource") is not None
             or (meta.get("freshness") or {}).get("generationId") != generation
