@@ -25,7 +25,8 @@ def test_failure_journal_distinguishes_sampling_failures_without_relaxing(
 
     trips = []
     guard = memory.HostMemoryGuard(
-        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler
+        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler,
+        advisory_failures=False
     )
     guard.previous_observed = previous
     with patch.object(memory.time, "monotonic", side_effect=clocks):
@@ -43,18 +44,24 @@ def test_failure_journal_distinguishes_sampling_failures_without_relaxing(
 @pytest.mark.parametrize("error", [ValueError("secret/path"), KeyError("secret-body")])
 def test_unexpected_failure_is_bounded_and_run_still_stops(tmp_path, error):
     class OneTick:
+        def __init__(self):
+            self.calls = 0
+
         def wait(self, seconds):
-            return False
+            self.calls += 1
+            return self.calls > 1
 
     def sampler():
         raise error
 
     trips = []
     guard = memory.HostMemoryGuard(
-        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler
+        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler,
+        advisory_failures=False
     )
     guard.stop_event = OneTick()
     guard._run()
+    assert guard.stop_event.calls <= 2
     row = json.loads(guard.log_path.read_text())
     assert row["telemetry_failure"]["category"] == "unexpected"
     assert row["reason_code"] == "host_memory_telemetry_failed"
@@ -64,7 +71,8 @@ def test_unexpected_failure_is_bounded_and_run_still_stops(tmp_path, error):
 
 def test_log_evidence_failure_keeps_original_flags(tmp_path, monkeypatch):
     guard = memory.HostMemoryGuard(
-        tmp_path / "memory.jsonl", lambda **kw: None, sampler=lambda: 1
+        tmp_path / "memory.jsonl", lambda **kw: None, sampler=lambda: 1,
+        advisory_failures=False
     )
     monkeypatch.setattr(
         guard, "_write", lambda **kw: (_ for _ in ()).throw(OSError("secret"))
@@ -99,7 +107,8 @@ def test_linux_error_chain_classification_is_bounded_and_original_preserved(
 
     trips = []
     guard = memory.HostMemoryGuard(
-        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler
+        tmp_path / "memory.jsonl", lambda **kw: trips.append(kw), sampler=sampler,
+        advisory_failures=False
     )
     with pytest.raises(memory.MemoryTelemetryError if missing else LinuxTelemetryError):
         guard.preflight()
