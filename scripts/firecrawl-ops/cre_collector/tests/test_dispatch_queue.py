@@ -60,6 +60,17 @@ def test_due_peer_precedes_automatic_successor(tmp_path):
     assert events == ["broad", "peer", "continuation"]
 
 
+def test_later_fresh_slots_do_not_starve_an_older_eligible_continuation(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue.time, "time", lambda: 100.0)
+    queue.enqueue(tmp_path, "20261106T000000Z_a.continuation2", {
+        "due_unix_ms": 1, "eligible_unix_ms": 1000, "continuation_depth": 2, "kind": "continuation"})
+    queue.enqueue(tmp_path, "20261106T000001Z_b", {"due_unix_ms": 2000, "kind": "later-peer"})
+    order = []
+    queue.drain(tmp_path, launch=lambda request: order.append(request["kind"]),
+                qualify=lambda _: {"outcome": "qualified"})
+    assert order == ["continuation", "later-peer"]
+
+
 def test_bound_no_work_refusal_does_not_block_due_peer(tmp_path):
     queue.enqueue(tmp_path, "a_refused", {"kind": "refused"})
     queue.enqueue(tmp_path, "b_peer", {"kind": "peer"})

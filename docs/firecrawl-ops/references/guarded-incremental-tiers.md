@@ -485,8 +485,11 @@ file references and target fingerprints, not credential values. Before a real
 dispatch, the Windows launcher, its native helpers and source policy files
 must match the pinned commit. Each due slot is retained in the private local
 queue before process creation; an ambiguous attempt blocks later slots rather
-than being replayed. A settled source may receive another fresh continuation;
-stalled sources use separate delayed intents, while fresh due peers take priority.
+than being replayed. A proven native refusal with no dispatch is privately
+recorded and retries the same intent after a temporary delay; it has no child
+receipt. A settled source may receive another fresh continuation;
+stalled sources use separate delayed intents. Earlier eligible work goes first,
+and fresh due peers win ties so older continuations do not starve.
 The scanner records unavailable historical policy intervals as unknown and uses
 the current policy for current eligible work; a fallback slot for an unsupported
 calendar is labeled as such and does not assert a past trigger. The launcher still

@@ -182,8 +182,11 @@ def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=Tru
                               (item[1].get("result") or {}).get("retry_after_unix_ms", 0)) <= now_ms]
             if not records:
                 break
-            # Uncertain writes fence everything; fresh due work precedes continuations.
+            # Uncertain writes fence everything. Earlier eligible work goes
+            # first; fresh slots win ties without starving older continuations.
             records.sort(key=lambda item: (item[1]["state"] != "dispatch_uncertain",
+                max(item[1]["request"].get("eligible_unix_ms", item[1]["request"].get("due_unix_ms", 0)),
+                    (item[1].get("result") or {}).get("retry_after_unix_ms", 0)),
                 bool(item[1]["request"].get("continuation_depth", 0)), item[0]))
             name, record = records[0]
             if record["state"] == "settled":
