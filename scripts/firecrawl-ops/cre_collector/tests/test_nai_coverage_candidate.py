@@ -90,7 +90,9 @@ def test_real_preseal_preserves_original_transition_and_peer(tmp_path, monkeypat
     peer_before = copy.deepcopy(manifest["sources"]["peer"])
     manifest["preflight"]["shared_lock"] = str(lock_path)
     monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: lock_path)
-    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    # Preserve a synthetic checkpoint so restart reads a fresh manifest object.
+    monkeypatch.setattr(refresh, "save_manifest",
+                        lambda directory, data: (directory / "manifest.json").write_text(json.dumps(data)))
     monkeypatch.setattr(refresh, "git_identity", lambda: (sha, False))
     monkeypatch.setattr(admission, "_utc_now", lambda: datetime(2026, 11, 5, 10, 2, tzinfo=timezone.utc))
 
@@ -137,7 +139,9 @@ def test_real_preseal_preserves_original_transition_and_peer(tmp_path, monkeypat
             else:
                 assert manifest["sources"]["nai-global"]["gate"]["verdict"] == "ok_additive_verified_subset"
             # Simulate a stop after the candidate pointer was saved: the next
-            # preseal gate observes the marked candidate, not the original.
+            # preseal gate observes a freshly loaded marked candidate pointer.
+            manifest = json.loads((root / "manifest.json").read_text())
+            assert manifest["sources"]["nai-global"]["artifact"]["path"] == CANDIDATE
             assert pipeline.preseal_source_gate(root, manifest, "nai-global", None) is (not probe_hold)
             assert path.read_bytes() == original and manifest["sources"]["peer"] == peer_before
         finally:
