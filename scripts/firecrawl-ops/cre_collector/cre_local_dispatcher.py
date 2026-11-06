@@ -300,7 +300,8 @@ def main(argv=None) -> int:
         os.close(parent_fd)
     path = parent / "local-dispatch"
     if args.wake:
-        dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify, successor=successor)
+        dispatch_queue.drain(path, prepare=prepare_launch, launch=launch, qualify=qualify,
+                             successor=successor, wait=False)
         return 0
     try:
         raw_policy = args.policy.read_bytes()

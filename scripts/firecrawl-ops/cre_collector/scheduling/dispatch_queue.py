@@ -113,21 +113,23 @@ def hold_invalid_policy(path: Path, slot: str, policy_sha256: str | None,
         os.close(directory)
 
 
-def drain(path: Path, *, launch, qualify, successor=None, prepare=None) -> bool:
+def drain(path: Path, *, launch, qualify, successor=None, prepare=None, wait=True) -> bool:
     """Run queued intents under one lock; uncertain attempts are never replayed.
 
     ``launch`` must invoke the real foreground launcher using the request's
     preallocated locator. ``qualify`` must independently verify all settlement
     and write fences; an exception preserves the uncertain intent and stops.
-    A busy owner waits after enqueue, so an intent arriving during owner exit
-    cannot be stranded by a lost wakeup. This can leave a scheduled task
-    instance waiting; it does not reconstruct triggers suppressed by Windows.
+    Submissions wait for a busy owner after enqueue. A periodic wake can instead
+    return False when busy; a subsequent wake must retry any pending intents.
     """
     directory = _directory(path)
     lock = os.open(".owner.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     try:
         _safe_stat(lock, private=True)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            return False
         while True:
             names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
             records = [(name, _read(directory, name)) for name in names]

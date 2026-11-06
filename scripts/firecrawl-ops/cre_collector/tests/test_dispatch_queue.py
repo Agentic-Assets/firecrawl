@@ -1,5 +1,6 @@
 """Durable due-slot behavior; callbacks are local synthetic stand-ins."""
 import json
+import fcntl
 import os
 import subprocess
 import sys
@@ -82,6 +83,21 @@ def test_future_slot_waits_for_later_wake(tmp_path, monkeypatch):
     calls = []
     queue.drain(tmp_path, launch=lambda _: calls.append("launch"),
                 qualify=lambda _: {"outcome": "qualified"})
+    assert calls == ["launch"]
+
+
+def test_busy_wake_returns_without_dispatch_and_later_wake_retries(tmp_path):
+    queue.enqueue(tmp_path, "20261106T010203Z_task", {"due_unix_ms": 0})
+    lock = tmp_path / ".owner.lock"
+    lock.touch(mode=0o600)
+    calls = []
+    with lock.open("r+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert queue.drain(tmp_path, launch=lambda _: calls.append("launch"),
+                           qualify=lambda _: {"outcome": "qualified"}, wait=False) is False
+    assert calls == []
+    assert queue.drain(tmp_path, launch=lambda _: calls.append("launch"),
+                       qualify=lambda _: {"outcome": "qualified"}, wait=False) is True
     assert calls == ["launch"]
 
 
