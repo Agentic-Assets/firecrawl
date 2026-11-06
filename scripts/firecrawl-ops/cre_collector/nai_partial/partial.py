@@ -136,8 +136,27 @@ def stage_post(listing, generation, *, exact_observation=None):
     source_title = source_title.strip() if isinstance(source_title, str) else None
     if not source_title or projected["title"] != source_title:
         projected["title"] = None
-    if tx is None or not categories:
+    if tx is None or not categories or projected["transaction_type"] != tx:
         projected["transaction_type"] = None
+    # These mapped values are not yet rederived from source-native content.
+    # Retain the complete observation below and do not assert them as facts.
+    for key in ("description", "property_type", "size_sf", "available_sf",
+                "min_divisible_sf", "max_divisible_sf", "lot_size_sf",
+                "year_built", "sale_price_per_sf", "highlights"):
+        projected[key] = None
+    # City/state come from the first detail location, or the feed when detail
+    # has none. Require exact mapper output to occur in that native path.
+    location_records = title_record.get("locations") if isinstance(title_record, dict) else None
+    if not isinstance(location_records, list) or not location_records:
+        location_records = listing["feedRow"].get("locations")
+    first = location_records[0] if isinstance(location_records, list) and location_records else None
+    location_value = (first.get("path") or first.get("name")) if isinstance(first, dict) else None
+    parts = [part.strip() for part in location_value.split(",") if part.strip()] if isinstance(location_value, str) else []
+    if not parts or projected["city"] != parts[0]:
+        projected["city"] = None
+    states = [part for part in parts if re.fullmatch(r"[A-Z]{2}", part)]
+    if not states or projected["state"] != states[0]:
+        projected["state"] = None
     # The native price has a currency label but no lease-rate unit/basis. Do
     # not turn a lease amount into $/SF/year. DOLLAR supports USD only when a
     # source location explicitly says United States; the mapper defaults US.
@@ -156,10 +175,25 @@ def stage_post(listing, generation, *, exact_observation=None):
     explicit_us = (isinstance(location_path, str)
                    and any(part.strip().lower() == "united states" for part in location_path.split(",")))
     projected["country"] = "US" if explicit_us else None
+    def native_amount(value):
+        if type(value) not in {int, float, str}:
+            return None
+        text = str(value).strip()
+        if len(text) > 30 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            return None
+        amount = Decimal(text)
+        return amount if amount.is_finite() and amount > 0 else None
+
+    source_amount = native_amount(price_source.get("price"))
+    mapped_amount = native_amount(projected["sale_price_usd"])
+    other_source = listing["feedRow"] if price_source is listing.get("publicPost") else None
+    other_raw = other_source.get("price") if isinstance(other_source, dict) else None
+    other_amount = native_amount(other_raw) if other_raw is not None else None
     if (tx != "sale" or categories != {4}
-            or str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us):
+            or str(price_source.get("currency") or "").upper() not in {"USD", "DOLLAR"} or not explicit_us
+            or source_amount is None or mapped_amount != source_amount
+            or (other_raw is not None and other_amount != source_amount)):
         projected["sale_price_usd"] = None
-        projected["sale_price_per_sf"] = None
     projected["lease_rate_min"] = None
     projected["lease_rate_max"] = None
     projected["lease_rate_type"] = None
@@ -227,16 +261,29 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
     # the successfully staged partition when testing source-local uniqueness.
     for index, listing in enumerate(listings):
         if isinstance(listing, dict):
+            witnessed_ids = set()
             native = listing.get("id")
             if isinstance(native, str) and _POST_ID.fullmatch(native):
-                id_counts[native] = id_counts.get(native, 0) + 1
+                witnessed_ids.add(native)
             observed_aliases = [listing.get("canonicalUrl"), listing.get("url")]
             for key in ("feedRow", "publicPost"):
                 raw = listing.get(key)
+                if isinstance(raw, dict):
+                    raw_id = raw.get("id")
+                    raw_text = str(raw_id) if type(raw_id) in {int, str} else ""
+                    if re.fullmatch(r"[1-9][0-9]*", raw_text) and int(raw_text) <= 9007199254740991:
+                        witnessed_ids.add("infabode:" + raw_text)
                 if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str):
                     observed_aliases.append(raw["urlOriginal"])
                 if isinstance(raw, dict) and isinstance(raw.get("url"), str):
                     observed_aliases.append(raw["url"])
+            for alias in observed_aliases:
+                if isinstance(alias, str):
+                    found = re.fullmatch(r"https://infabode\.com/(?:post|services/listings)/([1-9][0-9]*)/?", alias)
+                    if found and int(found.group(1)) <= 9007199254740991:
+                        witnessed_ids.add("infabode:" + found.group(1))
+            for witnessed_id in witnessed_ids:
+                id_counts[witnessed_id] = id_counts.get(witnessed_id, 0) + 1
             normalized_aliases = set()
             for alias in observed_aliases:
                 try:

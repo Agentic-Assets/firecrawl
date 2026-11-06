@@ -85,7 +85,7 @@ def test_title_and_coordinate_projection_require_matching_source_witnesses():
 def test_prices_require_us_currency_and_lease_amount_has_no_invented_rate_basis():
     sale = post()
     sale["salePriceUsd"] = 2500000
-    sale["publicPost"].update(currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
+    sale["publicPost"].update(price=2500000, currency="DOLLAR", locations=[{"path": "Seattle, WA, United States"}])
     assert stage_post(sale, "gen-1")["sale_price_usd"] == 2500000
     assert stage_post(sale, "gen-1")["country"] == "US"
     sale["publicPost"]["locations"] = [{"path": "Toronto, ON, Canada"}]
@@ -160,3 +160,51 @@ def test_unqualified_post_source_url_still_witnesses_an_alias_conflict():
     assert [row["external_id"] for row in result["staged"]] == ["infabode:3"]
     assert [row["reason"] for row in result["held"]] == [
         "unqualified_source_post", "conflicting_source_alias"]
+
+
+
+def test_unwitnessed_and_conflicting_prices_are_not_promoted_and_peers_survive():
+    missing = post(1)
+    missing["salePriceUsd"] = 2500000
+    missing["publicPost"].update(currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    conflicting = post(2)
+    conflicting["salePriceUsd"] = 2500000
+    conflicting["publicPost"].update(price=3000000, currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    peer = post(3)
+    peer["salePriceUsd"] = 1200000
+    peer["publicPost"].update(price=1200000, currency="USD", locations=[{"path": "Seattle, WA, United States"}])
+    result = partition_posts([missing, conflicting, peer], "gen-1")
+    assert result["held"] == []
+    assert [row["sale_price_usd"] for row in result["staged"]] == [None, None, 1200000]
+    assert json.loads(base64.b64decode(result["staged"][0]["observation_base64"])) == missing
+
+
+def test_unwitnessed_mapped_fields_remain_raw_and_witnessed_location_survives():
+    source = post()
+    source.update(city="Seattle", state="WA", description="invented", assetType="Office",
+                  yearBuilt=2020, buildingSizeSqft=12345, salePricePerSf=900,
+                  highlights=["invented"])
+    source["publicPost"]["locations"] = [{"path": "Seattle, WA, United States"}]
+    row = stage_post(source, "gen-1")
+    assert (row["city"], row["state"]) == ("Seattle", "WA")
+    for field in ("description", "property_type", "year_built", "size_sf",
+                  "sale_price_per_sf", "highlights"):
+        assert row[field] is None
+    assert json.loads(base64.b64decode(row["observation_base64"])) == source
+    source["city"] = "Tacoma"
+    source["state"] = "OR"
+    row = stage_post(source, "gen-1")
+    assert row["city"] is None and row["state"] is None
+
+
+
+def test_held_raw_post_identity_holds_matching_valid_post_but_not_peer():
+    invalid = post(1, "https://example.test/invalid")
+    invalid.pop("id")
+    valid = post(1, "https://example.test/valid")
+    peer = post(2)
+    result = partition_posts([invalid, valid, peer], "gen-1")
+    assert [row["external_id"] for row in result["staged"]] == ["infabode:2"]
+    assert result["held"] == [
+        {"index": 0, "reason": "unqualified_source_post"},
+        {"index": 1, "reason": "duplicate_post_id"}]
