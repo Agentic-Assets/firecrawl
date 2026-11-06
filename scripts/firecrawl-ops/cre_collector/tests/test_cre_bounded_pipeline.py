@@ -60,6 +60,7 @@ def run_schedule(
     lyon_partial=None,
     clock_deferrals=None,
     owner_check=None,
+    daum_all_held=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -240,6 +241,13 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     actual_preseal = pipeline.preseal_source_gate
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda _root, _owner, source, _env: not (lyon_partial == "probe_hold" and source == "lyon-stahl"))
+    if daum_all_held:
+        def preseal(_root, owner, source, _env):
+            if source == "daum-commercial":
+                owner["sources"][source]["state"] = "gate_blocked"
+                return False
+            return True
+        monkeypatch.setattr(pipeline, "preseal_source_gate", preseal)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     if colliers_partial:
         import cre_colliers_partial_checkpoint as partial
@@ -1135,3 +1143,16 @@ def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, mon
             colliers_partial="accepted", colliers_failure_nonzero=True)
     manifest = json.loads((tmp_path / "2026-10-15T120000Z" / "manifest.json").read_text())
     assert manifest["pipeline"]["cursor_recovery_outcome_unknown"] is True
+
+
+def test_daum_all_held_preseal_keeps_peer_running(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 1,
+        sources=("daum-commercial", "savills"), daum_all_held=True,
+    )
+    assert failures == ["daum-commercial"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["daum-commercial"]["state"] == "failed"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert not any(event[0] == "db_start" and "daum-commercial" in event[1] for event in events)
+    assert any(event[0] == "db_start" and "savills" in event[1] for event in events)
