@@ -74,7 +74,14 @@ globalThis.fetch=async(input,options)=>{
         address:'100 Fixture Street',name:'Fixture Property',transaction:[tx],
         url:`https://fixture-${tx}-${i}.sharplaunch.com/`,
         external_url:`https://www.avisonyoung.us/properties/fixture-${tx}-${i}`,
-        team_member_ids:[], ...(mode.startsWith('missing-url-') && i===1
+        team_member_ids:[], ...(mode.startsWith('selected-') && tx==='sale' && i===1
+          ? mode==='selected-missing-id' ? {id:null,order_id:9002}
+            : mode==='selected-object-id' ? {id:{toString:null,valueOf:null},order_id:null}
+              : mode==='selected-mapping-error' ? {team_member_ids:[{toString:null,valueOf:null}]}
+                : mode==='selected-duplicate-id' ? {id:9001,order_id:9002}
+                  : mode==='selected-mixed-transaction' ? {transaction:['sale',{toString:null,valueOf:null}]}
+                    : mode==='selected-unknown-transaction' ? {transaction:[{toString:null,valueOf:null}]} : {}
+          : {}), ...(mode.startsWith('missing-url-') && i===1
           ? {url:null,external_url:null,extra:mode==='missing-url-encoded'
               ? 'fixture '+String.fromCharCode(92)+'u0030'+'123456789abcdef0123456789abcdef'
               : 'fixture 0123456789abcdef0123456789abcdef value'}
@@ -96,7 +103,7 @@ https.request=(url,options,callback)=>{
       '<p>Current property details.</p></main></html>';
     if(mode.startsWith('missing-url-'))status=200;
     if(mode==='second-inventory-bad-json'||mode==='team403'||mode==='first-website500-team403'
-        ||mode==='validated-key')status=200;
+        ||mode==='validated-key'||mode.startsWith('selected-'))status=200;
     if(mode==='one-empty-direct' && index===1){status=200;body='';}
     if(mode==='404-then-local'||mode==='local-then-404'){
       const sale=(url.hostname+url.pathname).includes('fixture-sale-');
@@ -952,3 +959,43 @@ def test_key_in_validated_feed_is_held_redacted_and_peers_continue(tmp_path):
         assert held["feedObservation"]["credentialRedacted"] is True
         assert json.loads(held["feedObservation"]["sourceRowJson"])["unknown_note"] == "retain [REDACTED_API_KEY] safely"
         assert any(record["kind"] == "validated_detail" and record["transaction"] == tx for record in records)
+
+
+@pytest.mark.parametrize("case", ["selected-missing-id", "selected-object-id", "selected-mapping-error",
+                                  "selected-duplicate-id", "selected-mixed-transaction",
+                                  "selected-unknown-transaction"])
+def test_selected_row_partition_retains_original_ordinal_and_valid_peers(tmp_path, case):
+    preload, started, env = prepare(tmp_path, case)
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
+    sale = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == "sale")
+    original = [item for item in sale["documents"] if item.get("sourceOrdinal") == 1]
+    assert original
+    if case == "selected-duplicate-id":
+        assert original[0]["id"] == "9001" and original[0]["state"] == "validated"
+        assert sum(item["id"] == "9001" and item["state"] == "validated" for item in sale["documents"]) == 2
+    elif case == "selected-mixed-transaction":
+        assert {item["state"] for item in original} == {"validated", "failed"}
+        unknown = next(item for item in original if item["state"] == "failed")
+        assert unknown["reason"] == "selection_unclassified"
+        assert json.loads(unknown["feedObservation"]["sourceRowJson"])["id"] == 9002
+    else:
+        held = next(item for item in original if item["state"] == "failed")
+        assert held["reason"] == ("mapping_error" if case == "selected-mapping-error" else
+                                  "selection_unclassified" if case == "selected-unknown-transaction" else
+                                  "missing_or_invalid_native_id")
+        raw = json.loads(held["feedObservation"]["sourceRowJson"])
+        if case == "selected-missing-id":
+            assert held["id"] is None and raw["id"] is None
+        if case == "selected-object-id":
+            assert held["id"] is None and raw["id"] == {"toString": None, "valueOf": None}
+    assert any(record["kind"] == "validated_detail" and record["transaction"] == "sale"
+               and record["documents"][0]["id"] == "9003" for record in records)
