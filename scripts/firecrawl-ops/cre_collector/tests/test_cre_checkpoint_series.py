@@ -483,7 +483,7 @@ def test_non_wsl_series_preserves_historical_cpu_config_shape(monkeypatch):
 @pytest.mark.parametrize("case", ["local", "bad_evidence", "unsettled"])
 def test_serial_settled_atomic_failure_continues_only_with_bound_evidence(tmp_path, monkeypatch, case):
     import cre_checkpoint_refresh as refresh
-    import cre_atomic_ingest_rollback as atomic
+    import recovery.atomic_ingest_rollback as atomic
 
     target = {"algorithm": "sha256", "value": "d" * 64}
     manifest = series.new_manifest(tmp_path, git_sha="a" * 40,

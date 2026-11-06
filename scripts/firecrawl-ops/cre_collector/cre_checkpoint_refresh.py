@@ -6010,7 +6010,7 @@ def ingest_source(
             raise GlobalStageError("verified subset sealed dryrun failed")
         argv.extend(subset_ingest_arguments(run_dir, manifest, source))
     attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
-    from cre_atomic_ingest_rollback import eligible as atomic_failure_eligible
+    from recovery.atomic_ingest_rollback import eligible as atomic_failure_eligible
     target_sha = manifest_database_target_sha256(manifest)
     code_sha = manifest.get("collector_git_sha")
     atomic_recovery = (atomic_failure_eligible(manifest, source)
@@ -6080,7 +6080,7 @@ def ingest_source(
             else:
                 # Existing exact-generation readback established the commit.
                 return
-            from cre_atomic_ingest_rollback import verified_rollback
+            from recovery.atomic_ingest_rollback import verified_rollback
             try:
                 recovery["validation_sha256"] = sha256_file(run_dir / recovery["validation_path"])
             except (OSError, KeyError, TypeError) as exc:
@@ -6649,7 +6649,7 @@ def ingest_admitted_sources(
                 raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
             owner_check()
             if isinstance(exc, SettledIngestFailure):
-                from cre_atomic_ingest_rollback import verified_rollback as verified_atomic_rollback
+                from recovery.atomic_ingest_rollback import verified_rollback as verified_atomic_rollback
                 rollback_verified = verified_atomic_rollback(run_dir, manifest, source)
             else:
                 rollback_verified = verified_rollback(run_dir, manifest, source)
