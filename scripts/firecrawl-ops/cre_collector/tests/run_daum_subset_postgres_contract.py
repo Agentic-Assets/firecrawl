@@ -293,6 +293,24 @@ try:
     sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}', '\"50000\"') "
         "WHERE external_id='property/Synthetic-101';", db)
     ids = [{key: item[key] for key in ("native_id", "external_id", "source_url")} for item in members]
+    # Exercise the production wire format: psql emits a header and TSV rows.
+    # Composite json_agg emits physical newlines and cannot be parsed as one row.
+    wire = cmd(["docker", "exec", "-i", container, "psql", "-X", "-q", "-A",
+                "-F", "	", "-P", "footer=off", "-U", "postgres", "-d", db,
+                "-v", "ON_ERROR_STOP=1", "-f", "-"],
+               input=identity_partition_query(ids) + ";")
+    assert wire.returncode == 0, wire.stderr
+    wire_rows = validate.parse_tsv(wire.stdout)
+    assert len(wire_rows) == 1 and wire_rows[0]["joined"] == "102"
+    wire_partition = json.loads(wire_rows[0]["partition"])
+    assert {item["native_id"] for item in wire_partition if item["conflicted"]} == {"50000", "50101"}
+    try:
+        validate.parse_tsv(wire.stdout + "malformed" + chr(10))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("malformed TSV was accepted")
+    checks.append("identity_partition_psql_wire_format_and_malformed_refusal")
     result = sql(identity_partition_query(ids) + ";", db).stdout.strip().split("|", 1)
     assert result[0] == "102"
     part = json.loads(result[1])

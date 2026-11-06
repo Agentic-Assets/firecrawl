@@ -70,7 +70,7 @@ WITH source AS (
   FROM source s
 )
 SELECT (SELECT count(*) FROM source) AS joined,
-       COALESCE((SELECT json_agg(assessed ORDER BY source_url)::text FROM assessed), '[]') AS partition
+       COALESCE((SELECT jsonb_agg(assessed ORDER BY source_url)::text FROM assessed), '[]') AS partition
 """
 
 
