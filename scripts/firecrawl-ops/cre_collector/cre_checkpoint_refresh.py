@@ -4995,6 +4995,11 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
         if source in PARTIAL_PAGE_SOURCES:
             settle_partial_pages(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
+        if source == "avison-young" and not result[0]:
+            from source_evidence.avison_spool_receipt import verify_receipt
+            receipt = verify_receipt(run_dir, attempt)
+            if receipt is not None:
+                attempt["avison_standalone_receipt"] = receipt
         return result
     except ArtifactValidationError:
         refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
@@ -9046,6 +9051,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lock._require_authority()
                 for partial_source in PARTIAL_PAGE_SOURCES:
                     reconcile(run_dir, manifest, partial_source)
+                from source_evidence.avison_spool_receipt import verify_receipt
+                for attempt in (manifest.get("sources", {}).get("avison-young", {}).get("attempts") or []):
+                    if (isinstance(attempt, dict) and not attempt.get("rejected_artifact")
+                            and attempt.get("finished_at") and type(attempt.get("rc")) is int):
+                        receipt = verify_receipt(run_dir, attempt)
+                        if receipt is not None:
+                            attempt["avison_standalone_receipt"] = receipt
                 save_manifest(run_dir, manifest)
                 lock._require_authority()
             if args.resume and automatic_source_evidence is not None and not args.pipeline:
