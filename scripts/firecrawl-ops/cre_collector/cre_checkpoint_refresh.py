@@ -6626,6 +6626,27 @@ def run_aggregate_gate(
     return manifest["aggregate_gate"]
 
 
+@contextmanager
+def _serial_owner_scope(owner_check):
+    """Expose the already-held serial lock to shared owner checks, never acquire it."""
+    owner = getattr(owner_check, "__self__", None)
+    method = getattr(owner_check, "__func__", None)
+    if not isinstance(owner, SharedLock) or method is not SharedLock._require_authority:
+        yield
+        return
+    from cre_refresh_pipeline import _OWNER_CHECK, _OWNER_LEASE
+
+    if not owner.held or not owner.lease_token:
+        raise GlobalStageError("serial owner authority is unavailable")
+    check_token = _OWNER_CHECK.set(owner_check)
+    lease_token = _OWNER_LEASE.set(owner.lease_token)
+    try:
+        yield
+    finally:
+        _OWNER_LEASE.reset(lease_token)
+        _OWNER_CHECK.reset(check_token)
+
+
 def ingest_admitted_sources(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6648,7 +6669,8 @@ def ingest_admitted_sources(
         if owner_check is not None:
             owner_check()
         try:
-            ingest_source(run_dir, manifest, source, existing[0], env_file)
+            with _serial_owner_scope(owner_check):
+                ingest_source(run_dir, manifest, source, existing[0], env_file)
         except SourceGuardRefusal as exc:
             from cre_pyramid_rollback_result import verified_rollback
             if owner_check is None:

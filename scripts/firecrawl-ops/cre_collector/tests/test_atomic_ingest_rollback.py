@@ -561,3 +561,115 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
         assert checkpoint["ingest_recovery"]["readback_ok"] is False
         assert checkpoint["ingest_recovery"].get("outcome") != "exact_rollback"
     assert calls == {"write": 1, "read": 1 if fault == "missing_owner" else 2}
+
+
+@pytest.mark.parametrize("lose_lease", [False, True])
+def test_serial_late_commit_uses_actual_lock_authority(
+    tmp_path, monkeypatch, lose_lease
+):
+    from pathlib import Path
+    import cre_checkpoint_refresh as refresh
+    import cre_refresh_pipeline as pipeline
+
+    root = tmp_path / "2026-11-03T000000Z"
+    (root / "sources").mkdir(parents=True)
+    source = "daum-commercial"
+    artifact = root / "sources" / f"{source}.json"
+    artifact.write_bytes(b"serial bound synthetic artifact")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    target = {"algorithm": "sha256", "value": "c" * 64}
+    manifest = refresh.new_manifest(
+        root,
+        git_sha="e" * 40,
+        git_dirty=False,
+        sources=(source,),
+        page_cap=400,
+        concurrency=1,
+        database_target=target,
+    )
+    checkpoint = manifest["sources"][source]
+    checkpoint["state"] = "dry_run_passed"
+    checkpoint["artifact"] = {
+        "path": f"sources/{source}.json",
+        "sha256": digest,
+        "bytes": artifact.stat().st_size,
+        "freshness_generation_id": manifest["run_id"],
+        "freshness_generation_started_at": manifest["started_at"],
+    }
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("e" * 40, False))
+    monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
+    monkeypatch.setattr(
+        refresh, "_manifest_checkpoint_artifact_valid", lambda *_: [artifact]
+    )
+    monkeypatch.setattr(
+        refresh, "verify_validation_readback", lambda *_a, **_kw: {"ok": True}
+    )
+    run_key = artifact_run_identity_from_digests([digest])[0]
+    calls = {"write": 0, "read": 0}
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+
+    def command(argv, _log, **_kwargs):
+        if "cre_validate.py" not in argv:
+            calls["write"] += 1
+            return 1
+        calls["read"] += 1
+        second = calls["read"] == 2
+        attempt = argv[argv.index("--expected-ingest-attempt") + 1]
+        probe = {
+            "database_target_sha256": "c" * 64,
+            "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
+            "attempt_id": attempt,
+        }
+        queries = {key: [] for key in QUERIES}
+        queries["artifact_run_jobs"] = [{"matching_jobs": "1" if second else "0"}]
+        if second:
+            queries["freshness_generations"] = [
+                {"source_key": source, "generation_id": manifest["run_id"]}
+            ]
+        queries["atomic_settlement"] = [
+            {"matching_jobs": "1", "matching_generations": "1"}
+        ]
+        report = {
+            "ok": True,
+            "validation_profile": FULL_VALIDATION_PROFILE,
+            "audit_scope": VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE],
+            "queries": queries,
+            "historical_primary_child_conflicts": [],
+            "generated_at": refresh.utc_now(),
+            "artifact_run_probe": probe,
+            "atomic_settlement_probe": {
+                **probe,
+                "source": source,
+                "generation_id": manifest["run_id"],
+            },
+        }
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
+        if second and lose_lease:
+            (lock.path / "lease").write_text("changed-lease\n")
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", command)
+    with lock:
+        manifest["preflight"]["shared_lock"] = str(lock.path)
+        original_lease = lock.lease_token
+        try:
+            if lose_lease:
+                with pytest.raises(refresh.GlobalStageError):
+                    refresh.ingest_admitted_sources(
+                        root, manifest, None, owner_check=lock._require_authority
+                    )
+                assert checkpoint["state"] == "ingest_recovery_required"
+                assert checkpoint["ingest_recovery"]["readback_ok"] is False
+            else:
+                assert (
+                    refresh.ingest_admitted_sources(
+                        root, manifest, None, owner_check=lock._require_authority
+                    )
+                    == []
+                )
+                assert checkpoint["state"] == "ingested"
+            assert calls == {"write": 1, "read": 2}
+            assert pipeline._OWNER_LEASE.get() is None
+            assert pipeline._OWNER_CHECK.get() is None
+        finally:
+            (lock.path / "lease").write_text(original_lease + "\n")
