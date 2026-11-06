@@ -2861,8 +2861,15 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   const baseListings = selectedRows.map((row, index) => {
     if (preparationErrors[index]) return null;
     try {
+      // Only the mapper's comparison view drops unclassifiable transaction
+      // values; retain the untouched source row as the evidence and let the
+      // separate unclassified outcome prevent complete-source claims.
+      const mappingRow = partialRowMode && Array.isArray(row.transaction)
+        ? { ...row, transaction: row.transaction.filter((value: unknown) => typeof value === "string") }
+        : row;
       return {
-        ...avisonYoungBaseListing(row, teamMembers),
+        ...avisonYoungBaseListing(mappingRow, teamMembers),
+        rawSharpLaunch: row,
         inventoryObservedAt: inventoryObservation.observedAt,
         freshnessProvenance: {
           detailScope: "inventory_only",
