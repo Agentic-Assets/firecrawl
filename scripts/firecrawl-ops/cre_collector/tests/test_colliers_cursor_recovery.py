@@ -51,17 +51,28 @@ def incident(tmp_path, monkeypatch):
         "cursor": 1565, "next_cursor": 1670}
     completion = {"firstPosition": 1459, "rotationComplete": False, "sourceStopped": False,
                   "proposedCursor": 1565, "admitted": 100, "held": 0, "unattempted": 0}
-    prior_worker = {"window_index": 1, "cursor": 1459, "receipt_path": "colliers-partial/old-receipt.json",
+    prior_worker = {"window_index": 1, "cursor": 1459, "attempt": 1,
+                    "receipt_path": "colliers-partial/old-receipt.json",
                     "receipt_sha256": "1" * 64, "artifact_path": "colliers-partial/old-artifact.json",
-                    "completion": completion}
+                    "evidence_path": "colliers-partial/old-evidence.jsonl", "completion": completion}
+    evidence_path = run / prior_worker["evidence_path"]
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.parent.chmod(0o700)
+    evidence_raw = (json.dumps({"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
+                                "generation": run_id, "attempt": 1}) + "\n"
+                    + json.dumps({"kind": "detail", "source": {"start": 1401, "offset": 58}}) + "\n").encode()
+    evidence_path.write_bytes(evidence_raw)
+    evidence_path.chmod(0o600)
     prior_checkpoint = {"colliers_partial_worker": prior_worker,
         "gate": {"current_inventory_proof": {"artifact_sha256": "f" * 64, "cursor": 1459, "next_cursor": 1565}},
         "partial_cursor_settlement": {"attempt_id": old_attempt}}
     import cre_colliers_partial_checkpoint as partial
     worker_receipt = {**completion, "schema": "colliers-window-worker-receipt/v1",
         "generation": run_id, "attempt": 1, "producerSha": sha, "targetSha256": target,
-        "artifact": {"sha256": "f" * 64, "bytes": 123}, "evidence": {"sha256": "2" * 64, "bytes": 456}}
-    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: {"receipt": worker_receipt})
+        "artifact": {"sha256": "f" * 64, "bytes": 123},
+        "evidence": {"sha256": hashlib.sha256(evidence_raw).hexdigest(), "bytes": len(evidence_raw)}}
+    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: {
+        "receipt": worker_receipt, "data": {"total": 2000, "cursor": 1459, "proposedCursor": 1565}})
     checkpoint = {"state": "ingested", "ingest": {"rc": 0, "finished_at": "done", "additive": True,
         "mark_missing": False, "status_activation": False, "attempt_id": attempt},
         "subset_ingest_attempt_id": attempt, "artifact": {"sha256": artifact},
@@ -89,6 +100,55 @@ def test_bound_local_evidence_qualifies_without_writing(incident):
     series_dir, _, owner, _, _, _ = incident
     result = recovery.qualify(series_dir, owner)
     assert (result["cursor"], result["next_cursor"], result["unit_id"]) == (1565, 1670, "unit-0054")
+
+
+
+@pytest.mark.parametrize("case", ["gap", "wrap", "evidence_mismatch", "outside_interval", "artifact_cursor"])
+def test_prior_window_binds_rotated_first_evidence(incident, monkeypatch, case):
+    import hashlib
+    import cre_colliers_partial_checkpoint as partial
+
+    series_dir, run, owner, _, _, child = incident
+    checked = partial.verify_worker_artifact()
+    monkeypatch.setattr(partial, "verify_worker_artifact", lambda *args, **kwargs: checked)
+    previous = child["sources"]["colliers"]["partial_windows"][0]
+    worker = previous["checkpoint"]["colliers_partial_worker"]
+    start, first, end, total = (1459, 1460, 1565, 2000)
+    if case == "wrap":
+        start, first, end = 1999, 1, 3
+    elif case == "outside_interval":
+        first = 1600
+    previous.update(cursor=start, first_position=first, next_cursor=end)
+    worker["cursor"] = start
+    worker["completion"].update(firstPosition=first, proposedCursor=end)
+    prior = previous["checkpoint"]["gate"]["current_inventory_proof"]
+    prior.update(cursor=start, next_cursor=end)
+    child["sources"]["colliers"]["colliers_partial_worker"]["cursor"] = end
+    child["sources"]["colliers"]["colliers_partial_worker"]["stop_before_position"] = first
+    child["sources"]["colliers"]["gate"]["current_inventory_proof"]["cursor"] = end
+    checked["receipt"].update(firstPosition=first, proposedCursor=end)
+    checked["data"].update(cursor=(start + 1 if case == "artifact_cursor" else start),
+                           proposedCursor=end, total=total)
+    evidence_path = run / worker["evidence_path"]
+    lines = evidence_path.read_text().splitlines()
+    record = json.loads(lines[1])
+    record["source"] = {"start": first + (1 if case == "evidence_mismatch" else 0), "offset": 0}
+    raw = (lines[0] + "\n" + json.dumps(record) + "\n").encode()
+    evidence_path.write_bytes(raw)
+    checked["receipt"]["evidence"] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    _write(run / "manifest.json", child)
+    if case in {"gap", "wrap"}:
+        # Cursor proof and pending binding must follow the modified committed window.
+        cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers",
+            "targetSha256": child["preflight"]["database_target"]["value"], "position": end,
+            "generation": child["run_id"], "artifactSha256": previous["artifact_sha256"],
+            "attemptId": previous["attempt_id"], "outcome": "exact_commit"}
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(recovery, "read_cursor", lambda *args: (end, cursor))
+            assert recovery.qualify(series_dir, owner)["cursor"] == end
+    else:
+        with pytest.raises(recovery.SourceEvidenceRefusal):
+            recovery.qualify(series_dir, owner)
 
 
 @pytest.mark.parametrize("tamper", ["unsettled", "wrong_cursor", "unknown_write", "mark_missing", "before"])

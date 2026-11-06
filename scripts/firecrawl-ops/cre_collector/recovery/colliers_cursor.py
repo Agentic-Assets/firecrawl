@@ -141,14 +141,49 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     checked = verify_worker_artifact(run_dir / prior_worker["artifact_path"], projected,
         current_code_sha=child["collector_git_sha"], current_git_dirty=child["collector_git_dirty"])
     worker_receipt = checked["receipt"]
+    # The cursor is a position to resume scanning, not necessarily an
+    # observed card. Bind the actual first evidence position and require it
+    # to lie in the forward rotated interval ending at the committed cursor.
+    from cre_colliers_partial_checkpoint import _read_private_file
+
+    data = checked["data"]
+    total, start, end = data.get("total"), last_window.get("cursor"), last_window.get("next_cursor")
+    first = worker_receipt.get("firstPosition")
+    if (any(type(value) is not int for value in (total, start, end, first))
+            or total < 1 or start < 1 or not all(1 <= value <= total for value in (end, first))
+            or data.get("cursor") != start or data.get("proposedCursor") != end):
+        raise ValueError("Colliers prior rotation interval differs")
+    # The selector orders every position before an out-of-range cursor,
+    # starting at position 1 after a source inventory shrinks.
+    rotation_start = start if start <= total else 1
+    if (first - rotation_start) % total >= (end - rotation_start) % total:
+        raise ValueError("Colliers prior rotation interval differs")
+    evidence_raw = _read_private_file(run_dir / prior_worker["evidence_path"], 128 * 1024 * 1024)
+    evidence = worker_receipt.get("evidence") or {}
+    if (len(evidence_raw) != evidence.get("bytes")
+            or hashlib.sha256(evidence_raw).hexdigest() != evidence.get("sha256")):
+        raise ValueError("Colliers prior rotation evidence changed")
+    lines = evidence_raw.splitlines()
+    if len(lines) < 2:
+        raise ValueError("Colliers prior rotation evidence is empty")
+    header, first_record = json.loads(lines[0]), json.loads(lines[1])
+    if (header != {"schema": "colliers-window-evidence/v1", "sourceKey": "colliers",
+                   "generation": run_id, "attempt": prior_worker["attempt"]}
+            or not isinstance(first_record, dict)):
+        raise ValueError("Colliers prior rotation evidence differs")
+    first_source = first_record.get("source") if first_record.get("kind") == "detail" else (
+        first_record.get("candidate") if first_record.get("kind") == "held" else None)
+    if (not isinstance(first_source, dict) or type(first_source.get("start")) is not int
+            or type(first_source.get("offset")) is not int
+            or first_source["start"] + first_source["offset"] != first):
+        raise ValueError("Colliers prior first evidence position differs")
     completion = prior_worker.get("completion")
     if (not isinstance(completion, dict) or set(completion) != {"firstPosition", "rotationComplete",
             "sourceStopped", "proposedCursor", "admitted", "held", "unattempted"}
             or completion != {key: worker_receipt[key] for key in completion}
             or worker_receipt.get("sourceStopped") is not False or worker_receipt.get("rotationComplete") is not False
             or worker_receipt.get("proposedCursor") != last_window["next_cursor"]
-            or worker_receipt.get("firstPosition") != last_window["cursor"]
-            or (len(windows) == 1 and last_window.get("first_position") != last_window["cursor"])
+            or (len(windows) == 1 and last_window.get("first_position") != first)
             or (len(windows) > 1 and worker_receipt.get("stopBeforePosition") != last_window.get("first_position"))
             or worker.get("stop_before_position") != last_window.get("first_position")):
         raise ValueError("Colliers prior worker completion differs")
