@@ -2859,6 +2859,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           try {
             const raw = JSON.stringify(selectedRows[index]);
             if (typeof raw !== "string" || !apiKey) throw new Error();
+            if (containsCredential(raw, apiKey, true)) throw new Error();
             const redacted = raw.split(apiKey).join("[REDACTED_API_KEY]");
             if (containsCredential(redacted, apiKey)) throw new Error();
             outcomes[index]!.feedObservation = {
