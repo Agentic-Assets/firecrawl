@@ -122,6 +122,7 @@ class HostMemoryGuard:
     advisory_failures: bool | None = None
     failure_reported: bool = field(default=False, init=False)
     failure_reports: int = field(default=0, init=False)
+    degradation_recorded: bool = field(default=False, init=False)
     last_degradation: dict[str, Any] | None = field(default=None, init=False)
     high_since: float | None = field(default=None, init=False)
     previous_observed: float | None = field(default=None, init=False)
@@ -395,7 +396,7 @@ class HostMemoryGuard:
     def _degrade(self, exc: Exception) -> None:
         self._record_failure(exc)
         self.last_degradation = dict(self.telemetry_failure)
-        if not self.failure_reported:
+        if not self.degradation_recorded:
             try:
                 _append_record(self.log_path, {
                     "schema_version": 1,
@@ -407,6 +408,7 @@ class HostMemoryGuard:
                     "context": {},
                     "telemetry_failure": self.last_degradation,
                 })
+                self.degradation_recorded = True
             except Exception:  # journal itself may be unavailable
                 pass
         # Reset once per degradation episode; repeated journal failures must not
@@ -429,6 +431,7 @@ class HostMemoryGuard:
             try:
                 self.sample_once()
                 self.failure_reported = False
+                self.degradation_recorded = False
             except Exception as exc:  # classify all monitoring failures
                 if self.tripped:
                     raise

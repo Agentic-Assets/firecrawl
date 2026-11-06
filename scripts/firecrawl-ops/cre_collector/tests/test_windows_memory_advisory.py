@@ -219,3 +219,29 @@ def test_guard_journal_recovers_after_failed_degradation_write(tmp_path, monkeyp
     row = json.loads(guard.log_path.read_text())
     assert row["state"] == "recovered"
     assert row["preceding_telemetry_failure"]["category"] == "evidence_write"
+
+
+def test_degradation_record_retries_after_journal_recovers(tmp_path, monkeypatch):
+    import json
+
+    guard = memory.HostMemoryGuard(tmp_path / "guard.jsonl", lambda **_: None,
+                                   sampler=lambda: 1, advisory_failures=True)
+    append = memory._append_record
+    writes = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("journal unavailable")
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(memory, "_append_record", fail_once)
+    for _ in range(3):
+        guard._degrade(OSError("telemetry unavailable"))
+    rows = [json.loads(line) for line in guard.log_path.read_text().splitlines()]
+    assert writes == 2
+    assert [row["state"] for row in rows] == ["degraded"]
+    assert rows[0]["pressure_level"] is None
+    assert rows[0]["telemetry_failure"]["category"] == "read_unavailable"
+    assert not guard.tripped
