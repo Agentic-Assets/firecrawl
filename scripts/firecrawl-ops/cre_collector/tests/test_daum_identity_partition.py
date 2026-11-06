@@ -62,6 +62,7 @@ def test_generated_ingest_rechecks_before_filter_and_never_activates(subset):
         key = row["external_id"]
         staged[key] = merge_rows(staged[key], row) if key in staged else row
     sql = build_sql(list(staged.values()), [], manifest["started_at"], set(), daum_verified_subset_claims=claims)
+    assert "{daum_historical_conflict}" not in sql
     assert sql.index("DAUM identity partition changed") < sql.index("DELETE FROM _src s USING _daum_identity_held")
     assert sql.index("DELETE FROM _src s USING _daum_identity_held") < sql.index("DAUM identity contradiction in historical rows")
     assert "UPDATE credeals.cre_source_baseline" not in sql
