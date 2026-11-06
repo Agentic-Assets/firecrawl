@@ -55,6 +55,32 @@ def test_verified_peer_and_unwritten_interruption_can_qualify(case):
     assert settlement.qualify(root, series_id, invocation, **options)["outcome"] == "qualified"
 
 
+def test_unclassified_source_failure_is_held_without_suppressing_interrupted_peer(case, monkeypatch):
+    root, series_id, invocation, options, _, _ = case
+    def reconcile(_path, manifest, *, publish):
+        manifest["sources"]["colliers"]["state"] = "interrupted"
+        manifest["sources"]["savills"]["state"] = "failed_source"
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", reconcile)
+    result = settlement.qualify(root, series_id, invocation, **options)
+    assert result["unfinished_sources"] == ["colliers"]
+    assert result["held_sources"] == ["savills"]
+
+
+def test_settled_resource_stop_without_write_remains_retryable(case, monkeypatch):
+    root, series_id, invocation, options, child, _ = case
+    child["sources"]["colliers"]["attempts"] = [{"state": "collecting"}]
+    def reconcile(_path, manifest, *, publish):
+        manifest["sources"]["colliers"]["state"] = "resource_guard_interrupted"
+        manifest["sources"]["savills"]["state"] = "complete"
+    monkeypatch.setattr(settlement.series, "reconcile_pipeline_series", reconcile)
+    result = settlement.qualify(root, series_id, invocation, **options)
+    assert result["unfinished_sources"] == ["colliers"]
+    assert result["deferred_sources"] == ["colliers"]
+    child["sources"]["colliers"]["ingest"] = {"rc": 0}
+    with pytest.raises(settlement.DispatchSettlementRefused):
+        settlement.qualify(root, series_id, invocation, **options)
+
+
 @pytest.mark.parametrize("state,write,target_ok,expected", [
     ("interrupted", False, True, True),
     ("interrupted", True, True, False),
@@ -171,6 +197,11 @@ def test_current_partial_requires_actual_bound_cursor(case, monkeypatch):
     result = settlement.qualify(root, series_id, invocation, **options)
     assert result["outcome"] == "qualified"
     assert result["unfinished_sources"] == ["colliers"]
+    child["sources"]["colliers"]["partial_window_terminal"] = {
+        "colliers_partial_worker": {"state": "settled", "completion": {"sourceStopped": True}}}
+    stopped = settlement.qualify(root, series_id, invocation, **options)
+    assert stopped["held_sources"] == ["colliers"] and not stopped["unfinished_sources"]
+    del child["sources"]["colliers"]["partial_window_terminal"]
     cursor["attemptId"] = "0" * 32
     with pytest.raises(settlement.DispatchSettlementRefused, match="cursor no longer matches"):
         settlement.qualify(root, series_id, invocation, **options)

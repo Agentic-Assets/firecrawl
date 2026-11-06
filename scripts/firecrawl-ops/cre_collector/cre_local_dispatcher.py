@@ -383,7 +383,9 @@ def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
             if int(timestamp.timestamp() * 1000) < first_observed:
                 historical_seen = True
                 continue
-            due_now.append((due, task["task"]))
+            # A due time is an idempotency key for current-policy work, not
+            # evidence that the historical task definition actually ran.
+            due_now.append((due, task["task"] + "_current"))
         if historical_seen and first_observed <= snapshot["observed_unix_ms"]:
             # This is current-policy catchup, not a claim that an old slot ran.
             current = datetime.fromtimestamp(first_observed / 1000, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")

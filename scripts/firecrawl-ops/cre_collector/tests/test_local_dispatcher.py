@@ -129,7 +129,7 @@ def test_new_due_after_current_policy_observation_is_queued_as_due(tmp_path, pol
     later["observed_unix_ms"] = 1793939400000
     later["tasks"][0]["due"] = ["20261106T042500Z"]
     dispatcher.enqueue_current_snapshot(tmp_path, later)
-    assert len(list(tmp_path.glob("20261106T042500Z_colliers_*.json"))) == 1
+    assert len(list(tmp_path.glob("20261106T042500Z_colliers_current_*.json"))) == 1
 
 
 def test_weekly_due_before_observation_produces_current_catchup_not_historical_replay(tmp_path, policy):

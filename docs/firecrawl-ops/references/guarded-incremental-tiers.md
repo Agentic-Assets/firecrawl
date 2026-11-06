@@ -490,6 +490,9 @@ recorded and retries the same intent after a temporary delay; it has no child
 receipt. A settled source may receive another fresh continuation;
 stalled sources use separate delayed intents. Earlier eligible work goes first,
 and fresh due peers win ties so older continuations do not starve.
+An unclassified source failure or source-wide stop is held for the next normal
+configured opportunity, because its receipt does not establish whether an
+access refusal or a longer provider Retry-After applies.
 The scanner records unavailable historical policy intervals as unknown and uses
 the current policy for current eligible work; a fallback slot for an unsupported
 calendar is labeled as such and does not assert a past trigger. The launcher still

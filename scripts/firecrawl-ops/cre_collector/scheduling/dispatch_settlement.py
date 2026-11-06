@@ -91,6 +91,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         return {"status": terminal["status"], "outcome": "settled_no_work",
                 "unfinished_sources": list(expected_config.get("sources") or []),
                 "deferred_sources": list(expected_config.get("sources") or []),
+                "held_sources": [],
                 "finished_unix_ms": control["finished_unix_ms"]}
     manifest_path = path / "manifest.json"
     parent_bytes = manifest_path.read_bytes()
@@ -128,10 +129,11 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                            ("query_execution_ok", "quality_no_regression", "readback_ok"))):
                 raise DispatchSettlementRefused("serial success is not bound to the terminal attempt")
             unfinished = []
-        elif state in {"failed_source", "interrupted"}:
+        elif state in {"failed_source", "interrupted", "resource_guard_interrupted"}:
             if current.get("ingest") is not None or current.get("state") == "ingested":
                 raise DispatchSettlementRefused("serial incomplete work may include a write")
-            unfinished = [source]
+            source_held = state == "failed_source" or current.get("state") == "collect_failed"
+            unfinished = [] if source_held else [source]
         else:
             raise DispatchSettlementRefused("serial outcome is not settled")
         check_owner()
@@ -141,6 +143,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
             expected_target=expected_target, expected_config=expected_config)
         return {"status": terminal["status"], "outcome": "qualified", "child": ref,
                 "unfinished_sources": unfinished, "deferred_sources": list(unfinished),
+                "held_sources": [source] if state in {"failed_source", "interrupted", "resource_guard_interrupted"} and source_held else [],
                 "finished_unix_ms": control["finished_unix_ms"]}
     refs = {parent["sources"][key].get("checkpoint_run") for key in expected_config["sources"]}
     if len(refs) != 1:
@@ -168,6 +171,7 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
     series.reconcile_pipeline_series(path, candidate, publish=False)
     unfinished = []
     deferred = []
+    held = []
     for key in expected_config["sources"]:
         state = candidate["sources"][key]["state"]
         checkpoint = (child.get("sources") or {}).get(key) or {}
@@ -213,15 +217,17 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
                 raise DispatchSettlementRefused("Colliers cursor no longer matches settled window")
         if state == "qualified_partial_subset" and key == "colliers" and terminal["status"] == "deadline_interrupted":
             from cre_colliers_partial_checkpoint import partial_window_terminal_stop
-            unfinished.append(key)
             if partial_window_terminal_stop(checkpoint) is not None:
-                deferred.append(key)
+                held.append(key)
+            else:
+                unfinished.append(key)
             continue
         if state == "failed_source":
             if checkpoint.get("ingest") is not None and (checkpoint.get("readback") or {}).get("ok") is not True:
                 raise DispatchSettlementRefused("failed source may contain an unreadback write")
-            unfinished.append(key)
-            deferred.append(key)
+            # Generic source failure can include access denial or a provider
+            # Retry-After whose duration is not present in this receipt.
+            held.append(key)
             continue
         if state == "qualified_partial_subset" and terminal["status"] == "deadline_interrupted":
             unfinished.append(key)
@@ -229,12 +235,15 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
             continue
         if state in {"complete", "qualified_partial_subset"}:
             continue
-        if (state != "interrupted" or checkpoint.get("ingest") is not None
+        if (state not in {"interrupted", "resource_guard_interrupted"} or checkpoint.get("ingest") is not None
                 or checkpoint.get("state") in {"ingested", "ingesting", "ingest_recovery_required"}
                 or checkpoint.get("partial_cursor_settlement") is not None
                 or (checkpoint.get("colliers_partial_worker") or {}).get("state") in {
                     "cursor_publishing", "cursor_recovery_required", "settlement_unknown"}):
             raise DispatchSettlementRefused("interrupted source may have unsettled work")
+        if checkpoint.get("state") == "collect_failed":
+            held.append(key)
+            continue
         unfinished.append(key)
         if checkpoint.get("attempts"):
             deferred.append(key)
@@ -247,4 +256,5 @@ def _qualify(series_root: Path, series_id: str, invocation_id: str, *, owner,
         expected_config=expected_config)
     return {"status": terminal["status"], "outcome": "qualified", "child": ref,
             "unfinished_sources": unfinished, "deferred_sources": deferred,
+            "held_sources": held,
             "finished_unix_ms": control["finished_unix_ms"]}
