@@ -37,6 +37,7 @@ def run_schedule(
     workers,
     *,
     sources=SOURCES,
+    dispatch_sources=None,
     failure=None,
     artifact_failure=None,
     oversized_source=None,
@@ -321,7 +322,7 @@ def run_schedule(
     failures = pipeline.run_bounded_pipeline(
         run_dir,
         manifest,
-        sources,
+        dispatch_sources or sources,
         page_cap=400,
         concurrency=1,
         attempts_this_run=attempts_this_run,
@@ -975,3 +976,16 @@ def test_jll_unverified_rollback_stops_pipeline(tmp_path, monkeypatch):
     with pytest.raises(refresh.GlobalStageError, match="rollback evidence"):
         run_schedule(tmp_path, monkeypatch, 2, sources=("jll", "svn"),
                      jll_guard_refusal=True, pyramid_guard_valid=False)
+
+
+
+def test_dispatch_order_keeps_configured_scope_and_runs_every_peer(tmp_path, monkeypatch):
+    sources = ("savills", "transwestern", "nai-global")
+    order = ("transwestern", "nai-global", "savills")
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 1, sources=sources, dispatch_sources=order)
+    starts = [event[1] for event in events if event[0] == "start"]
+    assert starts == list(order)
+    assert manifest["config"]["sources"] == list(sources)
+    assert set(manifest["pipeline"]["source_results"]) == set(sources)
+    assert failures == []
