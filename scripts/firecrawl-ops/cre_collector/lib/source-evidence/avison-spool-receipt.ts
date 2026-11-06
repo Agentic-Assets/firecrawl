@@ -14,7 +14,7 @@ export type AvisonSpoolReceipt = {
 export function publishAvisonSpoolReceipt(
   spoolPath: string, generation: string, attempt: number, receipt: AvisonSpoolReceipt,
   sourceStartedAt: string, sourceFinishedAt: string,
-  sourceOutcome: "record_local_error" | "unclassified_source_error",
+  sourceOutcome: "record_local_error" | "unclassified_source_error" | "terminal_detail_not_found",
 ): string {
   const dir = dirname(spoolPath);
   const filename = `attempt-${attempt}.jsonl`;
@@ -23,7 +23,7 @@ export function publishAvisonSpoolReceipt(
       || !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 1
       || !Number.isSafeInteger(receipt.observationRecords) || receipt.observationRecords < 1
       || !/^[a-f0-9]{64}$/.test(receipt.sha256)
-      || !["record_local_error", "unclassified_source_error"].includes(sourceOutcome)
+      || !["record_local_error", "unclassified_source_error", "terminal_detail_not_found"].includes(sourceOutcome)
       || !Number.isFinite(Date.parse(sourceStartedAt)) || !Number.isFinite(Date.parse(sourceFinishedAt))
       || Date.parse(sourceStartedAt) > Date.parse(sourceFinishedAt)) throw new Error("invalid source receipt");
   const owner = process.getuid?.();
