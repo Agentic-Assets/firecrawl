@@ -215,7 +215,6 @@ def series_config(
             "max_host_cpu_percent": max_host_cpu_percent,
             "sustain_seconds": cpu_sustain_seconds,
             "sample_seconds": cpu_sample_seconds,
-            **cpu_guard_actions(),
         },
         "host_memory_guard": memory_guard_config(
             memory_sustain_seconds, memory_sample_seconds
@@ -224,6 +223,9 @@ def series_config(
         "nice": nice,
         "continue_source_local_failures": True,
     }
+    cpu_actions = cpu_guard_actions()
+    if cpu_actions["action"] == "diagnostic_only":
+        config["host_cpu_guard"].update(cpu_actions)
     if admit_baseline_hold_additively:
         config["admit_baseline_hold_additively"] = True
     if automatic_source_evidence is not None:

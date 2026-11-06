@@ -795,7 +795,8 @@ def test_windows_tier_does_not_admit_or_stop_on_cpu(tmp_path, monkeypatch, cpu):
         return 0
     assert execute(options(tier="monitor"), tmp_path, _cpu_sampler=cpu, _runner=runner) == 0
     assert calls == ["collect", "monitor_dry_run"]
-    assert receipt(tmp_path)["cpu_guard"]["action"] == "diagnostic_only"
+    assert receipt(tmp_path)["cpu_guard"]["action"] == "disabled"
+    assert receipt(tmp_path)["cpu_guard"]["telemetry_failure_action"] == "disabled"
     assert_released(tmp_path)
 
 

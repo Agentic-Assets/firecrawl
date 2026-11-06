@@ -364,6 +364,10 @@ def run_guarded_tier(
             ),
         )
         receipt["cpu_guard"] = cpu.config()
+        if checkpoint.windows_wsl():
+            # This tier has no resource-usage observer; do not claim sampling.
+            receipt["cpu_guard"]["action"] = "disabled"
+            receipt["cpu_guard"]["telemetry_failure_action"] = "disabled"
         receipt["memory_guard"] = memory.config()
         checkpoint._clear_cpu_guard_trip()
         previous_sigterm = signal.signal(

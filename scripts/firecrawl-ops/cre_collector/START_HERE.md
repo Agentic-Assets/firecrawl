@@ -212,7 +212,8 @@ further evidence supports changing it.
 
 On Windows/WSL, CPU readings are diagnostic and do not block or interrupt
 collection. The optional `resource-usage.jsonl` records WSL CPU samples and gaps;
-the native launcher does not sample CPU during admission. WSL VM
+the native launcher does not sample CPU during admission. Monitor and enrich
+tiers do not collect CPU telemetry and record that policy as disabled. WSL VM
 and Docker container limits bound CPU allocation. Memory admission, memory
 pressure stops, and write/ownership safeguards remain required. Windows CPU
 telemetry does not guarantee responsiveness under sustained VM saturation.
