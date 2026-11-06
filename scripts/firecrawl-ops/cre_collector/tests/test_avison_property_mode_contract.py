@@ -78,7 +78,8 @@ globalThis.fetch=async(input,options)=>{
           ? {url:null,external_url:null,extra:mode==='missing-url-encoded'
               ? 'fixture '+String.fromCharCode(92)+'u0030'+'123456789abcdef0123456789abcdef'
               : 'fixture 0123456789abcdef0123456789abcdef value'}
-          : {})})))
+          : {}), ...(mode==='validated-key' && i===1
+          ? {unknown_note:'retain 0123456789abcdef0123456789abcdef safely'} : {})})))
     : (mode==='explicit-strict'?[{id:1,name:'Synthetic Contact'}]:[]);
   return new Response(JSON.stringify({items}),{headers:{'content-type':'application/json'}});
 };
@@ -94,13 +95,20 @@ https.request=(url,options,callback)=>{
     let body='<html><main class="property-detail"><h1>Fixture Property</h1>'+
       '<p>Current property details.</p></main></html>';
     if(mode.startsWith('missing-url-'))status=200;
-    if(mode==='second-inventory-bad-json'||mode==='team403'||mode==='first-website500-team403')status=200;
+    if(mode==='second-inventory-bad-json'||mode==='team403'||mode==='first-website500-team403'
+        ||mode==='validated-key')status=200;
     if(mode==='one-empty-direct' && index===1){status=200;body='';}
     if(mode==='404-then-local'||mode==='local-then-404'){
       const sale=(url.hostname+url.pathname).includes('fixture-sale-');
       const terminal=mode==='404-then-local'?sale:!sale;
       status=terminal?404:200;
       if(!terminal && index===1)
+        body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
+    }
+    if(mode==='same-transaction-mixed'){
+      const sale=(url.hostname+url.pathname).includes('fixture-sale-');
+      status=sale&&index===2?404:200;
+      if(sale&&index===1)
         body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
     if(mode==='one-bad-identity' && index===1){
@@ -267,6 +275,9 @@ def test_settled_empty_detail_holds_row_and_continues_to_peer(tmp_path, case):
     for tx in ("sale", "lease"):
         outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
         assert [item["state"] for item in outcome["documents"]] == ["validated", "failed", "validated"]
+        failed_feed = outcome["documents"][1]["feedObservation"]
+        assert failed_feed["qualification"] == "unverified"
+        assert json.loads(failed_feed["sourceRowJson"])["id"] in (9002, 9005)
         assert outcome["documents"][1]["reason"] == (
             "unbound_response" if case == "empty-malformed-nondirect" else
             "malformed_content_type" if case == "malformed-content-nondirect" else
@@ -362,6 +373,9 @@ def test_actual_collector_retains_peers_and_marks_identity_failure_partial(tmp_p
         states = {item["id"]: item["state"] for item in outcome["documents"]}
         assert states[held] == "failed"
         assert states[peer] == "validated"
+        failed = next(item for item in outcome["documents"] if item["id"] == held)
+        assert json.loads(failed["feedObservation"]["sourceRowJson"])["id"] == int(held)
+        assert failed["feedObservation"]["qualification"] == "unverified"
         assert any(record["kind"] == "validated_detail" and record["transaction"] == tx
                    and str(record["documents"][0]["id"]) == peer for record in records)
 
@@ -847,6 +861,11 @@ def test_terminal_detail_not_found_preserves_valid_peer_receipt(tmp_path):
     assert receipt and receipt["source_outcome"] == "terminal_detail_not_found"
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
     assert any(record["kind"] == "validated_detail" for record in records)
+    outcomes = [item for record in records if record["kind"] == "detail_outcomes"
+                for item in record["documents"] if item["state"] == "required_detail_404"]
+    assert outcomes
+    assert all(json.loads(item["feedObservation"]["sourceRowJson"])["id"] == int(item["id"])
+               for item in outcomes)
 
 
 @pytest.mark.parametrize("case", ["404-then-local", "local-then-404"])
@@ -888,3 +907,48 @@ def test_terminal_404_with_optional_team_denial_retains_partial_receipt(tmp_path
     assert sum(item.get("feed") == "team" for item in calls) == 1
     records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
     assert any(record["kind"] == "validated_detail" for record in records)
+
+
+def test_same_transaction_404_and_held_identity_is_mixed_with_peer_evidence(tmp_path):
+    from source_evidence.avison_spool_receipt import verify_receipt
+
+    preload, started, env = prepare(tmp_path, "same-transaction-mixed")
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    attempt = {"number": 1, "rc": result.returncode, "started_at": started,
+               "finished_at": datetime.now(timezone.utc).isoformat(), "avison-young_partial": state}
+    receipt = verify_receipt(tmp_path, attempt)
+    assert receipt and receipt["source_outcome"] == "mixed_source_errors"
+    records = [json.loads(line) for line in (tmp_path / state["path"]).read_text().splitlines()[1:]]
+    sale = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == "sale")
+    assert [item["state"] for item in sale["documents"]] == ["validated", "failed", "required_detail_404"]
+    for item in sale["documents"][1:]:
+        assert json.loads(item["feedObservation"]["sourceRowJson"])["id"] == int(item["id"])
+    assert any(record["kind"] == "validated_detail" and record["transaction"] == "sale" for record in records)
+
+
+def test_key_in_validated_feed_is_held_redacted_and_peers_continue(tmp_path):
+    preload, started, env = prepare(tmp_path, "validated-key")
+    state = custody.prepare(tmp_path, 1, "avison-young")
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                      generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    spool = (tmp_path / state["path"]).read_text()
+    assert "0123456789abcdef0123456789abcdef" not in spool
+    assert "0123456789abcdef0123456789abcdef" not in output.read_text()
+    records = [json.loads(line) for line in spool.splitlines()[1:]]
+    for tx, native in (("sale", 9002), ("lease", 9005)):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        held = next(item for item in outcome["documents"] if item["id"] == str(native))
+        assert held["state"] == "failed"
+        assert held["feedObservation"]["credentialRedacted"] is True
+        assert json.loads(held["feedObservation"]["sourceRowJson"])["unknown_note"] == "retain [REDACTED_API_KEY] safely"
+        assert any(record["kind"] == "validated_detail" and record["transaction"] == tx for record in records)

@@ -4,6 +4,7 @@ import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-list
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
+import { getHeapStatistics } from "node:v8";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { observationNow } from "../lib/observation-clock.js";
@@ -133,7 +134,7 @@ export function avisonYoungTeamDenialObserved(): boolean {
 }
 class AvisonYoungSettledDetailError extends Error {}
 export class AvisonYoungPartialDetailError extends Error {
-  constructor(readonly heldIds: string[]) {
+  constructor(readonly heldIds: string[], readonly hasRequiredDetail404 = false) {
     super(`Avison Young partial detail: ${heldIds.length} record(s) held: ${heldIds.join(", ")}`);
     this.name = "AvisonYoungPartialDetailError";
   }
@@ -2866,6 +2867,18 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
         `Avison Young fresh property detail is incomplete for ${clean(listing?.id) ?? "unknown-id"}: ${reason}`
       );
     }
+    // A private spool or complete artifact must not persist the configured
+    // integration key as source data. Hold only this row; the source-row
+    // evidence path below records a redacted observation when possible.
+    if (requireLiveDetails) {
+      try {
+        const serialized = JSON.stringify(enriched);
+        if (typeof serialized !== "string" || !apiKey
+            || containsCredential(serialized, apiKey)) throw new Error();
+      } catch {
+        throw new AvisonYoungRecordDetailError("Avison Young detail evidence could not be safely retained");
+      }
+    }
     // Save only completed, freshly identity-validated detail. Spool failures
     // must not change source acceptance or request scheduling.
     if (requireLiveDetails && onValidatedDetail) onValidatedDetail(enriched, idx);
@@ -2891,22 +2904,6 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           outcomes[index]!.redirectObservations = error.redirectObservations;
         } else if (error.message === "missing public detail URLs") {
           outcomes[index]!.reason = "missing_public_detail_urls";
-          // Keep the parsed source row only as private unqualified evidence.
-          // Store it as JSON text so redaction cannot change or merge object keys.
-          try {
-            const raw = JSON.stringify(selectedRows[index]);
-            if (typeof raw !== "string" || !apiKey) throw new Error();
-            if (containsCredential(raw, apiKey, true)) throw new Error();
-            const redacted = raw.split(apiKey).join("[REDACTED_API_KEY]");
-            if (containsCredential(redacted, apiKey)) throw new Error();
-            outcomes[index]!.feedObservation = {
-              sourceKey: "avison-young", method: "SharpLaunch website inventory",
-              observedAt: inventoryObservation.observedAt, sourceRowJson: redacted,
-              credentialRedacted: redacted !== raw, qualification: "unverified",
-            };
-          } catch {
-            outcomes[index]!.feedObservation = { state: "retention_failed" };
-          }
         } else if (error.message.includes("Avison Young detail has empty or missing content")) {
           outcomes[index]!.reason = "empty_or_missing_content";
         } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
@@ -2948,9 +2945,36 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     throw error;
   } finally {
-    if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
+    if (requireLiveDetails && onDetailOutcomes) {
+      for (let index = 0; index < outcomes.length; index++) {
+        const outcome = outcomes[index]!;
+        if (outcome.state === "validated") continue;
+        // Keep every available source row privately, including unattempted
+        // rows. A malformed or oversized row affects only its own evidence.
+        try {
+          const raw = JSON.stringify(selectedRows[index]);
+          if (typeof raw !== "string" || !apiKey) throw new Error();
+          if (containsCredential(raw, apiKey, true)) throw new Error();
+          // Literal replacement can allocate two complete UTF-16 string copies.
+          // Check the actual V8 heap headroom only when replacement is needed.
+          const needsRedaction = raw.includes(apiKey);
+          const heap = getHeapStatistics();
+          if (needsRedaction && raw.length * 4 > heap.heap_size_limit - heap.used_heap_size) throw new Error();
+          const redacted = needsRedaction ? raw.split(apiKey).join("[REDACTED_API_KEY]") : raw;
+          if (containsCredential(redacted, apiKey)) throw new Error();
+          outcome.feedObservation = {
+            sourceKey: "avison-young", method: "SharpLaunch website inventory",
+            observedAt: inventoryObservation.observedAt, sourceRowJson: redacted,
+            credentialRedacted: redacted !== raw, qualification: "unverified",
+          };
+        } catch {
+          outcome.feedObservation = { state: "retention_failed" };
+        }
+      }
+      onDetailOutcomes(outcomes);
+    }
   }
-  if (heldIds.length) throw new AvisonYoungPartialDetailError(heldIds.sort());
+  if (heldIds.length) throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0);
   if (missingDetails.length) throw new AvisonYoungTerminalSourceError(missingDetails);
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
   assertAvisonYoungOutputIdentity(selectedProviderIds, listings);

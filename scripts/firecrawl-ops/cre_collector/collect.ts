@@ -258,6 +258,7 @@ async function main() {
   }> = [];
   let avisonOtherFailures = 0;
   let avisonOnlyRecordLocalFailures = true;
+  let avisonRecordLocalHas404 = false;
   let avisonAccessDenied = false;
   let avisonUnsettled = false;
   let terminalCaptureFailure = false;
@@ -359,6 +360,9 @@ async function main() {
             avisonTerminalFailures.push({ transaction: tx, failures: err.failures });
           } else {
             avisonOtherFailures += 1;
+            if (err instanceof AvisonYoungPartialDetailError && err.hasRequiredDetail404) {
+              avisonRecordLocalHas404 = true;
+            }
             if (!(err instanceof AvisonYoungPartialDetailError)) avisonOnlyRecordLocalFailures = false;
           }
         }
@@ -418,7 +422,8 @@ async function main() {
       try {
         publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
           receipt, startedAt, observationNow(),
-          avisonTerminalFailures.length > 0 && (avisonOtherFailures > 0 || avisonYoungTeamDenialObserved())
+          avisonRecordLocalHas404 || (avisonTerminalFailures.length > 0
+            && (avisonOtherFailures > 0 || avisonYoungTeamDenialObserved()))
             ? "mixed_source_errors"
             : avisonOtherFailures === 0 ? "terminal_detail_not_found"
               : avisonOnlyRecordLocalFailures && !avisonYoungTeamDenialObserved()
