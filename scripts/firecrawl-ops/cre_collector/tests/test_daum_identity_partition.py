@@ -120,3 +120,46 @@ def test_generated_ingest_rechecks_before_filter_and_never_activates(subset):
     assert sql.index("DAUM identity partition changed") < sql.index("DELETE FROM _src s USING _daum_identity_held")
     assert sql.index("DELETE FROM _src s USING _daum_identity_held") < sql.index("DAUM identity contradiction in historical rows")
     assert "UPDATE credeals.cre_source_baseline" not in sql
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_probe_uses_single_line_partition_and_fails_closed_on_malformed_tsv(tmp_path, monkeypatch, malformed):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    import cre_checkpoint_refresh
+    import cre_ingest
+    import cre_validate
+    from daum import identity_sql
+
+    members = [
+        {"native_id": "1", "external_id": "property/a", "source_url": "https://example.test/a"},
+        {"native_id": "2", "external_id": "property/b", "source_url": "https://example.test/b"},
+    ]
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text("{}")
+    target = "a" * 64
+    producer = "c" * 40
+    partition = [{**item, "conflicted": index == 1} for index, item in enumerate(members)]
+    monkeypatch.setattr(identity_sql, "cohort_members", lambda _data: members)
+    monkeypatch.setattr(cre_ingest, "load_db_url", lambda _env: ("synthetic", None))
+    monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url", lambda _url: {"value": target})
+    monkeypatch.setattr(cre_ingest, "find_psql", lambda: "synthetic-psql")
+    monkeypatch.setattr(cre_checkpoint_refresh, "git_identity", lambda: (producer, False))
+
+    def query(_psql, _url, sql, **_kwargs):
+        assert "jsonb_agg(assessed ORDER BY source_url)::text" in sql
+        result = json.dumps(partition, separators=(",", ":"))
+        if malformed:
+            result = result.replace("},{", "}," + chr(10) + "{")
+        output = chr(10).join(("joined" + chr(9) + "partition", "2" + chr(9) + result, ""))
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(cre_validate, "_run_psql_script", query)
+    args = (artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), "generation", producer, target, None)
+    if malformed:
+        with pytest.raises(RuntimeError, match="partition could not be qualified"):
+            identity_sql.run_cohort_probe(*args)
+    else:
+        assert identity_sql.run_cohort_probe(*args)["partition"] == partition
