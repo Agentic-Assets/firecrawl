@@ -176,9 +176,11 @@ def test_real_worker_artifact_verifier_with_source_gap(incident, monkeypatch, tm
     collector = Path(__file__).resolve().parents[1]
     fixture_dir = tmp_path / "node-fixture"
     fixture_dir.mkdir(mode=0o700)
-    env = {**os.environ, "COLLIERS_FIXTURE_DIRECTORY": str(fixture_dir),
-           "COLLIERS_FIXTURE_GENERATION": child["run_id"], "COLLIERS_FIXTURE_GAP": "1",
-           "COLLIERS_FIXTURE_TARGET": "c"}
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"COLLIERS_FIXTURE_COUNT_DRIFT", "NODE_OPTIONS"}}
+    env.update(COLLIERS_FIXTURE_DIRECTORY=str(fixture_dir),
+               COLLIERS_FIXTURE_GENERATION=child["run_id"], COLLIERS_FIXTURE_GAP="1",
+               COLLIERS_FIXTURE_TARGET="c")
     subprocess.run(["node", "--import", "tsx", "tests/ts/fixtures/colliers-window-staging.ts"],
                    cwd=collector, env=env, capture_output=True, text=True, timeout=30, check=True)
     artifact_raw = (fixture_dir / "artifact").read_bytes()
