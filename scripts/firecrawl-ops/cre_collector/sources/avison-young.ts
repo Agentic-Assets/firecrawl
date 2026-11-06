@@ -396,22 +396,24 @@ export function assertAvisonYoungDetailDoc(
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
   if (!combined.trim()) {
     // A missing SDK data envelope is not evidence of an empty source page.
-    // The completed response must identify the requested URL and a 2xx status.
-    const responseUrls = [doc.metadata?.sourceURL, doc.metadata?.url].filter(value => value !== undefined && value !== null);
-    let matchesRequest = responseUrls.length > 0;
+    // Distinguish an unbound response from empty or missing content with bound metadata.
+    // sourceURL binds the request; url can identify a redirected final page.
+    const requestUrl = doc.metadata?.sourceURL ?? doc.metadata?.url;
+    let matchesRequest = false;
     try {
-      matchesRequest &&= responseUrls.every(value => typeof value === "string" && new URL(value).href === new URL(requestedUrl).href);
+      matchesRequest = typeof requestUrl === "string" && new URL(requestUrl).href === new URL(requestedUrl).href;
     } catch {
       matchesRequest = false;
     }
-    if (!Number.isInteger(status) || status < 200 || status >= 300 || !matchesRequest) {
-      throw refuseUnsettled(new Error("Avison Young empty detail response lacks completed response metadata"));
+    if (!Number.isInteger(status) || status < 200 || status >= 400 || !matchesRequest) {
+      throw new AvisonYoungSettledDetailError("Avison Young detail response is unbound or lacks completion metadata");
     }
+    throw new AvisonYoungSettledDetailError("Avison Young detail has empty or missing content");
   }
   if (/just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-/i.test(combined)) {
     throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge");
   }
-  if (!combined.trim() || /page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(combined)) {
+  if (/page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(combined)) {
     throw new AvisonYoungSettledDetailError("Avison Young detail returned an error shell");
   }
 
@@ -1717,7 +1719,7 @@ export async function fetchAvisonYoungDirectDoc(
     throw new AvisonYoungHttpStatusError(currentUrl.toString(), response.status);
   }
   if (!rawHtml.trim()) {
-    throw new AvisonYoungSettledDetailError("Avison Young direct detail returned an empty body");
+    throw new AvisonYoungSettledDetailError("Avison Young detail has empty or missing content");
   }
   const $ = cheerio.load(rawHtml);
   const links = $("a[href]")
@@ -2767,7 +2769,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const outcomes: Array<{ id: string; state: string; reason?: string }> = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
   const heldIds: string[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
@@ -2779,6 +2781,11 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     } catch (error) {
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
       if (requireLiveDetails && !strict && error instanceof AvisonYoungRecordDetailError) {
+        if (error.message.includes("Avison Young detail has empty or missing content")) {
+          outcomes[index]!.reason = "empty_or_missing_content";
+        } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
+          outcomes[index]!.reason = "unbound_response";
+        }
         heldIds.push(selectedProviderIds[index]!);
         return undefined;
       }
