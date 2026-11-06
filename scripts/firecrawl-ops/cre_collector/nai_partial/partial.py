@@ -271,7 +271,7 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
                 if isinstance(raw, dict):
                     raw_id = raw.get("id")
                     raw_text = str(raw_id) if type(raw_id) in {int, str} else ""
-                    if re.fullmatch(r"[1-9][0-9]*", raw_text) and int(raw_text) <= 9007199254740991:
+                    if len(raw_text) <= 16 and re.fullmatch(r"[1-9][0-9]*", raw_text) and int(raw_text) <= 9007199254740991:
                         witnessed_ids.add("infabode:" + raw_text)
                 if isinstance(raw, dict) and isinstance(raw.get("urlOriginal"), str):
                     observed_aliases.append(raw["urlOriginal"])
@@ -280,7 +280,7 @@ def partition_posts(listings, generation, *, capture_start=None, capture_finish=
             for alias in observed_aliases:
                 if isinstance(alias, str):
                     found = re.fullmatch(r"https://infabode\.com/(?:post|services/listings)/([1-9][0-9]*)/?", alias)
-                    if found and int(found.group(1)) <= 9007199254740991:
+                    if found and len(found.group(1)) <= 16 and int(found.group(1)) <= 9007199254740991:
                         witnessed_ids.add("infabode:" + found.group(1))
             for witnessed_id in witnessed_ids:
                 id_counts[witnessed_id] = id_counts.get(witnessed_id, 0) + 1

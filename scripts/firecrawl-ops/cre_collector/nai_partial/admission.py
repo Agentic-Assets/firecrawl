@@ -106,8 +106,18 @@ def candidate(artifact_path, manifest, *, code_sha, dirty):
             raise ValueError("NAI recovery candidate or original changed")
         source_count = data["naiRecovery"]["originalCount"]
     else:
-        if data.get("schema") == "nai-post-inventory-recovery/v1":
-            raise ValueError("NAI recovery requires a bound checkpoint")
+        from nai_partial.coverage_candidate import ORIGINAL, SCHEMA, _private_regular, derive
+        if info.get("nai_coverage_partial") is True:
+            if data.get("schema") != SCHEMA or info.get("nai_coverage_original") != ORIGINAL:
+                raise ValueError("NAI coverage candidate marker differs")
+            original_path = root / ORIGINAL
+            _private_regular(original_path)
+            original = read_file(original_path.resolve())
+            if (hashlib.sha256(original).hexdigest() != info.get("nai_coverage_original_sha256")
+                    or derive(original) != raw or read_file(original_path.resolve()) != original):
+                raise ValueError("NAI coverage original binding differs")
+        elif data.get("schema") is not None:
+            raise ValueError("NAI partial schema requires a bound checkpoint")
         partition = partition_posts(data["listings"], manifest["run_id"],
                                     capture_start=max(capture_start, now - timedelta(hours=max_age)),
                                     capture_finish=capture_finish, exact_listings=exact_data["listings"])
@@ -364,6 +374,10 @@ def run_ingest(args):
     finally:
         os.close(directory)
     inherited_fds = _require_active_checkpoint(args, raw, envelope)
+    artifact_info = envelope["manifest"]["sources"][SOURCE]["artifact"]
+    if not (artifact_info.get("nai_inventory_recovery") is True
+            or artifact_info.get("nai_coverage_partial") is True):
+        raise ValueError("NAI partial requires an intrinsically marked artifact")
     code_sha, dirty = git_identity()
     context = ingest_subset_context(Path(args.inputs[0]), envelope, code_sha=code_sha, dirty=dirty,
                                     target_sha256=args.expected_db_target_sha256,

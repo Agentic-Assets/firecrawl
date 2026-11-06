@@ -5663,6 +5663,11 @@ def gate_source(
                 and per_source.get("verdict") == "hold"
                 and subset_gate_can_admit(per_source)):
             checkpoint["artifact"]["nai_post_partial"] = True
+            if not (checkpoint["artifact"].get("nai_inventory_recovery")
+                    or checkpoint["artifact"].get("nai_coverage_partial")):
+                from cre_refresh_pipeline import _OWNER_CHECK
+                from nai_partial.coverage_candidate import prepare_owned
+                prepare_owned(run_dir, manifest, getattr(_OWNER_CHECK.get(), "__self__", None))
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
                 or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
