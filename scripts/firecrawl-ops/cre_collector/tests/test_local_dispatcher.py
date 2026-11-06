@@ -130,6 +130,16 @@ def test_current_snapshot_holds_bad_policy_and_keeps_valid_peer(tmp_path, policy
     assert sorted(states) == ["held_no_work", "queued"]
 
 
+def test_malformed_due_does_not_suppress_current_peer(tmp_path, policy):
+    policy.update(task_path="\\Agentic Assets\\CRE\\", task_name="Colliers Partial Refresh", task_xml_sha256="e" * 64)
+    snapshot = {"schema": "cre-dispatch-current-snapshot/v1", "observed_unix_ms": 1793939400000,
+                "tasks": [{"task": "bad", "policy": policy, "due": ["bad-time"]},
+                          {"task": "good", "policy": policy, "due": ["20261106T042000Z"]}]}
+    dispatcher.enqueue_current_snapshot(tmp_path, snapshot)
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert len(list(tmp_path.glob(".history-*.audit"))) == 3
+
+
 def test_snapshot_only_never_becomes_dispatch_owner(tmp_path, monkeypatch, policy):
     monkeypatch.setattr(dispatcher, "HERE", tmp_path)
     (tmp_path / "out").mkdir()

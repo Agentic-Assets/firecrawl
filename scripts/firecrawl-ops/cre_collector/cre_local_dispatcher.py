@@ -359,17 +359,23 @@ def enqueue_current_snapshot(path: Path, snapshot: dict) -> None:
                 or not isinstance(task["task"], str) or re.fullmatch(r"[A-Za-z0-9_-]{1,72}", task["task"]) is None
                 or task["task"] in seen or not isinstance(task["policy"], dict)
                 or not isinstance(task["due"], list)):
-            raise ValueError("current task entry differs")
+            bad = hashlib.sha256(json.dumps(task, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+            dispatch_queue.record_unknown_history(path, "invalid_" + bad[:24], bad, snapshot["observed_unix_ms"])
+            continue
         seen.add(task["task"])
         raw = json.dumps(task["policy"], sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         digest = hashlib.sha256(raw).hexdigest()
         dispatch_queue.record_unknown_history(path, task["task"], digest, snapshot["observed_unix_ms"])
         for due in task["due"]:
-            if not isinstance(due, str) or re.fullmatch(r"\d{8}T\d{6}Z", due) is None:
-                raise ValueError("current task due time differs")
-            timestamp = datetime.strptime(due, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-            if int(timestamp.timestamp() * 1000) > snapshot["observed_unix_ms"]:
-                raise ValueError("current task due time is in the future")
+            try:
+                if not isinstance(due, str) or re.fullmatch(r"\d{8}T\d{6}Z", due) is None:
+                    raise ValueError("current task due time differs")
+                timestamp = datetime.strptime(due, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                if int(timestamp.timestamp() * 1000) > snapshot["observed_unix_ms"]:
+                    raise ValueError("current task due time is in the future")
+            except (ValueError, OverflowError):
+                dispatch_queue.record_unknown_history(path, "invalid_due_" + digest[:24], digest, snapshot["observed_unix_ms"])
+                continue
             slot = f"{due}_{task['task']}_{digest[:12]}"
             try:
                 if any(task["policy"].get(key) is None for key in ("task_path", "task_name", "task_xml_sha256")):

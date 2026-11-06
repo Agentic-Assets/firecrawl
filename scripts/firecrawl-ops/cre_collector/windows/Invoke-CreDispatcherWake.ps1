@@ -50,8 +50,9 @@ function Get-CreWakeDue([xml]$Document, [DateTimeOffset]$Now) {
         if($start.Date -gt $today) { continue }
         $day=$trigger.SelectSingleNode('t:ScheduleByDay/t:DaysInterval',$ns)
         $week=$trigger.SelectSingleNode('t:ScheduleByWeek',$ns)
+        $weeks=if($week){$week.SelectSingleNode('t:WeeksInterval',$ns)}else{$null}
         if($day -and -not $week -and $day.InnerText -ceq '1') { $active=$true }
-        elseif($week -and -not $day -and $week.SelectSingleNode('t:WeeksInterval',$ns).InnerText -ceq '1') {
+        elseif($week -and -not $day -and $weeks -and $weeks.InnerText -ceq '1') {
             $days=$week.SelectSingleNode('t:DaysOfWeek',$ns)
             if(-not $days) { return @{due=@($Now.UtcDateTime.Date.ToString('yyyyMMddTHHmmssZ')); fallback=$true} }
             $active=$null -ne $days.SelectSingleNode('t:'+$today.DayOfWeek.ToString(),$ns)
