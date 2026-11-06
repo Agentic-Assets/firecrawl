@@ -6797,6 +6797,7 @@ def recover_interrupted_ingest(
         raise GlobalStageError(
             f"interrupted ingest readback failed for {source} (rc={rc})"
         )
+    fresh_commit_lease = None
     try:
         validation = _load_json(output)
         require_full_validation_report(validation)
@@ -6824,11 +6825,15 @@ def recover_interrupted_ingest(
             if (fenced_counts(validation, source, manifest["run_id"], expected_probe) == (1, 1)
                     and _artifact_run_job_probe_is_exact(validation, expected_matching_jobs=0)
                     and absent_generation):
+                from cre_refresh_pipeline import _OWNER_LEASE, require_pipeline_owner
+                fresh_commit_lease = _OWNER_LEASE.get()
+                require_pipeline_owner(manifest, fresh_commit_lease)
                 saved_run_id = manifest["run_id"]
                 saved_artifact = dict(artifact_info)
                 saved_sha = manifest["collector_git_sha"]
                 artifact_path = run_dir / saved_artifact["path"]
                 def binding_unchanged():
+                    require_pipeline_owner(manifest, fresh_commit_lease)
                     return (git_identity() == (saved_sha, False)
                             and manifest.get("collector_git_sha") == saved_sha
                             and manifest.get("collector_git_dirty") is False
@@ -6883,6 +6888,8 @@ def recover_interrupted_ingest(
             validation,
             persist_manifest=False,
         )
+        if fresh_commit_lease is not None:
+            require_pipeline_owner(manifest, fresh_commit_lease)
     except Exception as exc:
         checkpoint["state"] = "ingest_recovery_required"
         recovery["readback_error"] = str(exc)

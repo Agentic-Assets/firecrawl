@@ -428,6 +428,9 @@ def test_atomic_fence_uses_separate_lock_first_read_committed_transaction():
         "second_fence",
         "second_rc",
         "cleanup_unknown",
+        "lease_loss",
+        "lease_loss_after_readback",
+        "missing_owner",
     ],
 )
 def test_late_commit_gets_one_bound_readback_without_write_retry(
@@ -435,6 +438,8 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
 ):
     from pathlib import Path
     import cre_checkpoint_refresh as refresh
+    import cre_refresh_pipeline as pipeline
+    from types import SimpleNamespace
 
     root = tmp_path / "2026-11-03T000000Z"
     (root / "sources").mkdir(parents=True)
@@ -464,11 +469,27 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
     identity = {"sha": "e" * 40}
     monkeypatch.setattr(refresh, "git_identity", lambda: (identity["sha"], False))
     monkeypatch.setattr(refresh, "save_manifest", lambda *_: None)
-    monkeypatch.setattr(
-        refresh, "verify_validation_readback", lambda *a, **kw: {"ok": True}
-    )
+
+    def checked_readback(*_args, **_kwargs):
+        if fault == "lease_loss_after_readback":
+            owner["valid"] = False
+        return {"ok": True}
+
+    monkeypatch.setattr(refresh, "verify_validation_readback", checked_readback)
     run_key = artifact_run_identity_from_digests([digest])[0]
     calls = {"write": 0, "read": 0}
+    owner = {"valid": True}
+    monkeypatch.setattr(
+        pipeline,
+        "_OWNER_LEASE",
+        SimpleNamespace(get=lambda: None if fault == "missing_owner" else "lease"),
+    )
+
+    def check_owner(_manifest, lease):
+        if lease != "lease" or not owner["valid"]:
+            raise refresh.GlobalStageError("pipeline owner changed")
+
+    monkeypatch.setattr(pipeline, "require_pipeline_owner", check_owner)
 
     def command(argv, _log, **_kwargs):
         if "cre_validate.py" not in argv:
@@ -513,6 +534,8 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
             },
         }
         Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
+        if second and fault == "lease_loss":
+            owner["valid"] = False
         if second and fault == "code":
             identity["sha"] = "f" * 40
         if second and fault == "manifest_code":
@@ -537,4 +560,4 @@ def test_late_commit_gets_one_bound_readback_without_write_retry(
         assert checkpoint["state"] == "ingest_recovery_required"
         assert checkpoint["ingest_recovery"]["readback_ok"] is False
         assert checkpoint["ingest_recovery"].get("outcome") != "exact_rollback"
-    assert calls == {"write": 1, "read": 2}
+    assert calls == {"write": 1, "read": 1 if fault == "missing_owner" else 2}
