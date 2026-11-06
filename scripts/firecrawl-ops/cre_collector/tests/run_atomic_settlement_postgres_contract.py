@@ -174,7 +174,7 @@ try:
             time.sleep(0.1)
     key = "hashtextextended('credeals:listing-lifecycle:v1', 0)"
     sql(
-        "CREATE SCHEMA credeals; CREATE TABLE credeals.cre_scrape_jobs (artifact_run_key text); CREATE TABLE fixture_generations (source_key text, generation_id text); CREATE FUNCTION delay_commit() RETURNS trigger LANGUAGE plpgsql AS 568328 BEGIN PERFORM pg_sleep(4); RETURN NEW; END 568328; CREATE CONSTRAINT TRIGGER deferred_delay AFTER INSERT ON credeals.cre_scrape_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION delay_commit();"
+        "CREATE SCHEMA credeals; CREATE TABLE credeals.cre_scrape_jobs (artifact_run_key text); CREATE TABLE fixture_generations (source_key text, generation_id text); CREATE FUNCTION delay_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(4); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER deferred_delay AFTER INSERT ON credeals.cre_scrape_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION delay_commit();"
     )
     cre_validate.QUERIES["freshness_generations"] = (
         "SELECT source_key, generation_id FROM fixture_generations;"
