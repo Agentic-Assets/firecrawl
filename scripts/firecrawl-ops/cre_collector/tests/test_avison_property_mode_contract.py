@@ -987,6 +987,11 @@ def test_selected_row_partition_retains_original_ordinal_and_valid_peers(tmp_pat
         unknown = next(item for item in original if item["state"] == "failed")
         assert unknown["reason"] == "selection_unclassified"
         assert json.loads(unknown["feedObservation"]["sourceRowJson"])["id"] == 9002
+        validated = next(record["documents"][0] for record in records
+                         if record["kind"] == "validated_detail" and record["transaction"] == "sale"
+                         and record["documents"][0]["id"] == "9002")
+        assert validated["rawSharpLaunch"]["transaction"] == [
+            "sale", {"toString": None, "valueOf": None}]
     else:
         held = next(item for item in original if item["state"] == "failed")
         assert held["reason"] == ("mapping_error" if case == "selected-mapping-error" else
