@@ -2064,6 +2064,15 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
                     continue
                 snapshot = _read_regular_file(path / "manifest.json", limit=4 * 1024 * 1024)
                 observed = json.loads(snapshot)
+                if (not isinstance(observed, dict) or observed.get("series_id") != path.name
+                        or not _exact_json_equal(observed.get("database_target"), manifest.get("database_target"))):
+                    continue
+                observed_config = observed.get("config") or {}
+                observed_sources = observed_config.get("sources")
+                if (not observed_config.get("pipeline") or not isinstance(observed_sources, list)
+                        or len(set(observed_sources)) != len(observed_sources)
+                        or not set(manifest["config"]["sources"]) <= set(observed_sources)):
+                    continue
                 started = _parse_utc_timestamp(observed.get("started_at"), field="prior started_at")
                 if started >= current_start:
                     continue
@@ -2088,9 +2097,6 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
             if snapshots is not None and raw != snapshots[prior_dir]:
                 return None
             prior = json.loads(raw)
-            if ((predecessor_id is not None or snapshots is not None) and _parse_utc_timestamp(prior.get("finished_at"), field="prior finished_at")
-                    > _parse_utc_timestamp(manifest.get("started_at"), field="current started_at")):
-                return None
             if (not isinstance(prior, dict) or prior.get("series_id") != prior_dir.name
                     or not _exact_json_equal(prior.get("database_target"), manifest.get("database_target"))):
                 continue
@@ -2109,6 +2115,9 @@ def scheduled_deadline_priority(out_root: Path, current_dir: Path, manifest: dic
             if prior_sha != current_sha and local_git_output(
                     ["merge-base", prior_sha, current_sha]).strip() != prior_sha:
                 continue
+            if ((predecessor_id is not None or snapshots is not None) and _parse_utc_timestamp(prior.get("finished_at"), field="prior finished_at")
+                    > _parse_utc_timestamp(manifest.get("started_at"), field="current started_at")):
+                return None
             # Never fall back to an older matching run if the latest cannot be
             # qualified: the full default scope remains eligible as usual.
             if prior.get("status") != "interrupted":
