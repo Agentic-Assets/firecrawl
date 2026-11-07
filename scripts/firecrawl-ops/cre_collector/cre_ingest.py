@@ -2236,22 +2236,6 @@ _JLL_PRICE_SOURCE_SHAPES = {
     "unsupported",
 }
 _JLL_WITHHELD_MARKER = "jllPriceWithheld"
-_JLL_PRICE_DERIVED_STAGING_COLUMNS = frozenset(
-    {
-        "sale_price_usd",
-        "sale_price_per_sf",
-        "lease_rate_min",
-        "lease_rate_max",
-        "lease_rate_type",
-        "cap_rate",
-        "noi",
-        "gross_revenue",
-        "price_per_unit",
-        "grm",
-        "price_per_acre",
-        "revpar",
-    }
-)
 _JLL_SAFE_CONTROL_KEYS = frozenset(
     {"hideprice", "pricewithholdingcontrol", _JLL_WITHHELD_MARKER.casefold()}
 )
@@ -2701,6 +2685,22 @@ def _safe_jll_withheld_projection(value, pricing):
     projected = {
         key: item for key, item in raw.items() if key in _JLL_WITHHELD_TOP_LEVEL
     }
+    # Preserve literal scalar controls and their original spelling; complex or
+    # unrecognized values remain represented by the existing classification.
+    controls = {}
+    for location, source in (("listing", value), ("search", value.get("jllSearchResult"))):
+        if not isinstance(source, dict):
+            continue
+        selected = {
+            key: item for key, item in source.items()
+            if isinstance(key, str) and key.casefold() in {"hideprice", "pricewithholdingcontrol"}
+            and (item is None or isinstance(item, bool)
+                 or (isinstance(item, str) and item in _JLL_PRICE_CONTROL_CLASSES))
+        }
+        if selected:
+            controls[location] = selected
+    if controls:
+        projected["jllLegacySourceControls"] = controls
     inventory = _safe_jll_inventory_observation(raw.get("inventoryObservedAt"))
     if inventory is None:
         projected.pop("inventoryObservedAt", None)
@@ -2793,31 +2793,9 @@ def _safe_jll_raw_data(listing):
         ):
             raw.pop(key, None)
     if must_redact:
-        # This non-sensitive marker survives the sale/lease merge and is the
-        # only upsert authority to clear a previously public price.
+        # This marker keeps sparse legacy observations on the additive path.
         raw[_JLL_WITHHELD_MARKER] = True
     return raw
-
-
-def _force_jll_raw_payload_withheld(value):
-    """Redact every direct JLL child when a merged row has any hidden pass."""
-    if not isinstance(value, dict):
-        return value
-    if value.get("sourceKey") == "jll":
-        detail = value.get("jllDetail")
-        pricing = detail.get("pricing") if isinstance(detail, dict) else None
-        safe_pricing = _safe_jll_pricing(pricing)
-        redacted = _safe_jll_withheld_projection(
-            value, _redacted_jll_pricing(safe_pricing)
-        )
-        redacted[_JLL_WITHHELD_MARKER] = True
-        return redacted
-    return {
-        key: _force_jll_raw_payload_withheld(item)
-        if key in {"primary", "secondary_pass"}
-        else item
-        for key, item in value.items()
-    }
 
 
 def _jll_withholding_control(value):
@@ -3661,13 +3639,8 @@ def merge_rows(a, b):
     # Raw source passes remain separately bound below; do not infer that a
     # longer or newer text includes the facts in the other one.
     avison_prices.merge_mixed_prose(a, b, avison_prose)
-    # Keep both raw payloads when the passes differ.  The top-level marker is
-    # deliberately carried outside that wrapper so SQL does not need to infer
-    # a price-withholding state from nested, malformed, or legacy provider data.
-    # A raw marker alone is not sufficient: non-JLL providers can surface the
-    # same arbitrary key.  The destructive merge-time transition applies only
-    # when both normalized passes are canonically JLL, including their direct
-    # raw source keys.  This mirrors the source-key guards in generated SQL.
+    # Each legacy pass has already been projected independently. A sparse
+    # withheld pass cannot erase facts observed in a visible sibling.
     jll_price_withheld = (
         _is_canonical_jll_staged_row(a)
         and _is_canonical_jll_staged_row(b)
@@ -3682,31 +3655,6 @@ def merge_rows(a, b):
     if jll_price_withheld:
         if isinstance(a["raw_data"], dict):
             a["raw_data"][_JLL_WITHHELD_MARKER] = True
-        # SQL clearing handles an existing listing, but a first-seen dual-mode
-        # row takes INSERT ... SELECT without entering DO UPDATE.  Clear the
-        # staged provider price fields before either path so a visible sale pass
-        # cannot leak through a withheld/unknown lease pass.
-        a["raw_data"] = _force_jll_raw_payload_withheld(a["raw_data"])
-        for key in _JLL_PRICE_DERIVED_STAGING_COLUMNS:
-            a[key] = None
-        # The final row, rather than the individual source pass, is the
-        # withholding boundary.  A visible sibling may have won these sparse
-        # fields before the hidden pass was observed, so erase unbounded prose
-        # and facts here as well.  Title is identity-bearing and only has its
-        # explicit monetary disclosure redacted.
-        a["title"] = _redact_jll_free_text(a.get("title"))
-        a["highlights"] = None
-        a["extra_facts"] = None
-        a["description"] = None
-        a["markdown"] = None
-        # Merge happens after each individual pass has already constructed its
-        # staged children. A visible sibling can therefore contribute a title,
-        # caption, broker license, or other label after the hidden pass was
-        # sanitized. Reapply the same narrow label projection to the final
-        # row, preserving URLs, identifiers, types, and ordinary names.
-        a["contacts"] = _safe_jll_hidden_child_metadata(a["contacts"], broker=True)
-        for key in ("documents", "images", "media", "links"):
-            a[key] = _safe_jll_hidden_child_metadata(a[key])
     return avison_leases.project_row(avison_prices.project_row(a))
 
 
@@ -5642,11 +5590,7 @@ WITH ins AS (
         raw_data          = CASE
                               WHEN {jll_legacy_sparse_row_sql}
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
-                                  'latestJllLegacyObservation', jsonb_build_object(
-                                    'sourceKey', 'jll', 'jllPriceWithheld', true,
-                                    'ingestScrapedAt', EXCLUDED.scraped_at,
-                                    'searchControl', EXCLUDED.raw_data#>'{jllSearchResult,priceWithholdingControl}',
-                                    'detailPricing', EXCLUDED.raw_data#>'{jllDetail,pricing}'))
+                                  'latestJllLegacyObservation', EXCLUDED.raw_data)
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.daumUnknownTenure ? (@ == true)')
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages db WHERE db.id=EXCLUDED.brokerage_id AND db.slug='daum-commercial')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
@@ -6086,7 +6030,10 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
-  AND NOT ({jll_sparse_child_stage_sql})
+  AND NOT (({jll_sparse_child_stage_sql}) AND EXISTS (
+    SELECT 1 FROM _prior_vals p
+    WHERE p.brokerage_id = s.brokerage_id AND p.external_id = s.external_id
+  ))
   AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
