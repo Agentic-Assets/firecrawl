@@ -1,3 +1,4 @@
+import type { PartialPageSpool } from "../lib/partial-page-spool.js";
 import { captureKidderTeamPage } from "./kidder-team-evidence.js";
 import { RetainedSourceError } from "../lib/source-observations.js";
 import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
@@ -460,7 +461,7 @@ export function mapKidderListing(
   return preserveKidderRaw(listing, raw, marker);
 }
 
-export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean, getSpool?: () => PartialPageSpool | undefined): Promise<SourceResult> {
   let result: KidderInventoryResult;
   try { result = await kidderFetchAll(max); }
   catch (error) {
@@ -471,8 +472,15 @@ export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): 
     let observation: Awaited<ReturnType<typeof captureKidderTeamPage>>;
     try { observation = await teamCapture.promise; }
     catch (captureError) {
-      if (captureError instanceof NativeEvidenceTerminalError) throw captureError;
+      if (captureError instanceof NativeEvidenceTerminalError)
+        throw new KidderInventoryCleanupUnknown("Kidder team response cleanup was not confirmed", { cause: captureError });
       throw error;
+    }
+    const spool = getSpool?.();
+    if (spool) {
+      spool.record({ transaction: tx, pass: 1, page: 0, observedAt: observation.observedAt,
+        kind: "kidder_team_observation", documents: [observation] });
+      if (!spool.writable) console.error("Kidder private evidence spool unavailable; interrupted evidence may be lost");
     }
     throw new RetainedSourceError(error, [observation]);
   }

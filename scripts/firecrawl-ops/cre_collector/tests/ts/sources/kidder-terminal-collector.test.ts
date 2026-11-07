@@ -59,3 +59,10 @@ test("unsettled response cleanup gets a distinct exit and stops dispatch", () =>
   assert.equal(requested.length, 1);
   assert.doesNotMatch(result.stderr, /collecting kidder-mathews\/lease/);
 });
+
+test("mixed collection keeps the unknown-cleanup fence before starting its peer", () => {
+  const { result, requested } = run(403, true, true);
+  assert.equal(result.status, 73, result.stderr);
+  assert.equal(requested.length, 1);
+  assert.doesNotMatch(result.stderr, /collecting newmark/);
+});

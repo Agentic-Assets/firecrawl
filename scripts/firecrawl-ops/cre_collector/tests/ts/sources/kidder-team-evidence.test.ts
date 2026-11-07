@@ -64,3 +64,18 @@ test("unconfirmed team response cleanup remains terminal", async () => {
     headers: { "content-type": "text/html" },
   })), error => error instanceof NativeEvidenceTerminalError);
 });
+
+test("healthy inventory does not open a team attempt spool", async () => {
+  const oldFetch=globalThis.fetch, oldStrict=process.env.CRE_REQUIRE_FRESH_DETAILS, oldGeneration=process.env.CRE_REFRESH_GENERATION;
+  let opened=false;
+  globalThis.fetch=async()=>new Response(JSON.stringify({startIndex:0,totalResultCount:1,currentResultCount:1,results:[{listing_key:"healthy",property_name:"Healthy"}]}));
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS="1"; process.env.CRE_REFRESH_GENERATION="kidder-healthy-lazy-spool";
+    const result=await srcKidderMathews("sale",Infinity,false,()=>{opened=true;return undefined});
+    assert.equal(result.listings.length,1); assert.equal(opened,false);
+  } finally {
+    globalThis.fetch=oldFetch;
+    if(oldStrict===undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS=oldStrict;
+    if(oldGeneration===undefined) delete process.env.CRE_REFRESH_GENERATION; else process.env.CRE_REFRESH_GENERATION=oldGeneration;
+  }
+});
