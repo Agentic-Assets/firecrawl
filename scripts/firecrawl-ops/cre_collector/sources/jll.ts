@@ -526,6 +526,18 @@ function jllSalePriceText(price: JllNormalizedPrice): string | null {
   return jllPriceUsd(price) === null ? null : price.text;
 }
 
+// Preserve each provider assertion, including conflicting spelling variants.
+// Refuse to copy a credential-bearing malformed control into listing data.
+function jllSafeObservation(entry: unknown): unknown {
+  return /(?:password|secret|authorization|api[_-]?key|access[_-]?token|"(?:token|signature|key)"\s*:|[?&](?:token|signature|key)=)/i.test(JSON.stringify(entry) ?? "")
+    ? { withheld: "credential-like-content" } : entry;
+}
+function jllSourcePriceControls(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([key]) =>
+    ["hideprice", "pricewithholdingcontrol"].includes(key.toLowerCase()),
+  ).map(([key, entry]) => [key, jllSafeObservation(entry)]));
+}
 function jllWithholdingControl(
   value: unknown,
   key: string,
@@ -887,7 +899,6 @@ export function jllGraphqlItemToListing(
   }
 
   const priceWithholdingControl = jllWithholdingControl(item, "hidePrice");
-  const hiddenPrice = jllPriceWithheld(priceWithholdingControl);
   const salePrice = jllNormalizedPrice(item?.salePrice);
   const rentPrice = jllNormalizedPrice(item?.rentPrice);
   const buildingSizeSqft = jllSurfaceAreaSqft(item);
@@ -898,7 +909,7 @@ export function jllGraphqlItemToListing(
     ? item.tenureTypes.map((value: any) => clean(value)).filter(Boolean)
     : [];
 
-  return prune({
+  const listing = prune({
     id,
     name: clean(item?.title) ?? clean(item?.address),
     transactionType: tx === "sale" ? "Sale" : "Lease",
@@ -910,11 +921,11 @@ export function jllGraphqlItemToListing(
     country: "US",
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
-    salePriceUsd: tx === "sale" && !hiddenPrice ? jllPriceUsd(salePrice) : null,
+    salePriceUsd: tx === "sale" ? jllPriceUsd(salePrice) : null,
     salePriceText:
-      tx === "sale" && !hiddenPrice ? jllSalePriceText(salePrice) : null,
+      tx === "sale" ? jllSalePriceText(salePrice) : null,
     leaseRateText:
-      tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
+      tx === "lease" ? jllLeasePriceText(rentPrice) : null,
     sizeText:
       buildingSizeSqft === null
         ? null
@@ -926,6 +937,7 @@ export function jllGraphqlItemToListing(
     jllPropertyTypeFilters: [propertyType],
     jllSearchPages: [page],
     jllFilterTotals: { [propertyType]: total },
+    jllPublicFactsRetention: { schema: "jll-public-facts-retention/v2" },
     jllSearchResult: {
       propertyTypes,
       tenureTypes,
@@ -933,6 +945,11 @@ export function jllGraphqlItemToListing(
       priceWithholdingControl,
     },
   });
+  listing.jllSearchResult.sourceControlEntries = jllSourcePriceControls(item);
+  for (const key of ["salePrice", "rentPrice"]) {
+    if (Object.hasOwn(item, key)) listing.jllSearchResult[`${key}Observation`] = jllSafeObservation(item[key]);
+  }
+  return listing;
 }
 
 export function parseJllGraphqlSearchPage(
@@ -1639,7 +1656,8 @@ export async function enrichJllListing(
     base,
     base?.jllSearchResult,
   );
-  const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
+  const retainPublicFacts = base?.jllPublicFactsRetention?.schema === "jll-public-facts-retention/v2";
+  const basePriceWithheld = !retainPublicFacts && jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
   try {
     let doc = await scrapeJllDetailDoc(base.url, { refresh: options.refresh });
@@ -1675,12 +1693,14 @@ export async function enrichJllListing(
       ) {
         options.onCompletedNative404?.();
       }
-      return prune({
-        ...(basePriceWithheld
+      const failed = prune({
+        ...(retainPublicFacts ? base : basePriceWithheld
           ? jllWithheldPublicProjection(base)
           : jllRedactSensitivePriceFields(base)),
         detailError: "missing property in __NEXT_DATA__",
       });
+      if (retainPublicFacts) failed.jllSearchResult = base.jllSearchResult;
+      return failed;
     }
 
     const detailId = clean(property.id);
@@ -1713,7 +1733,7 @@ export async function enrichJllListing(
       property,
       "hidePrice",
     );
-    const hiddenPrice = jllPriceWithheld(
+    const hiddenPrice = !retainPublicFacts && jllPriceWithheld(
       searchWithholdingControl,
       detailWithholdingControl,
     );
@@ -1724,7 +1744,8 @@ export async function enrichJllListing(
     );
     const baseLeasePrice = jllNormalizedPrice(base.leaseRateText);
     const pricing = {
-      visibility: hiddenPrice ? "withheld" : "visible",
+      visibility: jllPriceWithheld(searchWithholdingControl, detailWithholdingControl)
+        ? "withheld" : "visible",
       searchWithholdingControl,
       detailWithholdingControl,
       sale: jllPriceProvenance(salePrice, hiddenPrice),
@@ -1874,19 +1895,19 @@ export async function enrichJllListing(
       longitude: num(property.longitude) ?? base.longitude,
       salePriceUsd: hiddenPrice
         ? null
-        : salePrice.sourceShape === "absent"
-          ? jllPriceUsd(baseSalePrice)
-          : jllPriceUsd(salePrice),
+        : retainPublicFacts
+          ? jllPriceUsd(salePrice) ?? jllPriceUsd(baseSalePrice)
+          : salePrice.sourceShape === "absent" ? jllPriceUsd(baseSalePrice) : jllPriceUsd(salePrice),
       salePriceText: hiddenPrice
         ? null
-        : salePrice.sourceShape === "absent"
-          ? jllSalePriceText(baseSalePrice)
-          : jllSalePriceText(salePrice),
+        : retainPublicFacts
+          ? jllSalePriceText(salePrice) ?? jllSalePriceText(baseSalePrice)
+          : salePrice.sourceShape === "absent" ? jllSalePriceText(baseSalePrice) : jllSalePriceText(salePrice),
       leaseRateText: hiddenPrice
         ? null
-        : rentPrice.sourceShape === "absent"
-          ? jllLeasePriceText(baseLeasePrice)
-          : jllLeasePriceText(rentPrice),
+        : retainPublicFacts
+          ? jllLeasePriceText(rentPrice) ?? jllLeasePriceText(baseLeasePrice)
+          : rentPrice.sourceShape === "absent" ? jllLeasePriceText(baseLeasePrice) : jllLeasePriceText(rentPrice),
       sizeText: hiddenPrice
         ? (jllSafePublicText(
             clean(property.surfaceArea) ?? publicBase.sizeText,
@@ -1949,21 +1970,30 @@ export async function enrichJllListing(
         },
       },
     });
+    if (retainPublicFacts) {
+      listing.jllSearchResult = base.jllSearchResult;
+      listing.jllDetail.sourceControlEntries = jllSourcePriceControls(property);
+      for (const key of ["salePrice", "rentPrice"]) {
+        if (Object.hasOwn(property, key)) listing.jllDetail[`${key}Observation`] = jllSafeObservation(property[key]);
+      }
+    }
     return preserveJllSubleaseFact(listing, property.isSubleaseOnly);
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
     // The error path is also a visibility boundary.  Redact recursively so a
     // search-card askingPrice or an old nested jllDetail price cannot survive a
     // malformed detail field; preserve only safe control/provenance fields.
-    const redacted =
-      basePriceWithheld || failurePricing !== null
+    const redacted = retainPublicFacts ? base
+      : basePriceWithheld || failurePricing !== null
         ? jllWithheldPublicProjection(base)
         : jllRedactSensitivePriceFields(base);
     const detail =
       failurePricing === null
         ? redacted.jllDetail
         : { ...(redacted.jllDetail ?? {}), pricing: failurePricing };
-    return prune({ ...redacted, jllDetail: detail, detailError: String(err) });
+    const failed = prune({ ...redacted, jllDetail: detail, detailError: String(err) });
+    if (retainPublicFacts) failed.jllSearchResult = base.jllSearchResult;
+    return failed;
   }
 }
 

@@ -29,15 +29,8 @@ def _compact_sql(value):
 
 
 def _jll_withheld_price_gate():
-    return f"""(
-      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'
-      AND EXISTS (
-        SELECT 1
-        FROM credeals.cre_brokerages b_jll
-        WHERE b_jll.id = t.brokerage_id
-          AND {ingest.source_key_sql("EXCLUDED", "b_jll")} = 'jll'
-      )
-    )"""
+    # JLL legacy controls no longer authorize clearing stored prices.
+    return "false"
 
 
 @pytest.mark.parametrize(
