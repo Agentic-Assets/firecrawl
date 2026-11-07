@@ -32,6 +32,29 @@ class KidderTerminalTests(unittest.TestCase):
                     "code": refresh.KIDDER_TERMINAL_CODE, "http_status": status, "attempt_number": 1})
                 self.assertTrue(refresh.has_terminal_collection_failure("kidder-mathews", checkpoint))
 
+    def test_terminal_403_archives_private_evidence_and_stops_retry(self):
+        manifest = self.manifest()
+        payload = b'{"sources":[{"sourceKey":"kidder-mathews","retainedObservations":[{"coverage":"partial_unknown"}]}]}'
+
+        def collect(argv, *_args, **_kwargs):
+            output = next(arg.removeprefix("--out=") for arg in argv if arg.startswith("--out="))
+            Path(output).write_bytes(payload)
+            return refresh.KIDDER_TERMINAL_EXITS[403]
+
+        with patch.object(refresh, "run_command", side_effect=collect) as command:
+            self.assertIsNone(refresh.collect_source(self.root, manifest, "kidder-mathews",
+                transactions=("sale", "lease"), page_cap=400, concurrency=2, attempts_this_run=3))
+        checkpoint = manifest["sources"]["kidder-mathews"]
+        attempt = checkpoint["attempts"][0]
+        archived = self.root / attempt["rejected_artifact"]
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(archived.read_bytes(), payload)
+        self.assertEqual(archived.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(attempt["rejected_artifact_sha256"], refresh.sha256_file(archived))
+        self.assertEqual(checkpoint["terminal_collection_failure"]["http_status"], 403)
+        self.assertEqual(checkpoint["state"], "collect_failed")
+        self.assertIsNone(checkpoint.get("artifact"))
+
     def test_unknown_cleanup_keeps_global_fence(self):
         manifest = self.manifest()
         with patch.object(refresh, "run_command", return_value=refresh.KIDDER_CLEANUP_UNKNOWN_EXIT) as command:

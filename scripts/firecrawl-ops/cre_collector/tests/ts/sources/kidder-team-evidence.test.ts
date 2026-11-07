@@ -3,6 +3,7 @@ import test from "node:test";
 import { captureKidderTeamPage, parseKidderTeamPage } from "../../../sources/kidder-team-evidence.js";
 import { srcKidderMathews } from "../../../sources/kidder-mathews.js";
 import { RetainedSourceError } from "../../../lib/source-observations.js";
+import { NativeEvidenceTerminalError } from "../../../lib/source-evidence/terminal-error.js";
 
 const html = `<html><body><section id="available-properties"><article class="card-post"><a class="card-post__link" href="/same"><h4>A</h4><p>$1</p></a></article><article class="card-post"><a class="card-post__link" href="/same"><h4>B</h4><p>$2</p></a></article><article class="card-post"><div><h4>C</h4></div></article></section></body></html>`;
 
@@ -52,4 +53,14 @@ test("settled 403 retains page once while both transactions remain failures", as
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
     if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION; else process.env.CRE_REFRESH_GENERATION = oldGeneration;
   }
+});
+
+test("unconfirmed team response cleanup remains terminal", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array(1_000_001)); },
+    cancel() { return Promise.reject(new Error("cleanup not confirmed")); },
+  });
+  await assert.rejects(captureKidderTeamPage(async () => new Response(body, {
+    headers: { "content-type": "text/html" },
+  })), error => error instanceof NativeEvidenceTerminalError);
 });

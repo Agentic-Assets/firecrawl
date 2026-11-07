@@ -29,3 +29,22 @@ for (const mixed of [false,true]) test(`403 retains private evidence and ${mixed
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
 
+
+for (const mixed of [false,true]) test(`no output is rejected before ${mixed ? "mixed" : "single"} collection`,()=>{
+ const dir=mkdtempSync(join(tmpdir(),"kidder-team-no-output-"));
+ try {
+  const preload=join(dir,"hook.mjs"), calls=join(dir,"calls.json"); writeFileSync(preload,hook);
+  const result=spawnSync(process.execPath,["--import","tsx","--import",preload,"collect.ts",`--source=${mixed ? "kidder-mathews,newmark" : "kidder-mathews"}`,"--transaction=both"],{cwd:process.cwd(),encoding:"utf8",timeout:20000,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"team-no-output",KIDDER_CALLS:calls}});
+  assert.equal(result.status,1,result.stderr); assert.match(result.stderr,/require a private --out file/);
+  assert.equal(result.stdout,""); assert.deepEqual(JSON.parse(readFileSync(calls,"utf8")),[]);
+ } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("private output collision preserves existing bytes",()=>{
+ const dir=mkdtempSync(join(tmpdir(),"kidder-team-output-collision-"));
+ try {
+  const preload=join(dir,"hook.mjs"), out=join(dir,"out.json"), calls=join(dir,"calls.json"); writeFileSync(preload,hook); writeFileSync(out,"existing",{mode:0o600});
+  const result=spawnSync(process.execPath,["--import","tsx","--import",preload,"collect.ts","--source=kidder-mathews","--transaction=both",`--out=${out}`],{cwd:process.cwd(),encoding:"utf8",timeout:20000,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"team-collision",KIDDER_CALLS:calls}});
+  assert.notEqual(result.status,0); assert.equal(readFileSync(out,"utf8"),"existing"); assert.equal(result.stdout,"");
+ } finally {rmSync(dir,{recursive:true,force:true});}
+});
