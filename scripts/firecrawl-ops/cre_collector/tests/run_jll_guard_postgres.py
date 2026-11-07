@@ -69,7 +69,7 @@ def main():
             assert sql("SELECT (cap_rate=0.05 AND noi=50000 AND markdown='Price $1,000,000' AND raw_data->>'priorSentinel'='retained')::text FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "true"
         mixed = ingest.to_row({**item, "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},
                                "jllPriceWithheld": True, "salePriceUsd": None,
-                               "description": None, "preserveChildCollections": True}, {},
+                               "description": None}, {},
                               "2026-11-04T00:00:50Z")
         sql(ingest.build_sql([mixed], job, "2026-11-04T00:00:50Z", set()))
         assert sql("SELECT sale_price_usd::text || '|' || description FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1000000|Asking $1,000,000"
@@ -77,14 +77,16 @@ def main():
         assert sql("SELECT title FROM credeals.cre_listing_documents WHERE url='https://example.test/brochure.pdf';") == "Price $1,000,000"
         for reverse in (False, True):
             v2 = ingest.to_row({**item, "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},
-                                "salePriceUsd": 1100000, "preserveChildCollections": True}, {},
+                                "salePriceUsd": 1100000}, {},
                                "2026-11-04T00:00:55Z")
-            legacy = ingest.to_row({**item, "hidePrice": True, "salePriceUsd": None,
-                                    "preserveChildCollections": True}, {}, "2026-11-04T00:00:55Z")
+            legacy = ingest.to_row({**item, "hidePrice": True, "salePriceUsd": None}, {}, "2026-11-04T00:00:55Z")
             combined = ingest.merge_rows(legacy, v2) if reverse else ingest.merge_rows(v2, legacy)
+            assert "preserveChildCollections" not in json.dumps(combined["raw_data"])
             sql(ingest.build_sql([combined], job, "2026-11-04T00:00:55Z", set()))
             assert sql("SELECT sale_price_usd::text FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1100000"
             assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Agent';") == "Price $1,000,000"
+            assert sql("SELECT title FROM credeals.cre_listing_documents WHERE url='https://example.test/brochure.pdf';") == "Price $1,000,000"
+            assert sql("SELECT count(*) FROM credeals.cre_listing_images;") == "12"
         before = sql("SELECT count(*) FROM credeals.cre_listing_images;")
         assert int(before) == 12, before
         jobs_before = sql("SELECT count(*) FROM credeals.cre_scrape_jobs;")

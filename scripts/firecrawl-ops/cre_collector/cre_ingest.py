@@ -4460,10 +4460,11 @@ WHERE p.image_id IS NULL;
       AND NOT jsonb_path_exists(EXCLUDED.raw_data,
         '$.**.jllPublicFactsRetention ? (@.schema == "jll-public-facts-retention/v2")')
     )"""
-    jll_legacy_sparse_stage_sql = f"""(
-      COALESCE(s.raw_data->>'jllPriceWithheld' = 'true', false) AND {staged_source_key_sql} = 'jll'
-      AND NOT jsonb_path_exists(s.raw_data,
-        '$.**.jllPublicFactsRetention ? (@.schema == "jll-public-facts-retention/v2")')
+    # A mixed v2/legacy artifact can still lack children from the legacy
+    # pass. Preserve existing children even when v2 facts are admitted.
+    jll_sparse_child_stage_sql = f"""(
+      {staged_source_key_sql} = 'jll'
+      AND jsonb_path_exists(s.raw_data, '$.**.jllPriceWithheld ? (@ == true)')
     )"""
     jll_contact_title_clear_sql = _jll_hidden_label_sql("c.title")
     jll_contact_license_clear_sql = _jll_hidden_label_sql("c.license")
@@ -6060,7 +6061,7 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
-  AND NOT ({jll_legacy_sparse_stage_sql})
+  AND NOT ({jll_sparse_child_stage_sql})
   AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
@@ -6088,7 +6089,7 @@ JOIN _prior_vals p
   ON p.brokerage_id = s.brokerage_id
  AND p.external_id = s.external_id
 WHERE ({avison_price_sql.get('transition_predicate', 'false')})
-   OR ({jll_legacy_sparse_stage_sql})
+   OR ({jll_sparse_child_stage_sql})
    OR jsonb_path_exists(s.raw_data, '$.**.detailError')
    OR jsonb_path_exists(
         s.raw_data,

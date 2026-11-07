@@ -1207,8 +1207,8 @@ def test_withheld_jll_replay_uses_additive_child_path() -> None:
     compact = " ".join(sql.split())
     refresh = compact[compact.index("CREATE TEMP TABLE _child_refresh"):compact.index("CREATE TEMP TABLE _child_additive")]
     additive = compact[compact.index("CREATE TEMP TABLE _child_additive"):compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")]
-    assert "jllPriceWithheld" in refresh and "jll-public-facts-retention/v2" in refresh
-    assert "jllPriceWithheld" in additive and "jll-public-facts-retention/v2" in additive
+    assert "jllPriceWithheld" in refresh and "== true" in refresh
+    assert "jllPriceWithheld" in additive and "== true" in additive
     clear_scope = compact[compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear"):compact.index("-- Colliers", compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear"))]
     assert "WHERE false" in clear_scope
 
