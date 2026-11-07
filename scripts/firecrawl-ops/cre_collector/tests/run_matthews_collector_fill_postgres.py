@@ -76,10 +76,9 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
             info=prepare_candidate(root,manifest,attempt,git_identity=refresh.git_identity)
             attempt["matthews_partial_candidate"]={"state":"sealed_unadmitted",**info}
             gate_path=root/info["gate_path"]
-            stats=refresh._validate_source_artifact_local(gate_path,"matthews",started,require_strict_freshness=True,
-                expected_generation_id="fixture-generation",expected_generation_started_at=started)
+            promoted=refresh.promote_matthews_partial_candidate(root,manifest,attempt,candidate_only=False)
+            assert promoted is not None and promoted[0]==gate_path
             checkpoint=manifest["sources"]["matthews"]
-            checkpoint["artifact"]={**stats,"path":info["gate_path"],"attempt_started_at":started}
             env_file=work/"synthetic.env"; env_file.write_text("POSTGRES_URL="+synthetic_url+"\n"); os.chmod(env_file,0o600)
             psql=work/"psql-fixture"
             psql.write_text("#!/bin/bash\nargs=(\"$@\")\nn=${#args[@]}\n"
@@ -104,6 +103,10 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                         refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["state"]=="ingested" and checkpoint["ingest"]["rc"]==0
                         proof_read=refresh.matthews_partial_readback(root,manifest,str(env_file))
+                        validation={"queries":{"freshness_generations":[],"inventory_only_index":[]},
+                                    "matthews_partial_readback":proof_read}
+                        assert refresh.verify_validation_readback(root,manifest,validation,persist_manifest=False)=={"ok":True,"failed_sources":[]}
+                        assert checkpoint["readback"]["whole_source_coverage"] is False
                     finally:
                         pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
             finally:
