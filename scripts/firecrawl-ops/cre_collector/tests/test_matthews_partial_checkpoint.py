@@ -85,6 +85,25 @@ class MatthewsCandidateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no verified held outcome"):
             project(data)
 
+    def test_zero_reported_counts_with_verified_http_and_parse_outcomes(self):
+        for schema, status, outcome, expected in (
+                ("matthews-detail-http-observation/v1", 404, "held_http_error", [0, 0, 1]),
+                ("matthews-detail-observation/v1", 200, None, [0, 1, 0])):
+            data = artifact()
+            partial = data["sources"][0]
+            held = partial["retainedObservations"][0]
+            held.update(schema=schema, httpStatus=status)
+            if outcome is None:
+                held.pop("outcome")
+            else:
+                held["outcome"] = outcome
+            partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1",
+                "transaction": "sale", "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+            with self.subTest(schema=schema):
+                _, candidate = project(data)
+                self.assertEqual([x["external_id"] for x in candidate["rows"]], ["example"])
+                self.assertEqual(candidate["receipt_warnings"][0]["verified"], expected)
+
     def test_held_provenance_and_duplicate_are_isolated_from_valid_peer(self):
         data = artifact()
         original = data["sources"][0]["retainedObservations"][0]
