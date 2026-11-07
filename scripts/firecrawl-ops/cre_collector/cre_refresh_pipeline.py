@@ -1534,7 +1534,7 @@ def run_bounded_pipeline(
                                     held_count=len(observed.get("held") or []),
                                     emitted_count=len(observed.get("updated") or []),
                                     unchanged_count=binding.get("candidate_count", 0) - len(observed.get("held") or []) - len(observed.get("updated") or []),
-                                    visibility_limitation="active existing parents only; fills 12 fields; pricing, new children and other fields are not saved; new, ambiguous or stale identities are held",
+                                    visibility_limitation="active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history",
                                 )
                             if binding.get("schema") == "nai-public-post-partial-v1":
                                 state["source_results"][source]["visibility_limitation"] = (

@@ -606,7 +606,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
                 "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
                 "held_count": len(held), "source_held_count": observed["source_held_count"],
                 "candidate_count": observed["candidate_count"],
-                "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and other fields are not saved; new, ambiguous or stale identities are held"}
+                "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
         require(
             type(checkpoint.get("ingest", {}).get("rc")) is int
             and checkpoint["ingest"]["rc"] == 0
@@ -1324,7 +1324,7 @@ def verified_pipeline_summary(
                     "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
                     "held_count": len(held), "source_held_count": binding["source_held_count"],
                     "candidate_count": binding["candidate_count"],
-                    "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and other fields are not saved; new, ambiguous or stale identities are held"}
+                    "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
                 qualified.append((source, len(updated), checkpoint, unit, 0, summary, None))
                 continue
             if franklin_partial_candidate:
