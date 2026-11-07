@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -95,6 +96,18 @@ def main():
                 key = current["external_id"]
                 staged[key] = ingest.merge_rows(staged[key], current) if key in staged else current
             rows = list(staged.values())
+            # A reused external key with a different native ID must not become
+            # a false reappearance or overwrite the prior listing.
+            conflict = next(row for row in rows if row["external_id"] == "other")
+            conflict_id = str(uuid.uuid4())
+            prior_raw = json.dumps({"sourceKey": source, "id": "98", "url": conflict["source_url"]}).replace("'", "''")
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{conflict_id}','{bid}','other','{conflict['source_url']}','active','{prior_raw}'::jsonb);"
+                f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','other','{source}','{conflict['source_url']}',false,1,'{old_time}');")
+            conflict_present = next(row for row in rows if row["external_id"] == "dual")
+            present_id = str(uuid.uuid4())
+            present_raw = json.dumps({"sourceKey": source, "id": "89", "url": conflict_present["source_url"]}).replace("'", "''")
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{present_id}','{bid}','dual','{conflict_present['source_url']}','active','{present_raw}'::jsonb);"
+                f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','dual','{source}','{conflict_present['source_url']}',true,0,'{old_time}');")
             jobs = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows), "errors": 0, "notes": "synthetic", "finished_at": scope["observed_at"]}]
             tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
                                   finished_at=scope["observed_at"],
@@ -104,9 +117,34 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "other:true:0"], state
+            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == ["disappeared:not_observed_in_complete_enumeration:faris-lee:" + scope["generation_id"]], events
+            assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
+            receipt = run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip()
+            receipt = json.loads(receipt)
+            assert receipt == {"source": source, "generation": scope["generation_id"],
+                               "artifact_sha256": scope["artifact_sha256"],
+                               "disappeared": 1, "identity_held": 2,
+                               "held_external_ids": ["dual", "other"]}, receipt
+            from source_fields.buildout_observation_sql import readback
+            def fixture_query(_psql, _url, sql, **_kwargs):
+                result = run(sql)
+                result.stdout = "result\n" + result.stdout
+                return result
+            with patch("cre_ingest.load_db_url", return_value=("fixture", "fixture")), \
+                 patch("cre_ingest.database_target_fingerprint_from_url", return_value={"value": TARGET}), \
+                 patch("cre_ingest.find_psql", return_value="fixture"), \
+                 patch("cre_validate._run_psql_script", side_effect=fixture_query):
+                assert readback(scope, None) == receipt
+                run(f"UPDATE credeals.cre_scrape_jobs SET notes='missing receipt' WHERE id='{job}';")
+                try:
+                    readback(scope, None)
+                    raise AssertionError("missing receipt was accepted")
+                except ValueError:
+                    pass
+                receipt_json = json.dumps(receipt).replace("'", "''")
+                run(f"UPDATE credeals.cre_scrape_jobs SET notes=E'\\nCRE_BUILDOUT_OBSERVATION_V1:' || '{receipt_json}' WHERE id='{job}';")
             state_rows = run("SELECT external_id || ':' || status || ':' || (deleted_at IS NULL)::text FROM credeals.cre_listings ORDER BY external_id;").stdout.splitlines()
             assert state_rows[:3] == ["99:active:true", "changed-preimage:active:true", "closed-visible:active:true"], state_rows
             assert run(f"SELECT count(*) FROM credeals.cre_listing_images WHERE listing_id='{absent['listing_id']}' AND url='https://example.test/prior-image';").stdout.strip() == "1"

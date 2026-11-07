@@ -1,12 +1,8 @@
-"""WIP SQL fragment for source-qualified, observe-only Buildout absence.
-
-Not connected to ingestion. The owner must bind the source scope and actual
-PostgreSQL target, and call this only inside the normal ingest transaction.
-"""
+"""Source-qualified Buildout observation SQL and transaction readback."""
 
 import json
 import re
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from source_fields.buildout import classify_prior_inventory_presence, qualify_prior_inventory_binding
 
@@ -18,6 +14,122 @@ def _literal(value):
 def _uuid(value):
     parsed = UUID(str(value))
     return _literal(str(parsed)) + "::uuid"
+
+
+def identity_guard_sql(scope):
+    """Hold ambiguous existing identities before the ingest replaces them."""
+    source = _literal(scope["source_key"])
+    return f"""
+-- Lock in lifecycle order before reading prior native identity.
+DO $$ BEGIN
+PERFORM si.id FROM credeals.cre_source_index si JOIN _src s USING (brokerage_id, external_id)
+WHERE s.slug={source} ORDER BY si.id FOR UPDATE OF si;
+PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, external_id)
+WHERE s.slug={source} ORDER BY l.id FOR UPDATE OF l;
+END $$;
+CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS
+SELECT l.brokerage_id, l.external_id, claim.value #>> '{{}}' AS native_id
+FROM credeals.cre_listings l
+JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id AND b.slug={source}
+CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS claim(value)
+UNION
+SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
+FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
+WHERE s.slug={source};
+CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
+CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS
+SELECT s.brokerage_id, s.external_id
+FROM _src s
+JOIN credeals.cre_listings l USING (brokerage_id, external_id)
+LEFT JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
+WHERE s.slug = {source} AND NOT COALESCE(
+  si.source_key = {source} AND si.url = l.source_url
+  AND s.source_url = l.source_url
+  AND (si.last_enumerated_at IS NULL OR si.last_enumerated_at <= s.scraped_at)
+  AND jsonb_typeof(l.raw_data) = 'object'
+  AND jsonb_typeof(s.raw_data) = 'object'
+  AND l.raw_data->>'sourceKey' = {source}
+  AND s.raw_data->>'sourceKey' = {source}
+  AND l.raw_data->>'url' = l.source_url
+  AND s.raw_data->>'url' = s.source_url
+  AND l.raw_data->>'id' ~ '^[1-9][0-9]{{0,15}}$'
+  AND s.raw_data->>'id' = l.raw_data->>'id'
+  AND NOT EXISTS (
+    SELECT 1 FROM _buildout_identity_claims other
+    WHERE other.brokerage_id=l.brokerage_id AND other.external_id<>l.external_id
+      AND other.native_id=l.raw_data->>'id')
+  AND CASE WHEN l.raw_data->>'id' ~ '^[1-9][0-9]{{0,15}}$'
+           THEN (l.raw_data->>'id')::numeric <= 9007199254740991
+           ELSE false END,
+  false);
+DELETE FROM _src s USING _buildout_identity_held h
+WHERE s.brokerage_id = h.brokerage_id AND s.external_id = h.external_id;
+SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;
+"""
+
+
+def readback(scope, env_file):
+    """Read the artifact-keyed assessment and its events on the bound target."""
+    from cre_ingest import (_RUN_UUID_NAMESPACE, artifact_run_identity_from_digests,
+                            database_target_fingerprint_from_url, find_psql, load_db_url)
+    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+
+    target = scope["database_target_sha256"]
+    db_url, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(db_url).get("value") != target:
+        raise ValueError("observation readback target changed")
+    key, _ = artifact_run_identity_from_digests([scope["artifact_sha256"]])
+    job = str(uuid5(_RUN_UUID_NAMESPACE, f"{key}:{scope['source_key']}"))
+    source_value = "not_observed_in_complete_enumeration:" + scope["source_key"] + ":" + scope["generation_id"]
+    sql = f"""BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+{PIN_STRING_LITERALS}
+SELECT jsonb_build_object(
+ 'notes', j.notes,
+ 'events', (SELECT count(*) FROM credeals.cre_listing_events e
+            WHERE e.scrape_job_id=j.id AND e.event_type='disappeared'),
+ 'matching', (SELECT count(*) FROM credeals.cre_listing_events e
+              JOIN credeals.cre_listings l ON l.id=e.listing_id AND l.brokerage_id=e.brokerage_id
+              JOIN credeals.cre_source_index si
+                ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id
+              WHERE e.scrape_job_id=j.id AND e.event_type='disappeared'
+                AND e.source_value={_literal(source_value)}
+                AND si.source_key={_literal(scope['source_key'])}
+                AND si.url=e.source_url AND l.source_url=e.source_url
+                AND si.observation_present IS FALSE
+                AND si.presence_generation=e.presence_generation)) AS result
+FROM credeals.cre_scrape_jobs j
+JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
+WHERE j.id={_uuid(job)} AND j.artifact_run_key={_literal(key)}
+  AND b.slug={_literal(scope['source_key'])};
+ROLLBACK;"""
+    result = _run_psql_script(find_psql(), db_url, sql, timeout=45)
+    if result.returncode:
+        raise ValueError("observation readback query failed")
+    rows = parse_tsv(result.stdout)
+    if len(rows) != 1 or set(rows[0]) != {"result"}:
+        raise ValueError("observation job is missing or ambiguous")
+    value = json.loads(rows[0]["result"])
+    marker = "\nCRE_BUILDOUT_OBSERVATION_V1:"
+    notes = value.get("notes")
+    if not isinstance(notes, str) or notes.count(marker) != 1:
+        raise ValueError("observation receipt is missing or ambiguous")
+    receipt = json.loads(notes.split(marker, 1)[1])
+    ids = receipt.get("held_external_ids")
+    if (receipt.get("source") != scope["source_key"]
+            or receipt.get("generation") != scope["generation_id"]
+            or receipt.get("artifact_sha256") != scope["artifact_sha256"]
+            or type(receipt.get("disappeared")) is not int
+            or type(receipt.get("identity_held")) is not int
+            or not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids)
+            or ids != sorted(set(ids)) or len(ids) != receipt["identity_held"]
+            or receipt["disappeared"] < 0
+            or value.get("events") != receipt["disappeared"]
+            or value.get("matching") != receipt["disappeared"]):
+        raise ValueError("observation receipt and event readback differ")
+    current, _ = load_db_url(env_file)
+    if database_target_fingerprint_from_url(current).get("value") != target:
+        raise ValueError("observation readback target changed")
+    return receipt
 
 
 def sql_fragment(scope, prior, job_id, artifact_run_key):
@@ -186,6 +298,8 @@ WITH changed AS (
  JOIN credeals.cre_scrape_jobs j ON j.id={job_sql} AND j.brokerage_id=c.brokerage_id
   AND j.artifact_run_key={job_key_sql}
  WHERE si.brokerage_id=c.brokerage_id AND si.external_id=c.external_id
+   AND NOT EXISTS (SELECT 1 FROM _buildout_identity_held h
+                   WHERE h.brokerage_id=c.brokerage_id AND h.external_id=c.external_id)
    AND si.source_key={source_sql} AND si.url=c.source_url
    AND si.observation_present IS TRUE AND si.presence_generation=c.presence_generation
    AND si.last_enumerated_at=c.last_enumerated_at AND si.last_enumerated_at < {time_sql}
@@ -199,4 +313,16 @@ INSERT INTO credeals.cre_listing_events
 SELECT listing_id, brokerage_id, {job_sql}, 'disappeared', {event_value},
  source_url, presence_generation, {time_sql}
 FROM _buildout_observation_applied ON CONFLICT DO NOTHING;
+-- This source-qualified transaction receipt also records a zero-event result.
+-- Preserve the first receipt on an exact artifact replay.
+UPDATE credeals.cre_scrape_jobs j
+SET notes = COALESCE(j.notes, '') || E'\\nCRE_BUILDOUT_OBSERVATION_V1:' ||
+  jsonb_build_object('source', {source_sql}, 'generation', {generation_sql},
+    'artifact_sha256', {digest_sql},
+    'disappeared', (SELECT count(*) FROM _buildout_observation_applied),
+    'identity_held', (SELECT count(*) FROM _buildout_identity_held),
+    'held_external_ids', COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id)
+                                   FROM _buildout_identity_held), '[]'::jsonb))::text
+WHERE j.id={job_sql} AND j.artifact_run_key={job_key_sql}
+  AND position(E'\\nCRE_BUILDOUT_OBSERVATION_V1:' in COALESCE(j.notes, '')) = 0;
 """

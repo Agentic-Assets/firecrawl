@@ -4241,8 +4241,7 @@ WHERE p.image_id IS NULL;
     ]
     buildout_observation_fragment = ""
     if buildout_observation_context is not None:
-        # WIP builder-only integration: no CLI or checkpoint caller enables it.
-        # The owner, actual target and sealed source proof remain caller duties.
+        # The checkpoint caller binds its owner, target and sealed source proof.
         scope = buildout_observation_context.get("scope")
         prior = buildout_observation_context.get("prior")
         if not isinstance(scope, dict) or (prior is not None and not isinstance(prior, list)):
@@ -4822,6 +4821,10 @@ JOIN _src s USING (brokerage_id, external_id);
 DELETE FROM _src s USING _daum_identity_held h
  WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
 """)
+
+    if any(job["slug"] == "faris-lee" for job in job_meta):
+        from source_fields.buildout_observation_sql import identity_guard_sql
+        w(identity_guard_sql({"source_key": "faris-lee"}))
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.
@@ -7727,6 +7730,8 @@ def main():
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-code-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-buildout-observation", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-buildout-observation-sha256", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-transactions", choices=("sale", "lease", "sale,lease"), default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
@@ -8401,6 +8406,37 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Pyramid guard outcome: {exc}")
+    buildout_observation_context = None
+    if args.checkpoint_buildout_observation is not None:
+        from pathlib import Path
+        from cre_checkpoint_refresh import git_identity
+        from source_fields.buildout import prepare_inventory_observation_scope
+        try:
+            claim_path = Path(args.checkpoint_buildout_observation)
+            if (len(args.inputs) != 1 or args.dry_run or args.mark_missing or activate_status
+                    or not args.expected_db_target_sha256 or claim_path.is_symlink()):
+                raise ValueError("invalid observation invocation")
+            raw_claim = claim_path.read_bytes()
+            if hashlib.sha256(raw_claim).hexdigest() != args.checkpoint_buildout_observation_sha256:
+                raise ValueError("observation envelope changed")
+            claim = json.loads(raw_claim)
+            if claim.get("source") != "faris-lee":
+                raise ValueError("unsupported observation source")
+            db_url, _ = load_db_url(args.env_file)
+            assert_expected_database_target(db_url, args.expected_db_target_sha256)
+            sha, dirty = git_identity()
+            artifact_bytes = Path(args.inputs[0]).read_bytes()
+            if artifact_bytes != image_transition_input:
+                raise ValueError("observation artifact changed during staging")
+            scope = prepare_inventory_observation_scope(
+                artifact_bytes, claim["manifest"], claim["source"],
+                current_code_sha=sha, current_git_dirty=dirty,
+                current_target_sha256=args.expected_db_target_sha256)
+            buildout_observation_context = {"scope": scope, "prior": None}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            sys.exit(f"refusing Buildout observation: {exc}")
+    elif args.checkpoint_buildout_observation_sha256 is not None:
+        sys.exit("refusing observation hash without envelope")
     if lyon_partial_claims is not None:
         from cre_lyon_partial import build_partial_sql
 
@@ -8445,6 +8481,7 @@ def main():
             newmark_page_attempt=args.newmark_page_attempt,
             newmark_page_claim=newmark_page_claim,
             newmark_page_requires_witness=bool(page_rows),
+            buildout_observation_context=buildout_observation_context,
         )
 
     print(
