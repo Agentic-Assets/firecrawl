@@ -341,9 +341,9 @@ pacing and the run deadline only after response cancellation and owned dispatche
 destruction are acknowledged. Unknown cleanup stops dispatch and retains the
 checkpoint recovery fence. The collector retains the raw
 status, requested URL, transaction and observation clocks, not an inferred
-destination or disappearance. The source still fails with private retained
-observations, so these peers do not become an admitted partial ingest. Strict
-collector invocations also append these outcomes to the shared private attempt
+destination or disappearance. The collector reports a partial source failure
+and retains private observations; the draft checkpoint path below may admit
+individually qualified existing-parent peers. Strict collector invocations also append these outcomes to the shared private attempt
 spool as each completes; direct invocations without a checkpoint use a private
 temporary spool and report its path. Spool initialization, write or sealing
 failures are reported without stopping eligible source collection; no missing
@@ -370,12 +370,15 @@ the already completed parses after the shared mapper settles active workers.
 Their accepted mapper, source counts, redirect/404 exclusions, status, tenure
 and lifecycle gates remain authoritative for canonical output. Private captures
 require no native ID or address and do not turn those failures into acceptance.
-A draft checkpoint path may seal an attempt-bound candidate from a settled
-rejected artifact while retaining failed source status. Its existing-parent fill
-transaction and exact job/parent/child readback remain disconnected from the
-checkpoint writer and recovery; no Matthews peer ingestion is enabled by this
-candidate. The private spool is not a durable history store. These integrations
-require separate production acceptance and are not deployed. Targeted enrichment paths are unchanged.
+A draft checkpoint path can promote a settled, attempt-bound partial candidate
+through existing source and aggregate gates into a shared-owner existing-parent
+null-field fill. It preserves populated values, status, raw data and children;
+new, stale and conflicting identities remain held. The exact partial job and
+parent/child readback never establishes full coverage. Transaction-dependent
+pricing, new children and other fields are not yet saved by this path; the
+private spool is not a durable history store. Interrupted or unsettled writers
+retain the existing recovery fence. This draft requires separate review and
+production acceptance and is not deployed. Targeted enrichment paths are unchanged.
 
 On a strict identity failure, the intended `RetainedSourceError` preserves the
 original failure while carrying held context and otherwise accepted conflicting

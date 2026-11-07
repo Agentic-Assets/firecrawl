@@ -6062,9 +6062,12 @@ def subset_ingest_arguments(run_dir, manifest, source):
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
             else "--matthews-partial-claims" if matthews_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
-    return [flag, str(path),
-            "--checkpoint-ingest-attempt", attempt,
-            "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
+    result = [flag, str(path),
+              "--checkpoint-ingest-attempt", attempt,
+              "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
+    if matthews_partial_candidate(manifest, source):
+        result.extend(["--matthews-partial-claims-sha256", claims["sha256"]])
+    return result
 
 
 def _run_nai_owned_command(argv, log_path, manifest):

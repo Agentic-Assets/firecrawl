@@ -201,7 +201,7 @@ class MatthewsCandidateTest(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             result=subprocess.run([sys.executable,str(root/"cre_ingest.py"),"--in",str(Path(directory)/"missing.json"),
-                "--matthews-partial-claims",str(Path(directory)/"missing-claims.json"),"--checkpoint-ingest-attempt","d"*32,
+                "--matthews-partial-claims",str(Path(directory)/"missing-claims.json"),"--matthews-partial-claims-sha256","c"*64,"--checkpoint-ingest-attempt","d"*32,
                 "--expected-db-target-sha256","b"*64,"--require-strict-freshness","--dry-run"],
                 cwd=root,env={"PATH":os.environ["PATH"]},text=True,capture_output=True,check=False,timeout=30)
             self.assertNotEqual(result.returncode,0)

@@ -1,7 +1,7 @@
-"""Experimental existing-parent-only partial fill; caller owns artifact custody.
+"""Guarded existing-parent-only partial fill; checkpoint owns artifact custody.
 
-This is not wired to the checkpoint runner. Private source observations remain
-in the existing spool, which is not crash-durable or a historical archive.
+The private source spool is not crash-durable or a historical archive. The
+partial path has separate review and production acceptance requirements.
 """
 
 import hashlib

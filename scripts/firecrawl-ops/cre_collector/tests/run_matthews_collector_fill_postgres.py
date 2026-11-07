@@ -1,6 +1,5 @@
-"""Exercise the disconnected fill on a synthetic collector artifact, never a live DB."""
+"""Exercise the owned checkpoint with synthetic data and a disposable DB."""
 import hashlib
-import json
 import os
 import re
 import subprocess
@@ -99,7 +98,6 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                         assert checkpoint["gate"]["verdict"]=="ok_additive_verified_subset"
                         assert refresh.dry_run_source(root,manifest,"matthews",gate_path)
                         refresh.run_aggregate_gate(root,manifest,str(env_file),sources=["matthews"])
-                        attempt_id=checkpoint["subset_ingest_attempt_id"]
                         refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["state"]=="ingested" and checkpoint["ingest"]["rc"]==0
                         proof_read=refresh.matthews_partial_readback(root,manifest,str(env_file))

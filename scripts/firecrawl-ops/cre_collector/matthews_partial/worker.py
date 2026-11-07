@@ -1,5 +1,6 @@
 """Guarded internal Matthews checkpoint writer; not an operator entrypoint."""
 import copy
+import hashlib
 import json
 import os
 import re
@@ -65,11 +66,16 @@ def run_ingest(args):
                  "checkpoint_collector_git_sha", "checkpoint_pyramid_code_sha", "checkpoint_jll_code_sha")
     if (len(args.inputs) != 1 or args.mark_missing or _status_activation_enabled(args.activate_status)
             or not args.require_strict_freshness or not args.expected_db_target_sha256
-            or not args.checkpoint_ingest_attempt or any(getattr(args, name, None) for name in competing)):
+            or not args.checkpoint_ingest_attempt or not isinstance(args.matthews_partial_claims_sha256, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", args.matthews_partial_claims_sha256)
+            or any(getattr(args, name, None) for name in competing)):
         raise ValueError("unbound Matthews partial ingest")
     verify_inherited_lock(require_direct_parent=True)
     claim_path = Path(args.matthews_partial_claims)
-    envelope = json.loads(_read_private(claim_path))
+    claim_bytes = _read_private(claim_path)
+    if hashlib.sha256(claim_bytes).hexdigest() != args.matthews_partial_claims_sha256:
+        raise ValueError("Matthews partial claims hash differs")
+    envelope = json.loads(claim_bytes)
     code, dirty = git_identity()
     bound = context(Path(args.inputs[0]), envelope, code_sha=code, dirty=dirty,
                     target_sha256=args.expected_db_target_sha256, attempt_id=args.checkpoint_ingest_attempt)
@@ -95,7 +101,7 @@ def run_ingest(args):
         code, dirty = git_identity()
         current = context(Path(args.inputs[0]), envelope, code_sha=code, dirty=dirty,
                           target_sha256=args.expected_db_target_sha256, attempt_id=args.checkpoint_ingest_attempt)
-        if current != bound:
+        if current != bound or _read_private(claim_path) != claim_bytes:
             raise ValueError("Matthews partial inputs changed before ingest")
         db_url, _ = load_db_url(args.env_file)
         assert_expected_database_target(db_url, args.expected_db_target_sha256)
