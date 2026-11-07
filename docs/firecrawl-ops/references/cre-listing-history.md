@@ -34,7 +34,10 @@ and suspicious strings, retaining the other fields and recording hashed paths
 and reasons in the snapshot. A credential-bearing external identity is refused
 because it is also an indexed metadata value. Known signed URL parameters,
 userinfo, unknown percent-encoded URL queries, embedded credential-labelled
-JSON and escaped Unicode that cannot be safely inspected are withheld. The
+JSON and escaped Unicode that cannot be safely inspected are withheld.
+Percent-encoded ASCII object labels are decoded for inspection while benign
+original labels are retained. Malformed/non-ASCII encoded labels and HTML
+entity-bearing labels are withheld conservatively and may be false positives. The
 receipt reports affected captures without logging their values. This SQL
 projection cannot invoke the existing Python source-evidence admission workflow
 inside the transaction. Selected synthetic cases are compared with that

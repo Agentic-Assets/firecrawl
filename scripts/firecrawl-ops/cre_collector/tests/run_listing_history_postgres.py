@@ -260,6 +260,34 @@ SELECT id,'https://example.test/retire.jpg','Retained image' FROM credeals.cre_l
         key_replay = apply({**next_item, "name": "key bundle", "sourceEvidence": key_bundle}, "test-sensitive-key-bundle")
         assert "svn:observation:duplicate_with_omissions" in key_replay
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-key-bundle' AND phase='observation';") == "1"
+        from source_fields.public_facts import _credential_label_encoded
+        for label in ("access%5Ftoken", "access%255Ftoken", "access&#95;token"):
+            assert _credential_label_encoded(label)
+        assert not _credential_label_encoded("safe%5Fname")
+        encoded_bundle = {"access%5Ftoken": "synthetic-encoded-once",
+                          "access%255Ftoken": "synthetic-encoded-twice",
+                          "awsAccessKeyId": "synthetic-encoded-aws",
+                          "access&#95;token": "synthetic-encoded-html-label",
+                          "htmlEncodedJson": '{"access&amp;#95;token":"synthetic-encoded-html-json"}',
+                          "htmlUrl": "https://example.test/a?listing=42&amp;session=synthetic-encoded-html-url",
+                          "nested": {"%61ccess%255Ftoken": "synthetic-encoded-nested", "safe": "retained nested"},
+                          "encodedJson": '{"access%255Ftoken":"synthetic-encoded-json","safe":"inside"}',
+                          "safe%5Fname": "encoded benign field", "safe": "retained peer"}
+        encoded_receipt = apply({**next_item, "name": "encoded bundle", "sourceEvidence": encoded_bundle}, "test-encoded-bundle")
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "encoded-bundle.log"
+            log.write_text(encoded_receipt + "\n")
+            parsed = read_receipt(log, "test-encoded-bundle")
+            assert parsed["state"] == "reported_omissions"
+            assert parsed["outcomes"]["svn:observation:captured_with_omissions"] == 1
+        assert sql("SELECT payload->'raw_data'->'sourceEvidence'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-encoded-bundle' AND phase='observation';") == "retained peer"
+        assert sql("SELECT payload->'raw_data'->'sourceEvidence'->>'safe%5Fname' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-encoded-bundle' AND phase='observation';") == "encoded benign field"
+        assert sql("SELECT payload->'raw_data'->'sourceEvidence'->'nested'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-encoded-bundle' AND phase='observation';") == "retained nested"
+        assert int(sql("SELECT jsonb_array_length(omissions) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-encoded-bundle' AND phase='observation';")) >= 8
+        assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE payload::text LIKE '%synthetic-encoded-%';") == "0"
+        encoded_replay = apply({**next_item, "name": "encoded bundle", "sourceEvidence": encoded_bundle}, "test-encoded-bundle")
+        assert "svn:observation:duplicate_with_omissions" in encoded_replay
+        assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-encoded-bundle' AND phase='observation';") == "1"
         identity_item = {**next_item, "id": "https://example.test/a?token=synthetic-secret", "name": "valid identity peer"}
         identity_result = apply(identity_item, "test-sensitive-identity")
         assert "credential_identity_refused" in identity_result

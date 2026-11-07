@@ -11,6 +11,29 @@ SETUP = r"""
 CREATE TEMP TABLE _listing_history_outcome (slug text, artifact_run_key text, phase text, outcome text) ON COMMIT PRESERVE ROWS;
 CREATE TEMP TABLE _listing_history_redactions
   (capture_id uuid, path_sha256 text, reason text) ON COMMIT DROP;
+-- Decode nested ASCII percent encodings for credential-label inspection. A
+-- malformed or non-ASCII encoded label is ambiguous and is withheld instead.
+CREATE OR REPLACE FUNCTION pg_temp.normalize_history_label(p_input text)
+RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  v_value text := p_input;
+  v_match text[];
+  v_token text;
+  v_position integer;
+  v_byte integer;
+BEGIN
+  LOOP
+    v_match := regexp_match(v_value, '%([0-9a-fA-F]{2})');
+    EXIT WHEN v_match IS NULL;
+    v_token := '%' || v_match[1];
+    v_position := position(v_token in v_value);
+    v_byte := get_byte(decode(v_match[1], 'hex'), 0);
+    IF v_byte < 32 OR v_byte >= 127 THEN RETURN NULL; END IF;
+    v_value := substr(v_value, 1, v_position - 1) || chr(v_byte) || substr(v_value, v_position + 3);
+  END LOOP;
+  IF position('%' in v_value) > 0 THEN RETURN NULL; END IF;
+  RETURN v_value;
+END $$;
 CREATE OR REPLACE FUNCTION pg_temp.sanitize_listing_history(
   p_value jsonb, p_path text, p_capture uuid
 ) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -18,6 +41,7 @@ DECLARE
   v_kind text := jsonb_typeof(p_value);
   v_key text;
   v_normalized text;
+  v_decoded text;
   v_child jsonb;
   v_result jsonb;
   v_output_key text;
@@ -29,12 +53,15 @@ BEGIN
   IF v_kind = 'object' THEN
     v_result := '{}'::jsonb;
     FOR v_key, v_child IN SELECT key, value FROM jsonb_each(p_value) LOOP
-      v_normalized := lower(regexp_replace(v_key, '([a-z0-9])([A-Z])', '\1_\2', 'g'));
-      v_sensitive := v_normalized ~ '(^|[^a-z0-9])(authorizations?|passwords?|passwds?|secrets?|credentials?|cookies?|api[ _-]?keys?|access[ _-]?tokens?|refresh[ _-]?tokens?|security[ _-]?tokens?|signatures?|private[ _-]?keys?|session[ _-]?(tokens?|ids?|keys?))($|[^a-z0-9])'
+      v_decoded := pg_temp.normalize_history_label(v_key);
+      v_normalized := lower(regexp_replace(v_decoded, '([a-z0-9])([A-Z])', '\1_\2', 'g'));
+      v_sensitive := v_decoded IS NULL
+        OR v_decoded ~* '&(#(x[0-9a-f]+|[0-9]+)|[a-z][a-z0-9]+);'
+        OR v_normalized ~ '(^|[^a-z0-9])(authorizations?|passwords?|passwds?|secrets?|credentials?|cookies?|api[ _-]?keys?|access[ _-]?tokens?|refresh[ _-]?tokens?|security[ _-]?tokens?|signatures?|access[ _-]?keys?([ _-]?ids?)?|google[ _-]?access[ _-]?ids?|private[ _-]?keys?|session[ _-]?(tokens?|ids?|keys?))($|[^a-z0-9])'
         OR v_normalized ~ '^(tokens?|sessions?)([ _-]?(value|id|key))?$'
         OR v_normalized IN ('auth','bearer','sig','key')
-        OR v_key ~* 'https?://[^/[:space:]"<>]+@'
-        OR v_key ~* '[?&#](token|access_token|api_key|apikey|authorization|auth|signature|sig|password|secret|session|access_key|access_key_id|awsaccesskeyid|googleaccessid|x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|x-goog-security-token|client_secret|key)=';
+        OR v_decoded ~* 'https?://[^/[:space:]"<>]+@'
+        OR v_decoded ~* '[?&#](token|access_token|api_key|apikey|authorization|auth|signature|sig|password|secret|session|access_key|access_key_id|awsaccesskeyid|googleaccessid|x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|x-goog-security-token|client_secret|key)=';
       IF v_sensitive THEN
         v_output_key := '__withheld_key_sha256_' || encode(sha256(convert_to(v_key,'UTF8')),'hex');
         IF p_value ? v_output_key OR v_result ? v_output_key THEN RAISE EXCEPTION 'history redaction key collision'; END IF;
@@ -56,8 +83,13 @@ BEGIN
   ELSIF v_kind = 'string' THEN
     v_text := p_value #>> '{}';
     v_scan := replace(v_text, chr(92), '');
-    IF position(chr(92) || 'u' in lower(v_text)) > 0
-       OR v_scan ~* '"[^"]*(password|passwd|secret|authorization|credential|cookie|private[_-]?key|session[_-]?(id|key|token)|access[_-]?token|refresh[_-]?token|security[_-]?token|api[_-]?key|signature)[^"]*"[[:space:]]*:'
+    IF v_scan ~* '"[^"]*%[0-9a-f]{2}[^"]*"[[:space:]]*:' THEN
+      v_scan := pg_temp.normalize_history_label(v_scan);
+    END IF;
+    IF v_scan IS NULL OR position(chr(92) || 'u' in lower(v_text)) > 0
+       OR v_scan ~* '"[^"]*&(#(x[0-9a-f]+|[0-9]+)|[a-z][a-z0-9]+);[^"]*"[[:space:]]*:'
+       OR v_scan ~* 'https?://[^[:space:]"<>]*&((amp|#38|#x26);)'
+       OR v_scan ~* '"[^"]*(password|passwd|secret|authorization|credential|cookie|private[_-]?key|session[_-]?(id|key|token)|access[_-]?token|refresh[_-]?token|security[_-]?token|api[_-]?key|access[_-]?key|awsaccesskeyid|googleaccessid|signature)[^"]*"[[:space:]]*:'
        OR v_scan ~* '"(token|session|auth|sig|key)"[[:space:]]*:'
        OR v_scan ~* 'https?://[^/[:space:]"<>]+@'
        OR v_scan ~* 'https?://[^[:space:]"<>]*[?#][^[:space:]"<>]*%'
