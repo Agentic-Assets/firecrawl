@@ -69,7 +69,10 @@ test("collector preserves failed CBRE error, sidecar and healthy sibling", async
     const preload = join(dir, "preload.mjs");
     const stubCbre = `export async function srcCbre(tx,max,monitor,onPage) {
       onPage?.(1,1,[{"Common.PrimaryKey":tx+"-1","Common.Aspects":null,nullable:null}]);
-      if(tx==="lease" && process.env.CBRE_TEST_SUCCESS!=="1") throw new Error("synthetic lease failure");
+      if(tx==="lease" && process.env.CBRE_TEST_SUCCESS!=="1") {
+        onPage?.(2,1,[{DocumentCount:2,Documents:[{"Common.PrimaryKey":"peer"},null]}],"document_validation",[1]);
+        throw new Error("synthetic lease failure");
+      }
       return {company:"CBRE",sourceUrl:"https://example.test",method:"fixture",totalAvailable:1,
         listings:[{id:"sale-ok",url:"https://example.test/sale"}]}; }`;
     const stubOther = `export async function srcNewmark() {
@@ -98,7 +101,7 @@ test("collector preserves failed CBRE error, sidecar and healthy sibling", async
     const failure = artifact.sources.find((row: any) => row.sourceKey === "cbre" && row.error);
     assert.match(failure.error, /synthetic lease failure/);
     assert.equal(failure.partialCapture.state, "sealed");
-    assert.equal(failure.partialCapture.observationRecords, 2);
+    assert.equal(failure.partialCapture.observationRecords, 3);
     assert.ok(artifact.listings.some((row: any) => row.id === "other-ok"));
     assert.ok(artifact.listings.some((row: any) => row.id === "sale-ok"));
     assert.equal(statSync(out).mode & 0o777, 0o600);
@@ -106,6 +109,11 @@ test("collector preserves failed CBRE error, sidecar and healthy sibling", async
     assert.equal(pages[1].documents[0]["Common.Aspects"], null);
     assert.equal(pages[1].transaction, "sale");
     assert.equal(pages[2].transaction, "lease");
+    assert.equal(pages[3].kind, "cbre_rejected_page");
+    assert.deepEqual(pages[3].rejectedDocuments, [1]);
+    assert.equal(pages[3].rejectedDocumentsIndexBasis, "documents_flat_1");
+    assert.equal(pages[3].qualification, "unverified_page");
+    assert.equal(pages[3].documents[0].Documents[0]["Common.PrimaryKey"], "peer");
     const verify = spawnSync("python3", ["-c",
       `import json,sys; from pathlib import Path; from cre_partial_page_custody import settle; a={"number":1,"cbre_partial":{"state":"pending","path":"cbre-partial/attempt-1.jsonl"}}; settle(Path(sys.argv[1]),a,Path(sys.argv[2])); print(json.dumps(a))`,
       run, out], { cwd: process.cwd(), encoding: "utf8", timeout: 10000 });
@@ -188,4 +196,72 @@ test("a failed first sync only seals prefix after a successful retry", () => {
     assert.equal(spool.finish().state, "sealed_partial");
     assert.equal(calls, 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("retains rejected page response and distinguishes document from envelope failure", async () => {
+  for (const [response, expected] of [
+    [{ DocumentCount: 2, Documents: [{ "Common.PrimaryKey": "valid" }, null] }, "document_validation"],
+    [{ DocumentCount: 3, Page: 2, Documents: [{ "Common.PrimaryKey": "valid" }, null] }, "page_envelope"],
+  ] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "cbre-rejected-page-"));
+    try {
+      const path = join(dir, "capture.jsonl");
+      const spool = new PartialPageSpool(path, "run-1", 1);
+      await assert.rejects(() => fetchCbreSnapshot(async () => response, {
+        pageSize: 2, maxPasses: 2, maxPages: 2, concurrency: 1,
+        onPage: (page, pass, documents, rejection, rejectedDocuments) => spool.record({
+          transaction: "sale", page, pass, observedAt: "2026-01-01T00:00:00.000Z", documents,
+          ...(rejection ? { kind: "cbre_rejected_page" as const, rejection, rejectedDocuments } : {}),
+        }),
+      }));
+      assert.equal(spool.finish().state, "sealed");
+      const record = JSON.parse(readFileSync(path, "utf8").trim().split("\n")[1]);
+      assert.equal(record.kind, "cbre_rejected_page");
+      assert.equal(record.rejection, expected);
+      assert.deepEqual(record.rejectedDocuments, expected === "document_validation" ? [1] : []);
+      assert.deepEqual(record.documents, [response]);
+      assert.equal(record.documents[0].Documents[0]["Common.PrimaryKey"], "valid");
+      assert.equal(record.documents[0].Documents[1], null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+
+test("duplicate identity evidence identifies every conflicting document", async () => {
+  const captured: any[] = [];
+  const response = { DocumentCount: 3, Documents: [
+    { "Common.PrimaryKey": "same" }, { "Common.PrimaryKey": "valid" },
+    { "Common.PrimaryKey": "same" },
+  ] };
+  await assert.rejects(() => fetchCbreSnapshot(async () => response, {
+    pageSize: 3, maxPasses: 2, maxPages: 2, concurrency: 1,
+    onPage: (_page, _pass, documents, rejection, rejectedDocuments) => {
+      captured.push({ documents, rejection, rejectedDocuments });
+    },
+  }), /duplicate Common.PrimaryKey/);
+  assert.equal(captured[0].rejection, "document_validation");
+  assert.deepEqual(captured[0].rejectedDocuments, [0, 2]);
+  assert.deepEqual(captured[0].documents, [response]);
+});
+
+test("retention callback failure does not replace page validation error", async () => {
+  await assert.rejects(() => fetchCbreSnapshot(async () => ({ DocumentCount: 1, Documents: [null] }), {
+    pageSize: 1, maxPasses: 2, maxPages: 2, concurrency: 1,
+    onPage: () => { throw new Error("capture failed"); },
+  }), /contains a malformed document/);
+});
+
+
+test("rejected document indexes use the one-level flattened documents array", async () => {
+  const captured: any[] = [];
+  const response = { DocumentCount: 2, Documents: [[{ "Common.PrimaryKey": "valid" }, null]] };
+  await assert.rejects(() => fetchCbreSnapshot(async () => response, {
+    pageSize: 2, maxPasses: 2, maxPages: 2, concurrency: 1,
+    onPage: (_page, _pass, documents, rejection, rejectedDocuments) => {
+      captured.push({ documents, rejection, rejectedDocuments });
+    },
+  }), /contains a malformed document/);
+  assert.deepEqual(captured[0].rejectedDocuments, [1]);
+  assert.deepEqual(captured[0].documents, [response]);
 });

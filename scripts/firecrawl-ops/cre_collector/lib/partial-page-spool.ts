@@ -18,8 +18,12 @@ export type PartialPageObservation = {
   documents: unknown[];
   start?: number;
   pageSize?: number;
-  kind?: "unqualified_response_pair" | "recovery_hole" | "validated_detail" | "detail_outcomes" | "lyon_search_response";
+  kind?: "cbre_rejected_page" | "unqualified_response_pair" | "recovery_hole" | "validated_detail" | "detail_outcomes" | "lyon_search_response";
   reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "count_drift" | "requested_limit" | "page_cap";
+  rejection?: "document_validation" | "page_envelope";
+  rejectedDocuments?: number[];
+  rejectedDocumentsIndexBasis?: "documents_flat_1";
+  qualification?: "unverified_page";
   pairAttempt?: number;
 };
 
