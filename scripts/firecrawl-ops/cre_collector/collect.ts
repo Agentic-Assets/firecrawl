@@ -42,7 +42,7 @@ import { srcKidderMathews } from "./sources/kidder-mathews.js";
 import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcLyonSearchPartial } from "./sources/lyon-search-observation.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
-import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
+import { MatthewsPartialOutcomeError, srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { MatthewsRedirectCleanupUnknown, MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT } from "./sources/matthews-transport.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
@@ -382,6 +382,8 @@ async function main() {
           supported: true,
           error: String(err).slice(0, 300),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
+          ...(key === "matthews" && err instanceof RetainedSourceError &&
+            err.cause instanceof MatthewsPartialOutcomeError ? { matthewsPartialOutcome: err.cause.outcome } : {}),
         });
       }
     }

@@ -13,7 +13,7 @@ $sourceText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuarded
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($sourceText,[ref]$tokens,[ref]$errors)
 Assert-Cre ($errors.Count -eq 0) 'Shipped launcher must parse.'
-foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Test-CreJllSubsetSummary','Test-CreSourceSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
+foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Test-CreJllSubsetSummary','Test-CreSourceSubsetSummary','Test-CreMatthewsSubsetSummary','Get-CreMatthewsWarningLines','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
     $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true))
     Assert-Cre ($definition.Count -eq 1) "Exactly one shipped $name function is required."
     if ($name -eq 'Set-CreNotification') {
@@ -439,6 +439,68 @@ $unverifiableText = Get-CreNotificationText (New-Record) 'Terminal' 0 $unverifia
 Assert-Cre ($null -ne $unverifiableRead -and $unverifiableText.Contains('Readback could not be verified') -and $unverifiableText.Contains('100 listings verified by database readback') -and $unverifiableText.Contains('*Failed:* 0 | *Unverifiable:* 1')) 'Unverifiable JLL preserves peer counts without claiming failed execution.'
 $mixedJll['unverifiable_source_keys'] = @('newmark'); Save-Summary $mixedJll
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'jll-unverifiable-forged')) 'Unverifiable source must be the failed JLL source.'
+$Source = 'matthews'; $selectedSourceArgument = $Source; $Pipeline = $false
+$AdmitDaumVerifiedSubset = $false; $selectedAdmissionKeys = @()
+$matthews = New-Summary
+$matthews.Remove('transaction_breakdown')
+$matthews.source = 'matthews'; $matthews.verified_listings = 1
+$matthews.measurement = 'existing_parents_fields_filled'
+$matthews['qualification'] = 'qualified_partial_subset'; $matthews['partial'] = $true
+$matthews['whole_source_coverage'] = $false; $matthews['candidate_count'] = 3
+$matthews['emitted_count'] = 1; $matthews['held_count'] = 1; $matthews['source_held_count'] = 2
+$matthews['receipt_warnings'] = @([ordered]@{transaction='sale';reason='held_receipt_counts_unverified';reported=@(0,0,0);verified=@(1,0,0)})
+Save-Summary $matthews
+$matthewsRead = Get-CreVerifiedSummary (New-Record) 'matthews-serial'
+$matthewsText = Get-CreNotificationText (New-Record) 'Terminal' 0 $matthewsRead
+Assert-Cre ($null -ne $matthewsRead -and $matthewsText.Contains('1 existing parents') -and
+    $matthewsText.Contains('reported 0/0/0; verified 1/0/0') -and
+    $matthewsText.Contains('12 fields on active existing parents') -and $matthewsText.Contains('New IDs, pricing, new children') -and
+    $matthewsText.Contains('whole brokerage incomplete')) 'Serial Matthews renders verified fields, limitations and receipt discrepancy.'
+$invalidMatthews = $matthews | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$invalidMatthews.receipt_warnings[0].verified = @(0,0,0)
+Save-Summary $invalidMatthews
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'matthews-invalid-warning')) 'Invalid Matthews warning cannot be presented as verified.'
+$matthews.verified_listings = 0; $matthews.emitted_count = 0; $matthews.receipt_warnings = @()
+Save-Summary $matthews
+$zeroMatthews = Get-CreVerifiedSummary (New-Record) 'matthews-zero'
+Assert-Cre ($null -ne $zeroMatthews -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $zeroMatthews).Contains('0 existing parents')) 'A verified partial with no changed parents remains honest and visible.'
+$matthews.verified_listings = 1; $matthews.emitted_count = 1
+$matthews.receipt_warnings = @([ordered]@{transaction='sale';reason='held_receipt_counts_unverified';reported=@(0,0,0);verified=@(1,0,0)})
+$Pipeline = $true; $selectedSourceKeys = @('matthews','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
+$matthews['source_key'] = 'matthews'
+$mixedMatthews = New-Summary
+$mixedMatthews['selected_source_keys'] = $selectedSourceKeys
+$mixedMatthews['per_source_summaries'] = @($matthews, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedMatthews['qualified_subset_source_keys'] = @('matthews')
+$mixedMatthews['failed_source_keys'] = @(); $mixedMatthews['pending_source_keys'] = @(); $mixedMatthews['complete'] = $false
+Save-Summary $mixedMatthews
+$matthewsMixedRead = Get-CreVerifiedSummary (New-Record) 'matthews-mixed'
+$matthewsMixedText = Get-CreNotificationText (New-Record) 'Terminal' 0 $matthewsMixedRead
+Assert-Cre ($null -ne $matthewsMixedRead -and $matthewsMixedText.Contains('*Matthews:* 1 existing parents') -and
+    $matthewsMixedText.Contains('reported 0/0/0; verified 1/0/0') -and $matthewsMixedText.Contains('*Newmark:* 100 listings verified') -and
+    $matthewsMixedText.Contains('Whole brokerage incomplete')) "Pipeline Matthews warning and healthy sibling remain separately visible. Reader null: $($null -eq $matthewsMixedRead); text: $matthewsMixedText"
+
+$mixedMatthews['per_source_summaries'] = @([ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedMatthews['qualified_subset_source_keys'] = @()
+$mixedMatthews['failed_source_keys'] = @('matthews')
+$mixedMatthews['unverifiable_source_keys'] = @('matthews')
+Save-Summary $mixedMatthews
+$matthewsUnverified = Get-CreVerifiedSummary (New-Record) 'matthews-unverifiable'
+$matthewsUnverifiedText = Get-CreNotificationText (New-Record) 'Terminal' 1 $matthewsUnverified
+Assert-Cre ($null -ne $matthewsUnverified -and $matthewsUnverifiedText.Contains('*Newmark:* 100 listings verified by database readback') -and
+    $matthewsUnverifiedText.Contains('*Matthews:* Readback could not be verified') -and
+    $matthewsUnverifiedText.Contains('*Failed:* 0 | *Unverifiable:* 1') -and
+    $matthewsUnverifiedText.Contains('Partial result')) 'Unverifiable Matthews preserves the healthy peer and reports incomplete status.'
+$mixedMatthews['unverifiable_source_keys'] = @()
+Save-Summary $mixedMatthews
+$matthewsFailed = Get-CreVerifiedSummary (New-Record) 'matthews-failed'
+$matthewsFailedText = Get-CreNotificationText (New-Record) 'Terminal' 1 $matthewsFailed
+Assert-Cre ($null -ne $matthewsFailed -and $matthewsFailedText.Contains('*Newmark:* 100 listings verified by database readback') -and
+    $matthewsFailedText.Contains('*Matthews:* Failed; verified counts unavailable.') -and
+    $matthewsFailedText.Contains('*Failed:* 1') -and $matthewsFailedText.Contains('Partial result')) 'Failed Matthews preserves the healthy peer and does not claim verification.'
+$mixedMatthews['unverifiable_source_keys'] = @('newmark')
+Save-Summary $mixedMatthews
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'matthews-forged-unverifiable')) 'A verified peer cannot be forged into the unverifiable partition.'
 $Pipeline = $true; $selectedSourceKeys = @('colliers','lyon-stahl','franklin-street','newmark','savills')
 $selectedSourceArgument = $selectedSourceKeys -join ','
 $mixedSources = New-Summary

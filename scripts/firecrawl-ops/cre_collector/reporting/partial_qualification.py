@@ -19,6 +19,27 @@ def _exact_json_equal(left: Any, right: Any) -> bool:
         return False
 
 
+def _matthews_receipt_warnings_valid(warnings: Any) -> bool:
+    if not isinstance(warnings, list) or len(warnings) > 2:
+        return False
+    seen = set()
+    for item in warnings:
+        if (not isinstance(item, dict)
+                or set(item) != {"transaction", "reason", "reported", "verified"}
+                or item.get("transaction") not in ("sale", "lease")
+                or item.get("transaction") in seen
+                or item.get("reason") != "held_receipt_counts_unverified"):
+            return False
+        seen.add(item["transaction"])
+        for key in ("reported", "verified"):
+            value = item.get(key)
+            if not isinstance(value, list) or len(value) != 3 or any(type(x) is not int or x < 0 for x in value):
+                return False
+        if item["reported"] == item["verified"] or not sum(item["verified"]):
+            return False
+    return True
+
+
 def matthews_partial_child(child: Mapping[str, Any]) -> bool:
     """Recognize only a bound Matthews existing-parent partial."""
     try:
@@ -48,6 +69,8 @@ def matthews_partial_child(child: Mapping[str, Any]) -> bool:
                 and binding["candidate_count"] == candidate.get("candidate_count") == artifact.get("staged_unique")
                 and type(binding.get("source_held_count")) is int and binding["source_held_count"] >= 0
                 and binding["source_held_count"] == candidate.get("held_count")
+                and _matthews_receipt_warnings_valid(binding.get("receipt_warnings", []))
+                and _exact_json_equal(binding.get("receipt_warnings", []), candidate.get("receipt_warnings", []))
                 and isinstance(source.get("subset_ingest_attempt_id"), str)
                 and re.fullmatch(r"[a-f0-9]{32}", source["subset_ingest_attempt_id"]) is not None)
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):

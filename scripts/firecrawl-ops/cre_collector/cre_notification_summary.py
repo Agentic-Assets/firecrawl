@@ -606,6 +606,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
                 "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
                 "held_count": len(held), "source_held_count": observed["source_held_count"],
                 "candidate_count": observed["candidate_count"],
+                "receipt_warnings": checkpoint["gate"]["current_inventory_proof"].get("receipt_warnings", []),
                 "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
         require(
             type(checkpoint.get("ingest", {}).get("rc")) is int
@@ -1315,6 +1316,7 @@ def verified_pipeline_summary(
                     and type(result.get("held_count")) is int and result["held_count"] == len(held)
                     and result.get("source_held_count") == binding.get("source_held_count")
                     and result.get("candidate_count") == binding.get("candidate_count")
+                    and result.get("receipt_warnings", []) == binding.get("receipt_warnings", [])
                     and result.get("artifact_sha256") == artifact.get("sha256"))
                 if not proven:
                     failed.append(source)
@@ -1324,6 +1326,7 @@ def verified_pipeline_summary(
                     "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
                     "held_count": len(held), "source_held_count": binding["source_held_count"],
                     "candidate_count": binding["candidate_count"],
+                    "receipt_warnings": binding.get("receipt_warnings", []),
                     "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
                 qualified.append((source, len(updated), checkpoint, unit, 0, summary, None))
                 continue

@@ -310,6 +310,46 @@ function Get-CreBrokerageName {
     return 'Commercial real estate'
 }
 
+function Test-CreMatthewsSubsetSummary {
+    param($Summary)
+    try {
+        if ($Summary.measurement -cne 'existing_parents_fields_filled' -or
+            $Summary.qualification -cne 'qualified_partial_subset' -or
+            $Summary.partial -isnot [bool] -or -not $Summary.partial -or
+            $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage) { return $false }
+        foreach ($field in @('emitted_count','held_count','source_held_count','candidate_count','verified_listings')) {
+            if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or $Summary.$field -lt 0) { return $false }
+        }
+        if ($Summary.candidate_count -le 0 -or $Summary.emitted_count -ne $Summary.verified_listings -or
+            ($Summary.emitted_count + $Summary.held_count) -gt $Summary.candidate_count) { return $false }
+        $property = $Summary.PSObject.Properties['receipt_warnings']
+        if ($null -eq $property -or $property.Value -isnot [array] -or $property.Value.Count -gt 2) { return $false }
+        $transactions = @()
+        foreach ($item in $property.Value) {
+            if (@('sale','lease') -cnotcontains $item.transaction -or $transactions -ccontains $item.transaction -or
+                $item.reason -cne 'held_receipt_counts_unverified' -or
+                $item.reported -isnot [array] -or $item.verified -isnot [array] -or
+                $item.reported.Count -ne 3 -or $item.verified.Count -ne 3) { return $false }
+            $transactions += $item.transaction
+            foreach ($number in @($item.reported) + @($item.verified)) {
+                if (-not ($number -is [int] -or $number -is [long]) -or $number -lt 0) { return $false }
+            }
+            if (($item.reported -join ',') -ceq ($item.verified -join ',') -or
+                ($item.verified[0] + $item.verified[1] + $item.verified[2]) -le 0) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-CreMatthewsWarningLines {
+    param($Summary)
+    foreach ($item in @($Summary.receipt_warnings)) {
+        $reported = @($item.reported) -join '/'
+        $verified = @($item.verified) -join '/'
+        "    *Receipt warning ($($item.transaction)):* reported $reported; verified $verified (redirect / detail / HTTP)."
+    }
+}
+
 function Test-CreJllSubsetSummary {
     param($Summary)
     try {
@@ -443,7 +483,7 @@ function Get-CreVerifiedSummary {
                 if ($null -ne $entry.PSObject.Properties['terminal_stop'] -and $entry.source_key -cne 'colliers') { return $null }
                 if ($selectedSourceKeys -cnotcontains $entry.source_key -or
                     -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
-                    $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
+                    $entry.verified_listings -lt 0 -or ($entry.source_key -cne 'matthews' -and $entry.verified_listings -gt 500000)) { return $null }
                 $subsetMarked = $null -ne $entry.PSObject.Properties['partial'] -or
                     $null -ne $entry.PSObject.Properties['held_count'] -or $null -ne $entry.PSObject.Properties['emitted_count'] -or
                     $null -ne $entry.PSObject.Properties['qualification'] -or
@@ -451,11 +491,13 @@ function Get-CreVerifiedSummary {
                 $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
                     ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted) -or
                     ($subsetMarked -and $entry.source_key -ceq 'jll-investor') -or
-                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street','nai-global') -ccontains $entry.source_key)
+                    ($subsetMarked -and @('colliers','lyon-stahl','franklin-street','nai-global','matthews') -ccontains $entry.source_key)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($null -ne $entry.PSObject.Properties['terminal_stop'] -and -not $expectsSubset) { return $null }
                 if ($expectsSubset) {
-                    if ($entry.source_key -ceq 'jll-investor') {
+                    if ($entry.source_key -ceq 'matthews') {
+                        if (-not (Test-CreMatthewsSubsetSummary $entry)) { return $null }
+                    } elseif ($entry.source_key -ceq 'jll-investor') {
                         if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
                     } elseif (@('colliers','lyon-stahl','franklin-street','nai-global') -ccontains $entry.source_key) {
                         if (-not (Test-CreSourceSubsetSummary $entry $entry.source_key)) { return $null }
@@ -497,7 +539,7 @@ function Get-CreVerifiedSummary {
                 $unverifiableKeys = @($summary.unverifiable_source_keys)
                 if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
                 foreach ($key in $unverifiableKeys) {
-                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','nai-global') -cnotcontains $key -or
+                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','nai-global','matthews') -cnotcontains $key -or
                         @($summary.failed_source_keys) -cnotcontains $key) { return $null }
                 }
             }
@@ -517,12 +559,14 @@ function Get-CreVerifiedSummary {
         $null -ne $summary.PSObject.Properties['qualification'] -or $summary.measurement -ceq 'generation_exact_verified_subset'
     $pyramidSubset = $subsetMarked -and $notificationSource -ceq 'pyramid-brokerage' -and $pyramidAdmitted
     $jllSubset = $subsetMarked -and $notificationSource -ceq 'jll-investor'
-    $expectsSubset = $subsetRequested -or $pyramidSubset -or $jllSubset
+    $matthewsSubset = $subsetMarked -and $notificationSource -ceq 'matthews'
+    $expectsSubset = $subsetRequested -or $pyramidSubset -or $jllSubset -or $matthewsSubset
     if ($subsetMarked -ne $expectsSubset) { return $null }
-    if ($expectsSubset -and (($jllSubset -and -not (Test-CreJllSubsetSummary $summary)) -or
-        (-not $jllSubset -and -not (Test-CreDaumSubsetSummary $summary $notificationSource)) -or
+    if ($expectsSubset -and (($matthewsSubset -and -not (Test-CreMatthewsSubsetSummary $summary)) -or
+        ($jllSubset -and -not (Test-CreJllSubsetSummary $summary)) -or
+        (-not $jllSubset -and -not $matthewsSubset -and -not (Test-CreDaumSubsetSummary $summary $notificationSource)) -or
         ($subsetRequested -and $notificationSource -cne 'daum-commercial'))) { return $null }
-    $expectedMeasurement = if ($expectsSubset) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
+    $expectedMeasurement = if ($matthewsSubset) { 'existing_parents_fields_filled' } elseif ($expectsSubset) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
         $summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
         $summary.source -cne $notificationSource -or $summary.measurement -cne $expectedMeasurement -or
@@ -531,7 +575,8 @@ function Get-CreVerifiedSummary {
         $summary.run_id -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$' -or
         $summary.local_settlement -cne 'confirmed' -or $summary.quality_no_regression -isnot [bool] -or -not $summary.quality_no_regression -or
         -not ($summary.verified_listings -is [long] -or $summary.verified_listings -is [int]) -or
-        $summary.verified_listings -le 0 -or $summary.verified_listings -gt 500000 -or
+        $summary.verified_listings -lt $(if ($matthewsSubset) { 0 } else { 1 }) -or
+        (-not $matthewsSubset -and $summary.verified_listings -gt 500000) -or
         ($summary.transaction_scope -join ',') -cne 'sale,lease') { return $null }
     if ((Get-Variable -Name AdmitBaselineHoldAdditively -ValueOnly -ErrorAction SilentlyContinue) -and ($summary.PSObject.Properties['whole_source_coverage'] -eq $null -or
         $summary.whole_source_coverage -isnot [bool] -or $summary.whole_source_coverage -or
@@ -598,6 +643,13 @@ function Get-CreNotificationText {
             $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
             if ($null -ne $entry.PSObject.Properties['partial'] -and $entry.partial -eq $true) {
                 $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                if ($entry.source_key -ceq 'matthews') {
+                    $sourceHeld = ([long]$entry.source_held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                    $lines += "$bullet *${broker}:* $count existing parents had missing fields filled; $held database identities and $sourceHeld source observations held. Whole brokerage incomplete."
+                    $lines += '    Only 12 fields on active existing parents are filled. New IDs, pricing, new children and unsupported fields are not saved; private source evidence is not durable history.'
+                    $lines += @(Get-CreMatthewsWarningLines $entry)
+                    continue
+                }
                 if ($entry.source_key -ceq 'jll-investor') {
                     $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held database identity conflicts held; source exclusions unknown. Whole brokerage incomplete."
                     continue
@@ -723,6 +775,13 @@ function Get-CreNotificationText {
         }
         if ($null -ne $Summary.PSObject.Properties['partial'] -and $Summary.partial -eq $true) {
             $held = ([long]$Summary.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            if ($Summary.source -ceq 'matthews') {
+                $sourceHeld = ([long]$Summary.source_held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $warningText = @(Get-CreMatthewsWarningLines $Summary) -join "`n"
+                if ($warningText) { $warningText = "`n$warningText" }
+                $success = [char]::ConvertFromUtf32(0x2705)
+                return "`n$success *$name | Verified subset refreshed*`n`n$bullet *Duration:* $duration`n$bullet $count existing parents had missing fields filled; $held database identities and $sourceHeld source observations held.`n$bullet Only 12 fields on active existing parents are filled. New IDs, pricing, new children and unsupported fields are not saved; private source evidence is not durable history.`n$bullet *Database readback:* passed; no quality regression.`n$bullet *Coverage:* whole brokerage incomplete.$warningText"
+            }
             if ($Summary.source -ceq 'jll-investor') {
                 $success = [char]::ConvertFromUtf32(0x2705)
                 return "`n$success *$name | Verified subset refreshed*`n`n$bullet *Duration:* $duration`n$bullet $count emitted; $held database identity conflicts held; source exclusions unknown.`n$transactionLine`n$bullet *Database readback:* passed; no quality regression.`n$bullet *Coverage:* whole brokerage incomplete."

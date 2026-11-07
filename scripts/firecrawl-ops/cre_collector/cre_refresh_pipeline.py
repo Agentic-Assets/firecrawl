@@ -1531,6 +1531,7 @@ def run_bounded_pipeline(
                                 state["source_results"][source].update(
                                     candidate_count=binding.get("candidate_count"),
                                     source_held_count=binding.get("source_held_count"),
+                                    receipt_warnings=binding.get("receipt_warnings", []),
                                     held_count=len(observed.get("held") or []),
                                     emitted_count=len(observed.get("updated") or []),
                                     unchanged_count=binding.get("candidate_count", 0) - len(observed.get("held") or []) - len(observed.get("updated") or []),

@@ -2048,6 +2048,8 @@ def test_pipeline_matthews_partial_summary_preserves_verified_peer(evidence, tam
         "source_artifact_sha256": "1" * 64, "generation_id": RUN, "producer_sha": SHA,
         "database_target_sha256": "d" * 64, "candidate_count": 3, "source_held_count": 1,
         "whole_source_coverage": False}
+    warning = [{"transaction":"sale","reason":"held_receipt_counts_unverified","reported":[0,0,0],"verified":[1,0,0]}]
+    binding["receipt_warnings"] = warning
     observed = {"occupied_jobs":1,"matching_jobs":1,"verified_jobs":1,"held":["held"],"updated":["saved"],
         "held_reasons":{"held":"identity_conflict_or_unknown"},"artifact_sha256":artifact["sha256"],
         "generation_id":RUN,"attempt_id":"f"*32,"database_target_sha256":"d"*64,
@@ -2055,12 +2057,12 @@ def test_pipeline_matthews_partial_summary_preserves_verified_peer(evidence, tam
     checkpoint.update(gate={"verdict":"ok_additive_verified_subset","mark_missing_safe":False,
         "admission_scope":"matthews_existing_parent_partial_v1","current_inventory_proof":binding},
         attempts=[{"rejected_artifact_sha256":"1"*64,"matthews_partial_candidate":{"gate_sha256":artifact["sha256"],
-            "sha256":"2"*64,"original_sha256":"1"*64,"candidate_count":3,"held_count":1}}],
+            "sha256":"2"*64,"original_sha256":"1"*64,"candidate_count":3,"held_count":1,"receipt_warnings":warning}}],
         subset_ingest_attempt_id="f"*32,
         readback={"ok":True,"kind":"matthews_existing_parent_partial","whole_source_coverage":False,"observation":observed})
     result=child["pipeline"]["source_results"][source]
     result.update(qualification="qualified_partial_subset",partial=True,whole_source_coverage=False,
-                  emitted_count=1,held_count=1,unchanged_count=1,candidate_count=3,source_held_count=1)
+                  emitted_count=1,held_count=1,unchanged_count=1,candidate_count=3,source_held_count=1,receipt_warnings=warning)
     parent["sources"][source]["state"]="qualified_partial_subset"
     validation_path=evidence["series"]/"runs"/RUN/"pipeline/unit-0001/validation.json"
     validation=json.loads(validation_path.read_text()); validation["matthews_partial_readback"]=copy.deepcopy(observed)
@@ -2080,6 +2082,7 @@ def test_pipeline_matthews_partial_summary_preserves_verified_peer(evidence, tam
     if tamper is None:
         assert rows[source]["partial"] is True and rows[source]["whole_source_coverage"] is False
         assert rows[source]["verified_listings"]==1
+        assert rows[source]["receipt_warnings"] == warning
     else:
         assert source not in rows and source in summary["unverifiable_source_keys"]
 
@@ -2107,6 +2110,8 @@ def test_serial_matthews_notification_requires_bound_receipt_and_discloses_scope
         "source_artifact_sha256": "1" * 64, "generation_id": RUN, "producer_sha": SHA,
         "database_target_sha256": "d" * 64, "candidate_count": 3, "source_held_count": 1,
         "whole_source_coverage": False}
+    warning = [{"transaction":"sale","reason":"held_receipt_counts_unverified","reported":[0,0,0],"verified":[1,0,0]}]
+    binding["receipt_warnings"] = warning
     observed = {"occupied_jobs": 1, "matching_jobs": 1, "verified_jobs": 1, "held": ["new"],
         "updated": ["saved"], "held_reasons": {"new": "identity_conflict_or_unknown"},
         "artifact_sha256": artifact["sha256"], "generation_id": RUN, "attempt_id": "f" * 32,
@@ -2116,7 +2121,7 @@ def test_serial_matthews_notification_requires_bound_receipt_and_discloses_scope
         "admission_scope": "matthews_existing_parent_partial_v1", "current_inventory_proof": binding},
         attempts=[{"rejected_artifact_sha256": "1" * 64, "matthews_partial_candidate": {
             "gate_sha256": artifact["sha256"], "sha256": "2" * 64, "original_sha256": "1" * 64,
-            "candidate_count": 3, "held_count": 1}}], subset_ingest_attempt_id="f" * 32,
+            "candidate_count": 3, "held_count": 1, "receipt_warnings": warning}}], subset_ingest_attempt_id="f" * 32,
         readback={"ok": True, "kind": "matthews_existing_parent_partial",
                   "whole_source_coverage": False, "observation": observed})
     child["validation"]["path"] = "validation.json"
@@ -2140,5 +2145,6 @@ def test_serial_matthews_notification_requires_bound_receipt_and_discloses_scope
         result = read(evidence, source=source)
         assert result["partial"] is True and result["whole_source_coverage"] is False
         assert result["verified_listings"] == 1 and result["held_count"] == 1
+        assert result["receipt_warnings"] == warning
         limitation = result["visibility_limitation"]
         assert all(term in limitation for term in ("12 fields", "pricing", "new children", "unsupported fields", "new listing IDs", "not a durable history"))

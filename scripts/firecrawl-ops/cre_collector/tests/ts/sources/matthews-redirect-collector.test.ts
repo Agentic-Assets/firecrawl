@@ -430,9 +430,36 @@ from pathlib import Path
 from matthews_partial.checkpoint import derive,gate_projection
 from cre_artifact_scope import require_canonical_artifact
 raw=Path(sys.argv[1]).read_bytes()
+data=json.loads(raw)
+partial=next(x for x in data["sources"] if x.get("matthewsPartialOutcome"))
+typed=partial["matthewsPartialOutcome"]
+assert typed["schema"] == "matthews-partial-outcome/v1"
+assert typed["temporaryRedirects"] == (1 if ${status} == 307 else 0)
+assert typed["httpFailures"] == (0 if ${status} == 307 else 1)
+zero=json.loads(json.dumps(data))
+zero_outcome=next(x["matthewsPartialOutcome"] for x in zero["sources"] if x.get("matthewsPartialOutcome"))
+for key in ("temporaryRedirects","detailFailures","httpFailures"): zero_outcome[key]=0
+z=derive(json.dumps(zero,separators=(",", ":")).encode(),generation_id="fixture-generation",
+    generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
+assert {x["external_id"] for x in z["rows"]}=={"good-sale","leasing-good"} and len(z["receipt_warnings"])==1
+assert z["receipt_warnings"][0]["reported"]==[0,0,0]
+partial["error"]="renamed operator text"
+original=next(x for x in partial["retainedObservations"] if x.get("requestedUrl"))
+duplicate=dict(original)
+wrong_source={**original,"sourceKey":"other","requestedUrl":"https://www.matthews.com/properties/wrong-source"}
+wrong_tx={**original,"requestedTransaction":"lease","requestedUrl":"https://www.matthews.com/properties/wrong-tx"}
+wrong_tenure={**original,"requestedUrl":"https://www.matthews.com/properties/leasing-wrong"}
+partial["retainedObservations"].extend([duplicate,wrong_source,wrong_tx,wrong_tenure])
+category="temporaryRedirects" if ${status} == 307 else "httpFailures"
+typed[category] += 4
+raw=json.dumps(data,separators=(",", ":")).encode()
 r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
 assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
-assert len(r["held"])==1 and r["mark_missing_safe"] is False
+assert len(r["held"])==5 and r["mark_missing_safe"] is False
+assert [x["reason"] for x in r["held"]].count("duplicate_held_identity")==1
+assert [x["reason"] for x in r["held"]].count("invalid_held_observation")==2
+assert [x["reason"] for x in r["held"]].count("held_tenure_mismatch")==1
+assert len(r["receipt_warnings"])==1
 g=gate_projection(raw,r)
 require_canonical_artifact(g,allow_matthews_partial_gate=True)
 try: require_canonical_artifact(g)
@@ -442,8 +469,14 @@ else: raise AssertionError("partial gate artifact admitted as canonical")
     const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
     assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
     if (status === 307 && process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
+      const zeroOut=join(dir,"zero-count.json");
+      const zeroData=JSON.parse(readFileSync(out,"utf8"));
+      const zeroSource=zeroData.sources.find((item: any)=>item.matthewsPartialOutcome);
+      for (const key of ["temporaryRedirects","detailFailures","httpFailures"]) zeroSource.matthewsPartialOutcome[key]=0;
+      writeFileSync(zeroOut,JSON.stringify(zeroData),{mode:0o600});
       for (const mode of ["pipeline", "serial"]) {
-        const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",out,started,finished,mode],
+        const input=mode === "serial" ? zeroOut : out;
+        const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",input,started,finished,mode],
           {cwd:root,encoding:"utf8",timeout:90000});
         assert.ifError(postgres.error); assert.equal(postgres.status,0,postgres.stderr);
       }

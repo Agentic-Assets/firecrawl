@@ -9,6 +9,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cre_ingest import parse_strict_freshness_timestamp
 
@@ -42,7 +43,8 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
     by_tx = {entry.get("transaction"): entry for entry in entries if isinstance(entry, dict)}
     if set(by_tx) != {"sale", "lease"} or len(by_tx) != len(entries):
         raise ValueError("Matthews transaction scope differs")
-    candidates, held = [], []
+    candidates, held, receipt_warnings = [], [], []
+    held_identities = set()
     errors = 0
     for tx, entry in by_tx.items():
         if entry.get("sourceKey") != "matthews" or entry.get("supported") is not True:
@@ -52,31 +54,85 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                     if isinstance(row, dict) and row.get("transactionMode") == tx]
         if error:
             errors += 1
-            match = re.fullmatch(
-                rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held(?:; ([0-9]+) settled HTTP detail failure\(s\) held)?", error
-            ) if isinstance(error, str) else None
-            if not match or selected:
-                raise ValueError("Matthews partial failure is not a settled supported case")
+            typed = entry.get("matthewsPartialOutcome")
+            if "matthewsPartialOutcome" in entry:
+                if (not isinstance(typed, dict)
+                        or set(typed) != {"schema", "transaction", "temporaryRedirects", "detailFailures", "httpFailures"}
+                        or typed.get("schema") != "matthews-partial-outcome/v1"
+                        or typed.get("transaction") != tx
+                        or any(type(typed.get(key)) is not int or typed[key] < 0
+                               for key in ("temporaryRedirects", "detailFailures", "httpFailures"))):
+                    raise ValueError("Matthews typed partial outcome invalid")
+                counts = (typed["temporaryRedirects"], typed["detailFailures"], typed["httpFailures"])
+            else:
+                # Only older artifacts lack the versioned source outcome.
+                match = re.fullmatch(
+                    rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held(?:; ([0-9]+) settled HTTP detail failure\(s\) held)?", error
+                ) if isinstance(error, str) else None
+                if not match:
+                    raise ValueError("Matthews partial failure is not a settled supported case")
+                counts = (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+            if selected:
+                raise ValueError("Matthews partial failure emitted canonical rows")
             observations = entry.get("retainedObservations")
             if not isinstance(observations, list) or not observations:
                 raise ValueError("Matthews partial observations missing")
-            redirects = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-redirect-observation/v1"
-                            and item.get("outcome") == "held_temporary_redirect" and item.get("httpStatus") == 307
-                            and item.get("requestedTransaction") == tx for item in observations)
-            failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-observation/v1"
-                           for item in observations)
-            http_failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-http-observation/v1"
-                                and item.get("outcome") == "held_http_error" and item.get("httpStatus") in (404, 410)
-                                and item.get("requestedTransaction") == tx for item in observations)
-            if ((redirects, failures, http_failures) != (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
-                    or redirects + failures + http_failures == 0):
-                raise ValueError("Matthews held observations differ from failure receipt")
+            verified_counts = [0, 0, 0]
+            requested_identities = set()
             for ordinal, observation in enumerate(observations):
                 if isinstance(observation, dict) and observation.get("schema") == "matthews-completed-parse-observation/v1":
                     candidates.append((tx, "retained", ordinal, observation))
-                else:
-                    held.append({"transaction": tx, "ordinal": ordinal, "reason": "source_observation_held"})
+                    continue
+                category = None
+                if isinstance(observation, dict):
+                    schema = observation.get("schema")
+                    if (schema == "matthews-detail-redirect-observation/v1"
+                            and observation.get("outcome") == "held_temporary_redirect"
+                            and type(observation.get("httpStatus")) is int and observation["httpStatus"] == 307):
+                        category = 0
+                    elif (schema == "matthews-detail-observation/v1"
+                            and type(observation.get("httpStatus")) is int and 200 <= observation["httpStatus"] < 300):
+                        category = 1
+                    elif (schema == "matthews-detail-http-observation/v1"
+                            and observation.get("outcome") == "held_http_error"
+                            and type(observation.get("httpStatus")) is int and observation["httpStatus"] in (404, 410)):
+                        category = 2
+                reason = "invalid_held_observation"
+                if category is not None and observation.get("sourceKey") == "matthews" and observation.get("requestedTransaction") == tx:
+                    url = observation.get("requestedUrl")
+                    try:
+                        parsed = urlsplit(url) if isinstance(url, str) else None
+                        valid_url = (parsed is not None and parsed.scheme == "https"
+                            and parsed.netloc == "www.matthews.com" and not parsed.query and not parsed.fragment
+                            and re.fullmatch(r"/properties/[^/]+", parsed.path)
+                            and not re.search(r"%(?![0-9a-fA-F]{2})", parsed.path)
+                            and all(ord(c) >= 33 and ord(c) != 127 for c in url))
+                    except ValueError:
+                        valid_url = False
+                    if valid_url:
+                        # Match sources/pure/matthews-identity.ts: only the
+                        # leasing- property family belongs to the lease pass.
+                        url_tx = "lease" if re.search(r"/properties/leasing-", url, re.IGNORECASE) else "sale"
+                        if url_tx != tx:
+                            held.append({"transaction": tx, "ordinal": ordinal, "reason": "held_tenure_mismatch"})
+                            continue
+                        identity = re.sub(r"%[0-9a-fA-F]{2}", lambda m: m[0].lower(), parsed.path[12:])
+                        if identity in requested_identities:
+                            reason = "duplicate_held_identity"
+                        else:
+                            requested_identities.add(identity)
+                            held_identities.add((tx, identity))
+                            verified_counts[category] += 1
+                            reason = "source_observation_held"
+                held.append({"transaction": tx, "ordinal": ordinal, "reason": reason})
+            if sum(verified_counts) == 0:
+                raise ValueError("Matthews partial receipt has no verified held outcome")
+            if tuple(verified_counts) != counts:
+                receipt_warnings.append({"transaction": tx, "reason": "held_receipt_counts_unverified",
+                                         "reported": list(counts), "verified": verified_counts})
         else:
+            if "matthewsPartialOutcome" in entry:
+                raise ValueError("Matthews typed outcome missing partial failure")
             if type(entry.get("listingsCollected")) is not int or entry["listingsCollected"] != len(selected):
                 raise ValueError("Matthews successful transaction count differs")
             for ordinal, row in selected:
@@ -95,6 +151,9 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             one = stage_observations([item], generation_id, meta["startedAt"], meta["finishedAt"])[0]
         except (ValueError, TypeError, KeyError, OverflowError):
             held.append({"transaction": tx, "ordinal": ordinal, "reason": "invalid_completed_observation"})
+            continue
+        if (tx, one["external_id"]) in held_identities:
+            held.append({"transaction": tx, "ordinal": ordinal, "reason": "held_identity_conflict"})
             continue
         accepted.append((tx, kind, ordinal, one))
     identities = {}
@@ -116,7 +175,7 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             "generation_started_at": generation_started_at, "attempt_started_at": attempt_started_at,
             "attempt_finished_at": attempt_finished_at, "started_at": meta["startedAt"],
             "finished_at": meta["finishedAt"], "rows": rows, "accepted_observations": accepted_observations, "held": held,
-            "coverage": "partial_unknown", "mark_missing_safe": False}
+            "receipt_warnings": receipt_warnings, "coverage": "partial_unknown", "mark_missing_safe": False}
 
 
 def _read_private(path):
@@ -203,7 +262,7 @@ def prepare_candidate(run_dir, manifest, attempt, *, git_identity, settled_rcs=(
             "bytes": len(encoded), "original_path": original_rel, "original_sha256": expected_sha,
             "gate_path": str(gate_path.relative_to(root)), "gate_sha256": hashlib.sha256(gate_bytes).hexdigest(),
             "gate_bytes": len(gate_bytes), "candidate_count": len(result["rows"]),
-            "held_count": len(result["held"]), "attempt_rc": attempt["rc"]}
+            "held_count": len(result["held"]), "receipt_warnings": result["receipt_warnings"], "attempt_rc": attempt["rc"]}
 
 
 def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256, settled_rcs=(0, 1)):
@@ -248,6 +307,7 @@ def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256
                         attempt_started_at=attempt["started_at"], attempt_finished_at=attempt["finished_at"])
     if (json.loads(raw_candidate) != recomputed or candidate.get("candidate_count") != len(recomputed["rows"])
             or candidate.get("held_count") != len(recomputed["held"])
+            or candidate.get("receipt_warnings", []) != recomputed["receipt_warnings"]
             or json.loads(raw_gate) != gate_projection(original, recomputed)):
         raise ValueError("Matthews candidate differs from source")
     if (_read_private(root / relative) != original or _read_private(root / candidate["path"]) != raw_candidate
@@ -366,7 +426,7 @@ def admit_gate(artifact_path, run_dir, manifest, report, *, git_identity, target
                "candidate_sha256": candidate["sha256"], "source_artifact_sha256": candidate["original_sha256"],
                "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
                "database_target_sha256": target_sha256, "candidate_count": len(data["rows"]),
-               "source_held_count": len(data["held"]), "whole_source_coverage": False}
+               "source_held_count": len(data["held"]), "receipt_warnings": data["receipt_warnings"], "whole_source_coverage": False}
     if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
         raise ValueError("Matthews source gate binding changed")
     gate.update(raw_verdict=raw_pair[0], raw_reason=raw_pair[1], verdict="ok_additive_verified_subset",

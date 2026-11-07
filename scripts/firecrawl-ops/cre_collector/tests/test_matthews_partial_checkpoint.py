@@ -22,7 +22,7 @@ from tests.test_matthews_partial_fill import valid
 
 
 def artifact():
-    held = {"schema": "matthews-detail-redirect-observation/v1", "sourceKey": "matthews", "outcome": "held_temporary_redirect", "httpStatus": 307, "requestedTransaction": "sale"}
+    held = {"schema": "matthews-detail-redirect-observation/v1", "sourceKey": "matthews", "outcome": "held_temporary_redirect", "httpStatus": 307, "requestedTransaction": "sale", "requestedUrl": "https://www.matthews.com/properties/redirect"}
     completed = valid(); completed["observation"]["transactionType"] = "Sale"
     return {"runMeta": {"mode": "full", "transactions": ["sale", "lease"], "maxItemsPerSource": None,
         "startedAt": "2026-11-06T23:59:30Z", "finishedAt": "2026-11-07T00:01:30Z", "freshness": {
@@ -50,6 +50,132 @@ class MatthewsCandidateTest(unittest.TestCase):
         self.assertEqual(candidate["rows"][0]["external_id"],"example")
         self.assertEqual([x["reason"] for x in candidate["held"]], ["source_observation_held", "invalid_completed_observation"])
         self.assertFalse(candidate["mark_missing_safe"])
+
+    def test_versioned_outcome_ignores_message_and_rejects_malformed_or_mismatched_receipts(self):
+        data = artifact()
+        partial = data["sources"][0]
+        partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+            "temporaryRedirects": 1, "detailFailures": 0, "httpFailures": 0}
+        partial["error"] = "Human wording can change without affecting admission"
+        _, candidate = project(data)
+        self.assertEqual(candidate["rows"][0]["external_id"], "example")
+        for mutate in (lambda outcome: outcome.update(schema="matthews-partial-outcome/v2"),
+                       lambda outcome: outcome.update(transaction="lease"),
+                       lambda outcome: outcome.update(temporaryRedirects=True),
+                       lambda outcome: outcome.update(extra="untrusted")):
+            bad = copy.deepcopy(data)
+            mutate(bad["sources"][0]["matthewsPartialOutcome"])
+            with self.subTest(outcome=bad["sources"][0]["matthewsPartialOutcome"]), self.assertRaises(ValueError):
+                project(bad)
+        bad = copy.deepcopy(data)
+        bad["sources"][0]["error"] = ""
+        with self.assertRaises(ValueError):
+            project(bad)
+
+    def test_zero_reported_counts_keep_peer_when_held_identity_is_verified(self):
+        data = artifact()
+        partial = data["sources"][0]
+        partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+            "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+        _, candidate = project(data)
+        self.assertEqual(candidate["rows"][0]["external_id"], "example")
+        self.assertEqual(candidate["receipt_warnings"], [{"transaction": "sale",
+            "reason": "held_receipt_counts_unverified", "reported": [0, 0, 0], "verified": [1, 0, 0]}])
+        partial["retainedObservations"][0]["sourceKey"] = "other"
+        with self.assertRaisesRegex(ValueError, "no verified held outcome"):
+            project(data)
+
+    def test_zero_reported_counts_with_verified_http_and_parse_outcomes(self):
+        for schema, status, outcome, expected in (
+                ("matthews-detail-http-observation/v1", 404, "held_http_error", [0, 0, 1]),
+                ("matthews-detail-observation/v1", 200, None, [0, 1, 0])):
+            data = artifact()
+            partial = data["sources"][0]
+            held = partial["retainedObservations"][0]
+            held.update(schema=schema, httpStatus=status)
+            if outcome is None:
+                held.pop("outcome")
+            else:
+                held["outcome"] = outcome
+            partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1",
+                "transaction": "sale", "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+            with self.subTest(schema=schema):
+                _, candidate = project(data)
+                self.assertEqual([x["external_id"] for x in candidate["rows"]], ["example"])
+                self.assertEqual(candidate["receipt_warnings"][0]["verified"], expected)
+
+    def test_held_provenance_and_duplicate_are_isolated_from_valid_peer(self):
+        data = artifact()
+        original = data["sources"][0]["retainedObservations"][0]
+        typed = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+                 "temporaryRedirects": 3, "detailFailures": 2, "httpFailures": 1}
+        data["sources"][0]["matthewsPartialOutcome"] = typed
+        detail = {"schema": "matthews-detail-observation/v1", "sourceKey": "other",
+                  "requestedTransaction": "lease", "requestedUrl": "https://www.matthews.com/properties/wrong",
+                  "httpStatus": 200}
+        wrong_tx = {**original, "requestedTransaction": "lease",
+                    "requestedUrl": "https://www.matthews.com/properties/wrong-tx"}
+        wrong_source = {**original, "sourceKey": "other",
+                        "requestedUrl": "https://www.matthews.com/properties/wrong-source"}
+        duplicate = copy.deepcopy(original)
+        http = {"schema": "matthews-detail-http-observation/v1", "sourceKey": "matthews",
+                "requestedTransaction": "sale", "requestedUrl": "https://www.matthews.com/properties/http",
+                "outcome": "held_http_error", "httpStatus": 404}
+        data["sources"][0]["retainedObservations"].extend([detail, wrong_tx, wrong_source, duplicate, http])
+        raw, candidate = project(data)
+        self.assertEqual([x["external_id"] for x in candidate["rows"]], ["example"])
+        self.assertEqual([x["reason"] for x in candidate["held"]],
+            ["source_observation_held", "invalid_held_observation", "invalid_held_observation",
+             "invalid_held_observation", "duplicate_held_identity", "source_observation_held"])
+        self.assertEqual(candidate["receipt_warnings"][0]["reported"], [3, 2, 1])
+        self.assertEqual(candidate["receipt_warnings"][0]["verified"], [1, 0, 1])
+        self.assertEqual(len(gate_projection(raw, candidate)["listings"]), 1)
+        # Old artifacts use the same provenance validation after legacy parsing.
+        data["sources"][0].pop("matthewsPartialOutcome")
+        data["sources"][0]["error"] = "Error: Matthews strict sale partial: 3 temporary redirect(s) held; 2 detail parse or identity failure(s) held; 1 settled HTTP detail failure(s) held"
+        _, legacy = project(data)
+        self.assertEqual(legacy["receipt_warnings"], candidate["receipt_warnings"])
+
+    def test_held_url_tenure_mismatch_is_warned_without_blocking_peers(self):
+        for tx, url in (("sale", "https://www.matthews.com/properties/leasing-mismatch"),
+                        ("lease", "https://www.matthews.com/properties/sale-mismatch")):
+            data = artifact()
+            entry = data["sources"][0]
+            held = entry["retainedObservations"][0]
+            held["requestedUrl"] = url
+            held["requestedTransaction"] = tx
+            if tx == "lease":
+                entry["transaction"] = "lease"
+                entry["error"] = entry["error"].replace("sale", "lease")
+                entry["retainedObservations"][1]["observation"]["transactionType"] = "Lease"
+                entry["retainedObservations"][1]["observation"].update(
+                    id="leasing-example", url="https://www.matthews.com/properties/leasing-example",
+                    canonicalUrl="https://www.matthews.com/properties/leasing-example")
+                data["sources"][1]["transaction"] = "sale"
+            valid = copy.deepcopy(held)
+            valid["requestedUrl"] = ("https://www.matthews.com/properties/leasing-held"
+                                      if tx == "lease" else "https://www.matthews.com/properties/sale-held")
+            entry["retainedObservations"].append(valid)
+            entry["error"] = entry["error"].replace("1 temporary", "2 temporary")
+            _, candidate = project(data)
+            with self.subTest(tx=tx):
+                self.assertEqual(len(candidate["rows"]), 1)
+                self.assertIn("held_tenure_mismatch", [x["reason"] for x in candidate["held"]])
+                self.assertEqual(candidate["receipt_warnings"][0]["reported"], [2,0,0])
+                self.assertEqual(candidate["receipt_warnings"][0]["verified"], [1,0,0])
+
+    def test_completed_identity_also_held_isolated_from_unrelated_peer(self):
+        data = artifact()
+        held = data["sources"][0]["retainedObservations"][0]
+        held["requestedUrl"] = "https://www.matthews.com/properties/example"
+        peer = copy.deepcopy(data["sources"][0]["retainedObservations"][1])
+        peer["observation"].update(id="peer", url="https://www.matthews.com/properties/peer",
+                                   canonicalUrl="https://www.matthews.com/properties/peer")
+        data["sources"][0]["retainedObservations"].append(peer)
+        raw, candidate = project(data)
+        self.assertEqual([x["external_id"] for x in candidate["rows"]], ["peer"])
+        self.assertIn("held_identity_conflict", [x["reason"] for x in candidate["held"]])
+        self.assertEqual([x["id"] for x in gate_projection(raw, candidate)["listings"]], ["peer"])
 
     def test_invalid_duplicate_does_not_poison_accepted_ordinal(self):
         item = artifact()
@@ -101,7 +227,10 @@ class MatthewsCandidateTest(unittest.TestCase):
     def test_candidate_is_derived_from_private_settled_attempt_and_refuses_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)/"fixture"; (root/"rejected").mkdir(parents=True)
-            raw=json.dumps(artifact(), separators=(",", ":")).encode()
+            source = artifact()
+            source["sources"][0]["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1",
+                "transaction": "sale", "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+            raw=json.dumps(source, separators=(",", ":")).encode()
             original=root/"rejected"/"matthews.json"; original.write_bytes(raw); os.chmod(original,0o600)
             attempt={"number": 1, "rc": 1, "started_at": "2026-11-06T23:59:00Z", "finished_at": "2026-11-07T00:02:00Z",
                 "rejected_artifact": "rejected/matthews.json", "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
@@ -150,6 +279,9 @@ class MatthewsCandidateTest(unittest.TestCase):
             self.assertEqual(admit_gate(gate_path,root,manifest,aggregate,git_identity=lambda:("a"*40,False),
                 target_sha256="b"*64,phase="aggregate",settled_rcs=(0,1,80)),proof)
             self.assertFalse(proof["whole_source_coverage"])
+            self.assertEqual(proof["receipt_warnings"], result["receipt_warnings"])
+            self.assertEqual(proof["receipt_warnings"][0]["reported"], [0, 0, 0])
+            self.assertEqual(proof["receipt_warnings"][0]["verified"], [1, 0, 0])
             from reporting.partial_qualification import (
                 matthews_partial_child,
                 partial_member_report_matches,
