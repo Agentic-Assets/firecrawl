@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, statfsSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
-export const PARTIAL_PAGE_SOURCES = ["cbre", "colliers", "avison-young", "lyon-stahl"] as const;
+export const PARTIAL_PAGE_SOURCES = ["cbre", "colliers", "avison-young", "lyon-stahl", "matthews"] as const;
 export type PartialPageSource = (typeof PARTIAL_PAGE_SOURCES)[number];
 
 export function partialPageEnvName(source: PartialPageSource, field: "PATH" | "ATTEMPT"): string {
@@ -18,7 +18,7 @@ export type PartialPageObservation = {
   documents: unknown[];
   start?: number;
   pageSize?: number;
-  kind?: "unqualified_response_pair" | "recovery_hole" | "validated_detail" | "detail_outcomes" | "lyon_search_response";
+  kind?: "unqualified_response_pair" | "recovery_hole" | "validated_detail" | "detail_outcomes" | "lyon_search_response" | "matthews_detail_outcome";
   reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped" | "count_drift" | "requested_limit" | "page_cap";
   pairAttempt?: number;
 };

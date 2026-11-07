@@ -3,6 +3,8 @@ import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-erro
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-property-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
@@ -202,7 +204,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
     case "transwestern":
       return srcTranswestern(tx, max, monitor);
     case "matthews":
-      return srcMatthews(tx, max, monitor);
+      return srcMatthews(tx, max, monitor, spools.matthews);
     case "franklin-street":
       return srcFranklinStreet(tx, max, monitor);
     case "srs":
@@ -240,6 +242,18 @@ async function main() {
       spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
       attempts[key] = attempt;
     }
+  }
+  let matthewsDirectSpool = false;
+  if (!MONITOR && requireFreshDetails() && requestedSources.includes("matthews")) {
+    if (!spools.matthews) {
+      const directory = mkdtempSync(join(tmpdir(), "cre-matthews-partial-"));
+      spools.matthews = new PartialPageSpool(join(directory, "attempt-1.jsonl"),
+        refreshGenerationId() ?? "direct-unbound", 1, undefined, "matthews");
+      attempts.matthews = 1;
+      matthewsDirectSpool = true;
+    }
+    if (!spools.matthews.writable) throw new Error("Matthews private evidence custody unavailable");
+    console.error(`Matthews private evidence (unverified until sealed): ${spools.matthews.path}`);
   }
   const sources: any[] = [];
   const listings: any[] = [];
@@ -373,7 +387,7 @@ async function main() {
       partialSourceFailed ||= Boolean(failed);
       source.partialCapture = { ...receipt, sourceKey: key,
         generationId: refreshGenerationId(), attempt: attempts[key],
-        path: `${key}-partial/attempt-${attempts[key]}.jsonl`,
+        path: key === "matthews" && matthewsDirectSpool ? spool.path : `${key}-partial/attempt-${attempts[key]}.jsonl`,
         coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
     }
   }

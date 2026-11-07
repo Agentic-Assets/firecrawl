@@ -1,3 +1,4 @@
+import type { PartialPageSpool } from "../lib/partial-page-spool.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -713,7 +714,7 @@ export function matthewsParsedCoverage(
   };
 }
 
-export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?: PartialPageSpool): Promise<SourceResult> {
   const { detailUrls, inventoryObservedAt } = await matthewsFreshInventory();
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
@@ -753,6 +754,12 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   const observations: unknown[] = new Array(take.length);
   const parsedObservations: unknown[] = new Array(take.length);
   let heldRedirects = 0;
+  const record = (observation: unknown) => {
+    if (!spool) return;
+    spool.record({ transaction: tx, pass: 1, page: 0, observedAt: observationNow(),
+      kind: "matthews_detail_outcome", documents: [observation] });
+    if (!spool.writable) throw new Error("Matthews private evidence write failed");
+  };
   const retain = (error: unknown): never => {
     const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])
       .filter((value) => value !== undefined);
@@ -769,6 +776,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
           inventoryObservedAt, detailObservedAt: observationNow(), httpStatus: response.status,
           identity: "unverified", coverage: "unverified", outcome: "held_temporary_redirect",
         };
+        record(observations[index]);
         heldRedirects++;
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
@@ -840,10 +848,12 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         listing = parseMatthewsDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
       } catch (error) {
         retainPage();
+        if (observations[index]) record(observations[index]);
         throw error;
       }
       if (!listing) {
         retainPage();
+        if (observations[index]) record(observations[index]);
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
         if (requireFreshDetails()) {
           throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
@@ -852,6 +862,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         parsedObservations[index] = { schema: "matthews-completed-parse-observation/v1",
           sourceKey: "matthews", reason: "source_run_failed_after_completed_parse",
           observation: listing };
+        record(parsedObservations[index]);
       }
       return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
