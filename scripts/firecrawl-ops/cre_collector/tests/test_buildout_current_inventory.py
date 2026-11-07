@@ -18,13 +18,14 @@ CODE = "a" * 40
 TARGET = "b" * 64
 
 
-def setup(tmp_path, *, empty_lease=False, listing_host=None):
+def setup(tmp_path, *, empty_lease=False, listing_host=None, source=None):
+    source = source or SOURCE
     now = datetime.now(UTC)
     start = (now - timedelta(minutes=2)).isoformat()
     observed = (now - timedelta(minutes=1)).isoformat()
     run = tmp_path / "2026-10-15T120000Z"
     run.mkdir()
-    definition = buildout.definitions()[SOURCE]
+    definition = buildout.definitions()[source]
     items = []
     for native, sale, closed, under, property_id in [
         ("10", True, False, True, "dual-sale"),
@@ -66,7 +67,7 @@ def setup(tmp_path, *, empty_lease=False, listing_host=None):
             continue
         listings.append(
             {
-                "sourceKey": SOURCE,
+                "sourceKey": source,
                 "sourceCompany": definition["company"],
                 "id": item["id"],
                 "name": "Synthetic",
@@ -91,7 +92,7 @@ def setup(tmp_path, *, empty_lease=False, listing_host=None):
         count = sum(r["transactionMode"] == tx for r in listings)
         entries.append(
             {
-                "sourceKey": SOURCE,
+                "sourceKey": source,
                 "transaction": tx,
                 "supported": True,
                 "truncated": False,
@@ -110,7 +111,7 @@ def setup(tmp_path, *, empty_lease=False, listing_host=None):
                 "currentInventoryProof": {
                     "schema": buildout.SCHEMA,
                     "kind": "complete_paginated_feed",
-                    "sourceKey": SOURCE,
+                    "sourceKey": source,
                     "transaction": tx,
                     "generationId": run.name,
                     "pluginKey": definition["plugin"],
@@ -146,18 +147,18 @@ def setup(tmp_path, *, empty_lease=False, listing_host=None):
         run,
         git_sha=CODE,
         git_dirty=False,
-        sources=[SOURCE],
+        sources=[source],
         page_cap=400,
         concurrency=1,
         database_target={"algorithm": "sha256", "value": TARGET},
-        admit_current_inventory_source=SOURCE,
+        admit_current_inventory_source=source,
     )
     manifest["started_at"] = start
-    refresh(path, artifact, manifest)
+    refresh(path, artifact, manifest, source=source)
     report = {
         "generated_for_artifact": str(path),
         "per_source": {
-            SOURCE: {
+            source: {
                 "current_active": len(listings),
                 "baseline_median": None,
                 "effective_floor": 100,
@@ -178,9 +179,10 @@ def setup(tmp_path, *, empty_lease=False, listing_host=None):
     return run, path, artifact, manifest, report
 
 
-def refresh(path, artifact, manifest):
+def refresh(path, artifact, manifest, *, source=None):
+    source = source or SOURCE
     path.write_text(json.dumps(artifact))
-    manifest["sources"][SOURCE]["artifact"] = {
+    manifest["sources"][source]["artifact"] = {
         "sha256": cp.sha256_file(path),
         "bytes": path.stat().st_size,
         "path": path.name,

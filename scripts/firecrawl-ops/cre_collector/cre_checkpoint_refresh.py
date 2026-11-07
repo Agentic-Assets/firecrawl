@@ -6011,10 +6011,10 @@ def dry_run_source(
 
 def prepare_buildout_observation(run_dir, manifest, source, artifact, env_file):
     """Select the currently supported complete source without blocking ingest."""
-    if source != "faris-lee":
+    from source_fields.buildout import observation_sources, prepare_inventory_observation_scope
+    if source not in observation_sources():
         return None
     from cre_refresh_pipeline import _OWNER_LEASE, require_pipeline_owner
-    from source_fields.buildout import prepare_inventory_observation_scope
 
     require_pipeline_owner(manifest, _OWNER_LEASE.get())
     sha, dirty = git_identity()
@@ -6116,9 +6116,10 @@ def ingest_source(
                      "--checkpoint-collector-git-sha", manifest["collector_git_sha"]])
         from cre_transwestern_rollback_result import expected_binding
         transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
+    from source_fields.buildout import observation_sources
     checkpoint["ingest"] = {
         **({"buildout_observation": observation} if observation is not None else
-           ({"buildout_observation_unavailable": True} if source == "faris-lee" else {})),
+           ({"buildout_observation_unavailable": True} if source in observation_sources() else {})),
         **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage", "jll"} or subset or atomic_recovery else {}),
         "started_at": started,
         "finished_at": None,

@@ -16,26 +16,31 @@ def _uuid(value):
     return _literal(str(parsed)) + "::uuid"
 
 
-def identity_guard_sql(scope):
+def identity_guard_sql(sources):
     """Hold ambiguous existing identities before the ingest replaces them."""
-    source = _literal(scope["source_key"])
+    from source_fields.buildout import observation_sources
+
+    sources = frozenset(sources)
+    if not sources or not sources <= observation_sources():
+        raise ValueError("invalid Buildout observation sources")
+    source = ", ".join(_literal(item) for item in sorted(sources))
     return f"""
 -- Lock in lifecycle order before reading prior native identity.
 DO $$ BEGIN
 PERFORM si.id FROM credeals.cre_source_index si JOIN _src s USING (brokerage_id, external_id)
-WHERE s.slug={source} ORDER BY si.id FOR UPDATE OF si;
+WHERE s.slug IN ({source}) ORDER BY si.id FOR UPDATE OF si;
 PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, external_id)
-WHERE s.slug={source} ORDER BY l.id FOR UPDATE OF l;
+WHERE s.slug IN ({source}) ORDER BY l.id FOR UPDATE OF l;
 END $$;
 CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS
 SELECT l.brokerage_id, l.external_id, claim.value #>> '{{}}' AS native_id
 FROM credeals.cre_listings l
-JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id AND b.slug={source}
+JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id AND b.slug IN ({source})
 CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS claim(value)
 UNION
 SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
 FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
-WHERE s.slug={source};
+WHERE s.slug IN ({source});
 CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
 CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS
 -- Include newly staged keys: they may conflict with a historical parent or
@@ -47,20 +52,20 @@ JOIN _buildout_identity_claims own
 JOIN _buildout_identity_claims other
   ON other.brokerage_id=own.brokerage_id AND other.native_id=own.native_id
  AND other.external_id<>own.external_id
-WHERE s.slug={source} AND own.native_id IS NOT NULL
+WHERE s.slug IN ({source}) AND own.native_id IS NOT NULL
 UNION
 SELECT s.brokerage_id, s.external_id
 FROM _src s
 JOIN credeals.cre_listings l USING (brokerage_id, external_id)
 LEFT JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
-WHERE s.slug = {source} AND NOT COALESCE(
-  si.source_key = {source} AND si.url = l.source_url
+WHERE s.slug IN ({source}) AND NOT COALESCE(
+  si.source_key = s.slug AND si.url = l.source_url
   AND s.source_url = l.source_url
   AND (si.last_enumerated_at IS NULL OR si.last_enumerated_at <= s.scraped_at)
   AND jsonb_typeof(l.raw_data) = 'object'
   AND jsonb_typeof(s.raw_data) = 'object'
-  AND l.raw_data->>'sourceKey' = {source}
-  AND s.raw_data->>'sourceKey' = {source}
+  AND l.raw_data->>'sourceKey' = s.slug
+  AND s.raw_data->>'sourceKey' = s.slug
   AND l.raw_data->>'url' = l.source_url
   AND s.raw_data->>'url' = s.source_url
   AND l.raw_data->>'id' ~ '^[1-9][0-9]{{0,15}}$'
