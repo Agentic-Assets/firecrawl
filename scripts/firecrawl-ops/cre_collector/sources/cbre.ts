@@ -895,9 +895,9 @@ export function mapCbreDocument(
     brochures: [],
     documents: cbreHarvestDocs(d, brochureItems),
     photos: photoUrls,
-    url: listingUrl,
+    url: partial ? null : listingUrl,
     // WS1: canonicalUrl from the listing URL (col currently ~0%; raw_data->>'url' ~92%)
-    canonicalUrl: listingUrl,
+    canonicalUrl: partial ? null : listingUrl,
     lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
     created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
     ...(!partial ? {
