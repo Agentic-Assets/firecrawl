@@ -229,3 +229,48 @@ def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256
             or git_identity() != (manifest["collector_git_sha"], False)):
         raise ValueError("Matthews evidence or code changed during recheck")
     return recomputed
+
+
+def gate_projection(raw, candidate):
+    """Create an explicitly incomplete gate view, never an ingest artifact."""
+    if not isinstance(raw, bytes) or not isinstance(candidate, dict):
+        raise TypeError("invalid Matthews gate input")
+    source = json.loads(raw)
+    if candidate.get("source_artifact_sha256") != hashlib.sha256(raw).hexdigest():
+        raise ValueError("Matthews gate source changed")
+    rows = candidate.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Matthews gate rows missing")
+    expected = {row["external_id"]: row for row in rows}
+    if len(expected) != len(rows):
+        raise ValueError("Matthews gate duplicate staged identity")
+    emitted = {}
+    for entry in source["sources"]:
+        tx = entry["transaction"]
+        observations = entry.get("retainedObservations") or [] if entry.get("error") else []
+        source_rows = [item.get("observation") for item in observations
+                       if isinstance(item, dict) and item.get("schema") == "matthews-completed-parse-observation/v1"]
+        source_rows += [item for item in source["listings"]
+                        if isinstance(item, dict) and item.get("transactionMode") == tx]
+        for row in source_rows:
+            if not isinstance(row, dict) or row.get("id") not in expected:
+                continue
+            staged = stage_observations([{"schema": "matthews-completed-parse-observation/v1",
+                                          "sourceKey": "matthews", "observation": row}],
+                candidate["generation_id"], candidate["started_at"], candidate["finished_at"])[0]
+            if staged != expected[row["id"]] or row["id"] in emitted:
+                raise ValueError("Matthews gate staged identity differs")
+            emitted[row["id"]] = {**row, "sourceKey": "matthews", "transactionMode": tx}
+    if set(emitted) != set(expected):
+        raise ValueError("Matthews gate membership differs")
+    meta = dict(source["runMeta"])
+    meta.pop("evidenceOnly", None)
+    meta.pop("evidencePurpose", None)
+    meta["matthewsPartialFill"] = {"schema": "matthews-partial-gate/v1", "coverage": "partial_unknown",
+        "sourceArtifactSha256": candidate["source_artifact_sha256"],
+        "candidateSha256": hashlib.sha256(json.dumps(candidate,ensure_ascii=False,separators=(",", ":"),allow_nan=False).encode()).hexdigest()}
+    return {"runMeta": meta, "sources": [
+        {"sourceKey": "matthews", "transaction": tx, "supported": True, "truncated": True,
+         "error": "matthews_partial_incomplete", "listingsCollected": sum(row["transactionMode"] == tx for row in emitted.values())}
+        for tx in ("sale", "lease")], "listings": list(emitted.values()),
+        "totalListings": len(emitted), "brokers": source["brokers"]}

@@ -427,10 +427,17 @@ test("settled mixed Matthews artifact derives generation-bound valid peers", () 
     assert.ifError(child.error); assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
     const check=`import json,sys
 from pathlib import Path
-from cre_matthews_partial_checkpoint import derive
-r=derive(Path(sys.argv[1]).read_bytes(),generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
+from cre_matthews_partial_checkpoint import derive,gate_projection
+from cre_artifact_scope import require_canonical_artifact
+raw=Path(sys.argv[1]).read_bytes()
+r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
 assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
 assert len(r["held"])==1 and r["mark_missing_safe"] is False
+g=gate_projection(raw,r)
+require_canonical_artifact(g,allow_matthews_partial_gate=True)
+try: require_canonical_artifact(g)
+except ValueError: pass
+else: raise AssertionError("partial gate artifact admitted as canonical")
 `;
     const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
     assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);

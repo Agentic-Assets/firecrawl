@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_matthews_partial_checkpoint import derive, prepare_candidate, recheck_candidate
+from cre_matthews_partial_checkpoint import (
+    derive,
+    gate_projection,
+    prepare_candidate,
+    recheck_candidate,
+)
 from tests.test_matthews_partial_fill import valid
 
 
@@ -41,6 +46,25 @@ class MatthewsCandidateTest(unittest.TestCase):
         self.assertEqual(candidate["rows"][0]["external_id"],"example")
         self.assertEqual([x["reason"] for x in candidate["held"]], ["source_observation_held", "invalid_completed_observation"])
         self.assertFalse(candidate["mark_missing_safe"])
+
+    def test_gate_projection_counts_partial_without_canonical_authority(self):
+        from cre_artifact_scope import require_canonical_artifact
+        from cre_gate import count_artifacts, select_baseline_updates
+
+        raw, candidate = project(artifact())
+        gate = gate_projection(raw, candidate)
+        with self.assertRaisesRegex(ValueError, "not a canonical inventory"):
+            require_canonical_artifact(gate)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"gate.json"; path.write_text(json.dumps(gate))
+            counts, errors, sources, _, rejects = count_artifacts([str(path)], True)
+        self.assertEqual(counts,{"matthews":1})
+        self.assertEqual(errors,{"matthews":"matthews_partial_incomplete"})
+        self.assertEqual(sources,{"matthews"}); self.assertEqual(rejects,0)
+        self.assertEqual(select_baseline_updates({"matthews":{"verdict":"first_seen","current_active":1}},errors,{}),[])
+        changed = copy.deepcopy(gate); changed["sources"][0].pop("error")
+        with self.assertRaisesRegex(ValueError,"gate projection invalid"):
+            require_canonical_artifact(changed,allow_matthews_partial_gate=True)
 
     def test_refuses_uncertain_errors_stale_attempt_and_mutated_generation(self):
         mutations=(lambda d: d["sources"][0].update(error="Error: cleanup unknown"),
