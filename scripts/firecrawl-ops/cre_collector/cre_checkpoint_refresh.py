@@ -6011,7 +6011,10 @@ def dry_run_source(
 
 def prepare_buildout_observation(run_dir, manifest, source, artifact, env_file):
     """Select the currently supported complete source without blocking ingest."""
-    from source_fields.buildout import observation_sources, prepare_inventory_observation_scope
+    from source_fields.buildout import (
+        observation_sources,
+        prepare_inventory_observation_scope,
+    )
     if source not in observation_sources():
         return None
     from cre_refresh_pipeline import _OWNER_LEASE, require_pipeline_owner

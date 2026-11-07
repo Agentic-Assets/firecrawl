@@ -8413,7 +8413,10 @@ def main():
         from pathlib import Path
 
         from cre_checkpoint_refresh import git_identity
-        from source_fields.buildout import observation_sources, prepare_inventory_observation_scope
+        from source_fields.buildout import (
+            observation_sources,
+            prepare_inventory_observation_scope,
+        )
         try:
             claim_path = Path(args.checkpoint_buildout_observation)
             if (len(args.inputs) != 1 or args.dry_run or args.mark_missing or activate_status

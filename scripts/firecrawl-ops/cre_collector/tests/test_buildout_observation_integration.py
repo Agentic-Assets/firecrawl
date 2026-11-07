@@ -6,8 +6,8 @@ import cre_ingest
 import cre_refresh_pipeline
 import cre_validate
 import pytest
-from source_fields.buildout_observation_sql import readback
 from source_fields.buildout import observation_sources
+from source_fields.buildout_observation_sql import readback
 from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 
 
