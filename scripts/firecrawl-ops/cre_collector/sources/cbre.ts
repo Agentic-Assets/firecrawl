@@ -180,7 +180,7 @@ export type CbreSnapshotOptions = {
   maxPasses?: number;
   maxPages?: number;
   concurrency?: number;
-  onPage?: (page: number, pass: number, documents: any[]) => void;
+  onPage?: (page: number, pass: number, documents: any[], rejection?: "document_validation" | "page_envelope", rejectedDocuments?: number[]) => void;
 };
 
 type CbrePageFetcher = (
@@ -196,6 +196,7 @@ async function fetchValidatedCbrePage(
   pageSize: number,
   expectedTotal: number | null,
   strict: boolean,
+  onPage?: CbreSnapshotOptions["onPage"],
 ): Promise<CbreValidatedPage> {
   let observation: ScrapeResponseObservation | undefined;
   const response = await fetchPage(page, pass, (value) => { observation = value; });
@@ -203,6 +204,34 @@ async function fetchValidatedCbrePage(
     return assertCbrePage(response, page, pageSize, expectedTotal, strict);
   } catch (error) {
     if (observation) logCbreValidationDiagnostic(response, page, pass, observation);
+    // Retain parsed and reserialized data privately, without admitting any row.
+    // Test the envelope with unique placeholder documents to distinguish a bad
+    // document from page metadata/count failures; never alter the real response.
+    let rejection: "document_validation" | "page_envelope" = "page_envelope";
+    if (response && typeof response === "object" && !Array.isArray(response)
+        && Array.isArray(response.Documents)) {
+      const documents = response.Documents.flat();
+      const placeholders = documents.map((_: unknown, index: number) => ({ "Common.PrimaryKey": `retained-${index}` }));
+      try {
+        assertCbrePage({ ...response, Documents: placeholders }, page, pageSize, expectedTotal, strict);
+        rejection = "document_validation";
+      } catch { /* The envelope is also invalid. */ }
+    }
+    const rejectedDocuments: number[] = [];
+    if (rejection === "document_validation") {
+      const docs = response.Documents.flat();
+      const counts = new Map<string, number>();
+      for (const doc of docs) {
+        const key = doc && typeof doc === "object" && !Array.isArray(doc) ? clean(doc["Common.PrimaryKey"]) : null;
+        if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      docs.forEach((doc: any, index: number) => {
+        const key = doc && typeof doc === "object" && !Array.isArray(doc) ? clean(doc["Common.PrimaryKey"]) : null;
+        if (!key || counts.get(key)! > 1) rejectedDocuments.push(index);
+      });
+    }
+    try { onPage?.(page, pass, [response], rejection, rejectedDocuments); }
+    catch { /* Retention failure must not replace the source error. */ }
     throw error;
   }
 }
@@ -513,7 +542,7 @@ async function fetchCbreSnapshotPass(
 > {
   const pages = new Map<number, CbreValidatedPage>();
   const first = await fetchValidatedCbrePage(
-    fetchPage, 1, pass, pageSize, null, true,
+    fetchPage, 1, pass, pageSize, null, true, onPage,
   );
   pages.set(1, first);
   onPage?.(1, pass, first.documents);
@@ -537,7 +566,7 @@ async function fetchCbreSnapshotPass(
     if (missingPages.length === 0) break;
     const fetched = await pmap(missingPages, concurrency, async (page) => {
       const value = await fetchValidatedCbrePage(
-        fetchPage, page, pass, pageSize, null, true,
+        fetchPage, page, pass, pageSize, null, true, onPage,
       );
       onPage?.(page, pass, value.documents);
       console.error(
