@@ -2,6 +2,10 @@
 process.argv = [process.argv[0]!, process.argv[1]!];
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { fsyncSync, mkdtempSync, rmSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
 import { srcMatthews } from "../../../sources/matthews.js";
 import { RetainedSourceError } from "../../../lib/source-observations.js";
 
@@ -138,3 +142,30 @@ test("strict Matthews continues past more than 50 redirects to retain a valid pe
   });
   assert.ok(requests.includes(detail(60)));
 });
+
+for (const held of [false, true]) {
+  test(`failed spool writes do not stop ${held ? "redirect-partial" : "healthy"} Matthews peers`, async t => {
+    const dir=mkdtempSync(join(tmpdir(),"matthews-spool-failure-"));
+    t.after(()=>rmSync(dir,{recursive:true,force:true}));
+    let writes=0;
+    const spool=new PartialPageSpool(join(dir,"attempt.jsonl"),"test-generation",1,{
+      write(fd,buffer,offset,length) { if (++writes > 1) throw new Error("synthetic spool write failure"); return writeSync(fd,buffer,offset,length); },
+      sync(fd) { fsyncSync(fd); },
+    },"matthews");
+    assert.equal(spool.writable,true);
+    const requests=provider(t, held ? [307,page(1),page(2)] : [page(0),page(1),page(2)],true);
+    if (held) {
+      await assert.rejects(srcMatthews("sale",Infinity,false,spool),(error: unknown)=>{
+        assert.ok(error instanceof RetainedSourceError);
+        assert.match(error.message,/partial.*temporary redirect/);
+        assert.ok((error.retainedObservations as any[]).some(x=>x.schema==="matthews-completed-parse-observation/v1"));
+        return true;
+      });
+    } else {
+      const result=await srcMatthews("sale",Infinity,false,spool);
+      assert.equal(result.listings.length,3); assert.equal(result.truncated,false);
+    }
+    assert.ok(requests.includes(detail(2)));
+    assert.deepEqual(spool.finish(),{state:"failed"});
+  });
+}

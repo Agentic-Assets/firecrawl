@@ -343,7 +343,9 @@ destination or disappearance. The source still fails with private retained
 observations, so these peers do not become an admitted partial ingest. Strict
 collector invocations also append these outcomes to the shared private attempt
 spool as each completes; direct invocations without a checkpoint use a private
-temporary spool and report its path. Interrupted spools remain unverified;
+temporary spool and report its path. Spool initialization, write or sealing
+failures are reported without stopping eligible source collection; no missing
+evidence is claimed retained. Interrupted spools remain unverified;
 synchronous writes survive ordinary process termination, while fsync and a
 bound receipt are produced only on normal sealing, so no OS-crash durability
 or ingestion authority is claimed. Other

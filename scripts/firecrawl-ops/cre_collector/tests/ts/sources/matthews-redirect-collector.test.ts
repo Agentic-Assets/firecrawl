@@ -85,19 +85,27 @@ else:
   });
 }
 
-function interruptedFixture(dir: string, hang: boolean): string {
+function interruptedFixture(dir: string, hang: boolean, redirect = true): string {
   const preload = join(dir, "interrupted.mjs");
   writeFileSync(preload, `
     import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+    import fs from "node:fs"; import {syncBuiltinESMExports} from "node:module";
+    const originalMkdtemp=fs.mkdtempSync, originalOpen=fs.openSync, originalWrite=fs.writeSync, originalSync=fs.fsyncSync;
+    let spoolFd=null, spoolWrites=0;
+    fs.mkdtempSync=(prefix,...args)=>{if(process.env.FAIL_SPOOL_INIT==="1" && String(prefix).includes("cre-matthews-partial-")) throw new Error("synthetic spool init failure"); return originalMkdtemp(prefix,...args)};
+    fs.openSync=(path,...args)=>{const fd=originalOpen(path,...args); if(String(path).includes("cre-matthews-partial-") && String(path).endsWith("attempt-1.jsonl")) spoolFd=fd; return fd};
+    fs.writeSync=(fd,...args)=>{if(process.env.FAIL_SPOOL_WRITE==="1" && fd===spoolFd && ++spoolWrites>1) throw new Error("synthetic spool write failure"); return originalWrite(fd,...args)};
+    fs.fsyncSync=fd=>{if(process.env.FAIL_SPOOL_SYNC==="1" && fd===spoolFd) throw new Error("synthetic spool sync failure"); return originalSync(fd)};
+    syncBuiltinESMExports();
     const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
     net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
     await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
     const host="https://www.matthews.com", urls=["good-peer","redirect","later"].map(x=>host+"/properties/"+x);
     globalThis.fetch=async input=>{const url=String(input);
       if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
-      if(url===urls[1]) return new Response(null,{status:307,headers:{location:"/listings"}});
+      if(url===urls[1] && ${JSON.stringify(redirect)}) return new Response(null,{status:307,headers:{location:"/listings"}});
       if(url===urls[2] && ${JSON.stringify(hang)}) return new Promise(()=>{});
-      if(url===urls[0]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+      if(url===urls[0]||url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
       throw new Error("UNEXPECTED_FIXTURE_URL");
     };
   `);
@@ -143,4 +151,107 @@ test("process termination leaves previously written private observations as unve
     const after=readFileSync(path,"utf8"); assert.equal(after,before);
     assert.equal(statSync(path).mode & 0o777,0o600);
   } finally {if(child.exitCode===null && child.signalCode===null) child.kill("SIGKILL"); rmSync(dir,{recursive:true,force:true});}
+});
+
+for (const redirect of [false,true]) {
+  test(`spool initialization failure preserves ${redirect ? "partial" : "healthy"} collector output`, () => {
+    const dir=mkdtempSync(join(tmpdir(),"matthews-init-failure-"));
+    try {
+      const preload=interruptedFixture(dir,false,redirect),out=join(dir,"artifact.json");
+      const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+        "collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+        {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1"},encoding:"utf8",timeout:30000});
+      assert.ifError(child.error); assert.equal(child.status,redirect ? 1 : 0,child.stderr);
+      assert.match(child.stderr,/spool unavailable; interrupted observations may be lost/);
+      const artifact=JSON.parse(readFileSync(out,"utf8"));
+      assert.equal(artifact.sources[0].partialCapture.state,"failed");
+      if (redirect) {
+        assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
+        assert.match(artifact.sources[0].error,/partial.*temporary redirect/);
+        assert.ok(artifact.sources[0].retainedObservations.some((x: any)=>x.schema==="matthews-completed-parse-observation/v1"));
+      } else { assert.equal(artifact.listings.length,3); assert.equal(artifact.sources[0].truncated,false); }
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+}
+
+test("final output collision remains a reported failure when spool is unavailable", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-output-failure-"));
+  try {
+    const preload=interruptedFixture(dir,false,true),out=join(dir,"artifact.json");
+    writeFileSync(out,'{"marker":"unchanged"}');
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.match(child.stderr,/spool unavailable/);
+    assert.deepEqual(JSON.parse(readFileSync(out,"utf8")),{marker:"unchanged"});
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+for (const redirect of [false,true]) {
+  test(`mid-write spool failure preserves ${redirect ? "partial" : "healthy"} collector output`, () => {
+    const dir=mkdtempSync(join(tmpdir(),"matthews-write-failure-"));
+    try {
+      const preload=interruptedFixture(dir,false,redirect),out=join(dir,"artifact.json");
+      const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+        "collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+        {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_WRITE:"1"},encoding:"utf8",timeout:30000});
+      assert.ifError(child.error); assert.equal(child.status,redirect ? 1 : 0,child.stderr);
+      assert.match(child.stderr,/spool failed; interrupted observations may be lost/);
+      const artifact=JSON.parse(readFileSync(out,"utf8"));
+      assert.equal(artifact.sources[0].partialCapture.state,"failed");
+      if (redirect) {
+        assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
+        assert.match(artifact.sources[0].error,/partial.*temporary redirect/);
+        assert.ok(artifact.sources[0].retainedObservations.some((x: any)=>x.schema==="matthews-completed-parse-observation/v1"));
+      } else {assert.equal(artifact.listings.length,3); assert.equal(artifact.sources[0].truncated,false);}
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+}
+
+test("healthy direct stdout remains available when spool initialization fails", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-direct-init-failure-"));
+  try {
+    const preload=interruptedFixture(dir,false,false);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.equal(child.status,0,child.stderr);
+    assert.match(child.stderr,/spool unavailable/);
+    const artifact=JSON.parse(child.stdout);
+    assert.equal(artifact.listings.length,3); assert.equal(artifact.sources[0].partialCapture.state,"failed");
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("spool sealing failure is reported without suppressing healthy output", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-sync-failure-"));
+  try {
+    const preload=interruptedFixture(dir,false,false),out=join(dir,"artifact.json");
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_SYNC:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.equal(child.status,0,child.stderr);
+    assert.match(child.stderr,/spool was not fully sealed/);
+    const artifact=JSON.parse(readFileSync(out,"utf8"));
+    assert.equal(artifact.sources[0].partialCapture.state,"failed");
+    assert.equal(artifact.listings.length,3);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("partial direct call without output retains private fallback when spool initialization fails", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-direct-partial-failure-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.match(child.stderr,/spool unavailable/);
+    const path=child.stderr.match(/Matthews private fallback artifact: ([^\r\n]+)/)?.[1];
+    assert.ok(path,child.stderr); assert.equal(statSync(path).mode & 0o777,0o600);
+    const artifact=JSON.parse(readFileSync(path,"utf8"));
+    assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
+    assert.equal(artifact.sources[0].partialCapture.state,"failed");
+    assert.ok(artifact.sources[0].retainedObservations.some((x: any)=>x.outcome==="held_temporary_redirect"));
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });

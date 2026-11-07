@@ -754,11 +754,15 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
   const observations: unknown[] = new Array(take.length);
   const parsedObservations: unknown[] = new Array(take.length);
   let heldRedirects = 0;
+  let spoolFailureReported = false;
   const record = (observation: unknown) => {
-    if (!spool) return;
+    if (!spool || spoolFailureReported) return;
     spool.record({ transaction: tx, pass: 1, page: 0, observedAt: observationNow(),
       kind: "matthews_detail_outcome", documents: [observation] });
-    if (!spool.writable) throw new Error("Matthews private evidence write failed");
+    if (!spool.writable) {
+      spoolFailureReported = true;
+      console.error("Matthews private evidence spool failed; interrupted observations may be lost");
+    }
   };
   const retain = (error: unknown): never => {
     const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])

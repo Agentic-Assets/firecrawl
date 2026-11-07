@@ -244,16 +244,22 @@ async function main() {
     }
   }
   let matthewsDirectSpool = false;
+  let matthewsSpoolUnavailable = false;
   if (!MONITOR && requireFreshDetails() && requestedSources.includes("matthews")) {
-    if (!spools.matthews) {
-      const directory = mkdtempSync(join(tmpdir(), "cre-matthews-partial-"));
-      spools.matthews = new PartialPageSpool(join(directory, "attempt-1.jsonl"),
-        refreshGenerationId() ?? "direct-unbound", 1, undefined, "matthews");
-      attempts.matthews = 1;
-      matthewsDirectSpool = true;
+    try {
+      if (!spools.matthews) {
+        const directory = mkdtempSync(join(tmpdir(), "cre-matthews-partial-"));
+        spools.matthews = new PartialPageSpool(join(directory, "attempt-1.jsonl"),
+          refreshGenerationId() ?? "direct-unbound", 1, undefined, "matthews");
+        attempts.matthews = 1;
+        matthewsDirectSpool = true;
+      }
+      if (!spools.matthews.writable) throw new Error("spool unavailable");
+      console.error(`Matthews private evidence (unverified until sealed): ${spools.matthews.path}`);
+    } catch {
+      matthewsSpoolUnavailable = true;
+      console.error("Matthews private evidence spool unavailable; interrupted observations may be lost");
     }
-    if (!spools.matthews.writable) throw new Error("Matthews private evidence custody unavailable");
-    console.error(`Matthews private evidence (unverified until sealed): ${spools.matthews.path}`);
   }
   const sources: any[] = [];
   const listings: any[] = [];
@@ -380,16 +386,25 @@ async function main() {
     const spool = spools[key];
     if (!spool) continue;
     const receipt = spool.finish();
+    if (key === "matthews" && receipt.state !== "sealed") {
+      matthewsSpoolUnavailable = true;
+      console.error("Matthews private evidence spool was not fully sealed; interrupted observations may be lost");
+    }
     const failed = sources.find((source) => source.sourceKey === key && source.error);
     const source = failed ?? sources.find((entry) => entry.sourceKey === key);
     if (source) {
-      partialCaptureAttached = true;
+      partialCaptureAttached ||= key !== "matthews" || receipt.state !== "failed";
       partialSourceFailed ||= Boolean(failed);
       source.partialCapture = { ...receipt, sourceKey: key,
         generationId: refreshGenerationId(), attempt: attempts[key],
         path: key === "matthews" && matthewsDirectSpool ? spool.path : `${key}-partial/attempt-${attempts[key]}.jsonl`,
         coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
     }
+  }
+  if (matthewsSpoolUnavailable && !spools.matthews) {
+    const source = sources.find(entry => entry.sourceKey === "matthews" && entry.error)
+      ?? sources.find(entry => entry.sourceKey === "matthews");
+    if (source) source.partialCapture = { state: "failed", sourceKey: "matthews", coverage: "unverified" };
   }
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
@@ -543,6 +558,11 @@ async function main() {
       console.error("Other private evidence prevents a stdout projection; use the private artifact.");
       process.exitCode = 1;
     }
+  } else if (!OUT_PATH && matthewsSpoolUnavailable && privateEvidence &&
+      sources.some(source => source.sourceKey === "matthews")) {
+    const path = writeTerminalCollectorArtifact(undefined, json);
+    console.error(`Matthews private fallback artifact: ${path}`);
+    process.exitCode = 1;
   } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
   else {
     try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
