@@ -2676,6 +2676,7 @@ def pipeline_source_qualified(
                     observed = (checkpoint.get("readback") or {}).get("observation") or {}
                     if (proof.get("candidate_count") != binding.get("candidate_count")
                             or proof.get("source_held_count") != binding.get("source_held_count")
+                            or not _exact_json_equal(proof.get("receipt_warnings", []), binding.get("receipt_warnings", []))
                             or not isinstance(observed.get("held"), list) or not isinstance(observed.get("updated"), list)
                             or proof.get("held_count") != len(observed["held"])
                             or proof.get("emitted_count") != len(observed["updated"])
@@ -3303,6 +3304,11 @@ def run_series(
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
                 checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or matthews_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+                if matthews_partial_child(child_manifest):
+                    binding = child_manifest["sources"]["matthews"]["gate"]["current_inventory_proof"]
+                    checkpoint["partial_counts"] = {"source_held_count": binding["source_held_count"],
+                        "candidate_count": binding["candidate_count"],
+                        "receipt_warnings": binding.get("receipt_warnings", [])}
                 if nai_post_partial_child(child_manifest):
                     binding = child_manifest["sources"]["nai-global"]["gate"]["current_inventory_proof"]
                     checkpoint["partial_counts"] = {key: binding[key] for key in ("emitted_count", "held_count")}

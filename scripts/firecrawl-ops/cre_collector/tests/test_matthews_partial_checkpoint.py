@@ -72,6 +72,19 @@ class MatthewsCandidateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             project(bad)
 
+    def test_zero_reported_counts_keep_peer_when_held_identity_is_verified(self):
+        data = artifact()
+        partial = data["sources"][0]
+        partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+            "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+        _, candidate = project(data)
+        self.assertEqual(candidate["rows"][0]["external_id"], "example")
+        self.assertEqual(candidate["receipt_warnings"], [{"transaction": "sale",
+            "reason": "held_receipt_counts_unverified", "reported": [0, 0, 0], "verified": [1, 0, 0]}])
+        partial["retainedObservations"][0]["sourceKey"] = "other"
+        with self.assertRaisesRegex(ValueError, "no verified held outcome"):
+            project(data)
+
     def test_held_provenance_and_duplicate_are_isolated_from_valid_peer(self):
         data = artifact()
         original = data["sources"][0]["retainedObservations"][0]
@@ -167,7 +180,10 @@ class MatthewsCandidateTest(unittest.TestCase):
     def test_candidate_is_derived_from_private_settled_attempt_and_refuses_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)/"fixture"; (root/"rejected").mkdir(parents=True)
-            raw=json.dumps(artifact(), separators=(",", ":")).encode()
+            source = artifact()
+            source["sources"][0]["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1",
+                "transaction": "sale", "temporaryRedirects": 0, "detailFailures": 0, "httpFailures": 0}
+            raw=json.dumps(source, separators=(",", ":")).encode()
             original=root/"rejected"/"matthews.json"; original.write_bytes(raw); os.chmod(original,0o600)
             attempt={"number": 1, "rc": 1, "started_at": "2026-11-06T23:59:00Z", "finished_at": "2026-11-07T00:02:00Z",
                 "rejected_artifact": "rejected/matthews.json", "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
@@ -216,6 +232,9 @@ class MatthewsCandidateTest(unittest.TestCase):
             self.assertEqual(admit_gate(gate_path,root,manifest,aggregate,git_identity=lambda:("a"*40,False),
                 target_sha256="b"*64,phase="aggregate",settled_rcs=(0,1,80)),proof)
             self.assertFalse(proof["whole_source_coverage"])
+            self.assertEqual(proof["receipt_warnings"], result["receipt_warnings"])
+            self.assertEqual(proof["receipt_warnings"][0]["reported"], [0, 0, 0])
+            self.assertEqual(proof["receipt_warnings"][0]["verified"], [1, 0, 0])
             from reporting.partial_qualification import (
                 matthews_partial_child,
                 partial_member_report_matches,

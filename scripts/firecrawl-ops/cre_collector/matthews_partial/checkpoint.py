@@ -119,8 +119,8 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                             verified_counts[category] += 1
                             reason = "source_observation_held"
                 held.append({"transaction": tx, "ordinal": ordinal, "reason": reason})
-            if sum(counts) == 0:
-                raise ValueError("Matthews partial receipt has no held outcome")
+            if sum(verified_counts) == 0:
+                raise ValueError("Matthews partial receipt has no verified held outcome")
             if tuple(verified_counts) != counts:
                 receipt_warnings.append({"transaction": tx, "reason": "held_receipt_counts_unverified",
                                          "reported": list(counts), "verified": verified_counts})
@@ -256,7 +256,7 @@ def prepare_candidate(run_dir, manifest, attempt, *, git_identity, settled_rcs=(
             "bytes": len(encoded), "original_path": original_rel, "original_sha256": expected_sha,
             "gate_path": str(gate_path.relative_to(root)), "gate_sha256": hashlib.sha256(gate_bytes).hexdigest(),
             "gate_bytes": len(gate_bytes), "candidate_count": len(result["rows"]),
-            "held_count": len(result["held"]), "attempt_rc": attempt["rc"]}
+            "held_count": len(result["held"]), "receipt_warnings": result["receipt_warnings"], "attempt_rc": attempt["rc"]}
 
 
 def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256, settled_rcs=(0, 1)):
@@ -301,6 +301,7 @@ def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256
                         attempt_started_at=attempt["started_at"], attempt_finished_at=attempt["finished_at"])
     if (json.loads(raw_candidate) != recomputed or candidate.get("candidate_count") != len(recomputed["rows"])
             or candidate.get("held_count") != len(recomputed["held"])
+            or candidate.get("receipt_warnings", []) != recomputed["receipt_warnings"]
             or json.loads(raw_gate) != gate_projection(original, recomputed)):
         raise ValueError("Matthews candidate differs from source")
     if (_read_private(root / relative) != original or _read_private(root / candidate["path"]) != raw_candidate
@@ -419,7 +420,7 @@ def admit_gate(artifact_path, run_dir, manifest, report, *, git_identity, target
                "candidate_sha256": candidate["sha256"], "source_artifact_sha256": candidate["original_sha256"],
                "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
                "database_target_sha256": target_sha256, "candidate_count": len(data["rows"]),
-               "source_held_count": len(data["held"]), "whole_source_coverage": False}
+               "source_held_count": len(data["held"]), "receipt_warnings": data["receipt_warnings"], "whole_source_coverage": False}
     if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
         raise ValueError("Matthews source gate binding changed")
     gate.update(raw_verdict=raw_pair[0], raw_reason=raw_pair[1], verdict="ok_additive_verified_subset",

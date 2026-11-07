@@ -436,6 +436,13 @@ typed=partial["matthewsPartialOutcome"]
 assert typed["schema"] == "matthews-partial-outcome/v1"
 assert typed["temporaryRedirects"] == (1 if ${status} == 307 else 0)
 assert typed["httpFailures"] == (0 if ${status} == 307 else 1)
+zero=json.loads(json.dumps(data))
+zero_outcome=next(x["matthewsPartialOutcome"] for x in zero["sources"] if x.get("matthewsPartialOutcome"))
+for key in ("temporaryRedirects","detailFailures","httpFailures"): zero_outcome[key]=0
+z=derive(json.dumps(zero,separators=(",", ":")).encode(),generation_id="fixture-generation",
+    generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
+assert {x["external_id"] for x in z["rows"]}=={"good-sale","leasing-good"} and len(z["receipt_warnings"])==1
+assert z["receipt_warnings"][0]["reported"]==[0,0,0]
 partial["error"]="renamed operator text"
 original=next(x for x in partial["retainedObservations"] if x.get("requestedUrl"))
 duplicate=dict(original)
