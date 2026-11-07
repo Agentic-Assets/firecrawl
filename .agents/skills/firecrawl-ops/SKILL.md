@@ -36,9 +36,11 @@ operator guide. For a high-volume listing refresh, do not use raw
 
 The supervised runner supports Darwin Mach/sysctl safety telemetry and Linux
 CPU, memory PSI, available memory/swap and visible cgroup v2 limits/events.
-Unknown platforms, missing required memory evidence, and missing required
-non-WSL CPU evidence fail closed. Under WSL2/Docker Desktop, measurements
-cover the Linux VM and visible cgroups, not aggregate Windows host CPU or RAM.
+Unknown platforms and missing required non-WSL CPU or memory evidence fail
+closed. On Windows/WSL, CPU and memory telemetry failures are diagnostic;
+observed memory pressure can still stop a run. Under WSL2/Docker Desktop,
+measurements cover the Linux VM and visible cgroups, not aggregate Windows
+host CPU or RAM.
 Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
 for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
 Linux verification does not prove native Windows or native Mac runtime parity.
@@ -69,9 +71,12 @@ CLI API access and checkpoint tenant identity from full-refresh acceptance.
 3. On macOS and native Linux, the CPU guard stops and checkpoints sustained
    CPU pressure or missing required CPU telemetry. On Windows/WSL, CPU samples
    and gaps are diagnostic only and do not block or interrupt collection.
-   The separate memory guard still stops for sustained warning or critical
-   pressure and missing required memory telemetry/evidence. These guards are
-   not a permanent monitor or auto-resume service. Inspect
+   The separate memory guard blocks admission on observed warning or critical
+   pressure and stops a running checkpoint for sustained warning or critical
+   pressure. Missing memory telemetry is diagnostic on Windows/WSL and stops
+   the run on other supported platforms. An unsettled sampler can still block
+   terminal publication. These guards are not a permanent monitor or
+   auto-resume service. Inspect
    `host-memory-guard.jsonl`, enabled CPU guard logs, and the optional WSL
    `resource-usage.jsonl` after an interruption. Serial resume requires the exact
    recorded configuration; pipeline resume is unsupported, so reconcile its
