@@ -5079,7 +5079,7 @@ def promote_matthews_partial_candidate(run_dir, manifest, attempt, *, candidate_
     from matthews_partial.checkpoint import recheck_candidate
 
     candidate = attempt.get("matthews_partial_candidate") or {}
-    if manifest.get("config", {}).get("pipeline") is not True or candidate.get("state") != "sealed_unadmitted":
+    if candidate.get("state") != "sealed_unadmitted":
         return None
     try:
         recheck_candidate(run_dir, manifest, attempt, git_identity=git_identity,
@@ -6846,10 +6846,13 @@ def ingest_admitted_sources(
             if owner_check is None:
                 raise GlobalStageError("serial rollback requires owner verification") from exc
             if (manifest["config"]["sources"] != [source]
-                    and (source != "jll" or not isinstance(exc, JllImageGuardRefusal))):
+                    and (source != "jll" or not isinstance(exc, JllImageGuardRefusal))
+                    and (source != "matthews" or not isinstance(exc, SettledIngestFailure))):
                 raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
             owner_check()
-            if isinstance(exc, SettledIngestFailure):
+            if isinstance(exc, SettledIngestFailure) and source == "matthews":
+                rollback_verified = verified_matthews_partial_rollback(run_dir, manifest)
+            elif isinstance(exc, SettledIngestFailure):
                 from recovery.atomic_ingest_rollback import verified_rollback as verified_atomic_rollback
                 rollback_verified = verified_atomic_rollback(run_dir, manifest, source)
             else:

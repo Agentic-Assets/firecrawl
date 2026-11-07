@@ -402,7 +402,7 @@ for (const spoolFails of [true, false]) test(`mixed Essex mismatch and failed pr
 });
 
 
-test("settled mixed Matthews artifact derives generation-bound valid peers", () => {
+for (const status of [307, 404]) test(`settled HTTP ${status} Matthews artifact derives generation-bound valid peers`, () => {
   const dir=mkdtempSync(join(tmpdir(),"matthews-partial-custody-"));
   try {
     const preload=join(dir,"preload.mjs"), out=join(dir,"artifact.json");
@@ -414,7 +414,7 @@ test("settled mixed Matthews artifact derives generation-bound valid peers", () 
       const host="https://www.matthews.com", urls=["redirect","good-sale","leasing-good"].map(x=>host+"/properties/"+x);
       globalThis.fetch=async input=>{const url=String(input);
         if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
-        if(url===urls[0]) return new Response(null,{status:307,headers:{location:"/listings"}});
+        if(url===urls[0]) return new Response(null,{status:${status},headers:{location:"/listings"}});
         if(url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
         throw new Error("UNEXPECTED_FIXTURE_URL");
       };
@@ -441,7 +441,7 @@ else: raise AssertionError("partial gate artifact admitted as canonical")
 `;
     const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
     assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
-    if (process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
+    if (status === 307 && process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
       const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",out,started,finished],
         {cwd:root,encoding:"utf8",timeout:90000});
       assert.ifError(postgres.error); assert.equal(postgres.status,0,postgres.stderr);

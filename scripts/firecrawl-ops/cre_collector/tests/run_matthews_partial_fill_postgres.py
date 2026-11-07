@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from matthews_partial.fill import fill_sql, readback_sql, stage_observations
+from matthews_partial.worker import settled_readback_sql
 
 
 def run(*args, input_text=None):
@@ -80,6 +81,35 @@ SELECT id,'https://example.test/old.jpg' FROM credeals.cre_listings WHERE extern
 'size_sf',size_sf,'cap_rate',cap_rate,'images',(SELECT jsonb_agg(url) FROM credeals.cre_listing_images WHERE listing_id=l.id)) FROM credeals.cre_listings l WHERE external_id='known';""")
         assert json.loads(reread)=={"title":"Existing title","description":"New description","status":"active","raw_data":{"old":"retained"},"size_sf":4000,"cap_rate":0.065,"images":["https://example.test/old.jpg"]}, reread
         assert sql("SELECT count(*) FROM credeals.cre_listings;")=="4"
+        # Hold the actual writer in a deferred commit trigger after it has
+        # acquired the lifecycle lock. A read before settlement sees no receipt.
+        sql("""INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url,canonical_url,status,raw_data)
+SELECT id,'late','https://www.matthews.com/properties/late','https://www.matthews.com/properties/late','active','{}'
+FROM credeals.cre_brokerages WHERE slug='matthews';
+CREATE FUNCTION credeals.fixture_delay_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN PERFORM pg_sleep(4); RETURN NULL; END $$;
+CREATE CONSTRAINT TRIGGER fixture_delay_commit AFTER INSERT ON credeals.cre_scrape_jobs
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION credeals.fixture_delay_commit();""")
+        late_binding = {**binding, "artifact_sha256": "9" * 64, "attempt_id": "8" * 32}
+        late = stage_observations([observation("late", name="Late")], "fixture",
+            "2026-11-06T23:59:00Z", "2026-11-07T00:02:00Z")
+        writer = subprocess.Popen(["docker", "exec", "-i", name, "psql", "-U", "postgres",
+            "-X", "-q", "-tA", "-v", "ON_ERROR_STOP=1"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        writer.stdin.write(fill_sql(late, late_binding))
+        writer.stdin.close()
+        for _ in range(100):
+            if sql("SELECT count(*) FROM pg_stat_activity WHERE wait_event='PgSleep';") != "0":
+                break
+            time.sleep(.05)
+        else:
+            raise AssertionError("writer did not reach delayed commit")
+        writer.kill()
+        writer.wait(timeout=10)
+        assert json.loads(sql(readback_sql(late, late_binding)))["occupied_jobs"] == 0
+        settled = json.loads(sql(settled_readback_sql(late, late_binding)))
+        assert settled["occupied_jobs"] == 1 and settled["verified_jobs"] == 1, settled
+        sql("DROP TRIGGER fixture_delay_commit ON credeals.cre_scrape_jobs;")
         wrong_binding = {**binding, "attempt_id": "1" * 32}
         occupied = json.loads(sql(readback_sql(staged, wrong_binding)))
         assert occupied["occupied_jobs"] == 1 and occupied["matching_jobs"] == 0 and occupied["verified_jobs"] == 0

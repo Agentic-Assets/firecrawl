@@ -224,6 +224,13 @@ export async function matthewsFetch(
           location: null,
         };
       }
+      // Only a settled, exact detail HTTP 404 is record-local. Provider-wide
+      // access denial, throttling, and uncertain cleanup keep the stop fence.
+      if (manualRedirect && strict && requireRedirectSettlement && role === "detail" && status === 404) {
+        confirmRedirectCleanup = true;
+        if (!await cancelResponseBody(res.body, 1000)) throw new MatthewsRedirectCleanupUnknown("Matthews HTTP 404 body cleanup unknown");
+        return { html: null, status, location: null };
+      }
       if (manualRedirect && (status === 301 || status === 308 || (observeTemporaryRedirect && status === 307))) {
         if (status === 307 && requireRedirectSettlement) {
           confirmRedirectCleanup = true;

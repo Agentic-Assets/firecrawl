@@ -70,7 +70,7 @@ def run_ingest(args):
             or not re.fullmatch(r"[a-f0-9]{64}", args.matthews_partial_claims_sha256)
             or any(getattr(args, name, None) for name in competing)):
         raise ValueError("unbound Matthews partial ingest")
-    verify_inherited_lock(require_direct_parent=True)
+    verify_inherited_lock(allow_recovery_required=True, require_direct_parent=True)
     claim_path = Path(args.matthews_partial_claims)
     claim_bytes = _read_private(claim_path)
     if hashlib.sha256(claim_bytes).hexdigest() != args.matthews_partial_claims_sha256:
@@ -97,7 +97,7 @@ def run_ingest(args):
             os.close(fd)
         if args.dry_run:
             return
-        verify_inherited_lock(require_direct_parent=True)
+        verify_inherited_lock(allow_recovery_required=True, require_direct_parent=True)
         code, dirty = git_identity()
         current = context(Path(args.inputs[0]), envelope, code_sha=code, dirty=dirty,
                           target_sha256=args.expected_db_target_sha256, attempt_id=args.checkpoint_ingest_attempt)
@@ -112,7 +112,7 @@ def run_ingest(args):
             raise RuntimeError("Matthews partial ingest outcome requires reconciliation")
         current_url, _ = load_db_url(args.env_file)
         assert_expected_database_target(current_url, args.expected_db_target_sha256)
-        verify_inherited_lock(require_direct_parent=True)
+        verify_inherited_lock(allow_recovery_required=True, require_direct_parent=True)
 
     if args.keep_artifacts:
         write_and_run(args.keep_artifacts)
@@ -121,11 +121,28 @@ def run_ingest(args):
             write_and_run(out_dir)
 
 
+def settled_readback_sql(staged, binding):
+    """Acquire the writer's transaction lock before the read-committed snapshot.
+
+    A disconnected client can leave the server committing. READ COMMITTED takes
+    the receipt statement's snapshot only after the lock wait finishes. A lock
+    timeout is an unresolved outcome, never evidence of rollback.
+    """
+    from cre_ingest import LIFECYCLE_TRANSACTION_LOCK_NAME, sql_lit
+    from cre_validate import PIN_STRING_LITERALS
+
+    return ("BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY;\n"
+            "SET LOCAL lock_timeout = '30s';\n" + PIN_STRING_LITERALS + "\n"
+            "DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtextextended("
+            + sql_lit(LIFECYCLE_TRANSACTION_LOCK_NAME) + ", 0)); END $$;\n"
+            + readback_sql(staged, binding) + "\nROLLBACK;\n")
+
+
 def run_readback(artifact_path, envelope, *, target_sha256, attempt_id, env_file):
     """Read the exact receipt and row/child digest on the bound target."""
     from cre_checkpoint_refresh import git_identity
     from cre_ingest import database_target_fingerprint_from_url, find_psql, load_db_url
-    from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
+    from cre_validate import _run_psql_script, parse_tsv
 
     code, dirty = git_identity()
     bound = context(artifact_path, envelope, code_sha=code, dirty=dirty,
@@ -133,8 +150,7 @@ def run_readback(artifact_path, envelope, *, target_sha256, attempt_id, env_file
     db_url, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(db_url).get("value") != target_sha256:
         raise ValueError("Matthews readback target differs")
-    sql = ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n" + PIN_STRING_LITERALS + "\n"
-           + readback_sql(bound["rows"], bound["sql_binding"]) + "\nROLLBACK;\n")
+    sql = settled_readback_sql(bound["rows"], bound["sql_binding"])
     result = _run_psql_script(find_psql(), db_url, sql, timeout=45)
     if result.returncode:
         raise RuntimeError("Matthews readback failed")

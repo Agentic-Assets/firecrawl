@@ -48,11 +48,12 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
         if entry.get("sourceKey") != "matthews" or entry.get("supported") is not True:
             raise ValueError("Matthews source receipt differs")
         error = entry.get("error")
-        selected = [row for row in listings if isinstance(row, dict) and row.get("transactionMode") == tx]
+        selected = [(index, row) for index, row in enumerate(listings)
+                    if isinstance(row, dict) and row.get("transactionMode") == tx]
         if error:
             errors += 1
             match = re.fullmatch(
-                rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held", error
+                rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held(?:; ([0-9]+) settled HTTP detail failure\(s\) held)?", error
             ) if isinstance(error, str) else None
             if not match or selected:
                 raise ValueError("Matthews partial failure is not a settled supported case")
@@ -64,25 +65,29 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                             and item.get("requestedTransaction") == tx for item in observations)
             failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-observation/v1"
                            for item in observations)
-            if (redirects, failures) != (int(match.group(1)), int(match.group(2))) or redirects + failures == 0:
+            http_failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-http-observation/v1"
+                                and item.get("outcome") == "held_http_error" and item.get("httpStatus") == 404
+                                and item.get("requestedTransaction") == tx for item in observations)
+            if ((redirects, failures, http_failures) != (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+                    or redirects + failures + http_failures == 0):
                 raise ValueError("Matthews held observations differ from failure receipt")
             for ordinal, observation in enumerate(observations):
                 if isinstance(observation, dict) and observation.get("schema") == "matthews-completed-parse-observation/v1":
-                    candidates.append((tx, ordinal, observation))
+                    candidates.append((tx, "retained", ordinal, observation))
                 else:
                     held.append({"transaction": tx, "ordinal": ordinal, "reason": "source_observation_held"})
         else:
             if type(entry.get("listingsCollected")) is not int or entry["listingsCollected"] != len(selected):
                 raise ValueError("Matthews successful transaction count differs")
-            for ordinal, row in enumerate(selected):
+            for ordinal, row in selected:
                 if row.get("sourceKey") != "matthews":
                     raise ValueError("Matthews successful source key differs")
-                candidates.append((tx, ordinal, {"schema": "matthews-completed-parse-observation/v1",
+                candidates.append((tx, "listing", ordinal, {"schema": "matthews-completed-parse-observation/v1",
                                                  "sourceKey": "matthews", "observation": row}))
     if not errors or sum(1 for row in listings if isinstance(row, dict) and row.get("transactionMode") in by_tx) != len(listings):
         raise ValueError("Matthews source is not a supported partial artifact")
     accepted = []
-    for tx, ordinal, item in candidates:
+    for tx, kind, ordinal, item in candidates:
         try:
             observed = item.get("observation") or {}
             if observed.get("transactionType") != ("Sale" if tx == "sale" else "Lease"):
@@ -91,25 +96,26 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
         except (ValueError, TypeError, KeyError, OverflowError):
             held.append({"transaction": tx, "ordinal": ordinal, "reason": "invalid_completed_observation"})
             continue
-        accepted.append((tx, ordinal, one))
+        accepted.append((tx, kind, ordinal, one))
     identities = {}
     urls = {}
-    for _, _, row in accepted:
+    for _, _, _, row in accepted:
         identities[row["external_id"]] = identities.get(row["external_id"], 0) + 1
         urls[row["source_url"]] = urls.get(row["source_url"], 0) + 1
-    rows = []
-    for tx, ordinal, row in accepted:
+    rows, accepted_observations = [], []
+    for tx, kind, ordinal, row in accepted:
         if identities[row["external_id"]] != 1 or urls[row["source_url"]] != 1:
             held.append({"transaction": tx, "ordinal": ordinal, "reason": "duplicate_identity"})
         else:
             rows.append(row)
+            accepted_observations.append({"transaction": tx, "kind": kind, "ordinal": ordinal})
     if not rows:
         raise ValueError("Matthews has no individually valid peers")
     return {"schema": "matthews-partial-fill-candidate/v1", "source_key": "matthews",
             "source_artifact_sha256": hashlib.sha256(raw).hexdigest(), "generation_id": generation_id,
             "generation_started_at": generation_started_at, "attempt_started_at": attempt_started_at,
             "attempt_finished_at": attempt_finished_at, "started_at": meta["startedAt"],
-            "finished_at": meta["finishedAt"], "rows": rows, "held": held,
+            "finished_at": meta["finishedAt"], "rows": rows, "accepted_observations": accepted_observations, "held": held,
             "coverage": "partial_unknown", "mark_missing_safe": False}
 
 
@@ -265,22 +271,43 @@ def gate_projection(raw, candidate):
     if len(expected) != len(rows):
         raise ValueError("Matthews gate duplicate staged identity")
     emitted = {}
-    for entry in source["sources"]:
-        tx = entry["transaction"]
-        observations = entry.get("retainedObservations") or [] if entry.get("error") else []
-        source_rows = [item.get("observation") for item in observations
-                       if isinstance(item, dict) and item.get("schema") == "matthews-completed-parse-observation/v1"]
-        source_rows += [item for item in source["listings"]
-                        if isinstance(item, dict) and item.get("transactionMode") == tx]
-        for row in source_rows:
-            if not isinstance(row, dict) or row.get("id") not in expected:
-                continue
-            staged = stage_observations([{"schema": "matthews-completed-parse-observation/v1",
-                                          "sourceKey": "matthews", "observation": row}],
-                candidate["generation_id"], candidate["started_at"], candidate["finished_at"])[0]
-            if staged != expected[row["id"]] or row["id"] in emitted:
-                raise ValueError("Matthews gate staged identity differs")
-            emitted[row["id"]] = {**row, "sourceKey": "matthews", "transactionMode": tx}
+    references = candidate.get("accepted_observations")
+    if not isinstance(references, list) or len(references) != len(rows):
+        raise ValueError("Matthews gate accepted membership missing")
+    entries = {entry["transaction"]: entry for entry in source["sources"]}
+    seen = set()
+    for ref in references:
+        if (not isinstance(ref, dict) or set(ref) != {"transaction", "kind", "ordinal"}
+                or ref["transaction"] not in entries or ref["kind"] not in {"retained", "listing"}
+                or type(ref["ordinal"]) is not int or ref["ordinal"] < 0):
+            raise ValueError("Matthews gate accepted membership invalid")
+        tx, kind, ordinal = ref["transaction"], ref["kind"], ref["ordinal"]
+        key = (tx, kind, ordinal)
+        if key in seen:
+            raise ValueError("Matthews gate duplicate membership")
+        seen.add(key)
+        if kind == "retained":
+            entries_for_tx = entries[tx].get("retainedObservations") or []
+            if ordinal >= len(entries_for_tx):
+                raise ValueError("Matthews gate held ordinal missing")
+            item = entries_for_tx[ordinal]
+            if not isinstance(item, dict) or item.get("schema") != "matthews-completed-parse-observation/v1":
+                raise ValueError("Matthews gate observation type differs")
+            row = item.get("observation")
+        else:
+            if ordinal >= len(source["listings"]):
+                raise ValueError("Matthews gate listing ordinal missing")
+            row = source["listings"][ordinal]
+            if not isinstance(row, dict) or row.get("transactionMode") != tx:
+                raise ValueError("Matthews gate listing transaction differs")
+        if not isinstance(row, dict) or row.get("id") not in expected:
+            raise ValueError("Matthews gate membership identity differs")
+        staged = stage_observations([{"schema": "matthews-completed-parse-observation/v1",
+                                      "sourceKey": "matthews", "observation": row}],
+            candidate["generation_id"], candidate["started_at"], candidate["finished_at"])[0]
+        if staged != expected[row["id"]] or row["id"] in emitted:
+            raise ValueError("Matthews gate staged identity differs")
+        emitted[row["id"]] = {**row, "sourceKey": "matthews", "transactionMode": tx}
     if set(emitted) != set(expected):
         raise ValueError("Matthews gate membership differs")
     meta = dict(source["runMeta"])

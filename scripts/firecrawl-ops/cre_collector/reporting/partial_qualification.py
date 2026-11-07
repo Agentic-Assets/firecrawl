@@ -27,7 +27,7 @@ def matthews_partial_child(child: Mapping[str, Any]) -> bool:
         binding = gate["current_inventory_proof"]
         attempt = source["attempts"][-1]
         candidate = attempt["matthews_partial_candidate"]
-        return (child["config"].get("pipeline") is True and artifact.get("matthews_partial") is True
+        return (artifact.get("matthews_partial") is True
                 and isinstance(child.get("run_id"), str) and bool(child["run_id"])
                 and isinstance(child.get("collector_git_sha"), str)
                 and re.fullmatch(r"[a-f0-9]{40}", child["collector_git_sha"])

@@ -51,6 +51,17 @@ class MatthewsCandidateTest(unittest.TestCase):
         self.assertEqual([x["reason"] for x in candidate["held"]], ["source_observation_held", "invalid_completed_observation"])
         self.assertFalse(candidate["mark_missing_safe"])
 
+    def test_invalid_duplicate_does_not_poison_accepted_ordinal(self):
+        item = artifact()
+        bad = copy.deepcopy(item["sources"][0]["retainedObservations"][1])
+        bad["observation"]["canonicalUrl"] = "https://www.matthews.com/properties/different"
+        item["sources"][0]["retainedObservations"].append(bad)
+        raw, candidate = project(item)
+        projected = gate_projection(raw, candidate)
+        self.assertEqual(len(projected["listings"]), 1)
+        self.assertEqual(projected["listings"][0]["id"], "example")
+        self.assertEqual(candidate["accepted_observations"], [{"transaction": "sale", "kind": "retained", "ordinal": 1}])
+
     def test_gate_projection_counts_partial_without_canonical_authority(self):
         from datetime import datetime
 
@@ -116,7 +127,7 @@ class MatthewsCandidateTest(unittest.TestCase):
                 _validate_source_artifact_local,
                 promote_matthews_partial_candidate,
             )
-            manifest["config"]["pipeline"]=True
+            manifest["config"]["pipeline"]=False
             def validate_bound(path, *args, **kwargs):
                 return _validate_source_artifact_local(path,*args,now=datetime(2026,11,7,0,3,tzinfo=UTC),**kwargs)
             with patch("cre_checkpoint_refresh.git_identity",return_value=("a"*40,False)), \

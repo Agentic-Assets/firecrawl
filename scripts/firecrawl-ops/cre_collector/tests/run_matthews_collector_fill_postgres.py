@@ -90,7 +90,7 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
             cre_ingest.PSQL_CANDIDATES.insert(0,str(psql))
             try:
                 canonical_lock.parent.mkdir(parents=True,exist_ok=True)
-                with refresh.SharedLock(canonical_lock) as owner:
+                with refresh.SharedLock(canonical_lock, recovery_required=True) as owner:
                     token=pipeline._OWNER_CHECK.set(owner._require_authority)
                     lease=pipeline._OWNER_LEASE.set(owner.lease_token)
                     try:
@@ -107,6 +107,7 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                         assert checkpoint["readback"]["whole_source_coverage"] is False
                     finally:
                         pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
+                    owner.clear_recovery_requirement()
             finally:
                 cre_ingest.PSQL_CANDIDATES.remove(str(psql))
                 if old_psql is None: os.environ.pop("PSQL_BIN",None)

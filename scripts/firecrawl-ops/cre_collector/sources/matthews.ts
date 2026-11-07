@@ -755,6 +755,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
   const parsedObservations: unknown[] = new Array(take.length);
   let heldRedirects = 0;
   let heldDetailFailures = 0;
+  let heldHttpFailures = 0;
   let cleanupUnknown: MatthewsRedirectCleanupUnknown | undefined;
   let spoolFailureReported = false;
   const record = (observation: unknown) => {
@@ -784,6 +785,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
         };
         record(observations[index]);
         heldRedirects++;
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
+      if (requireFreshDetails() && response.status === 404) {
+        observations[index] = {
+          schema: "matthews-detail-http-observation/v1", sourceKey: "matthews",
+          requestedUrl: url, requestedTransaction: tx, inventoryObservedAt,
+          detailObservedAt: observationNow(), httpStatus: 404,
+          identity: "unverified", coverage: "unverified", outcome: "held_http_error",
+        };
+        record(observations[index]);
+        heldHttpFailures++;
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
@@ -886,8 +898,8 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
   }).catch(error => retain(cleanupUnknown ?? error));
-  if (heldRedirects || heldDetailFailures) {
-    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held; ${heldDetailFailures} detail parse or identity failure(s) held`));
+  if (heldRedirects || heldDetailFailures || heldHttpFailures) {
+    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held; ${heldDetailFailures} detail parse or identity failure(s) held; ${heldHttpFailures} settled HTTP detail failure(s) held`));
   }
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
