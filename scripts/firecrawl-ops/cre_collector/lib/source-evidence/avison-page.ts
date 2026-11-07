@@ -17,8 +17,8 @@ function bound(name: string, maximum: number): number {
   return number;
 }
 
-function containsCredential(body: string, secret: string): boolean {
-  if (body.includes(secret)) return true;
+export function containsCredential(body: string, secret: string, encodedOnly = false): boolean {
+  if (!encodedOnly && body.includes(secret)) return true;
   // SharpLaunch integration keys are alphanumeric; reject equivalent JSON
   // Unicode escapes too, without placing the key in errors or metadata.
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(secret)) throw new Error();
@@ -26,7 +26,12 @@ function containsCredential(body: string, secret: string): boolean {
     const code = char.charCodeAt(0).toString(16).padStart(4, "0");
     return `(?:${char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|\\\\u${code})`;
   }).join("");
-  return new RegExp(pattern, "i").test(body);
+  if (!encodedOnly) return new RegExp(pattern, "i").test(body);
+  // Look ahead at every offset: a literal match can overlap an encoded one.
+  for (const match of body.matchAll(new RegExp(`(?=(${pattern}))`, "gi"))) {
+    if (match[1]?.includes("\\u")) return true;
+  }
+  return false;
 }
 
 /** Retain collector-decoded text locally; source-owned projection precedes admission. */

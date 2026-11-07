@@ -7,7 +7,8 @@ import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { observationNow } from "../lib/observation-clock.js";
-import { publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
+import { classifyPerformanceError } from "../lib/performance.js";
+import { containsCredential, publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
@@ -24,7 +25,9 @@ import {
 import {
   assertAvisonYoungTransportSettled,
   avisonYoungDeadlineError,
+  AvisonYoungDeadlineError,
   AvisonYoungUnsettledError,
+  refuseUnsettled,
   fetchAvisonYoungText,
   requestAvisonYoungPinned,
   withinAvisonYoungDeadline,
@@ -68,6 +71,8 @@ export const AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS = boundedInt(
 // checkpoint coordinator handles this separately from ordinary collector and
 // resource/cancellation exit codes; it is still a failed, unaccepted source.
 export const AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78;
+export const AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE = 74;
+export const AVISON_YOUNG_UNSETTLED_EXIT_CODE = 73;
 const AVISON_YOUNG_TURNDOWN = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
@@ -107,6 +112,34 @@ export class AvisonYoungTerminalDetailError extends Error {
   }
 }
 
+// These holds never authorize a complete source result or a database write.
+type AvisonRedirectObservation = { requestedUrl: string | null; finalUrl: string | null; urlsSanitized: true };
+export class AvisonYoungRecordDetailError extends Error {
+  constructor(message: string, readonly redirectObservations: AvisonRedirectObservation[] = []) { super(message); }
+}
+export class AvisonYoungAccessDeniedError extends Error {
+  readonly retryAfter: string | null;
+  constructor(message: string, retryAfter: string | null = null) {
+    super(message);
+    const value = retryAfter?.trim() ?? "";
+    this.retryAfter = /^(?:[0-9]{1,9}|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), .{20,35} GMT)$/.test(value)
+      && (value.length <= 9 || Number.isFinite(Date.parse(value))) ? value : null;
+  }
+}
+
+let avisonYoungOptionalTeamDenial: AvisonYoungAccessDeniedError | null = null;
+export function avisonYoungTeamDenialObserved(): boolean {
+  return avisonYoungOptionalTeamDenial !== null;
+}
+class AvisonYoungSettledDetailError extends Error {}
+export class AvisonYoungPartialDetailError extends Error {
+  constructor(readonly heldIds: string[], readonly hasRequiredDetail404 = false,
+    readonly unidentifiedCount = 0, readonly duplicateIdCount = 0, readonly unclassifiedCount = 0) {
+    super(`Avison Young partial detail: ${heldIds.length} identified and ${unidentifiedCount} unidentified record(s) held; ${duplicateIdCount} duplicate ID(s); ${unclassifiedCount} unclassified row(s): ${heldIds.join(", ")}`);
+    this.name = "AvisonYoungPartialDetailError";
+  }
+}
+
 export class AvisonYoungTerminalSourceError extends Error {
   readonly code = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404";
 
@@ -133,8 +166,9 @@ export function isExclusiveAvisonYoungTerminal404Failure(input: {
     input.requestedSources.length === 1
     && input.requestedSources[0] === "avison-young"
     && input.transactions.length > 0
-    && input.listingsCollected === 0
-    && input.terminalFailureTransactions === input.transactions.length
+    && Number.isSafeInteger(input.listingsCollected) && input.listingsCollected >= 0
+    && input.terminalFailureTransactions > 0
+    && input.terminalFailureTransactions <= input.transactions.length
     && input.otherFailureCount === 0
   );
 }
@@ -164,7 +198,9 @@ export async function mapAvisonYoungStrictDetails<T, R>(
         if (error instanceof AvisonYoungTerminalDetailError) {
           terminalFailures.push(error.failure);
         } else {
-          if (!hasOtherError) firstOtherError = error;
+          const priority = (value: unknown) => value instanceof AvisonYoungUnsettledError ? 2
+            : value instanceof AvisonYoungAccessDeniedError ? 1 : 0;
+          if (!hasOtherError || priority(error) > priority(firstOtherError)) firstOtherError = error;
           hasOtherError = true;
         }
       }
@@ -189,12 +225,17 @@ export async function fetchAvisonYoungApiKey(timeoutMs = 30_000): Promise<string
   try {
     const html = await fetchAvisonYoungText(AVISON_YOUNG_PAGE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 CRE collector" },
-    }, timeoutMs, (status) => new Error(`HTTP ${status}`));
+    }, timeoutMs, (status, retryAfter) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young bootstrap returned HTTP ${status}`, retryAfter)
+      : new Error(`HTTP ${status}`));
+    if (/<title[^>]*>\s*(?:just a moment|access denied)/i.test(html)) {
+      throw new AvisonYoungAccessDeniedError("Avison Young bootstrap returned a challenge");
+    }
     const key = html.match(/SharpLaunch\.PSE\.create\(\s*['"]([a-f0-9]{32})['"]/i)?.[1];
     if (key) return key;
     console.error("  avison-young: SharpLaunch key not found on page; using documented fallback");
   } catch (err) {
-    if (err instanceof AvisonYoungUnsettledError) throw err;
+    if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
     console.error(`  avison-young: failed to fetch page key (${err}); using documented fallback`);
   }
   return AVISON_YOUNG_FALLBACK_API_KEY;
@@ -207,9 +248,19 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string, tim
   const captureDir = entity === "website" ? process.env.CRE_AVISON_NATIVE_CAPTURE_DIR : undefined;
   const startedAt = captureDir ? observationNow() : "";
   const text = await fetchAvisonYoungText(url, { headers: { "X-Api-Key": apiKey } }, timeoutMs,
-    (status) => new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
+    (status, retryAfter) => [401, 403, 429].includes(status)
+      ? new AvisonYoungAccessDeniedError(`Avison Young SharpLaunch ${entity} API HTTP ${status}`, retryAfter)
+      : new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
   if (captureDir) publishAvisonNativePage(captureDir, text, apiKey, startedAt, observationNow());
-  const data = JSON.parse(text);
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    if (entity === "website" && /<title[^>]*>\s*(?:just a moment|access denied)/i.test(text)) {
+      throw new AvisonYoungAccessDeniedError("Avison Young SharpLaunch website returned a challenge");
+    }
+    throw error;
+  }
   return avisonYoungEntityItems(data, entity);
 }
 
@@ -230,7 +281,9 @@ export function avisonYoungTeamFeedState(
   error: unknown = null
 ): { rows: any[]; complete: boolean; reason: string | null } {
   if (error) {
-    return { rows: [], complete: false, reason: `team_member request failed: ${String(error)}` };
+    const retryAfter = error instanceof AvisonYoungAccessDeniedError ? error.retryAfter : null;
+    return { rows: [], complete: false, reason: `team_member request failed: ${String(error)}`
+      + (retryAfter ? `; Retry-After: ${retryAfter}` : "") };
   }
   if (!rows.length) {
     return { rows: [], complete: false, reason: "team_member API returned no items" };
@@ -250,9 +303,15 @@ export async function getAvisonYoungFeed(timeoutMs = 30_000): Promise<{
   const apiKey = await fetchAvisonYoungApiKey(timeoutMs);
   const [website, team] = await Promise.allSettled([
     fetchAvisonYoungEntity("website", apiKey, timeoutMs),
-    fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
+    avisonYoungOptionalTeamDenial
+      ? Promise.reject(avisonYoungOptionalTeamDenial)
+      : fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
   ]);
   assertAvisonYoungTransportSettled();
+  if (team.status === "rejected" && team.reason instanceof AvisonYoungAccessDeniedError) {
+    // Record this even if the concurrent website fetch failed too.
+    avisonYoungOptionalTeamDenial = team.reason;
+  }
   if (website.status === "rejected") throw website.reason;
   const websiteRows = website.value;
   const rawTeamState = team.status === "fulfilled"
@@ -349,7 +408,9 @@ export function indexAvisonYoungOfficialFeedUrls(websiteRows: readonly any[]): M
     const key = avisonYoungOfficialUrlKey(row?.external_url);
     if (!key) continue;
     const rowIds = rowsByUrl.get(key) ?? [];
-    const rowId = row?.id == null ? "" : String(row.id);
+    let rowId = "";
+    try { rowId = row?.id == null ? "" : String(row.id); }
+    catch { /* An unconvertible ID remains an unknown URL owner. */ }
     // Repeated copies of the same literal feed identity do not create a second owner.
     // Preserve each empty-ID occurrence because it cannot be safely deduplicated.
     if (!rowId || !rowIds.includes(rowId)) rowIds.push(rowId);
@@ -365,17 +426,40 @@ export function assertAvisonYoungDetailDoc(
   officialFeedIdentity?: AvisonYoungOfficialFeedIdentityContext
 ): any | null {
   const status = Number(doc.metadata?.statusCode);
+  if ([401, 403, 429].includes(status)) {
+    throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${status}`);
+  }
+  if (Number.isFinite(status) && status >= 500) {
+    throw new AvisonYoungSettledDetailError(`Avison Young detail returned HTTP ${status}`);
+  }
   if (Number.isFinite(status) && status >= 400) {
     throw new Error(`Avison Young detail returned HTTP ${status}`);
   }
+  if (typeof doc.rawHtml !== "string" || typeof doc.markdown !== "string") {
+    throw new AvisonYoungSettledDetailError("Avison Young detail has malformed content types");
+  }
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
-  if (
-    !combined.trim()
-    || /just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
-      combined
-    )
-  ) {
-    throw new Error("Avison Young detail returned a challenge or error shell");
+  if (!combined.trim()) {
+    // A missing SDK data envelope is not evidence of an empty source page.
+    // Distinguish an unbound response from empty or missing content with bound metadata.
+    // sourceURL binds the request; url can identify a redirected final page.
+    const requestUrl = doc.metadata?.sourceURL ?? doc.metadata?.url;
+    let matchesRequest = false;
+    try {
+      matchesRequest = typeof requestUrl === "string" && new URL(requestUrl).href === new URL(requestedUrl).href;
+    } catch {
+      matchesRequest = false;
+    }
+    if (!Number.isInteger(status) || status < 200 || status >= 400 || !matchesRequest) {
+      throw new AvisonYoungSettledDetailError("Avison Young detail response is unbound or lacks completion metadata");
+    }
+    throw new AvisonYoungSettledDetailError("Avison Young detail has empty or missing content");
+  }
+  if (/just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-/i.test(combined)) {
+    throw new AvisonYoungAccessDeniedError("Avison Young detail returned a challenge");
+  }
+  if (/page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(combined)) {
+    throw new AvisonYoungSettledDetailError("Avison Young detail returned an error shell");
   }
 
   const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
@@ -1549,7 +1633,35 @@ export function assertAvisonYoungDetailDoc(
       ? "Avison Young detail identity does not match the requested property"
       : "Avison Young detail structure was not recognized");
   }
-  if (!urlMatches && !contentMatches) {
+  // In fresh mode a matching URL alone does not establish the subject of a
+  // generic page. Require a property-container heading or a URL-bound listing
+  // name, compared with the feed; unrelated body/script text is not a witness.
+  const fresh = requireFreshDetails() || requireFreshPropertyDetails();
+  const feedName = normalizeName(base?.name);
+  const feedStreet = normalizeStreet(base?.street);
+  const headings = $("main h1, .property-detail h1, .property-details h1, .property-page h1");
+  const visibleSubjectMatches = headings.length === 1 && Boolean(
+    (feedName && normalizeName(headings.first().text()) === feedName)
+    || (feedStreet && normalizeStreet(headings.first().text()) === feedStreet)
+  );
+  const structuredName = normalizeName(listing?.name);
+  const structuredSubjectMatches = Boolean(feedName && structuredName === feedName
+    && listing?.url && sameIdentityUrl(listing.url, requestedUrl));
+  if (fresh && doc.metadata?.url != null && !sameIdentityUrl(doc.metadata.url, requestedUrl)) {
+    const sanitize = (value: unknown): string | null => {
+      try {
+        if (typeof value !== "string") return null;
+        const parsed = new URL(value);
+        if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        return parsed.origin + parsed.pathname;
+      } catch { return null; }
+    };
+    throw new AvisonYoungRecordDetailError("Avison Young detail final URL is not bound to the requested property", [{
+      requestedUrl: sanitize(requestedUrl), finalUrl: sanitize(doc.metadata.url), urlsSanitized: true,
+    }]);
+  }
+  if (fresh ? !urlMatches || !(visibleSubjectMatches || structuredSubjectMatches)
+    : !urlMatches && !contentMatches) {
     throw new Error(
       "Avison Young detail identity does not match the requested property"
     );
@@ -1680,7 +1792,7 @@ export async function fetchAvisonYoungDirectDoc(
     throw new AvisonYoungHttpStatusError(currentUrl.toString(), response.status);
   }
   if (!rawHtml.trim()) {
-    throw new Error("Avison Young direct detail returned an empty body");
+    throw new AvisonYoungSettledDetailError("Avison Young detail has empty or missing content");
   }
   const $ = cheerio.load(rawHtml);
   const links = $("a[href]")
@@ -2344,7 +2456,7 @@ export async function fetchAvisonYoungDirectDocWithRetry(
       return await fetchDetail(url);
     } catch (error) {
       if (error instanceof AvisonYoungUnsettledError) throw error;
-      if (error instanceof AvisonYoungHttpStatusError && error.status === 404) {
+      if (error instanceof AvisonYoungHttpStatusError && [401, 403, 404, 429].includes(error.status)) {
         throw error;
       }
       lastError = error;
@@ -2353,8 +2465,9 @@ export async function fetchAvisonYoungDirectDocWithRetry(
       }
     }
   }
+  if (lastError instanceof AvisonYoungDeadlineError) throw lastError;
   throw new Error(
-    `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`
+    `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`, { cause: lastError }
   );
 }
 
@@ -2407,14 +2520,21 @@ export async function enrichAvisonYoungListing(
     if (strict) {
       throw new Error("Avison Young strict detail requires a public detail URL");
     }
+    if (requireLiveDetails) {
+      throw new AvisonYoungRecordDetailError("missing public detail URLs");
+    }
     return prune({ ...base, detailError: "missing public detail URLs" });
   }
 
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
+  let recordDetailErrors = 0;
+  let settledDetailErrors = 0;
+  const redirectObservations: AvisonRedirectObservation[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     assertAvisonYoungTransportSettled();
+    let deniedResponseUrl: string | undefined;
     try {
       const doc =
         process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
@@ -2424,12 +2544,78 @@ export async function enrichAvisonYoungListing(
           : await scrapeDoc(url, {
               waitFor: 1000,
               timeout: 60000,
+              ...(requireLiveDetails ? { singleAttempt: true } : {}),
+              ...(requireLiveDetails ? { allowEmptyBody: true } : {}),
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
-      assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
+      deniedResponseUrl = doc.metadata?.url ?? doc.metadata?.sourceURL;
+      try {
+        assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
+      } catch (error) {
+        if (error instanceof Error && [
+          "Avison Young detail identity does not match the requested property",
+          "Avison Young detail structure was not recognized",
+        ].includes(error.message)) {
+          throw new AvisonYoungRecordDetailError(error.message);
+        }
+        throw error;
+      }
       docs.push({ url, doc });
     } catch (err) {
-      if (err instanceof AvisonYoungUnsettledError) throw err;
+      // A settled denial on the separately hosted SharpLaunch page does not
+      // authorize another attempt there. The source-owned official URL may
+      // still be checked independently; live partial runs retain this row as held.
+      const denialUrl = err instanceof AvisonYoungHttpStatusError
+        && [401, 403].includes(err.status) ? err.url
+        : err instanceof AvisonYoungAccessDeniedError
+          && err.message === "Avison Young detail returned a challenge" ? deniedResponseUrl
+          : undefined;
+      let independentOfficial = false;
+      try {
+        const requested = new URL(url);
+        const denied = new URL(denialUrl ?? "");
+        const official = new URL(clean(base.externalUrl) ?? "");
+        independentOfficial = !strict && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+          && url === clean(base.sharpLaunchUrl) && requested.protocol === "https:"
+          && requested.hostname.endsWith(".sharplaunch.com")
+          && denied.hostname === requested.hostname && denied.protocol === requested.protocol
+          && official.protocol === "https:" && official.hostname === "www.avisonyoung.us"
+          && !official.username && !official.password && !official.port
+          && detailUrls.includes(official.toString());
+      } catch { /* An unbound denial remains terminal. */ }
+      if (independentOfficial) {
+        recordDetailErrors++;
+        errors.push(url + ": " + String(err));
+        continue;
+      }
+      if (err instanceof AvisonYoungUnsettledError || err instanceof AvisonYoungAccessDeniedError) throw err;
+      const classified = classifyPerformanceError(err);
+      if (classified.remoteSettlementUnknown) throw refuseUnsettled(err);
+      if (process.env.AVISON_YOUNG_DETAIL_TRANSPORT !== "direct"
+          && [401, 403, 429].includes(classified.status ?? 0)) {
+        throw new AvisonYoungAccessDeniedError(`Firecrawl API returned HTTP ${classified.status}`);
+      }
+      // An HTTP failure from the local API is not a receipt that its remote
+      // scrape or browser has settled. This source stops without a retry.
+      if (process.env.AVISON_YOUNG_DETAIL_TRANSPORT !== "direct" && (classified.status ?? 0) >= 500) {
+        throw refuseUnsettled(err);
+      }
+      if (err instanceof AvisonYoungHttpStatusError && [401, 403, 429].includes(err.status)) {
+        throw new AvisonYoungAccessDeniedError(`Avison Young detail returned HTTP ${err.status}`);
+      }
+      const knownSettledFailure = err instanceof AvisonYoungDeadlineError
+        || err instanceof AvisonYoungSettledDetailError
+        || (process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct" && err instanceof Error
+            && err.cause instanceof AvisonYoungSettledDetailError)
+        || (process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct" && err instanceof Error
+            && err.cause instanceof AvisonYoungHttpStatusError && err.cause.status >= 500);
+      if (requireLiveDetails && !strict && !(err instanceof AvisonYoungRecordDetailError)
+          && !(err instanceof AvisonYoungHttpStatusError && err.status === 404)
+          && !knownSettledFailure) throw err;
+      if (err instanceof AvisonYoungRecordDetailError) {
+        recordDetailErrors++;
+        redirectObservations.push(...err.redirectObservations);
+      } else if (!(err instanceof AvisonYoungHttpStatusError && err.status === 404)) settledDetailErrors++;
       const error = `${url}: ${String(err)}`;
       if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
         const role =
@@ -2450,6 +2636,11 @@ export async function enrichAvisonYoungListing(
       }
       errors.push(error);
     }
+  }
+  // A validated alternate must not conceal another URL's ordinary failure.
+  // Keep this row held; the complete validated peers can still be spooled.
+  if (requireLiveDetails && !strict && (recordDetailErrors || settledDetailErrors)) {
+    throw new AvisonYoungRecordDetailError(errors.join("; "), redirectObservations);
   }
   if (!docs.length) {
     if (requireLiveDetails && missingDetails.length === detailUrls.length) {
@@ -2577,7 +2768,7 @@ export async function enrichAvisonYoungListing(
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
   onValidatedDetail?: (listing: any, index: number) => void,
-  onDetailOutcomes?: (outcomes: Array<{ id: string; state: string }>) => void): Promise<SourceResult> {
+  onDetailOutcomes?: (outcomes: Array<{ id: string | null; state: string; feedObservation?: unknown }>) => void): Promise<SourceResult> {
   const strict = requireFreshDetails();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   if (requireLiveDetails && !refreshGenerationId()) {
@@ -2597,39 +2788,109 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     avisonYoungCache = null;
   }
   const sourceUrl = `https://www.avisonyoung.us/properties/#/?transaction=${tx}&view=sidebar&status=active`;
-  const { websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
+  const { apiKey, websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
   const officialFeedUrls = indexAvisonYoungOfficialFeedUrls(websiteRows);
   assertAvisonYoungStrictFeed(teamFeedComplete, teamFeedReason, strict);
   const inventoryObservation = detailObservation(
     "avison_young_sharplaunch_inventory",
     requireLiveDetails ? "live" : "generation_cache"
   );
-  const rows = websiteRows
-    .filter((row) => row?.status === "active")
-    .filter(isAvisonYoungUsCompatible)
-    .filter((row) => avisonYoungMatchesTx(row, tx))
-    .sort((a, b) => Number(a.order_id ?? a.id ?? 0) - Number(b.order_id ?? b.id ?? 0));
+  const partialRowMode = requireLiveDetails && !strict;
+  const sortValue = (row: any) => {
+    try { return Number(row.order_id ?? row.id ?? 0); }
+    catch { return 0; }
+  };
+  const unclassified: Array<{ row: any; sourceOrdinal: number }> = [];
+  const rows = websiteRows.map((row, sourceOrdinal) => ({ row, sourceOrdinal }))
+    .filter((entry) => {
+      const { row } = entry;
+      if (!partialRowMode) {
+        return row?.status === "active" && isAvisonYoungUsCompatible(row) && avisonYoungMatchesTx(row, tx);
+      }
+      try {
+        if (!row || typeof row !== "object" || Array.isArray(row)) {
+          unclassified.push(entry);
+          return false;
+        }
+        if (row.status !== "active") {
+          if (row.status !== "inactive") unclassified.push(entry);
+          return false;
+        }
+        if (!isAvisonYoungUsCompatible(row)) {
+          if (!clean(row.country)) unclassified.push(entry);
+          return false;
+        }
+        const values = Array.isArray(row.transaction) ? row.transaction : [row.transaction];
+        let unknown = false;
+        const labels: string[] = [];
+        for (const value of values) {
+          if (typeof value !== "string" || !clean(value)) { unknown = true; continue; }
+          const label = clean(value)!.toLowerCase();
+          if (!label.includes("sale") && !label.includes("lease")) unknown = true;
+          labels.push(label);
+        }
+        if (!labels.length) unknown = true;
+        if (unknown) unclassified.push(entry);
+        return labels.some((label) => tx === "sale" ? label.includes("sale") : label.includes("lease"));
+      } catch {
+        unclassified.push(entry);
+        return false;
+      }
+    })
+    .sort((a, b) => partialRowMode
+      ? sortValue(a.row) - sortValue(b.row)
+      : Number(a.row.order_id ?? a.row.id ?? 0) - Number(b.row.order_id ?? b.row.id ?? 0));
   const want = Math.min(max, rows.length);
-  const selectedRows = rows.slice(0, want);
+  const selected = rows.slice(0, want);
+  const selectedRows = selected.map(({ row }) => row);
   const truncated = avisonYoungTruncated(max, selectedRows.length, rows.length);
-  const selectedProviderIds = avisonYoungSelectedProviderIds(selectedRows);
-  const baseListings = selectedRows.map((row) => ({
-    ...avisonYoungBaseListing(row, teamMembers),
-    inventoryObservedAt: inventoryObservation.observedAt,
-    freshnessProvenance: {
-      detailScope: "inventory_only",
-      generationId: inventoryObservation.generationId,
-      method: inventoryObservation.method,
-      cacheDisposition: inventoryObservation.cacheDisposition,
-      identityMethod: "SharpLaunch website id",
-    },
-  }));
+  const preparationErrors: Array<string | null> = selectedRows.map(() => null);
+  const selectedProviderIds: Array<string | null> = partialRowMode
+    ? selectedRows.map((row, index) => {
+        try {
+          if (typeof row?.id === "number" && !Number.isSafeInteger(row.id)) throw new Error();
+          return avisonYoungProviderId(row?.id, "selected inventory row");
+        } catch { preparationErrors[index] = "missing_or_invalid_native_id"; return null; }
+      })
+    : avisonYoungSelectedProviderIds(selectedRows);
+  const counts = new Map<string, number>();
+  if (partialRowMode) for (const id of selectedProviderIds) {
+    if (id !== null) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const duplicateIdCount = [...counts.values()].filter((count) => count > 1).length;
+  const baseListings = selectedRows.map((row, index) => {
+    if (preparationErrors[index]) return null;
+    try {
+      // Only the mapper's comparison view drops unclassifiable transaction
+      // values; retain the untouched source row as the evidence and let the
+      // separate unclassified outcome prevent complete-source claims.
+      const mappingRow = partialRowMode && Array.isArray(row.transaction)
+        ? { ...row, transaction: row.transaction.filter((value: unknown) => typeof value === "string") }
+        : row;
+      return {
+        ...avisonYoungBaseListing(mappingRow, teamMembers),
+        rawSharpLaunch: row,
+        inventoryObservedAt: inventoryObservation.observedAt,
+        freshnessProvenance: {
+          detailScope: "inventory_only",
+          generationId: inventoryObservation.generationId,
+          method: inventoryObservation.method,
+          cacheDisposition: inventoryObservation.cacheDisposition,
+          identityMethod: "SharpLaunch website id",
+        },
+      };
+    } catch (error) {
+      if (!partialRowMode) throw error;
+      preparationErrors[index] = "mapping_error";
+      return null;
+    }
+  });
   if (monitor) {
     // Monitor mode: emit the SharpLaunch feed base listings only and skip the
     // detail-page enrichment. id/price/cap rate/lastUpdated are all free in the
     // feed; the feed already filters to status=active.
     if (!baseListings.length) throw new Error(`no ${tx} listings found in Avison Young SharpLaunch feed`);
-    assertAvisonYoungOutputIdentity(selectedProviderIds, baseListings);
+    assertAvisonYoungOutputIdentity(selectedProviderIds as string[], baseListings);
     return {
       company: "Avison Young (US)",
       sourceUrl,
@@ -2653,12 +2914,16 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     const enriched = await enrichAvisonYoungListing(
       {
         ...listing,
+        avisonTeamFeedStatus: teamFeedComplete ? undefined : { state: "unavailable", reason: teamFeedReason },
         preserveChildCollections: teamFeedComplete ? undefined : true,
       },
       strict,
       undefined,
       officialFeedIdentity
     );
+    // Enrichment prunes mapped fields recursively. Preserve the original feed
+    // observation separately, including unknown or null transaction values.
+    if (partialRowMode) enriched.rawSharpLaunch = listing.rawSharpLaunch;
     // Classify only successful fresh results as successes in the draining map.
     // Otherwise a concurrent 404 could conceal this ordinary source failure.
     if (requireLiveDetails && (
@@ -2677,6 +2942,18 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
         `Avison Young fresh property detail is incomplete for ${clean(listing?.id) ?? "unknown-id"}: ${reason}`
       );
     }
+    // A private spool or complete artifact must not persist the configured
+    // integration key as source data. Hold only this row; the source-row
+    // evidence path below records a redacted observation when possible.
+    if (requireLiveDetails) {
+      try {
+        const serialized = JSON.stringify(enriched);
+        if (typeof serialized !== "string" || !apiKey
+            || containsCredential(serialized, apiKey)) throw new Error();
+      } catch {
+        throw new AvisonYoungRecordDetailError("Avison Young detail evidence could not be safely retained");
+      }
+    }
     // Save only completed, freshly identity-validated detail. Spool failures
     // must not change source acceptance or request scheduling.
     if (requireLiveDetails && onValidatedDetail) onValidatedDetail(enriched, idx);
@@ -2685,8 +2962,31 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes = selectedProviderIds.map((id) => ({ id, state: "unattempted" }));
+  const outcomes: Array<{ id: string | null; state: string; sourceOrdinal?: number; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id, index) => ({
+    id, state: "unattempted", ...(partialRowMode ? { sourceOrdinal: selected[index]!.sourceOrdinal } : {}),
+  }));
+  const evidenceRows = [...selectedRows];
+  for (const entry of unclassified) {
+    let id: string | null = null;
+    try {
+      if (typeof entry.row?.id === "number" && !Number.isSafeInteger(entry.row.id)) throw new Error();
+      id = avisonYoungProviderId(entry.row?.id, "unclassified inventory row");
+    } catch { /* No ID is invented for an unclassifiable row. */ }
+    outcomes.push({ id, state: "failed", sourceOrdinal: entry.sourceOrdinal, reason: "selection_unclassified" });
+    evidenceRows.push(entry.row);
+  }
+  const heldIds: string[] = [];
+  let unidentifiedCount = 0;
+  const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   const trackedEnrich = async (listing: any, index: number) => {
+    if (partialRowMode && preparationErrors[index]) {
+      outcomes[index]!.state = "failed";
+      outcomes[index]!.reason = preparationErrors[index]!;
+      const id = selectedProviderIds[index];
+      if (id === null) unidentifiedCount++;
+      else if (id !== undefined) heldIds.push(id);
+      return undefined;
+    }
     outcomes[index]!.state = "started";
     try {
       const result = await enrichSelected(listing, index);
@@ -2694,13 +2994,33 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
       return result;
     } catch (error) {
       outcomes[index]!.state = error instanceof AvisonYoungTerminalDetailError ? "required_detail_404" : "failed";
+      if (requireLiveDetails && !strict && error instanceof AvisonYoungRecordDetailError) {
+        if (error.redirectObservations.length) {
+          outcomes[index]!.reason = "unbound_final_url";
+          outcomes[index]!.redirectObservations = error.redirectObservations;
+        } else if (error.message === "missing public detail URLs") {
+          outcomes[index]!.reason = "missing_public_detail_urls";
+        } else if (error.message.includes("Avison Young detail has empty or missing content")) {
+          outcomes[index]!.reason = "empty_or_missing_content";
+        } else if (error.message.includes("Avison Young detail response is unbound or lacks completion metadata")) {
+          outcomes[index]!.reason = "unbound_response";
+        } else if (error.message.includes("Avison Young detail has malformed content types")) {
+          outcomes[index]!.reason = "malformed_content_type";
+        }
+        heldIds.push(selectedProviderIds[index]!);
+        return undefined;
+      }
+      if (requireLiveDetails && !strict && error instanceof AvisonYoungTerminalDetailError) {
+        missingDetails.push(error.failure);
+        return undefined;
+      }
       throw error;
     }
   };
   let enrichedListings: any[];
   try {
     enrichedListings = detailLimit
-    ? requireLiveDetails && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+    ? requireLiveDetails
       ? await mapAvisonYoungStrictDetails(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
@@ -2712,11 +3032,48 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           trackedEnrich
         )
     : [];
+  } catch (error) {
+    // A terminal-only 404 is not authoritative if another record was held
+    // for an independent identity/structure failure in the same batch.
+    if ((heldIds.length || unidentifiedCount || unclassified.length) && (error instanceof AvisonYoungTerminalSourceError
+        || error instanceof AvisonYoungTerminalDetailError)) {
+      throw new Error(`Avison Young detail batch has both held records and required 404: ${heldIds.sort().join(", ")}`);
+    }
+    throw error;
   } finally {
-    if (requireLiveDetails && onDetailOutcomes) onDetailOutcomes(outcomes);
+    if (requireLiveDetails && onDetailOutcomes) {
+      for (let index = 0; index < outcomes.length; index++) {
+        const outcome = outcomes[index]!;
+        if (outcome.state === "validated") continue;
+        // Keep every available source row privately, including unattempted
+        // rows. A malformed or oversized row affects only its own evidence.
+        try {
+          const raw = JSON.stringify(evidenceRows[index]);
+          if (typeof raw !== "string" || !apiKey) throw new Error();
+          if (containsCredential(raw, apiKey, true)) throw new Error();
+          // Replace literals in one pass; serialization and allocation remain
+          // subject to the worker's normal runtime and memory limits.
+          const redacted = raw.replaceAll(apiKey, "[REDACTED_API_KEY]");
+          if (containsCredential(redacted, apiKey)) throw new Error();
+          outcome.feedObservation = {
+            sourceKey: "avison-young", method: "SharpLaunch website inventory",
+            observedAt: inventoryObservation.observedAt, sourceRowJson: redacted,
+            credentialRedacted: redacted !== raw, qualification: "unverified",
+          };
+        } catch {
+          outcome.feedObservation = { state: "retention_failed" };
+        }
+      }
+      onDetailOutcomes(outcomes);
+    }
   }
+  if (heldIds.length || unidentifiedCount || duplicateIdCount || unclassified.length) {
+    throw new AvisonYoungPartialDetailError(heldIds.sort(), missingDetails.length > 0,
+      unidentifiedCount, duplicateIdCount, unclassified.length);
+  }
+  if (missingDetails.length) throw new AvisonYoungTerminalSourceError(missingDetails);
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
-  assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
+  assertAvisonYoungOutputIdentity(selectedProviderIds as string[], listings);
   if (requireLiveDetails) {
     const generationId = refreshGenerationId();
     const incomplete = listings.filter(

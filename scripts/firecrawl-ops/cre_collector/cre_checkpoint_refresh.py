@@ -151,6 +151,8 @@ class ProcessCleanupUnknown(RefreshError):
 COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
+COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT = 87
+COHORT_SETTLED_AVISON_READ_UNSETTLED_EXIT = 88
 COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
 PYRAMID_GUARD_SETTLED_EXIT = 86
 DAUM_ALL_HELD_SETTLED_EXIT = 87
@@ -160,11 +162,17 @@ PYRAMID_DENIED_FAILURE_CODE = "PYRAMID_HTTP_ACCESS_DENIED"
 COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79
 COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403"
 AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78
+AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE = 74
+AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE = 73
+AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE = "AVISON_YOUNG_ACCESS_DENIED"
+AVISON_YOUNG_READ_UNSETTLED_FAILURE_CODE = "AVISON_YOUNG_READ_UNSETTLED"
 AVISON_YOUNG_TERMINAL_FAILURE_CODE = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404"
 COHORT_SETTLED_EXIT_CODES = frozenset(
     {
         0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT,
-        COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
+        COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT,
+        COHORT_SETTLED_AVISON_READ_UNSETTLED_EXIT,
+        COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
         *COHORT_SETTLED_PYRAMID_DENIED_EXITS.values(),
     }
 )
@@ -3992,6 +4000,10 @@ def run_cohort_collection_worker(
     )
     if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
         return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    if source == "avison-young" and rc == AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE:
+        return COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT
+    if source == "avison-young" and rc == AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE:
+        return COHORT_SETTLED_AVISON_READ_UNSETTLED_EXIT
     if source == "pyramid-brokerage":
         for status, exit_code in PYRAMID_DENIED_EXITS.items():
             if rc == exit_code:
@@ -4399,6 +4411,10 @@ def _finalize_cohort_collection(
         terminal = None
         if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
             terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+        elif item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT:
+            terminal = {"code": AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE}
+        elif item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_READ_UNSETTLED_EXIT:
+            terminal = {"code": AVISON_YOUNG_READ_UNSETTLED_FAILURE_CODE}
         elif item.source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT:
             terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
         elif item.source == "pyramid-brokerage":
@@ -4411,7 +4427,7 @@ def _finalize_cohort_collection(
             item.attempt["terminal_failure"] = terminal
             checkpoint["terminal_collection_failure"] = terminal
             item.attempt["error"] = (
-                "typed terminal required-detail HTTP 404; see private attempt log"
+                "typed terminal Avison source failure; see private attempt log"
                 if item.source == "avison-young"
                 else "typed terminal Pyramid access denial; see private attempt log"
                 if item.source == "pyramid-brokerage"
@@ -4997,6 +5013,11 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
         if source in PARTIAL_PAGE_SOURCES:
             settle_partial_pages(run_dir, attempt, run_dir / result[0] if result[0] else None, source)
+        if source == "avison-young" and not result[0]:
+            from source_evidence.avison_spool_receipt import verify_receipt
+            receipt = verify_receipt(run_dir, attempt)
+            if receipt is not None:
+                attempt["avison_standalone_receipt"] = receipt
         return result
     except ArtifactValidationError:
         refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
@@ -5333,7 +5354,9 @@ def collect_colliers_main_chunks(
 def has_terminal_collection_failure(source: str, checkpoint: Mapping[str, Any]) -> bool:
     terminal = checkpoint.get("terminal_collection_failure")
     return isinstance(terminal, Mapping) and (
-        (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
+        (source == "avison-young" and terminal.get("code") in
+         {AVISON_YOUNG_TERMINAL_FAILURE_CODE, AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE,
+          AVISON_YOUNG_READ_UNSETTLED_FAILURE_CODE})
         or (source == "colliers-main" and terminal.get("code") == COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE)
         or (source == "pyramid-brokerage" and terminal.get("code") == PYRAMID_DENIED_FAILURE_CODE
             and terminal.get("http_status") in (401, 403))
@@ -5495,6 +5518,10 @@ def collect_source(
             terminal = None
             if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
                 terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+            elif source == "avison-young" and rc == AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE:
+                terminal = {"code": AVISON_YOUNG_ACCESS_DENIED_FAILURE_CODE}
+            elif source == "avison-young" and rc == AVISON_YOUNG_READ_UNSETTLED_EXIT_CODE:
+                terminal = {"code": AVISON_YOUNG_READ_UNSETTLED_FAILURE_CODE}
             elif source == "colliers-main" and rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE:
                 terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
             elif source == "pyramid-brokerage":
@@ -5507,7 +5534,7 @@ def collect_source(
                 attempt["terminal_failure"] = terminal
                 checkpoint["terminal_collection_failure"] = terminal
                 attempt["error"] = (
-                    "typed terminal required-detail HTTP 404; see private attempt log"
+                    "typed terminal Avison source failure; see private attempt log"
                     if source == "avison-young"
                     else "typed terminal Pyramid access denial; see private attempt log"
                     if source == "pyramid-brokerage"
@@ -8825,7 +8852,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 daum_verified_subset=args.admit_daum_verified_subset,
                 daum_subset_policy=args.daum_subset_policy,
             )
-            if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+            if worker_rc in (COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_AVISON_ACCESS_DENIED_EXIT,
+                             COHORT_SETTLED_AVISON_READ_UNSETTLED_EXIT):
                 return worker_rc
             if (
                 args._cohort_collect_source == "colliers-main"
@@ -9229,6 +9257,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lock._require_authority()
                 for partial_source in PARTIAL_PAGE_SOURCES:
                     reconcile(run_dir, manifest, partial_source)
+                from source_evidence.avison_spool_receipt import verify_receipt
+                for attempt in (manifest.get("sources", {}).get("avison-young", {}).get("attempts") or []):
+                    if (isinstance(attempt, dict) and not attempt.get("rejected_artifact")
+                            and attempt.get("finished_at") and type(attempt.get("rc")) is int):
+                        receipt = verify_receipt(run_dir, attempt)
+                        if receipt is not None:
+                            attempt["avison_standalone_receipt"] = receipt
                 save_manifest(run_dir, manifest)
                 lock._require_authority()
             if args.resume and automatic_source_evidence is not None and not args.pipeline:

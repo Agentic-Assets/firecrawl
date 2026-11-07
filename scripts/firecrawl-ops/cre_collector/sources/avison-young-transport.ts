@@ -8,7 +8,7 @@ import { cancelResponseBody, settleResponseBodyRead, type ResponseBodyReader } f
 const CLEANUP_MS = 1_000;
 export class AvisonYoungUnsettledError extends Error {
   constructor(cause: unknown) {
-    super(`Avison Young transport cleanup was not acknowledged: ${String(cause)}`, { cause });
+    super(`Avison Young request settlement was not confirmed: ${String(cause)}`, { cause });
     this.name = "AvisonYoungUnsettledError";
   }
 }
@@ -18,13 +18,17 @@ export function assertAvisonYoungTransportSettled(): void {
   if (unsettled) throw unsettled;
 }
 
-function refuseUnsettled(cause: unknown): AvisonYoungUnsettledError {
+export function refuseUnsettled(cause: unknown): AvisonYoungUnsettledError {
   unsettled ??= new AvisonYoungUnsettledError(cause);
   return unsettled;
 }
 
+export class AvisonYoungDeadlineError extends Error {
+  constructor() { super("Avison Young request elapsed deadline exceeded"); }
+}
+
 export function avisonYoungDeadlineError(): Error {
-  return new Error("Avison Young request elapsed deadline exceeded");
+  return new AvisonYoungDeadlineError();
 }
 
 export async function withinAvisonYoungDeadline<T>(pending: Promise<T>, deadlineAt: number): Promise<T> {
@@ -51,7 +55,7 @@ export async function fetchAvisonYoungText(
   url: string | URL,
   init: RequestInit,
   timeoutMs: number,
-  httpError: (status: number) => Error
+  httpError: (status: number, retryAfter: string | null) => Error
 ): Promise<string> {
   assertAvisonYoungTransportSettled();
   const controller = new AbortController();
@@ -70,7 +74,7 @@ export async function fetchAvisonYoungText(
   const consume = async (): Promise<string> => {
     const res = await headers;
     controller.signal.throwIfAborted();
-    if (!res.ok) throw httpError(res.status);
+    if (!res.ok) throw httpError(res.status, res.headers?.get?.("retry-after") ?? null);
     if (!res.body) return "";
     reader = res.body.getReader();
     const decoder = new TextDecoder();

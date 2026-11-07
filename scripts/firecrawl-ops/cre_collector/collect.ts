@@ -1,5 +1,6 @@
 import { PARTIAL_PAGE_SOURCES, PartialPageSpool, partialPageEnvName, type PartialPageSource } from "./lib/partial-page-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
+import { publishAvisonSpoolReceipt } from "./lib/source-evidence/avison-spool-receipt.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
@@ -8,10 +9,16 @@ import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-pro
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE,
+  AVISON_YOUNG_UNSETTLED_EXIT_CODE,
+  AvisonYoungAccessDeniedError,
+  AvisonYoungPartialDetailError,
+  avisonYoungTeamDenialObserved,
   isAvisonYoungTerminalSourceError,
   isExclusiveAvisonYoungTerminal404Failure,
   srcAvisonYoung,
 } from "./sources/avison-young.js";
+import { AvisonYoungUnsettledError } from "./sources/avison-young-transport.js";
 import { brokerIndex, brokers } from "./lib/broker.js";
 import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
@@ -229,6 +236,8 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
   }
 }
 
+let avisonTerminalExit: number | undefined;
+
 async function main() {
   const startedAt = observationNow();
   const spools: Partial<Record<PartialPageSource, PartialPageSpool>> = {};
@@ -248,6 +257,10 @@ async function main() {
     failures: Array<{ listingId: string; role: string; status: 404 }>;
   }> = [];
   let avisonOtherFailures = 0;
+  let avisonOnlyRecordLocalFailures = true;
+  let avisonRecordLocalHas404 = false;
+  let avisonAccessDenied = false;
+  let avisonUnsettled = false;
   let terminalCaptureFailure = false;
 
   sourceLoop: for (const key of requestedSources) {
@@ -347,6 +360,10 @@ async function main() {
             avisonTerminalFailures.push({ transaction: tx, failures: err.failures });
           } else {
             avisonOtherFailures += 1;
+            if (err instanceof AvisonYoungPartialDetailError && err.hasRequiredDetail404) {
+              avisonRecordLocalHas404 = true;
+            }
+            if (!(err instanceof AvisonYoungPartialDetailError)) avisonOnlyRecordLocalFailures = false;
           }
         }
         sources.push({
@@ -354,8 +371,39 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof AvisonYoungAccessDeniedError && err.retryAfter
+            ? { providerRetryAfter: err.retryAfter } : {}),
+          ...(err instanceof AvisonYoungPartialDetailError || isAvisonYoungTerminalSourceError(err) || err instanceof AvisonYoungAccessDeniedError
+            || err instanceof AvisonYoungUnsettledError ? { truncated: true } : {}),
           ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
+        if (key === "avison-young" && err instanceof AvisonYoungAccessDeniedError) {
+          if (err.retryAfter) console.error(`  avison-young: provider Retry-After: ${err.retryAfter}`);
+          avisonAccessDenied = true;
+          if (!MONITOR && requestedSources.length === 1) avisonTerminalExit = AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
+          break;
+        }
+        if (key === "avison-young" && err instanceof AvisonYoungUnsettledError) {
+          avisonUnsettled = true;
+          if (!MONITOR && requestedSources.length === 1) avisonTerminalExit = AVISON_YOUNG_UNSETTLED_EXIT_CODE;
+          break;
+        }
+      }
+    }
+  }
+
+  // A mixed-source artifact can still carry independent peers, but an earlier
+  // successful Avison transaction must not escape its later source failure.
+  // Its validated details, when captured, remain in the private spool.
+  if (requestedSources.length > 1 && sources.some(source => source.sourceKey === "avison-young" && source.error)) {
+    for (let index = listings.length - 1; index >= 0; index--) {
+      if (listings[index].sourceKey === "avison-young") listings.splice(index, 1);
+    }
+    for (const source of sources) {
+      if (source.sourceKey === "avison-young" && !source.error) {
+        source.error = "Avison Young source failed in another transaction; listings held";
+        source.truncated = true;
+        source.listingsCollected = 0;
       }
     }
   }
@@ -368,6 +416,24 @@ async function main() {
     const receipt = spool.finish();
     const failed = sources.find((source) => source.sourceKey === key && source.error);
     const source = failed ?? sources.find((entry) => entry.sourceKey === key);
+    if (key === "avison-young" && failed && (avisonOtherFailures > 0 || avisonTerminalFailures.length > 0)
+        && requestedSources.length === 1 && !avisonAccessDenied && !avisonUnsettled && !terminalCaptureFailure
+        && (receipt.state === "sealed" || receipt.state === "sealed_partial")) {
+      try {
+        publishAvisonSpoolReceipt(spool.path, refreshGenerationId() ?? "", attempts[key] ?? 0,
+          receipt, startedAt, observationNow(),
+          avisonRecordLocalHas404 || (avisonTerminalFailures.length > 0
+            && (avisonOtherFailures > 0 || avisonYoungTeamDenialObserved()))
+            ? "mixed_source_errors"
+            : avisonOtherFailures === 0 ? "terminal_detail_not_found"
+              : avisonOnlyRecordLocalFailures && !avisonYoungTeamDenialObserved()
+                ? "record_local_error" : "unclassified_source_error");
+      } catch {
+        // The ordinary artifact/peer path remains independent; a missing
+        // receipt must never qualify the spool without the main artifact.
+        console.error("  avison-young: standalone spool receipt unavailable");
+      }
+    }
     if (source) {
       partialCaptureAttached = true;
       partialSourceFailed ||= Boolean(failed);
@@ -380,11 +446,16 @@ async function main() {
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
-  const evidenceOnly = !MONITOR && listings.length === 0 &&
-    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
+  const singletonAvisonFailure = listings.length > 0 && requestedSources.length === 1 && requestedSources[0] === "avison-young"
+    && sources.some(source => source.sourceKey === "avison-young" && source.error);
+  const evidenceOnly = !MONITOR && (singletonAvisonFailure || (listings.length === 0 &&
+    (partialSourceFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0))));
   let avisonTerminal404 = false;
-  if (listings.length === 0) {
-    if (
+  const terminalAvisonDenial = avisonAccessDenied && !MONITOR && requestedSources.length === 1
+    && requestedSources[0] === "avison-young";
+  const terminalAvisonUnsettled = avisonUnsettled && !MONITOR && requestedSources.length === 1
+    && requestedSources[0] === "avison-young";
+  if (
       !MONITOR
       && isExclusiveAvisonYoungTerminal404Failure({
         requestedSources,
@@ -394,10 +465,8 @@ async function main() {
         otherFailureCount: avisonOtherFailures,
       })
     ) {
-      // This exit is reserved for the typed direct-HTTP 404 path. It carries no
-      // accepted artifact and is used only when every selected transaction failed
-      // with that terminal response. If a private spool captured validated peers,
-      // write a rejected evidence-only artifact before returning the same code.
+      // A typed 404 with no other source failures is terminal for this source.
+      // Any completed peers remain private evidence, never a complete artifact.
       console.error(JSON.stringify({
         event: "avison_young_terminal_required_detail_failure",
         code: "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404",
@@ -411,12 +480,18 @@ async function main() {
         ),
       }));
       avisonTerminal404 = true;
+      avisonTerminalExit = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
       const capture = sources.find(source => source.sourceKey === "avison-young" && source.partialCapture)?.partialCapture;
-      if (!capture || !["sealed", "sealed_partial"].includes(capture.state)
-          || capture.observationRecords < 1) {
+      if (listings.length === 0 && (!capture || !["sealed", "sealed_partial"].includes(capture.state)
+          || capture.observationRecords < 1)) {
         process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
         return;
       }
+  }
+  if (listings.length === 0) {
+    if ((terminalAvisonDenial || terminalAvisonUnsettled) && !evidenceOnly) {
+      process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
+      return;
     }
     // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that
@@ -466,7 +541,7 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  const privateEvidence = partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+  const privateEvidence = evidenceOnly || partialCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
   const franklinFallback = !partialCaptureAttached && sources.some(source => source.sourceKey === "franklin-street" &&
       Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
@@ -545,8 +620,11 @@ async function main() {
   }
   if (terminalCaptureFailure) process.exitCode = 1;
   if (evidenceOnly) {
-    console.error("no listings collected from any source");
-    process.exitCode = avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
+    console.error("collector artifact is evidence-only and cannot be ingested");
+    process.exitCode = terminalAvisonDenial ? AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE : avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
+  }
+  if (terminalAvisonDenial || terminalAvisonUnsettled) {
+    process.exitCode = terminalAvisonUnsettled ? AVISON_YOUNG_UNSETTLED_EXIT_CODE : AVISON_YOUNG_ACCESS_DENIED_EXIT_CODE;
   }
 }
 
@@ -703,5 +781,6 @@ async function dispatch(): Promise<void> {
 
 dispatch().catch((err) => {
   console.error(err);
-  process.exit(1);
+  if (avisonTerminalExit !== undefined) console.error("Avison terminal source outcome preserved after collector output failure");
+  process.exit(avisonTerminalExit ?? 1);
 });
