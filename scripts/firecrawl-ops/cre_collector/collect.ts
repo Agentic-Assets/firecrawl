@@ -3,6 +3,8 @@ import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-erro
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-property-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
@@ -41,6 +43,7 @@ import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcLyonSearchPartial } from "./sources/lyon-search-observation.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
+import { MatthewsRedirectCleanupUnknown, MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT } from "./sources/matthews-transport.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
 import { srcPyramidBrokerage, PyramidAccessDenied, PYRAMID_DENIED_EXIT } from "./sources/pyramid-brokerage.js";
@@ -202,7 +205,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
     case "transwestern":
       return srcTranswestern(tx, max, monitor);
     case "matthews":
-      return srcMatthews(tx, max, monitor);
+      return srcMatthews(tx, max, monitor, spools.matthews);
     case "franklin-street":
       return srcFranklinStreet(tx, max, monitor);
     case "srs":
@@ -239,6 +242,24 @@ async function main() {
     if (!MONITOR && OUT_PATH && requestedSources.includes(key) && path) {
       spools[key] = new PartialPageSpool(path, refreshGenerationId() ?? "", attempt, undefined, key);
       attempts[key] = attempt;
+    }
+  }
+  let matthewsDirectSpool = false;
+  let matthewsSpoolUnavailable = false;
+  if (!MONITOR && requireFreshDetails() && requestedSources.includes("matthews")) {
+    try {
+      if (!spools.matthews) {
+        const directory = mkdtempSync(join(tmpdir(), "cre-matthews-partial-"));
+        spools.matthews = new PartialPageSpool(join(directory, "attempt-1.jsonl"),
+          refreshGenerationId() ?? "direct-unbound", 1, undefined, "matthews");
+        attempts.matthews = 1;
+        matthewsDirectSpool = true;
+      }
+      if (!spools.matthews.writable) throw new Error("spool unavailable");
+      console.error(`Matthews private evidence (unverified until sealed): ${spools.matthews.path}`);
+    } catch {
+      matthewsSpoolUnavailable = true;
+      console.error("Matthews private evidence spool unavailable; interrupted observations may be lost");
     }
   }
   const sources: any[] = [];
@@ -325,6 +346,12 @@ async function main() {
           }
           break;
         }
+        if (key === "matthews" && (err instanceof MatthewsRedirectCleanupUnknown ||
+            (err instanceof RetainedSourceError && err.cause instanceof MatthewsRedirectCleanupUnknown))) {
+          console.error("  matthews: redirect response cleanup unknown; source dispatch stopped");
+          process.exitCode = MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT;
+          return;
+        }
         if (err instanceof NativeEvidenceTerminalError) {
           sources.push({ sourceKey: key, transaction: tx, supported: true, error: "native_capture_failed" });
           console.error(`  ${key}/${tx} FAILED: native_capture_failed`);
@@ -366,16 +393,25 @@ async function main() {
     const spool = spools[key];
     if (!spool) continue;
     const receipt = spool.finish();
+    if (key === "matthews" && receipt.state !== "sealed") {
+      matthewsSpoolUnavailable = true;
+      console.error("Matthews private evidence spool was not fully sealed; interrupted observations may be lost");
+    }
     const failed = sources.find((source) => source.sourceKey === key && source.error);
     const source = failed ?? sources.find((entry) => entry.sourceKey === key);
     if (source) {
-      partialCaptureAttached = true;
+      partialCaptureAttached ||= key !== "matthews" || receipt.state !== "failed";
       partialSourceFailed ||= Boolean(failed);
       source.partialCapture = { ...receipt, sourceKey: key,
         generationId: refreshGenerationId(), attempt: attempts[key],
-        path: `${key}-partial/attempt-${attempts[key]}.jsonl`,
+        path: key === "matthews" && matthewsDirectSpool ? spool.path : `${key}-partial/attempt-${attempts[key]}.jsonl`,
         coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
     }
+  }
+  if (matthewsSpoolUnavailable && !spools.matthews) {
+    const source = sources.find(entry => entry.sourceKey === "matthews" && entry.error)
+      ?? sources.find(entry => entry.sourceKey === "matthews");
+    if (source) source.partialCapture = { state: "failed", sourceKey: "matthews", coverage: "unverified" };
   }
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
@@ -505,6 +541,96 @@ async function main() {
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
+  } else if (!OUT_PATH && privateEvidence && sources.some(source => source.sourceKey === "matthews") &&
+      (matthewsSpoolUnavailable || sources.some(source => source.sourceKey === "essex-realty" &&
+        Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
+          value?.schema === "essex-inventory-mismatch-v1")))) {
+    try {
+      const path = writeTerminalCollectorArtifact(undefined, json);
+      console.error(`Matthews private fallback artifact: ${path}`);
+    } catch {
+      console.error("Matthews private fallback artifact could not be retained; observations may be lost");
+      // Only bounded source status is safe to print: other sources may carry
+      // private observations or raw provider fields in either entry or listing.
+      // Use the existing Essex stdout eligibility boundary for peer rows.
+      // A private sidecar or non-Matthews retained/raw evidence forces status-only.
+      const healthyPeerKeys = new Set(requestedSources.filter(key => {
+        if (key === "matthews") return false;
+        const entries = sources.filter(source => source.sourceKey === key);
+        return entries.length > 0 && entries.every(source =>
+          source.supported === true && !source.error && source.truncated === false);
+      }));
+      const peerRows = listings.filter(listing => healthyPeerKeys.has(listing.sourceKey));
+      const withheldPeerRows = listings.filter(listing =>
+        listing.sourceKey !== "matthews" && !healthyPeerKeys.has(listing.sourceKey)).length;
+      const peerBrokerIds = new Set<number>();
+      let safeProjection = !partialCaptureAttached &&
+        !sources.some(source => source.sourceKey !== "matthews" &&
+          Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+        !listings.some(listing => listing.srsRawRetention || listing.buildoutRawRetention ||
+          listing.kidderRawRetention || listing.newmarkNimRawRetention);
+      for (const listing of peerRows) {
+        if (listing.brokerIds !== undefined && !Array.isArray(listing.brokerIds)) safeProjection = false;
+        for (const id of Array.isArray(listing.brokerIds) ? listing.brokerIds : []) {
+          if (!Number.isSafeInteger(id) || id < 0 || id >= brokers.length ||
+              brokers[id]?.company === "Matthews") safeProjection = false;
+          else peerBrokerIds.add(id);
+        }
+      }
+      const secrets = Object.entries(process.env).flatMap(([key, value]) =>
+        /(?:api.?key|token|password|secret|credential)/i.test(key) && value && value.length >= 8 ? [value] : []);
+      const safeText = (value: unknown): value is string => typeof value === "string" &&
+        value.length > 0 && value.length <= 500 && !/[\u0000-\u001f\u007f]/.test(value) &&
+        !/(?:bearer\s+|(?:api.?key|token|password|secret|credential)\s*[:=])/i.test(value) &&
+        !secrets.some(secret => {
+          try { return value.includes(secret) || value.toLowerCase().includes(encodeURIComponent(secret).toLowerCase()) ||
+            value.includes(Buffer.from(secret).toString("base64")); }
+          catch { return true; }
+        });
+      const orderedIds = [...peerBrokerIds].sort((a, b) => a - b);
+      const remap = new Map(orderedIds.map((id, index) => [id, index]));
+      const brokerProjection = orderedIds.map(id => {
+        const broker = brokers[id];
+        if (!safeText(broker?.name) || !safeText(broker?.company)) safeProjection = false;
+        return { name: broker?.name, company: broker?.company };
+      });
+      const rowProjection = peerRows.map(listing => {
+        const row: Record<string, unknown> = { sourceKey: listing.sourceKey };
+        // Without source-specific proof an ID or URL path can itself contain
+        // opaque credentials. Neither belongs in this emergency stdout view.
+        if (!safeText(listing.name)) safeProjection = false;
+        for (const field of ["name", "transactionType", "transactionMode", "street", "city", "state"]) {
+          if (listing[field] === undefined || listing[field] === null) continue;
+          if (!safeText(listing[field])) safeProjection = false;
+          else row[field] = listing[field];
+        }
+        if (Array.isArray(listing.brokerIds)) row.brokerIds = listing.brokerIds.map((id: number) => remap.get(id));
+        return row;
+      });
+      const projectedListings = safeProjection ? rowProjection : [];
+      const projection = {
+        runMeta: { mode: MONITOR ? "monitor" : "full", evidenceOnly: true,
+          evidencePurpose: "private_retention_failed", coverage: "unverified",
+          peerRowsAvailable: safeProjection, withheldPeerRows,
+          omittedFields: "Only source, name, transaction, location and broker name/company are projected; IDs, URLs and other fields omitted" },
+        sources: sources.map(source => ({
+          sourceKey: requestedSources.includes(source.sourceKey) ? source.sourceKey : "unknown",
+          transaction: ["sale", "lease"].includes(source.transaction) ? source.transaction : null,
+          supported: source.supported === true,
+          failed: Boolean(source.error),
+          truncated: typeof source.truncated === "boolean" ? source.truncated : null,
+          listingsCollected: Number.isSafeInteger(source.listingsCollected) && source.listingsCollected >= 0
+            ? source.listingsCollected : null,
+        })),
+        listings: projectedListings,
+        brokers: safeProjection ? brokerProjection : [],
+        totalListings: projectedListings.length,
+      };
+      if (!safeProjection) console.error("Private peer evidence prevents row projection; peer data was not retained");
+      else if (withheldPeerRows) console.error("Incomplete peer source rows were not retained in the status projection");
+      writeCollectorArtifact(undefined, JSON.stringify(projection), false);
+    }
+    process.exitCode = 1;
   } else if (!OUT_PATH && sources.some(source => source.sourceKey === "essex-realty" &&
       Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
         value?.schema === "essex-inventory-mismatch-v1"))) {

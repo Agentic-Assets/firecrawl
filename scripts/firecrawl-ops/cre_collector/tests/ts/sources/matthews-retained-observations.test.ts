@@ -2,6 +2,10 @@
 process.argv = [process.argv[0]!, process.argv[1]!];
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { fsyncSync, mkdtempSync, rmSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PartialPageSpool } from "../../../lib/partial-page-spool.js";
 import { srcMatthews } from "../../../sources/matthews.js";
 import { RetainedSourceError } from "../../../lib/source-observations.js";
 
@@ -15,7 +19,7 @@ const page = (index: number, canonical = detail(index)) => `<html><head>
   <table><tr><th>Rate</th><td></td></tr><tr><th>Rate</th><td>Original units</td></tr></table>
   <a href="/brochure.pdf">Brochure</a><img src="/photo.jpg" alt="Literal image"></section></body></html>`;
 
-function provider(t: TestContext, bodies: string[], strict: boolean) {
+function provider(t: TestContext, bodies: Array<string | number>, strict: boolean) {
   const oldFetch = globalThis.fetch, oldTimer = globalThis.setTimeout;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   process.env.CRE_REQUIRE_FRESH_DETAILS = strict ? "1" : "0";
@@ -27,11 +31,12 @@ function provider(t: TestContext, bodies: string[], strict: boolean) {
       `<url><loc>${detail(i)}</loc></url>`).join("")}</urlset>`);
     const index = bodies.findIndex((_, i) => detail(i) === url);
     assert.ok(index >= 0, `unexpected provider request ${url}`);
-    return new Response(bodies[index]);
+    const body = bodies[index];
+    return typeof body === "number" ? new Response(null, { status: body, headers: { location: "/listings" } }) : new Response(body);
   };
   // Only provider pacing is accelerated; bounded request deadlines stay intact.
   globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
-    oldTimer(callback, typeof delay === "number" && delay < 10_000 ? 0 : delay, ...args)) as typeof setTimeout;
+    oldTimer(callback, typeof delay === "number" && (delay < 29_900 || delay > 30_000) ? 0 : delay, ...args)) as typeof setTimeout;
   t.after(() => {
     globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimer;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -82,3 +87,85 @@ test("Matthews mixed results keep accepted counts and omit challenge-shell conte
   assert.equal(result.retainedObservations?.length, 1);
   assert.equal((result.retainedObservations![0] as any).requestedUrl, detail(1));
 });
+
+for (const tx of ["sale", "lease"] as const) for (const redirectIndex of [0, 2]) {
+  test(`strict Matthews ${tx} holds 307 at ${redirectIndex} and preserves peer evidence`, async (t) => {
+    // The lease selector is exercised with lease-shaped sitemap URLs.
+    const oldFetch = globalThis.fetch, oldTimer = globalThis.setTimeout;
+    const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const urls = [0, 1, 2].map(i => `${host}/properties/${tx === "lease" ? "leasing-" : ""}peer-${i}`);
+    const requested: string[] = [];
+    globalThis.fetch = async input => {
+      const url = String(input); requested.push(url);
+      if (url === `${host}/sitemap.xml`) return new Response(`<urlset>${urls.map(u => `<url><loc>${u}</loc></url>`).join("")}</urlset>`);
+      const i = urls.indexOf(url); assert.ok(i >= 0);
+      if (i === redirectIndex) return new Response(null, { status: 307, headers: { location: "/listings" } });
+      return new Response(page(i, urls[i]).replace(`Partial ${i}`, `Peer ${i}`));
+    };
+    globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+      oldTimer(callback, typeof delay === "number" && (delay < 29_900 || delay > 30_000) ? 0 : delay, ...args)) as typeof setTimeout;
+    t.after(() => { globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimer;
+      if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict; });
+    await assert.rejects(srcMatthews(tx, Infinity, false), (error: unknown) => {
+      assert.ok(error instanceof RetainedSourceError);
+      assert.match(error.message, /partial.*temporary redirect/);
+      const observations = error.retainedObservations as any[];
+      const held = observations.find(x => x.outcome === "held_temporary_redirect");
+      assert.equal(held.requestedUrl, urls[redirectIndex]); assert.equal(held.httpStatus, 307);
+      assert.equal(held.coverage, "unverified"); assert.equal(held.location, undefined);
+      assert.ok(observations.some(x => x.schema === "matthews-completed-parse-observation/v1"));
+      return true;
+    });
+    assert.ok(requested.includes(urls[2]));
+    assert.ok(!requested.includes(`${host}/listings`));
+  });
+}
+
+for (const status of [401, 403, 418, 429]) {
+  test(`strict Matthews HTTP ${status} still stops without continuing peers`, async t => {
+    const requests = provider(t, [status, status, page(2)], true);
+    await assert.rejects(srcMatthews("sale", Infinity, false), status === 403 || status === 429 ? /throttled after retries/ : new RegExp(`Matthews HTTP ${status}`));
+    assert.ok(!requests.includes(detail(2)));
+  });
+}
+
+test("strict Matthews continues past more than 50 redirects to retain a valid peer", async t => {
+  const requests = provider(t, [...Array.from({ length: 60 }, () => 307), page(60)], true);
+  await assert.rejects(srcMatthews("sale", Infinity, false), (error: unknown) => {
+    assert.ok(error instanceof RetainedSourceError);
+    assert.match(error.message, /partial: 60 temporary redirect/);
+    const observations = error.retainedObservations as any[];
+    assert.equal(observations.filter(x => x.outcome === "held_temporary_redirect").length, 60);
+    assert.ok(observations.some(x => x.schema === "matthews-completed-parse-observation/v1"));
+    return true;
+  });
+  assert.ok(requests.includes(detail(60)));
+});
+
+for (const held of [false, true]) {
+  test(`failed spool writes do not stop ${held ? "redirect-partial" : "healthy"} Matthews peers`, async t => {
+    const dir=mkdtempSync(join(tmpdir(),"matthews-spool-failure-"));
+    t.after(()=>rmSync(dir,{recursive:true,force:true}));
+    let writes=0;
+    const spool=new PartialPageSpool(join(dir,"attempt.jsonl"),"test-generation",1,{
+      write(fd,buffer,offset,length) { if (++writes > 1) throw new Error("synthetic spool write failure"); return writeSync(fd,buffer,offset,length); },
+      sync(fd) { fsyncSync(fd); },
+    },"matthews");
+    assert.equal(spool.writable,true);
+    const requests=provider(t, held ? [307,page(1),page(2)] : [page(0),page(1),page(2)],true);
+    if (held) {
+      await assert.rejects(srcMatthews("sale",Infinity,false,spool),(error: unknown)=>{
+        assert.ok(error instanceof RetainedSourceError);
+        assert.match(error.message,/partial.*temporary redirect/);
+        assert.ok((error.retainedObservations as any[]).some(x=>x.schema==="matthews-completed-parse-observation/v1"));
+        return true;
+      });
+    } else {
+      const result=await srcMatthews("sale",Infinity,false,spool);
+      assert.equal(result.listings.length,3); assert.equal(result.truncated,false);
+    }
+    assert.ok(requests.includes(detail(2)));
+    assert.deepEqual(spool.finish(),{state:"failed"});
+  });
+}

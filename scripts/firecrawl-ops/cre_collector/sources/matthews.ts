@@ -1,3 +1,4 @@
+import type { PartialPageSpool } from "../lib/partial-page-spool.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -15,7 +16,7 @@ import { matthewsSpaceFacts } from "./pure/matthews-space-facts.js";
 import { RetainedSourceError } from "../lib/source-observations.js";
 import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
 
-import { matthewsFetch } from "./matthews-transport.js";
+import { matthewsFetch, MatthewsRedirectCleanupUnknown } from "./matthews-transport.js";
 export {
   MATTHEWS_FETCH_TIMEOUT_MS,
   MATTHEWS_MAX_RESPONSE_BYTES,
@@ -713,7 +714,7 @@ export function matthewsParsedCoverage(
   };
 }
 
-export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?: PartialPageSpool): Promise<SourceResult> {
   const { detailUrls, inventoryObservedAt } = await matthewsFreshInventory();
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
@@ -752,6 +753,18 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   // unchanged. pmap settles already-started workers before rejecting.
   const observations: unknown[] = new Array(take.length);
   const parsedObservations: unknown[] = new Array(take.length);
+  let heldRedirects = 0;
+  let cleanupUnknown: MatthewsRedirectCleanupUnknown | undefined;
+  let spoolFailureReported = false;
+  const record = (observation: unknown) => {
+    if (!spool || spoolFailureReported) return;
+    spool.record({ transaction: tx, pass: 1, page: 0, observedAt: observationNow(),
+      kind: "matthews_detail_outcome", documents: [observation] });
+    if (!spool.writable) {
+      spoolFailureReported = true;
+      console.error("Matthews private evidence spool failed; interrupted observations may be lost");
+    }
+  };
   const retain = (error: unknown): never => {
     const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])
       .filter((value) => value !== undefined);
@@ -760,7 +773,18 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   };
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url, index) => {
     try {
-      const response = await matthewsFetch(url, true);
+      const response = await matthewsFetch(url, true, requireFreshDetails(), requireFreshDetails(), requireFreshDetails());
+      if (requireFreshDetails() && response.status === 307) {
+        observations[index] = {
+          schema: "matthews-detail-redirect-observation/v1",
+          sourceKey: "matthews", requestedUrl: url, requestedTransaction: tx,
+          inventoryObservedAt, detailObservedAt: observationNow(), httpStatus: response.status,
+          identity: "unverified", coverage: "unverified", outcome: "held_temporary_redirect",
+        };
+        record(observations[index]);
+        heldRedirects++;
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
         response.status,
         response.location,
@@ -829,10 +853,12 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         listing = parseMatthewsDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
       } catch (error) {
         retainPage();
+        if (observations[index]) record(observations[index]);
         throw error;
       }
       if (!listing) {
         retainPage();
+        if (observations[index]) record(observations[index]);
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
         if (requireFreshDetails()) {
           throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
@@ -841,16 +867,21 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         parsedObservations[index] = { schema: "matthews-completed-parse-observation/v1",
           sourceKey: "matthews", reason: "source_run_failed_after_completed_parse",
           observation: listing };
+        record(parsedObservations[index]);
       }
       return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
+      if (err instanceof MatthewsRedirectCleanupUnknown) cleanupUnknown = err;
       console.error(`  matthews/${tx}: ${url} failed: ${err}`);
       if (requireFreshDetails()) {
         throw err;
       }
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
-  }).catch(retain);
+  }).catch(error => retain(cleanupUnknown ?? error));
+  if (heldRedirects) {
+    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held`));
+  }
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
     parsed.filter((result) => result.providerNotFound).length,

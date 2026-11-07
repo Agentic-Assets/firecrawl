@@ -335,6 +335,31 @@ unchanged. These are retention limits, not evidence of complete page coverage.
 The draft shared `lib/source-page-context` helper owns that bounded extraction;
 Foundry retains its source schema through a thin wrapper. Lyon-Stahl captures
 held/rejected non-shell page context at its existing detail-fetch boundary.
+In strict Matthews collection, an observed detail HTTP 307 is held as an
+unverified temporary redirect while eligible peers continue under existing
+pacing and the run deadline only after response cancellation and owned dispatcher
+destruction are acknowledged. Unknown cleanup stops dispatch and retains the
+checkpoint recovery fence. The collector retains the raw
+status, requested URL, transaction and observation clocks, not an inferred
+destination or disappearance. The source still fails with private retained
+observations, so these peers do not become an admitted partial ingest. Strict
+collector invocations also append these outcomes to the shared private attempt
+spool as each completes; direct invocations without a checkpoint use a private
+temporary spool and report its path. Spool initialization, write or sealing
+failures are reported without stopping eligible source collection; no missing
+evidence is claimed retained. When both a direct no-output spool and its private
+fallback artifact fail, stderr reports the loss and stdout contains an
+unverified evidence-only status projection. Allowlisted non-Matthews name,
+location and transaction fields and referenced broker names/companies appear only
+when private-evidence checks pass; IDs, URLs and all other fields are explicitly omitted. Otherwise
+no rows appear and the loss is reported. Matthews observations never
+appear in this projection. Interrupted spools remain unverified;
+synchronous writes survive ordinary process termination, while fsync and a
+bound receipt are produced only on normal sealing, so no OS-crash durability
+or ingestion authority is claimed. Other
+transport and access failures keep their existing stop behavior. This does not
+prove sitemap coverage, tenure, source freshness or lifecycle authority.
+
 Matthews captures accessible non-shell pages that fail parsing or identity
 validation. If strict Matthews collection fails, its typed error also carries
 the already completed parses after the shared mapper settles active workers.
