@@ -180,7 +180,7 @@ export type CbreSnapshotOptions = {
   maxPasses?: number;
   maxPages?: number;
   concurrency?: number;
-  onPage?: (page: number, pass: number, documents: any[], rejection?: "document_validation" | "page_envelope", rejectedDocuments?: number[]) => void;
+  onPage?: (page: number, pass: number, documents: any[], rejection?: "document_validation" | "page_envelope", rejectedDocuments?: number[], pageSize?: number) => void;
 };
 
 type CbrePageFetcher = (
@@ -230,7 +230,7 @@ async function fetchValidatedCbrePage(
         if (!key || counts.get(key)! > 1) rejectedDocuments.push(index);
       });
     }
-    try { onPage?.(page, pass, [response], rejection, rejectedDocuments); }
+    try { onPage?.(page, pass, [response], rejection, rejectedDocuments, pageSize); }
     catch { /* Retention failure must not replace the source error. */ }
     throw error;
   }
@@ -757,6 +757,163 @@ export function cbreResultTruncated(
   );
 }
 
+/** Map a source document without changing full-snapshot behavior. */
+export function mapCbreDocument(
+  d: any,
+  tx: Tx,
+  observed: ReturnType<typeof detailObservation>,
+  partial = false,
+) {
+  if (partial) {
+    const key = d && typeof d === "object" && !Array.isArray(d) ? d["Common.PrimaryKey"] : null;
+    if (typeof key !== "string" || !key || /\s/.test(key)) {
+      throw new Error("CBRE partial document has no usable native identity");
+    }
+    const objects = (value: unknown): any[] => Array.isArray(value)
+      ? value.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) : [];
+    const safeUri = (value: unknown): string | null => {
+      const uri = clean(value);
+      if (!uri || uri.startsWith("//") || (!uri.startsWith("/") && !/^https?:\/\//i.test(uri))) return null;
+      try {
+        const url = new URL(uri, "https://www.cbre.com");
+        if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password
+            || (uri.startsWith("/") && url.hostname !== "www.cbre.com")) return null;
+        return uri.replace(/^https?:/i, (scheme: string) => scheme.toLowerCase());
+      } catch { return null; }
+    };
+    d = { ...d,
+      "Common.Charges": objects(d["Common.Charges"]),
+      "Common.Agents": objects(d["Common.Agents"]),
+      "Common.Brochures": objects(d["Common.Brochures"]).flatMap((brochure) => {
+        const uri = safeUri(brochure["Common.Uri"]);
+        return uri ? [{ ...brochure, "Common.Uri": uri }] : [];
+      }),
+      "Common.Photos": objects(d["Common.Photos"]).map((photo) => ({
+        ...photo, "Common.ImageResources": objects(photo["Common.ImageResources"])
+          .flatMap((resource) => {
+            const uri = safeUri(resource["Common.Resource.Uri"]);
+            return uri ? [{ ...resource, "Common.Resource.Uri": uri }] : [];
+          }),
+      })),
+      "Common.Strapline": objects(d["Common.Strapline"]),
+      "Common.LongDescription": objects(d["Common.LongDescription"]),
+    };
+  }
+  const text = (loc: any) =>
+    Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;
+
+  const addr = d["Common.ActualAddress"] ?? {};
+  const charges: any[] = Array.isArray(d["Common.Charges"])
+    ? d["Common.Charges"]
+    : [];
+  const sale = charges.find(
+    (c: any) =>
+      c["Common.ChargeKind"] === "SalePrice" && num(c["Common.Amount"]),
+  );
+  const rent = charges.find(
+    (c: any) => c["Common.ChargeKind"] === "Rent" && num(c["Common.Amount"]),
+  );
+  const coord = d["Common.Coordinate"] ?? {};
+  const aspects: string[] = Array.isArray(d["Common.Aspects"])
+    ? d["Common.Aspects"]
+    : [];
+  const name = clean(addr["Common.Line1"]);
+  const street = clean(addr["Common.Line2"]);
+  const city = clean(addr["Common.Locallity"]);
+  const state = clean(addr["Common.Region"]);
+  const zip = clean(addr["Common.PostCode"]);
+  const slug = cbreListingSlug({ name, street, city, state, zip });
+  const brokerIds = (partial ? [] : (
+    Array.isArray(d["Common.Agents"]) ? d["Common.Agents"] : []
+  ))
+    .map((a: any) =>
+      brokerRef({
+        name: clean(a["Common.AgentName"]),
+        email: clean(a["Common.EmailAddress"]),
+        phone: clean(a["Common.TelephoneNumber"]),
+        office: clean(a["Common.AgentOffice"]),
+        company: "CBRE",
+      }),
+    )
+    .filter((x: number | null): x is number => x !== null);
+  const brochureItems = (
+    Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []
+  ).map((b: any) => ({
+    name: clean(b["Common.BrochureName"]),
+    url: cbreBrochureUrl(clean(b["Common.Uri"])),
+  }));
+  const photoUrls = (
+    Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : []
+  )
+    .map((p: any) => {
+      const r =
+        (p["Common.ImageResources"] ?? []).find(
+          (x: any) => x["Common.Breakpoint"] === "original",
+        ) ?? (p["Common.ImageResources"] ?? [])[0];
+      return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
+    })
+    .filter((u: string | null): u is string => Boolean(u));
+  const listingUrl = cbreListingUrl(d["Common.PrimaryKey"], slug);
+  const leaseRateText = rent && (!partial || clean(rent["Common.ChargeCurrency"])?.toUpperCase() === "USD")
+    ? `${rent["Common.Amount"]} ${clean(rent["Common.ChargeCurrency"]) ?? "USD"}/${clean(rent["Common.ChargeInterval"]) ?? ""} ${clean(rent["Common.ChargeBasis"]) ?? ""}`.trim()
+    : null;
+  const lr = parseLeaseRate(leaseRateText);
+  return {
+    id: d["Common.PrimaryKey"],
+    name,
+    headline: text(d["Common.Strapline"]),
+    // WS1: lift highlights from the CBRE strapline/headline field
+    highlights: text(d["Common.Strapline"]) ?? undefined,
+    transactionType: partial
+      ? (aspects.includes("isSale") && aspects.includes("isLetting") ? "Sale/Lease"
+        : aspects.includes("isSale") ? "Sale" : aspects.includes("isLetting") ? "Lease" : null)
+      : cbreTransactionType(aspects),
+    assetType: clean(d["Common.UsageType"]),
+    description: text(d["Common.LongDescription"]),
+    street,
+    city,
+    state,
+    postalCode: zip,
+    country: clean(addr["Common.Country"]),
+    latitude: typeof coord.lat === "number" ? coord.lat : null,
+    longitude: typeof coord.lon === "number" ? coord.lon : null,
+    salePriceUsd: sale && (!partial || clean(sale["Common.ChargeCurrency"])?.toUpperCase() === "USD")
+      ? sale["Common.Amount"] : null,
+    salePriceText:
+      sale || tx === "lease" || partial ? null : "Contact broker for pricing",
+    leaseRateText,
+    // WS1: parse lease rate into typed camelCase fields via parseLeaseRate
+    leaseRateMin: lr.min ?? undefined,
+    leaseRateMax: lr.max ?? undefined,
+    leaseRateType: lr.type ?? undefined,
+    buildingSizeSqft: num(d["Dynamic.TotalArea"]),
+    ...cbreStrandedStructured(d),
+    brokerIds,
+    // Brochures are classified by name into typed DocItems on the `documents`
+    // channel; `brochures` left empty to avoid a double-insert (no unique key
+    // on cre_listing_documents). CBRE has no detail page, so no media/links.
+    brochures: [],
+    documents: cbreHarvestDocs(d, brochureItems),
+    photos: photoUrls,
+    url: listingUrl,
+    // WS1: canonicalUrl from the listing URL (col currently ~0%; raw_data->>'url' ~92%)
+    canonicalUrl: listingUrl,
+    lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
+    created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
+    ...(!partial ? {
+    inventoryObservedAt: observed.observedAt,
+    detailObservedAt: observed.observedAt,
+    freshnessProvenance: {
+      detailScope: "authoritative_inventory_feed",
+      generationId: observed.generationId,
+      method: observed.method,
+      cacheDisposition: observed.cacheDisposition,
+      identityMethod: "Common.PrimaryKey",
+    },
+    } : {}),
+  };
+}
+
 export async function srcCbre(
   tx: Tx,
   max: number,
@@ -851,114 +1008,7 @@ export async function srcCbre(
     strict ? "live" : "generation_cache",
     snapshotObservedAt ?? observationNow(),
   );
-  const text = (loc: any) =>
-    Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;
-  const listings = docs.map((d: any) => {
-    const addr = d["Common.ActualAddress"] ?? {};
-    const charges: any[] = Array.isArray(d["Common.Charges"])
-      ? d["Common.Charges"]
-      : [];
-    const sale = charges.find(
-      (c: any) =>
-        c["Common.ChargeKind"] === "SalePrice" && num(c["Common.Amount"]),
-    );
-    const rent = charges.find(
-      (c: any) => c["Common.ChargeKind"] === "Rent" && num(c["Common.Amount"]),
-    );
-    const coord = d["Common.Coordinate"] ?? {};
-    const aspects: string[] = Array.isArray(d["Common.Aspects"])
-      ? d["Common.Aspects"]
-      : [];
-    const name = clean(addr["Common.Line1"]);
-    const street = clean(addr["Common.Line2"]);
-    const city = clean(addr["Common.Locallity"]);
-    const state = clean(addr["Common.Region"]);
-    const zip = clean(addr["Common.PostCode"]);
-    const slug = cbreListingSlug({ name, street, city, state, zip });
-    const brokerIds = (
-      Array.isArray(d["Common.Agents"]) ? d["Common.Agents"] : []
-    )
-      .map((a: any) =>
-        brokerRef({
-          name: clean(a["Common.AgentName"]),
-          email: clean(a["Common.EmailAddress"]),
-          phone: clean(a["Common.TelephoneNumber"]),
-          office: clean(a["Common.AgentOffice"]),
-          company: "CBRE",
-        }),
-      )
-      .filter((x: number | null): x is number => x !== null);
-    const brochureItems = (
-      Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []
-    ).map((b: any) => ({
-      name: clean(b["Common.BrochureName"]),
-      url: cbreBrochureUrl(clean(b["Common.Uri"])),
-    }));
-    const photoUrls = (
-      Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : []
-    )
-      .map((p: any) => {
-        const r =
-          (p["Common.ImageResources"] ?? []).find(
-            (x: any) => x["Common.Breakpoint"] === "original",
-          ) ?? (p["Common.ImageResources"] ?? [])[0];
-        return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
-      })
-      .filter((u: string | null): u is string => Boolean(u));
-    const listingUrl = cbreListingUrl(d["Common.PrimaryKey"], slug);
-    const leaseRateText = rent
-      ? `${rent["Common.Amount"]} ${clean(rent["Common.ChargeCurrency"]) ?? "USD"}/${clean(rent["Common.ChargeInterval"]) ?? ""} ${clean(rent["Common.ChargeBasis"]) ?? ""}`.trim()
-      : null;
-    const lr = parseLeaseRate(leaseRateText);
-    return {
-      id: d["Common.PrimaryKey"],
-      name,
-      headline: text(d["Common.Strapline"]),
-      // WS1: lift highlights from the CBRE strapline/headline field
-      highlights: text(d["Common.Strapline"]) ?? undefined,
-      transactionType: cbreTransactionType(aspects),
-      assetType: clean(d["Common.UsageType"]),
-      description: text(d["Common.LongDescription"]),
-      street,
-      city,
-      state,
-      postalCode: zip,
-      country: clean(addr["Common.Country"]),
-      latitude: typeof coord.lat === "number" ? coord.lat : null,
-      longitude: typeof coord.lon === "number" ? coord.lon : null,
-      salePriceUsd: sale ? sale["Common.Amount"] : null,
-      salePriceText:
-        sale || tx === "lease" ? null : "Contact broker for pricing",
-      leaseRateText,
-      // WS1: parse lease rate into typed camelCase fields via parseLeaseRate
-      leaseRateMin: lr.min ?? undefined,
-      leaseRateMax: lr.max ?? undefined,
-      leaseRateType: lr.type ?? undefined,
-      buildingSizeSqft: num(d["Dynamic.TotalArea"]),
-      ...cbreStrandedStructured(d),
-      brokerIds,
-      // Brochures are classified by name into typed DocItems on the `documents`
-      // channel; `brochures` left empty to avoid a double-insert (no unique key
-      // on cre_listing_documents). CBRE has no detail page, so no media/links.
-      brochures: [],
-      documents: cbreHarvestDocs(d, brochureItems),
-      photos: photoUrls,
-      url: listingUrl,
-      // WS1: canonicalUrl from the listing URL (col currently ~0%; raw_data->>'url' ~92%)
-      canonicalUrl: listingUrl,
-      lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
-      created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
-      inventoryObservedAt: observed.observedAt,
-      detailObservedAt: observed.observedAt,
-      freshnessProvenance: {
-        detailScope: "authoritative_inventory_feed",
-        generationId: observed.generationId,
-        method: observed.method,
-        cacheDisposition: observed.cacheDisposition,
-        identityMethod: "Common.PrimaryKey",
-      },
-    };
-  });
+  const listings = docs.map((d: any) => mapCbreDocument(d, tx, observed));
   return {
     company: "CBRE",
     sourceUrl: `https://www.cbre.com/properties (${aspect})`,

@@ -127,10 +127,10 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
   switch (key) {
     case "cbre":
       return srcCbre(tx, max, monitor, cbreSpool
-        ? (page, pass, documents, rejection, rejectedDocuments) => {
+        ? (page, pass, documents, rejection, rejectedDocuments, pageSize) => {
             try { cbreSpool.record({ transaction: tx, page, pass,
               observedAt: observationNow(), documents,
-              ...(rejection ? { kind: "cbre_rejected_page" as const, rejection, rejectedDocuments,
+              ...(rejection ? { kind: "cbre_rejected_page" as const, rejection, rejectedDocuments, pageSize,
                 rejectedDocumentsIndexBasis: "documents_flat_1" as const, qualification: "unverified_page" as const } : {}) }); }
             catch { cbreSpool.markFailure(); }
           }
