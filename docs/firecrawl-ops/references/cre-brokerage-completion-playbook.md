@@ -73,6 +73,23 @@ leave missing values unknown, continue valid peers and do not retire records
 based on a partial sample. Neither an evidence artifact nor a successful test is
 proof of a live database write.
 
+An individual bad row, redirect or detail failure should not prevent eligible
+peer listings from being collected and saved through a tested partial path.
+Keep the affected source evidence and tell operators what remains unresolved;
+do not describe partial coverage as a full successful source run. Investigate
+redirect destinations and changed URLs rather than guessing identity or status.
+
+Keep prior listing information, including historical source values, contacts,
+documents and images, even after the listing is no longer visible. A complete,
+source-appropriate enumeration can establish an absence observation; record its
+source and time and record reappearance when it is seen again. Absence itself
+does not establish a sale, lease or reason for removal. A failed, partial or
+ambiguous enumeration cannot establish absence. The existing event model is not
+yet connected to every scheduled complete refresh, and current upserts can
+replace older raw data and child rows. Track implementation and readback in
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
 Record attempted routes, methods, observations, source-specific limitations and
 the next concrete fix in Linear. In user updates, name working and failed feeds,
 provide representative listing URLs, and distinguish merged code, deployed
