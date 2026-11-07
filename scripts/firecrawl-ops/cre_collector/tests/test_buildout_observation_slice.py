@@ -109,3 +109,22 @@ def test_prior_binding_requires_matching_source_identity_url_and_preimage():
     assert qualify_prior_inventory_binding(SOURCE, listing, {**index, "observation_present": False}) is None
     assert qualify_prior_inventory_binding(SOURCE, {**listing, "raw_data": {**listing["raw_data"], "id": None}}, index) is None
     assert qualify_prior_inventory_binding(SOURCE, {**listing, "raw_data": {**listing["raw_data"], "sourceKey": "other"}}, index) is None
+
+
+def test_prior_binding_uses_latest_inventory_and_keeps_full_preimage():
+    from source_fields.buildout import qualify_prior_inventory_binding
+
+    current = {"sourceKey": SOURCE, "id": "99", "url": "https://example.test/listing"}
+    old = {"sourceKey": "old-source", "id": "11", "url": "https://example.test/stale",
+           "latestInventoryObservation": current}
+    listing = {"id": "listing", "brokerage_id": "broker", "external_id": "key",
+               "source_url": current["url"], "raw_data": old}
+    index = {"brokerage_id": "broker", "external_id": "key", "source_key": SOURCE,
+             "url": current["url"], "observation_present": True, "presence_generation": 1,
+             "last_enumerated_at": "2026-11-06T00:00:00Z"}
+    bound = qualify_prior_inventory_binding(SOURCE, listing, index)
+    assert bound["native_ids"] == ["99"] and bound["raw_data"] == old
+    for invalid in (None, {"latestInventoryObservation": current}):
+        assert qualify_prior_inventory_binding(
+            SOURCE, {**listing, "raw_data": {**current, "latestInventoryObservation": invalid}}, index
+        ) is None

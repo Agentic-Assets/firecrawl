@@ -93,6 +93,8 @@ def main():
             malformed_raw = json.dumps({"primary": {"sourceKey": source, "id": "85", "url": malformed["source_url"]},
                                         "secondary_pass": {"id": "86", "url": malformed["source_url"]}}).replace("'", "''")
             run(f"UPDATE credeals.cre_listings SET raw_data='{malformed_raw}'::jsonb WHERE id='{malformed['listing_id']}';")
+            stale_invalid = create("invalid-latest", "84")
+            run(f"UPDATE credeals.cre_listings SET raw_data=raw_data || '{{\"latestInventoryObservation\":null}}'::jsonb WHERE id='{stale_invalid['listing_id']}';")
             run(f"UPDATE credeals.cre_listings SET title='user update',raw_data=raw_data || '{{\"url\":\"https://example.test/changed\"}}'::jsonb WHERE id='{stale['listing_id']}';")
             staged = {}
             for listing in artifact["listings"]:
@@ -121,7 +123,7 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "missing-member-source:true:0", "other:false:1"], state
+            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == ["disappeared:not_observed_in_complete_enumeration:faris-lee:" + scope["generation_id"]], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
@@ -192,6 +194,7 @@ def main():
                     mode = "sale" if index == 0 else "lease"
                     listing = {"sourceKey": source, "id": native, "name": title,
                                "transactionMode": mode, "transactionType": mode.title(),
+                               "preserveChildCollections": True,
                                "url": f"https://example.test/listings/?propertyId=dual-live-{mode}"}
                     row = ingest.to_row(listing, {}, observed)
                     result = row if result is None else ingest.merge_rows(result, row)
@@ -228,6 +231,39 @@ def main():
             del malformed_incoming["raw_data"]["secondary_pass"]["sourceKey"]
             ingest_rows([malformed_incoming], fifth)
             assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "merged-again"
+            flat_input = {"sourceKey": source, "id": "301", "name": "flat first",
+                          "preserveChildCollections": True,
+                          "url": "https://example.test/listings/?propertyId=flat-inventory-sale"}
+            ingest_rows([ingest.to_row(flat_input, {}, fifth)], fifth)
+            ingest_rows([ingest.to_row({**flat_input, "name": "flat updated"}, {}, fifth)], fifth)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='flat-inventory';").stdout.strip() == "flat updated"
+            # Retained older top-level context is not the current identity.
+            run("UPDATE credeals.cre_listings SET raw_data=raw_data || "
+                "'{\"id\":\"999999\",\"url\":\"https://example.test/stale\"}'::jsonb "
+                "WHERE external_id IN ('dual-live','flat-inventory');")
+            scope2 = {**scope, "generation_id": "later-complete", "observed_at": "2026-11-20T00:00:00Z",
+                      "artifact_sha256": "f" * 64}
+            key2 = artifact_run_identity_from_digests([scope2["artifact_sha256"]])[0]
+            jobs2 = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows),
+                      "errors": 0, "notes": "synthetic", "finished_at": scope2["observed_at"]}]
+            run(ingest.build_sql(rows, jobs2, scope2["observed_at"], set(), artifact_run_key=key2,
+                                 finished_at=scope2["observed_at"],
+                                 buildout_observation_context={"scope": scope2, "prior": None}))
+            states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
+                         "WHERE external_id IN ('dual-live','flat-inventory') ORDER BY external_id;").stdout.splitlines()
+            assert states == ["dual-live:false", "flat-inventory:false"], states
+            with patch("cre_ingest.load_db_url", return_value=("fixture", "fixture")), \
+                 patch("cre_ingest.database_target_fingerprint_from_url", return_value={"value": TARGET}), \
+                 patch("cre_ingest.find_psql", return_value="fixture"), \
+                 patch("cre_validate._run_psql_script", side_effect=fixture_query):
+                assessed = readback(scope2, None)
+                assert {"dual-live", "flat-inventory"} <= {row["external_id"] for row in assessed["applied"]}
+            returned = "2026-11-21T00:00:00Z"
+            ingest_rows([dual_row(["101", "102"], "dual returned again", returned),
+                         ingest.to_row({**flat_input, "name": "flat returned"}, {}, returned)], returned)
+            states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
+                         "WHERE external_id IN ('dual-live','flat-inventory') ORDER BY external_id;").stdout.splitlines()
+            assert states == ["dual-live:true", "flat-inventory:true"], states
             proof_tmp.cleanup()
             print("PASS: actual schema and ingest builder, absent and held peers, concurrent replay, wrong job and stale source job refused, preserved status, actual ingest reappearance")
         finally:
