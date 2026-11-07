@@ -16,6 +16,13 @@ def _uuid(value):
     return _literal(str(parsed)) + "::uuid"
 
 
+def _current_raw_sql(value):
+    """Select the explicitly current inventory, even if it is malformed."""
+    return (f"(CASE WHEN jsonb_typeof({value})='object' "
+            f"AND {value} ? 'latestInventoryObservation' "
+            f"THEN {value}->'latestInventoryObservation' ELSE {value} END)")
+
+
 def identity_guard_sql(sources):
     """Hold ambiguous existing identities before the ingest replaces them."""
     from source_fields.buildout import observation_sources
@@ -36,10 +43,10 @@ CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS
 SELECT l.brokerage_id, l.external_id, claim.value #>> '{{}}' AS native_id
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id AND b.slug IN ({source})
-CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS claim(value)
+CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('l.raw_data')}, '$.**.id') AS claim(value)
 UNION
 SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
-FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
+FROM _src s CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('s.raw_data')}, '$.**.id') AS claim(value)
 WHERE s.slug IN ({source});
 CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
 -- Qualify each whole source-native shape before comparing it. A canonical
@@ -48,10 +55,11 @@ CREATE TEMP TABLE _buildout_identity_shapes ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id, input.kind,
        array_agg(member.value->>'id' ORDER BY member.value->>'id') AS native_ids
 FROM _src s JOIN credeals.cre_listings l USING (brokerage_id, external_id)
-CROSS JOIN LATERAL (VALUES ('prior', l.raw_data, l.source_url),
-                           ('incoming', s.raw_data, s.source_url)) AS input(kind, raw, url)
+CROSS JOIN LATERAL (VALUES ('prior', {_current_raw_sql('l.raw_data')}, l.source_url),
+                           ('incoming', {_current_raw_sql('s.raw_data')}, s.source_url)) AS input(kind, raw, url)
 CROSS JOIN LATERAL jsonb_array_elements(CASE
   WHEN jsonb_typeof(input.raw) <> 'object' THEN '[]'::jsonb
+  WHEN input.raw ? 'latestInventoryObservation' THEN '[]'::jsonb
   WHEN input.raw ? 'primary' AND input.raw ? 'secondary_pass'
        AND (input.raw - 'primary' - 'secondary_pass') = '{{}}'::jsonb
     THEN jsonb_build_array(input.raw->'primary', input.raw->'secondary_pass')
@@ -123,9 +131,9 @@ SELECT jsonb_build_object(
  'applied', COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'listing_id', l.id::text, 'external_id', l.external_id,
                 'native_ids', (SELECT jsonb_agg(member.value->>'id' ORDER BY member.value->>'id')
-                  FROM jsonb_array_elements(CASE WHEN l.raw_data ? 'primary'
-                    THEN jsonb_build_array(l.raw_data->'primary', l.raw_data->'secondary_pass')
-                    ELSE jsonb_build_array(l.raw_data) END) member(value))) ORDER BY l.external_id)
+                  FROM jsonb_array_elements(CASE WHEN {_current_raw_sql('l.raw_data')} ? 'primary'
+                    THEN jsonb_build_array({_current_raw_sql('l.raw_data')}->'primary', {_current_raw_sql('l.raw_data')}->'secondary_pass')
+                    ELSE jsonb_build_array({_current_raw_sql('l.raw_data')}) END) member(value))) ORDER BY l.external_id)
               FROM credeals.cre_listing_events e
               JOIN credeals.cre_listings l ON l.id=e.listing_id AND l.brokerage_id=e.brokerage_id
               JOIN credeals.cre_source_index si
@@ -255,7 +263,7 @@ CREATE TEMP TABLE _buildout_possible_native ON COMMIT DROP AS
 SELECT DISTINCT l.id AS listing_id, item.value #>> '{{}}' AS native_id
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
-CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS item(value)
+CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('l.raw_data')}, '$.**.id') AS item(value)
 WHERE b.slug={slug_sql}
   AND jsonb_typeof(item.value) IN ('number','string')
   AND (item.value #>> '{{}}') ~ '^[1-9][0-9]{{0,15}}$';
@@ -267,13 +275,15 @@ SELECT l.id AS listing_id, l.brokerage_id, l.external_id, l.source_url, l.raw_da
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
 JOIN credeals.cre_source_index si ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id
+CROSS JOIN LATERAL (SELECT {_current_raw_sql('l.raw_data')} AS raw) AS current_observation
 CROSS JOIN LATERAL jsonb_array_elements(CASE
- WHEN jsonb_typeof(l.raw_data) <> 'object' THEN '[]'::jsonb
- WHEN l.raw_data ? 'primary' AND l.raw_data ? 'secondary_pass'
-      AND (l.raw_data - 'primary' - 'secondary_pass') = '{{}}'::jsonb
-   THEN jsonb_build_array(l.raw_data->'primary', l.raw_data->'secondary_pass')
- WHEN NOT (l.raw_data ? 'primary') AND NOT (l.raw_data ? 'secondary_pass')
-   THEN jsonb_build_array(l.raw_data)
+ WHEN jsonb_typeof(current_observation.raw) <> 'object' THEN '[]'::jsonb
+ WHEN current_observation.raw ? 'latestInventoryObservation' THEN '[]'::jsonb
+ WHEN current_observation.raw ? 'primary' AND current_observation.raw ? 'secondary_pass'
+      AND (current_observation.raw - 'primary' - 'secondary_pass') = '{{}}'::jsonb
+   THEN jsonb_build_array(current_observation.raw->'primary', current_observation.raw->'secondary_pass')
+ WHEN NOT (current_observation.raw ? 'primary') AND NOT (current_observation.raw ? 'secondary_pass')
+   THEN jsonb_build_array(current_observation.raw)
  ELSE '[]'::jsonb END) AS member(value)
 WHERE b.slug={slug_sql} AND si.source_key={source_sql} AND si.url=l.source_url
   AND si.observation_present IS TRUE AND si.last_enumerated_at IS NOT NULL
@@ -374,9 +384,9 @@ SET notes = COALESCE(j.notes, '') || E'\\nCRE_BUILDOUT_OBSERVATION_V1:' ||
     'applied', COALESCE((SELECT jsonb_agg(jsonb_build_object(
       'listing_id', a.listing_id::text, 'external_id', c.external_id,
       'native_ids', (SELECT jsonb_agg(member.value->>'id' ORDER BY member.value->>'id')
-        FROM jsonb_array_elements(CASE WHEN c.raw_data ? 'primary'
-          THEN jsonb_build_array(c.raw_data->'primary', c.raw_data->'secondary_pass')
-          ELSE jsonb_build_array(c.raw_data) END) member(value))) ORDER BY c.external_id)
+        FROM jsonb_array_elements(CASE WHEN {_current_raw_sql('c.raw_data')} ? 'primary'
+          THEN jsonb_build_array({_current_raw_sql('c.raw_data')}->'primary', {_current_raw_sql('c.raw_data')}->'secondary_pass')
+          ELSE jsonb_build_array({_current_raw_sql('c.raw_data')}) END) member(value))) ORDER BY c.external_id)
       FROM _buildout_observation_applied a
       JOIN _buildout_observation_candidate c ON c.listing_id=a.listing_id), '[]'::jsonb))::text
 WHERE j.id={job_sql} AND j.artifact_run_key={job_key_sql}

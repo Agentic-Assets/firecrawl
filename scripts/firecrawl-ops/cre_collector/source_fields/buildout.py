@@ -622,8 +622,16 @@ def qualify_prior_inventory_binding(source, listing, index):
             or index["presence_generation"] < 0):
         return None
     raw = listing.get("raw_data")
+    original_raw = raw
     if not isinstance(raw, dict):
         return None
+    # An inventory-preserving ingest stores current source evidence here and
+    # may retain older, contradictory top-level detail. Never fall back when
+    # the explicitly present latest observation is malformed.
+    if "latestInventoryObservation" in raw:
+        raw = raw["latestInventoryObservation"]
+        if not isinstance(raw, dict) or "latestInventoryObservation" in raw:
+            return None
     if "primary" in raw or "secondary_pass" in raw:
         if set(raw) != {"primary", "secondary_pass"}:
             return None
@@ -652,7 +660,7 @@ def qualify_prior_inventory_binding(source, listing, index):
         "external_id": external_id, "source_key": source,
         "native_ids": ids, "observation_present": True,
         "listing_id": listing.get("id"), "brokerage_id": listing.get("brokerage_id"),
-        "source_url": source_url, "raw_data": raw,
+        "source_url": source_url, "raw_data": original_raw,
         "presence_generation": index["presence_generation"],
         "last_enumerated_at": index.get("last_enumerated_at"),
     }
