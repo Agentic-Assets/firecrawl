@@ -40,7 +40,7 @@ for (const [status, expected] of [[401,72],[403,74],[429,75]]) {
   test(`settled ${status} stops the second transaction`, () => {
     const { result, requested } = run(status);
     assert.equal(result.status, expected, result.stderr);
-    assert.equal(requested.length, 1);
+    assert.equal(requested.length, status === 403 ? 2 : 1);
     assert.doesNotMatch(result.stderr, /collecting kidder-mathews\/lease/);
   });
 }
@@ -48,7 +48,7 @@ for (const [status, expected] of [[401,72],[403,74],[429,75]]) {
 test("settled denial retains an independently successful peer", () => {
   const { result, requested, artifact } = run(403, true);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(requested.length, 1);
+  assert.equal(requested.length, 2);
   assert.ok(artifact.sources.some((s: any) => s.sourceKey === "kidder-mathews" && s.error === "inventory HTTP 403"));
   assert.ok(artifact.listings.some((s: any) => s.sourceKey === "newmark" && s.id === "peer"));
 });
@@ -58,4 +58,11 @@ test("unsettled response cleanup gets a distinct exit and stops dispatch", () =>
   assert.equal(result.status, 73, result.stderr);
   assert.equal(requested.length, 1);
   assert.doesNotMatch(result.stderr, /collecting kidder-mathews\/lease/);
+});
+
+test("mixed collection keeps the unknown-cleanup fence before starting its peer", () => {
+  const { result, requested } = run(403, true, true);
+  assert.equal(result.status, 73, result.stderr);
+  assert.equal(requested.length, 1);
+  assert.doesNotMatch(result.stderr, /collecting newmark/);
 });

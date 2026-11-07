@@ -1,11 +1,14 @@
 """Offline settled denial and unknown-cleanup routing for Kidder."""
+import hashlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import cre_checkpoint_refresh as refresh
+import cre_partial_page_custody as custody
 
 
 class KidderTerminalTests(unittest.TestCase):
@@ -32,6 +35,56 @@ class KidderTerminalTests(unittest.TestCase):
                     "code": refresh.KIDDER_TERMINAL_CODE, "http_status": status, "attempt_number": 1})
                 self.assertTrue(refresh.has_terminal_collection_failure("kidder-mathews", checkpoint))
 
+    def test_terminal_403_archives_private_evidence_and_stops_retry(self):
+        manifest = self.manifest()
+        payload = b'{"sources":[{"sourceKey":"kidder-mathews","retainedObservations":[{"coverage":"partial_unknown"}]}]}'
+
+        def collect(argv, *_args, **_kwargs):
+            output = next(arg.removeprefix("--out=") for arg in argv if arg.startswith("--out="))
+            Path(output).write_bytes(payload)
+            return refresh.KIDDER_TERMINAL_EXITS[403]
+
+        with patch.object(refresh, "run_command", side_effect=collect) as command:
+            self.assertIsNone(refresh.collect_source(self.root, manifest, "kidder-mathews",
+                transactions=("sale", "lease"), page_cap=400, concurrency=2, attempts_this_run=3))
+        checkpoint = manifest["sources"]["kidder-mathews"]
+        attempt = checkpoint["attempts"][0]
+        archived = self.root / attempt["rejected_artifact"]
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(archived.read_bytes(), payload)
+        self.assertEqual(archived.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(attempt["rejected_artifact_sha256"], refresh.sha256_file(archived))
+        self.assertEqual(checkpoint["terminal_collection_failure"]["http_status"], 403)
+        self.assertEqual(checkpoint["state"], "collect_failed")
+        self.assertIsNone(checkpoint.get("artifact"))
+
+    def test_kidder_attempt_spool_settles_only_with_bound_receipt(self):
+        source = "kidder-mathews"
+        state = custody.prepare(self.root, 1, source)
+        attempt = {"number": 1, f"{source}_partial": state}
+        path = custody.expected_path(self.root, 1, source)
+        payload = (json.dumps({"schema": f"{source}-partial-pages/v1", "sourceKey": source,
+                               "generation": self.root.name, "attempt": 1}) + "\n" +
+                   json.dumps({"kind": "kidder_team_observation"}) + "\n").encode()
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        receipt = {"state": "sealed", "sourceKey": source, "generationId": self.root.name,
+                   "attempt": 1, "path": state["path"], "coverage": "unverified",
+                   "outcome": "source_error", "observationRecords": 1, "bytes": len(payload),
+                   "sha256": hashlib.sha256(payload).hexdigest()}
+        main = self.root / "main.json"
+        main.write_text(json.dumps({"sources": [{"sourceKey": source, "error": "HTTP 403",
+                                                 "partialCapture": receipt}]}))
+        main.chmod(0o600)
+        custody.settle(self.root, attempt, main, source)
+        self.assertEqual(state["state"], "sealed_local")
+        self.assertEqual(state["coverage"], "unverified")
+        state["state"] = "pending"
+        attempt.update(finished_at=None, rc=None)
+        custody.reconcile(self.root, {"sources": {source: {"attempts": [attempt]}}}, source)
+        self.assertEqual(state["state"], "unverified")
+        self.assertTrue(path.exists())
+
     def test_unknown_cleanup_keeps_global_fence(self):
         manifest = self.manifest()
         with patch.object(refresh, "run_command", return_value=refresh.KIDDER_CLEANUP_UNKNOWN_EXIT) as command:
@@ -43,6 +96,33 @@ class KidderTerminalTests(unittest.TestCase):
         self.assertEqual(checkpoint["state"], "collect_infrastructure_failed")
         self.assertFalse(refresh.has_terminal_collection_failure("kidder-mathews", checkpoint))
         self.assertNotIn(refresh.COHORT_KIDDER_CLEANUP_UNKNOWN_EXIT, refresh.COHORT_SETTLED_EXIT_CODES)
+
+    def test_mixed_cohort_unknown_cleanup_keeps_prior_healthy_checkpoint(self):
+        manifest = self.manifest(("kidder-mathews", "hanley"))
+        healthy = manifest["sources"]["hanley"]
+        healthy.update(state="validated", artifact={"path": "hanley.json", "sha256": "peer"})
+        kidder = manifest["sources"]["kidder-mathews"]
+        attempt = {"number": 1, "started_at": manifest["started_at"], "finished_at": None,
+                   "temporary_artifact": "kidder.tmp"}
+        kidder["attempts"].append(attempt)
+        kidder["state"] = "collecting"
+
+        class Process:
+            def poll(self):
+                return refresh.COHORT_KIDDER_CLEANUP_UNKNOWN_EXIT
+
+        class Settled:
+            gone = True
+
+        item = refresh.CohortCollectionProcess(source="kidder-mathews", process=Process(),
+            log_handle=io.StringIO(), tmp_artifact=self.root / "kidder.tmp", attempt=attempt,
+            attempt_started_at=manifest["started_at"], owned_group=Settled())
+        with self.assertRaises(refresh.ProcessCleanupUnknown):
+            refresh._finalize_cohort_collection(self.root, manifest, item, candidate_only=True)
+        self.assertIsNone(attempt["finished_at"])
+        self.assertFalse(refresh.has_terminal_collection_failure("kidder-mathews", kidder))
+        self.assertEqual(healthy["state"], "validated")
+        self.assertEqual(healthy["artifact"]["sha256"], "peer")
 
     def test_worker_preserves_only_kidder_specific_settled_and_unknown_codes(self):
         for status, raw in refresh.KIDDER_TERMINAL_EXITS.items():

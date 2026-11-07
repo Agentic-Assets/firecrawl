@@ -285,7 +285,7 @@ test("sale and lease do not repeat the same settled inventory denial", async () 
     process.env.CRE_REFRESH_GENERATION = "kidder-sale-lease-denial";
     await assert.rejects(srcKidderMathews("sale", Infinity, false), /HTTP 403/);
     await assert.rejects(srcKidderMathews("lease", Infinity, false), /HTTP 403/);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2); // one inventory request and one team-page request
   } finally {
     globalThis.fetch = originalFetch;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;

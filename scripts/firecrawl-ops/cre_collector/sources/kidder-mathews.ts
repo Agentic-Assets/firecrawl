@@ -1,3 +1,7 @@
+import type { PartialPageSpool } from "../lib/partial-page-spool.js";
+import { captureKidderTeamPage } from "./kidder-team-evidence.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 import { captureKidderRaw, preserveKidderRaw } from "./pure/kidder-raw-retention.js";
 import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
@@ -52,6 +56,7 @@ export class KidderSettledInventoryDenial extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 export class KidderInventoryCleanupUnknown extends Error {}
+let teamCapture: { generation: string; promise: ReturnType<typeof captureKidderTeamPage> } | null = null;
 const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
 function kidderDisposition(row: any): CacheDisposition {
   return kidderCacheDisposition.get(row) ?? "live";
@@ -456,8 +461,29 @@ export function mapKidderListing(
   return preserveKidderRaw(listing, raw, marker);
 }
 
-export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
-  const result = await kidderFetchAll(max);
+export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean, getSpool?: () => PartialPageSpool | undefined): Promise<SourceResult> {
+  let result: KidderInventoryResult;
+  try { result = await kidderFetchAll(max); }
+  catch (error) {
+    if (_monitor || !(error instanceof KidderSettledInventoryDenial) || error.status !== 403) throw error;
+    const generation = refreshGenerationId();
+    if (!generation) throw error;
+    if (teamCapture?.generation !== generation) teamCapture = { generation, promise: captureKidderTeamPage() };
+    let observation: Awaited<ReturnType<typeof captureKidderTeamPage>>;
+    try { observation = await teamCapture.promise; }
+    catch (captureError) {
+      if (captureError instanceof NativeEvidenceTerminalError)
+        throw new KidderInventoryCleanupUnknown("Kidder team response cleanup was not confirmed", { cause: captureError });
+      throw error;
+    }
+    const spool = getSpool?.();
+    if (spool) {
+      spool.record({ transaction: tx, pass: 1, page: 0, observedAt: observation.observedAt,
+        kind: "kidder_team_observation", documents: [observation] });
+      if (!spool.writable) console.error("Kidder private evidence spool unavailable; interrupted evidence may be lost");
+    }
+    throw new RetainedSourceError(error, [observation]);
+  }
   const { items, total, inventoryObservedAt, generationId } = result;
   const listings: any[] = [];
   let eligible = 0;
