@@ -99,8 +99,10 @@ function interruptedFixture(dir: string, hang: boolean, redirect = true): string
     syncBuiltinESMExports();
     const {registerHooks}=await import("node:module");
     const brokerModule=${JSON.stringify(pathToFileURL(join(root, "lib/broker.ts")).href)};
-    const stub="data:text/javascript,"+encodeURIComponent('import {brokerRef} from '+JSON.stringify(brokerModule)+'; export async function srcFoundryCommercial(){return {company:"Synthetic",sourceUrl:"https://secret.invalid/PRIVATE_URL",method:"PRIVATE_METHOD",totalAvailable:1,listings:[{id:"public-peer",name:process.env.STUB_SECRET||"Public Peer",url:"https://example.test/public-peer",extraFacts:{unknown:"PRIVATE_NESTED_VALUE"},brokerIds:[brokerRef({name:"Public Broker",company:"Synthetic"})],...(process.env.STUB_PRIVATE==="1" ? {rawSrs:{key:"PRIVATE_VALUE"},srsRawRetention:{private:true}} : {})}]}}');
-    registerHooks({resolve(s,c,next){if(process.env.STUB_PEER==="1" && c.parentURL?.endsWith("/collect.ts") && s==="./sources/foundry-commercial.js") return {url:stub,shortCircuit:true};return next(s,c)}});
+    const stub="data:text/javascript,"+encodeURIComponent('import {brokerRef} from '+JSON.stringify(brokerModule)+'; export async function srcFoundryCommercial(){return {company:"Synthetic",sourceUrl:"https://secret.invalid/PRIVATE_URL",method:"PRIVATE_METHOD",totalAvailable:1,listings:[{id:"public-peer",name:process.env.STUB_SECRET||"Public Peer",url:"https://example.test/PRIVATE_OPAQUE_PATH",extraFacts:{unknown:"PRIVATE_NESTED_VALUE"},brokerIds:[brokerRef({name:"Public Broker",company:"Synthetic"})],...(process.env.STUB_PRIVATE==="1" ? {rawSrs:{key:"PRIVATE_VALUE"},srsRawRetention:{private:true}} : {})}]}}');
+    const errorsModule=${JSON.stringify(pathToFileURL(join(root, "lib/source-observations.ts")).href)};
+    const essexStub="data:text/javascript,"+encodeURIComponent('import {RetainedSourceError} from '+JSON.stringify(errorsModule)+'; export async function srcEssexRealty(){throw new RetainedSourceError(new Error("synthetic Essex mismatch"),[{schema:"essex-inventory-mismatch-v1", privateEvidence:"PRIVATE_ESSEX"}])}');
+    registerHooks({resolve(s,c,next){if(c.parentURL?.endsWith("/collect.ts")){if(process.env.STUB_PEER==="1" && s==="./sources/foundry-commercial.js") return {url:stub,shortCircuit:true};if(process.env.STUB_ESSEX==="1" && s==="./sources/essex-realty.js") return {url:essexStub,shortCircuit:true}}return next(s,c)}});
     const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
     net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
     await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
@@ -284,7 +286,9 @@ for (const mixed of [false,true]) {
         const peer=artifact.sources.find((x: any)=>x.sourceKey==="foundry-commercial");
         assert.equal(peer.failed,false); assert.equal(peer.listingsCollected,1);
         assert.equal(artifact.runMeta.peerRowsAvailable,true);
-        assert.equal(artifact.listings.length,1); assert.equal(artifact.listings[0].id,"public-peer");
+        assert.equal(artifact.listings.length,1); assert.equal(artifact.listings[0].name,"Public Peer");
+        assert.equal(artifact.listings[0].id,undefined); assert.equal(artifact.listings[0].url,undefined);
+        assert.match(artifact.runMeta.omittedFields,/IDs, URLs/);
         assert.deepEqual(artifact.listings[0].brokerIds,[0]); assert.equal(artifact.brokers[0].name,"Public Broker");
         assert.equal(artifact.totalListings,1);
       } else {assert.deepEqual(artifact.listings,[]); assert.deepEqual(artifact.brokers,[]); assert.equal(artifact.totalListings,0);}
@@ -377,5 +381,22 @@ test("settled identity failure retains later peers without admitting the partial
     const observations=artifact.sources[0].retainedObservations;
     assert.equal(observations.filter((x:any)=>x.schema==="matthews-completed-parse-observation/v1").length,2);
     assert.ok(observations.some((x:any)=>x.schema==="matthews-detail-observation/v1" && x.requestedUrl.endsWith("/bad")));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+for (const spoolFails of [true, false]) test(`mixed Essex mismatch and failed private fallback report safe status with spool ${spoolFails ? "unavailable" : "available"}`, () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-essex-fallback-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews,essex-realty,foundry-commercial","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:spoolFails ? "1" : "0",FAIL_FALLBACK_INIT:"1",STUB_ESSEX:"1",STUB_PEER:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.match(child.stderr,/private fallback artifact could not be retained/);
+    assert.doesNotMatch(child.stdout,/PRIVATE_|essex-inventory-mismatch|held_temporary_redirect/);
+    const artifact=JSON.parse(child.stdout);
+    assert.equal(artifact.runMeta.evidenceOnly,true); assert.equal(artifact.runMeta.peerRowsAvailable,false);
+    assert.deepEqual(artifact.listings,[]);
+    assert.equal(artifact.sources.find((x: any)=>x.sourceKey==="essex-realty").failed,true);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
