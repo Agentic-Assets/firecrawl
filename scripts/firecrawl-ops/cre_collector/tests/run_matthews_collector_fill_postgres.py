@@ -20,7 +20,7 @@ def run(*args, input_text=None):
     return result.stdout.strip()
 
 
-def main(path, started, finished):
+def main(path, started, finished, mode="pipeline"):
     raw=Path(path).read_bytes()
     candidate=derive(raw,generation_id="fixture-generation",generation_started_at=started,
                      attempt_started_at=started,attempt_finished_at=finished)
@@ -69,7 +69,7 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
             manifest={"schema_version":refresh.SCHEMA_VERSION,"run_id":"fixture-generation","started_at":started,"collector_git_sha":code,"collector_git_dirty":False,
                 "preflight":{"database_target":target,"shared_lock":str(canonical_lock)},
                 "scope":{"source_keys":["matthews"]},"sources":{"matthews":{"attempts":[attempt]}},
-                "config":{"pipeline":True,"sources":["matthews"],"transactions":["sale","lease"],"max_items":0,
+                "config":{"pipeline":mode == "pipeline","sources":["matthews"],"transactions":["sale","lease"],"max_items":0,
                     "additive":True,"mark_missing":False,"status_activation":False,"page_cap":0,"concurrency":1,
                     "source_workers":1,"host_cpu_guard":{},"admit_baseline_hold_additively":False}}
             info=prepare_candidate(root,manifest,attempt,git_identity=refresh.git_identity)
@@ -98,7 +98,10 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                         assert checkpoint["gate"]["verdict"]=="ok_additive_verified_subset"
                         assert refresh.dry_run_source(root,manifest,"matthews",gate_path)
                         refresh.run_aggregate_gate(root,manifest,str(env_file),sources=["matthews"])
-                        refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
+                        if mode == "serial":
+                            assert refresh.ingest_admitted_sources(root,manifest,str(env_file),owner_check=owner._require_authority) == []
+                        else:
+                            refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["state"]=="ingested" and checkpoint["ingest"]["rc"]==0
                         proof_read=refresh.matthews_partial_readback(root,manifest,str(env_file))
                         validation={"queries":{"freshness_generations":[],"inventory_only_index":[]},

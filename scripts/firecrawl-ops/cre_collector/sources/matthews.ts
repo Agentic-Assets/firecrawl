@@ -787,11 +787,11 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
         heldRedirects++;
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
-      if (requireFreshDetails() && response.status === 404) {
+      if (requireFreshDetails() && (response.status === 404 || response.status === 410)) {
         observations[index] = {
           schema: "matthews-detail-http-observation/v1", sourceKey: "matthews",
           requestedUrl: url, requestedTransaction: tx, inventoryObservedAt,
-          detailObservedAt: observationNow(), httpStatus: 404,
+          detailObservedAt: observationNow(), httpStatus: response.status,
           identity: "unverified", coverage: "unverified", outcome: "held_http_error",
         };
         record(observations[index]);

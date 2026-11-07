@@ -66,7 +66,7 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-observation/v1"
                            for item in observations)
             http_failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-http-observation/v1"
-                                and item.get("outcome") == "held_http_error" and item.get("httpStatus") == 404
+                                and item.get("outcome") == "held_http_error" and item.get("httpStatus") in (404, 410)
                                 and item.get("requestedTransaction") == tx for item in observations)
             if ((redirects, failures, http_failures) != (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
                     or redirects + failures + http_failures == 0):

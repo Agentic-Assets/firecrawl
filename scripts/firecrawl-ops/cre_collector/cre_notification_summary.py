@@ -577,6 +577,36 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         require(
             set(child["sources"]) == {source} and checkpoint.get("state") == "ingested"
         )
+        from reporting.partial_qualification import matthews_partial_child, partial_member_report_matches
+
+        if source == "matthews" and matthews_partial_child(child):
+            ingest = checkpoint.get("ingest") or {}
+            recovery = checkpoint.get("ingest_recovery") or {}
+            require(type(ingest.get("rc")) is int and
+                    (ingest["rc"] == 0 or
+                     (recovery.get("outcome") == "exact_commit" and recovery.get("readback_ok") is True)))
+            require(validation.get("path") == "validation.json")
+            report = read(child_fd, "validation.json", MAX_VALIDATION_REPORT_BYTES)
+            from cre_validate import require_full_validation_report
+            require_full_validation_report(report)
+            require(report.get("ok") is True)
+            require(partial_member_report_matches(report, checkpoint, source, run_id) is True)
+            observed = report["matthews_partial_readback"]
+            held, updated = observed.get("held"), observed.get("updated")
+            require(isinstance(held, list) and isinstance(updated, list))
+            require(len(held) + len(updated) <= observed["candidate_count"])
+            for descriptor, name, limit, raw in snapshots:
+                require(safe._read_at(descriptor, name, limit)[0] == raw)
+            return {"schema_version": 1, "verified": True, "source": source,
+                "collector_git_sha": expected_sha, "windows_admission_unix_ms": windows_admission_ms,
+                "series_id": selected.name, "invocation_id": invocation, "run_id": run_id,
+                "verified_listings": len(updated), "transaction_scope": ["sale", "lease"],
+                "measurement": "existing_parents_fields_filled", "quality_no_regression": True,
+                "local_settlement": "confirmed", "qualification": "qualified_partial_subset",
+                "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
+                "held_count": len(held), "source_held_count": observed["source_held_count"],
+                "candidate_count": observed["candidate_count"],
+                "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and other fields are not saved; new, ambiguous or stale identities are held"}
         require(
             type(checkpoint.get("ingest", {}).get("rc")) is int
             and checkpoint["ingest"]["rc"] == 0
