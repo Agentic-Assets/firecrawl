@@ -107,6 +107,7 @@ function interruptedFixture(dir: string, hang: boolean, redirect = true): string
     const host="https://www.matthews.com", urls=["good-peer","redirect","later"].map(x=>host+"/properties/"+x);
     globalThis.fetch=async input=>{const url=String(input);
       if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
+      if(url===urls[0] && process.env.FAIL_ORDINARY_FIRST==="1") return new Response(null,{status:418});
       if(url===urls[1] && ${JSON.stringify(redirect)}) {
         if(process.env.FAIL_REDIRECT_CLEANUP==="1") return {ok:false,status:307,headers:new Headers({location:"/listings"}),body:{cancel:()=>Promise.reject(new Error("unsettled"))}};
         return new Response(null,{status:307,headers:{location:"/listings"}});
@@ -330,5 +331,20 @@ test("known secret in a canonical peer field forces status-only fallback", () =>
     assert.doesNotMatch(child.stdout,/SYNTHETIC_SECRET_012345|public-peer/);
     const artifact=JSON.parse(child.stdout);
     assert.equal(artifact.runMeta.peerRowsAvailable,false); assert.deepEqual(artifact.listings,[]);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("later unknown cleanup takes precedence over earlier ordinary failure and stops peers", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-mixed-cleanup-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews,foundry-commercial","--transaction=sale","--concurrency=2"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_ORDINARY_FIRST:"1",FAIL_REDIRECT_CLEANUP:"1",STUB_PEER:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.equal(child.status,71,child.stderr);
+    const ordinary=child.stderr.indexOf("Matthews HTTP 418"), unknown=child.stderr.indexOf("Matthews redirect body cleanup unknown");
+    assert.ok(ordinary >= 0 && unknown > ordinary,child.stderr);
+    assert.match(child.stderr,/redirect response cleanup unknown; source dispatch stopped/);
+    assert.doesNotMatch(child.stderr,/collecting foundry-commercial/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
