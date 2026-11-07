@@ -264,5 +264,5 @@ SELECT jsonb_build_object('occupied_jobs',(SELECT count(*) FROM credeals.cre_scr
  'verified_jobs',(SELECT count(*) FROM verified),
  'held',COALESCE((SELECT receipt->'held' FROM verified),'[]'::jsonb),
  'held_reasons',COALESCE((SELECT receipt->'held_reasons' FROM verified),'{{}}'::jsonb),
- 'updated',COALESCE((SELECT receipt->'updated' FROM verified),'[]'::jsonb));
+ 'updated',COALESCE((SELECT receipt->'updated' FROM verified),'[]'::jsonb)) AS result;
 """

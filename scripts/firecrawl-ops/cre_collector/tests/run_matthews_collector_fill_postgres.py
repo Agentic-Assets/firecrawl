@@ -1,16 +1,17 @@
 """Exercise the disconnected fill on a synthetic collector artifact, never a live DB."""
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cre_matthews_partial_checkpoint import derive
-from cre_matthews_partial_fill import fill_sql, readback_sql
+from matthews_partial.checkpoint import admit_gate, derive, prepare_candidate
 
 
 def run(*args, input_text=None):
@@ -25,9 +26,6 @@ def main(path, started, finished):
     candidate=derive(raw,generation_id="fixture-generation",generation_started_at=started,
                      attempt_started_at=started,attempt_finished_at=finished)
     assert {item["external_id"] for item in candidate["rows"]}=={"good-sale","leasing-good"}
-    binding={"artifact_sha256":hashlib.sha256(raw).hexdigest(),"database_target_sha256":"b"*64,
-             "producer_sha":"c"*40,"generation_id":"fixture-generation","attempt_id":"d"*32,
-             "started_at":candidate["started_at"],"finished_at":candidate["finished_at"]}
     name="matthews-e2e-"+uuid.uuid4().hex[:12]
     container_id=None
     def sql(query):
@@ -55,11 +53,75 @@ def main(path, started, finished):
         sql("""INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url,canonical_url,status,raw_data,title,scraped_at)
 SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.com/properties/'||x,
 'active','{\"prior\":true}',NULL,NULL FROM credeals.cre_brokerages CROSS JOIN unnest(ARRAY['good-sale','leasing-good']) x WHERE slug='matthews';""")
-        sql(fill_sql(candidate["rows"],binding))
-        proof=json.loads(sql(readback_sql(candidate["rows"],binding)))
-        assert proof["verified_jobs"]==1 and proof["held"]==[] and proof["updated"]==["good-sale","leasing-good"], proof
-        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='Good peer' AND raw_data='{\"prior\":true}'::jsonb AND status='active';")=="2"
-        assert len(candidate["held"])==1 and candidate["mark_missing_safe"] is False
+        import cre_checkpoint_refresh as refresh
+        import cre_ingest
+        import cre_refresh_pipeline as pipeline
+        from matthews_partial.worker import run_readback
+
+        code, dirty=refresh.git_identity()
+        assert not dirty, "test must run on a clean committed tree"
+        with tempfile.TemporaryDirectory(prefix="matthews-owned-fixture-") as scratch:
+            work=Path(scratch); root=work/"fixture-generation"; (root/"rejected").mkdir(parents=True)
+            original=root/"rejected"/"matthews.json"; original.write_bytes(raw); os.chmod(original,0o600)
+            attempt={"number":1,"rc":1,"started_at":started,"finished_at":finished,
+                "rejected_artifact":"rejected/matthews.json","rejected_artifact_sha256":hashlib.sha256(raw).hexdigest()}
+            synthetic_url="postgresql://postgres:synthetic-only@127.0.0.1/postgres"
+            target=cre_ingest.database_target_fingerprint_from_url(synthetic_url)
+            canonical_lock=refresh.canonical_shared_lock_dir()
+            manifest={"run_id":"fixture-generation","started_at":started,"collector_git_sha":code,"collector_git_dirty":False,
+                "preflight":{"database_target":target,"shared_lock":str(canonical_lock)},
+                "scope":{"source_keys":["matthews"]},"sources":{"matthews":{"attempts":[attempt]}},
+                "config":{"pipeline":True,"sources":["matthews"],"transactions":["sale","lease"],"max_items":0,
+                    "additive":True,"mark_missing":False,"status_activation":False}}
+            info=prepare_candidate(root,manifest,attempt,git_identity=refresh.git_identity)
+            attempt["matthews_partial_candidate"]={"state":"sealed_unadmitted",**info}
+            gate_path=root/info["gate_path"]
+            stats=refresh._validate_source_artifact_local(gate_path,"matthews",started,require_strict_freshness=True,
+                expected_generation_id="fixture-generation",expected_generation_started_at=started)
+            checkpoint=manifest["sources"]["matthews"]
+            checkpoint["artifact"]={**stats,"path":info["gate_path"],"attempt_started_at":started}
+            def report():
+                return {"generated_for_artifact":str(gate_path),"per_source":{"matthews":{"current_active":2,
+                    "verdict":"hold","reason":"source pass error: matthews_partial_incomplete","mark_missing_safe":False}},
+                    "summary":{"mode":"live","torow_errors":0,"baseline_updated":False,"baseline_update_sources":[],
+                    "hold_sources":["matthews"],"mark_missing_safe_sources":[],"verdict_counts":{}},"per_brokerage":{}}
+            source_report=report()
+            proof=admit_gate(gate_path,root,manifest,source_report,git_identity=refresh.git_identity,
+                target_sha256=target["value"],phase="source")
+            checkpoint["gate"]={"current_inventory_proof":proof,"verdict":"ok_additive_verified_subset",
+                "mark_missing_safe":False,"admission_scope":"matthews_existing_parent_partial_v1"}
+            aggregate=report()
+            assert admit_gate(gate_path,root,manifest,aggregate,git_identity=refresh.git_identity,
+                target_sha256=target["value"],phase="aggregate")==proof
+            attempt_id=uuid.uuid4().hex; checkpoint["subset_ingest_attempt_id"]=attempt_id
+            envelope={"manifest":manifest,"source_report":source_report,"aggregate_report":aggregate,
+                "binding":proof,"attempt_id":attempt_id}
+            claims=root/"claims.json"; claims.write_text(json.dumps(envelope)); os.chmod(claims,0o600)
+            checkpoint["matthews_partial_claims"]={"path":str(claims),"sha256":refresh.sha256_file(claims),"attempt_id":attempt_id}
+            checkpoint["state"]="dry_run_passed"
+            env_file=work/"synthetic.env"; env_file.write_text("POSTGRES_URL="+synthetic_url+"\n"); os.chmod(env_file,0o600)
+            psql=work/"psql-fixture"; psql.write_text("#!/bin/sh\nfor x in \"$@\"; do last=\"$x\"; done\ncat \"$last\" | docker exec -i "+container_id+" psql -U postgres -X -q -v ON_ERROR_STOP=1 -P pager=off -P footer=off -F '\\t' -A -f -\n")
+            os.chmod(psql,0o700)
+            old_psql=os.environ.get("PSQL_BIN"); os.environ["PSQL_BIN"]=str(psql)
+            cre_ingest.PSQL_CANDIDATES.insert(0,str(psql))
+            try:
+                canonical_lock.parent.mkdir(parents=True,exist_ok=True)
+                with refresh.SharedLock(canonical_lock) as owner:
+                    token=pipeline._OWNER_CHECK.set(owner._require_authority)
+                    lease=pipeline._OWNER_LEASE.set(owner.lease_token)
+                    try:
+                        refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
+                        assert checkpoint["state"]=="ingested" and checkpoint["ingest"]["rc"]==0
+                        proof_read=run_readback(gate_path,envelope,target_sha256=target["value"],attempt_id=attempt_id,env_file=str(env_file))
+                    finally:
+                        pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
+            finally:
+                cre_ingest.PSQL_CANDIDATES.remove(str(psql))
+                if old_psql is None: os.environ.pop("PSQL_BIN",None)
+                else: os.environ["PSQL_BIN"]=old_psql
+            assert proof_read["verified_jobs"]==1 and proof_read["held"]==[] and proof_read["updated"]==["good-sale","leasing-good"], proof_read
+            assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='Good peer' AND raw_data='{\"prior\":true}'::jsonb AND status='active';")=="2"
+            assert len(candidate["held"])==1 and candidate["mark_missing_safe"] is False
         print("offline collector artifact to isolated PostgreSQL passed")
     finally:
         if container_id:

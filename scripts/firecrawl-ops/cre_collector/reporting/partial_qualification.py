@@ -19,6 +19,41 @@ def _exact_json_equal(left: Any, right: Any) -> bool:
         return False
 
 
+def matthews_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only a bound Matthews existing-parent partial."""
+    try:
+        source = child["sources"]["matthews"]
+        artifact, gate = source["artifact"], source["gate"]
+        binding = gate["current_inventory_proof"]
+        attempt = source["attempts"][-1]
+        candidate = attempt["matthews_partial_candidate"]
+        return (child["config"].get("pipeline") is True and artifact.get("matthews_partial") is True
+                and isinstance(child.get("run_id"), str) and bool(child["run_id"])
+                and isinstance(child.get("collector_git_sha"), str)
+                and re.fullmatch(r"[a-f0-9]{40}", child["collector_git_sha"])
+                and gate.get("verdict") == "ok_additive_verified_subset" and gate.get("mark_missing_safe") is False
+                and gate.get("admission_scope") == "matthews_existing_parent_partial_v1"
+                and binding.get("schema") == "matthews-existing-parent-partial-v1"
+                and binding.get("scope") == "matthews_existing_parent_partial_v1"
+                and binding.get("source_key") == "matthews" and binding.get("whole_source_coverage") is False
+                and binding.get("artifact_sha256") == artifact.get("sha256") == candidate.get("gate_sha256")
+                and binding.get("candidate_sha256") == candidate.get("sha256")
+                and binding.get("source_artifact_sha256") == candidate.get("original_sha256") == attempt.get("rejected_artifact_sha256")
+                and all(isinstance(binding.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", binding[key])
+                        for key in ("artifact_sha256", "candidate_sha256", "source_artifact_sha256", "database_target_sha256"))
+                and binding.get("generation_id") == child["run_id"]
+                and binding.get("producer_sha") == child["collector_git_sha"]
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
+                and type(binding.get("candidate_count")) is int and binding["candidate_count"] > 0
+                and binding["candidate_count"] == candidate.get("candidate_count") == artifact.get("staged_unique")
+                and type(binding.get("source_held_count")) is int and binding["source_held_count"] >= 0
+                and binding["source_held_count"] == candidate.get("held_count")
+                and isinstance(source.get("subset_ingest_attempt_id"), str)
+                and re.fullmatch(r"[a-f0-9]{32}", source["subset_ingest_attempt_id"]) is not None)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 def franklin_partial_child(child: Mapping[str, Any]) -> bool:
     """Recognize only a target-bound Franklin partial with unresolved coverage."""
     try:
@@ -156,6 +191,20 @@ def partial_member_report_matches(report: dict, checkpoint: dict, source: str, r
     """Return None when this source-specific partial proof does not apply."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
+    if source == "matthews" and artifact.get("matthews_partial") is True:
+        binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+        observed = report.get("matthews_partial_readback")
+        return (isinstance(observed, dict) and _exact_json_equal(observed, readback.get("observation"))
+                and readback.get("ok") is True and readback.get("kind") == "matthews_existing_parent_partial"
+                and readback.get("whole_source_coverage") is False and observed.get("whole_source_coverage") is False
+                and all(type(observed.get(key)) is int and observed[key] == 1 for key in
+                        ("occupied_jobs", "matching_jobs", "verified_jobs"))
+                and observed.get("generation_id") == binding.get("generation_id") == run_id
+                and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                and type(observed.get("candidate_count")) is int and observed["candidate_count"] == binding.get("candidate_count")
+                and type(observed.get("source_held_count")) is int and observed["source_held_count"] == binding.get("source_held_count"))
     if source == "franklin-street" and artifact.get("franklin_partial") is True:
         binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
         observed = report.get("franklin_partial_readback")

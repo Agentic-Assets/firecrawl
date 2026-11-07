@@ -427,7 +427,7 @@ test("settled mixed Matthews artifact derives generation-bound valid peers", () 
     assert.ifError(child.error); assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
     const check=`import json,sys
 from pathlib import Path
-from cre_matthews_partial_checkpoint import derive,gate_projection
+from matthews_partial.checkpoint import derive,gate_projection
 from cre_artifact_scope import require_canonical_artifact
 raw=Path(sys.argv[1]).read_bytes()
 r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])

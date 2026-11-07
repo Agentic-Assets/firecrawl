@@ -84,6 +84,7 @@ from reporting.partial_qualification import (
     colliers_partial_child,
     franklin_partial_child,
     lyon_partial_child,
+    matthews_partial_child,
     partial_member_report_matches,
 )
 
@@ -1227,6 +1228,12 @@ def _child_succeeded(
                 and isinstance(scope, Mapping) and scope.get("kind") == "collector_registry_verified_subset"
                 and scope.get("whole_source_coverage") is False
                 and _exact_json_equal(child_manifest.get("config"), _expected_child_config("nai-global", config)))
+    if matthews_partial_child(child_manifest):
+        scope = child_manifest.get("scope")
+        return (child_manifest.get("status") == "qualified_partial_subset"
+                and isinstance(scope, Mapping) and scope.get("kind") == "collector_registry_verified_subset"
+                and scope.get("whole_source_coverage") is False
+                and _exact_json_equal(child_manifest.get("config"), _expected_child_config("matthews", config)))
     if franklin_partial_child(child_manifest):
         scope = child_manifest.get("scope")
         return (child_manifest.get("status") == "qualified_partial_subset"
@@ -1292,7 +1299,7 @@ def _reconciled_state(
         return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or matthews_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -1997,7 +2004,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict, *, publish: bool
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "matthews" and matthews_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -2625,6 +2632,7 @@ def pipeline_source_qualified(
             pyramid_partial = key == "pyramid-brokerage" and pyramid_partial_child(child)
             jll_partial = key == "jll-investor" and jll_partial_child(child)
             franklin_partial = key == "franklin-street" and franklin_partial_child(child)
+            matthews_partial = key == "matthews" and matthews_partial_child(child)
             colliers_partial = key == "colliers" and colliers_partial_child(child)
             lyon_partial = key == "lyon-stahl" and lyon_partial_child(child)
             nai_partial = key == "nai-global" and nai_post_partial_child(child)
@@ -2635,6 +2643,10 @@ def pipeline_source_qualified(
             if ((checkpoint.get("artifact") or {}).get("lyon_partial") is True
                     or binding.get("schema") == "lyon-search-partial-v1"
                     or binding.get("scope") == "lyon_partial_search_v1") and not lyon_partial:
+                return False
+            if ((checkpoint.get("artifact") or {}).get("matthews_partial") is True
+                    or binding.get("schema") == "matthews-existing-parent-partial-v1"
+                    or binding.get("scope") == "matthews_existing_parent_partial_v1") and not matthews_partial:
                 return False
             if ((checkpoint.get("artifact") or {}).get("franklin_partial") is True
                     or binding.get("schema") == "franklin-site-partial-v1"
@@ -2651,7 +2663,7 @@ def pipeline_source_qualified(
                          or binding.get("scope") == "pyramid_incomplete_v2")
                     and not pyramid_partial):
                 return False
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or colliers_partial or lyon_partial or nai_partial:
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial or jll_partial or franklin_partial or matthews_partial or colliers_partial or lyon_partial or nai_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
@@ -2660,6 +2672,15 @@ def pipeline_source_qualified(
                 if (jll_partial or franklin_partial or colliers_partial or lyon_partial or nai_partial) and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                        for name in ("emitted_count", "held_count")):
                     return False
+                if matthews_partial:
+                    observed = (checkpoint.get("readback") or {}).get("observation") or {}
+                    if (proof.get("candidate_count") != binding.get("candidate_count")
+                            or proof.get("source_held_count") != binding.get("source_held_count")
+                            or not isinstance(observed.get("held"), list) or not isinstance(observed.get("updated"), list)
+                            or proof.get("held_count") != len(observed["held"])
+                            or proof.get("emitted_count") != len(observed["updated"])
+                            or proof.get("unchanged_count") != binding.get("candidate_count") - len(observed["held"]) - len(observed["updated"])):
+                        return False
                 if franklin_partial and any(not _exact_json_equal(proof.get(name), binding.get(name))
                                             for name in ("buildout_pending", "held_observations", "identity_uncertainty")):
                     return False
@@ -2915,7 +2936,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) or (key == "jll-investor" and jll_partial_child(child)) or (key == "franklin-street" and franklin_partial_child(child)) or (key == "matthews" and matthews_partial_child(child)) or (key == "colliers" and colliers_partial_child(child)) or (key == "lyon-stahl" and lyon_partial_child(child)) or (key == "nai-global" and nai_post_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
                 row["subset_counts"] = pyramid_subset_counts(child)
@@ -3281,7 +3302,7 @@ def run_series(
                 save_manifest(series_dir, manifest)
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
+                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) or jll_partial_child(child_manifest) or franklin_partial_child(child_manifest) or matthews_partial_child(child_manifest) or nai_post_partial_child(child_manifest) else "complete"
                 if nai_post_partial_child(child_manifest):
                     binding = child_manifest["sources"]["nai-global"]["gate"]["current_inventory_proof"]
                     checkpoint["partial_counts"] = {key: binding[key] for key in ("emitted_count", "held_count")}

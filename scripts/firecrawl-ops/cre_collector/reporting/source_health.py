@@ -385,6 +385,22 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
                     and _within_clock_skew(child.get("finished_at"), computed_at))
         except (KeyError, TypeError, ValueError):
             return False
+    if source_key == "matthews" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
+        from reporting.partial_qualification import matthews_partial_child, partial_member_report_matches
+
+        try:
+            source = _source_checkpoint(child, source_key)
+            readback = _mapping(source.get("readback"))
+            bound = _mapping(readback.get("observation"))
+            start, finished = (_parse_timestamp(value) for value in (child.get("started_at"), child.get("finished_at")))
+            return (matthews_partial_child(child) and child.get("status") in {"qualified_partial_subset", "failed"}
+                    and source.get("state") == "ingested" and readback.get("ok") is True
+                    and readback.get("kind") == "matthews_existing_parent_partial"
+                    and partial_member_report_matches({"matthews_partial_readback": bound}, source, source_key, child["run_id"])
+                    and None not in (start, finished) and start <= finished
+                    and _within_clock_skew(child.get("finished_at"), computed_at))
+        except (KeyError, TypeError, ValueError):
+            return False
     if source_key == "franklin-street" and checkpoint.get("state") == "qualified_partial_subset" and isinstance(child, Mapping):
         from reporting.partial_qualification import partial_member_report_matches, franklin_partial_child
 

@@ -2967,6 +2967,11 @@ def jll_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("jll_partial") is True)
 
 
+def matthews_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (source == "matthews"
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("matthews_partial") is True)
+
+
 def franklin_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (source == "franklin-street"
             and (manifest["sources"].get(source, {}).get("artifact") or {}).get("franklin_partial") is True)
@@ -2990,8 +2995,8 @@ def nai_post_partial_candidate(manifest: Mapping[str, Any], source: str) -> bool
 def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
     return (current_inventory.is_verified_subset(manifest["config"], source)
             or pyramid_subset_candidate(manifest, source) or jll_partial_candidate(manifest, source)
-            or franklin_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source)
-            or lyon_partial_candidate(manifest, source) or nai_post_partial_candidate(manifest, source))
+            or franklin_partial_candidate(manifest, source) or matthews_partial_candidate(manifest, source)
+            or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source) or nai_post_partial_candidate(manifest, source))
 
 
 def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
@@ -3005,6 +3010,8 @@ def subset_claims_key(manifest: Mapping[str, Any], source: str) -> str:
         return "jll_partial_claims"
     if franklin_partial_candidate(manifest, source):
         return "franklin_partial_claims"
+    if matthews_partial_candidate(manifest, source):
+        return "matthews_partial_claims"
     return "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
 
 
@@ -3142,6 +3149,43 @@ def _validate_source_artifact_local(
                 "freshness_generation_id": source["generation"], "freshness_generation_started_at": generation_start.isoformat(),
                 "sha256": artifact_sha256, "bytes": artifact_bytes}
     meta = data.get("runMeta") if isinstance(data, dict) else None
+    if isinstance(meta, dict) and meta.get("matthewsPartialFill") is not None:
+        from cre_artifact_scope import require_canonical_artifact
+        from matthews_partial.fill import stage_observations
+
+        try:
+            if expected_source != "matthews" or tuple(expected_transactions) != TRANSACTIONS or not require_strict_freshness:
+                raise ValueError("Matthews partial source scope differs")
+            require_canonical_artifact(data, allow_matthews_partial_gate=True)
+            marker, fresh = meta["matthewsPartialFill"], meta.get("freshness") or {}
+            if (not re.fullmatch(r"[a-f0-9]{64}", str(marker.get("sourceArtifactSha256") or ""))
+                    or not re.fullmatch(r"[a-f0-9]{64}", str(marker.get("candidateSha256") or ""))
+                    or fresh.get("generationId") != expected_generation_id or fresh.get("requireFreshDetails") is not True
+                    or meta.get("mode") != "full" or meta.get("transactions") != ["sale", "lease"]
+                    or meta.get("maxItemsPerSource") is not None):
+                raise ValueError("Matthews partial marker differs")
+            generation_start = parse_iso8601(expected_generation_started_at, field="generation_started_at") if not isinstance(expected_generation_started_at, datetime) else expected_generation_started_at
+            attempt_start = parse_iso8601(attempt_started_at, field="attempt_started_at") if not isinstance(attempt_started_at, datetime) else attempt_started_at
+            started = parse_iso8601(meta["startedAt"], field="startedAt")
+            finished = parse_iso8601(meta["finishedAt"], field="finishedAt")
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            if (parse_iso8601(fresh.get("generationStartedAt"), field="generationStartedAt") != generation_start
+                    or not generation_start <= attempt_start <= started <= finished <= current + timedelta(minutes=5)
+                    or started < current - timedelta(hours=max_observation_age_hours)):
+                raise ValueError("Matthews partial clock differs")
+            wrapped = [{"schema": "matthews-completed-parse-observation/v1", "sourceKey": "matthews", "observation": row} for row in data["listings"]]
+            staged = stage_observations(wrapped, expected_generation_id, meta["startedAt"], meta["finishedAt"])
+            stats = compute_staged_stats(data)
+            if stats["rejected_by_ingest"] or stats["staged_unique"] != len(staged):
+                raise ValueError("Matthews partial staging differs")
+            digest, size = sha256_file(path), path.stat().st_size
+            return {**stats, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
+                    "max_observation_age_hours": max_observation_age_hours, "strict_freshness": False,
+                    "property_detail_freshness": False, "matthews_partial": True,
+                    "freshness_generation_id": expected_generation_id,
+                    "freshness_generation_started_at": generation_start.isoformat(), "sha256": digest, "bytes": size}
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ArtifactValidationError("Matthews partial structural validation refused") from exc
     if isinstance(meta, dict) and meta.get("franklinSitePartial") is not None:
         if (expected_source != "franklin-street" or not require_strict_freshness
                 or tuple(expected_transactions) != TRANSACTIONS
@@ -4398,6 +4442,8 @@ def _finalize_cohort_collection(
                              run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
         if item.source == "matthews":
             retain_matthews_partial_candidate(run_dir, manifest, item.attempt)
+            if promote_matthews_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only):
+                return True
         if (item.source == "franklin-street" and rc == COHORT_SETTLED_FAILURE_EXIT
                 and prepare_franklin_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only)):
             return True
@@ -4489,6 +4535,8 @@ def _finalize_cohort_collection(
         )
         if item.source == "matthews":
             retain_matthews_partial_candidate(run_dir, manifest, item.attempt)
+            if promote_matthews_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only):
+                return True
         if item.source == "franklin-street" and prepare_franklin_partial_candidate(
                 run_dir, manifest, item.attempt, candidate_only=candidate_only):
             return True
@@ -5015,7 +5063,7 @@ def retain_matthews_partial_candidate(run_dir, manifest, attempt):
     """Seal eligible peers for later admission without changing failed state."""
     if not attempt.get("rejected_artifact") or not attempt.get("rejected_artifact_sha256"):
         return
-    from cre_matthews_partial_checkpoint import prepare_candidate
+    from matthews_partial.checkpoint import prepare_candidate
 
     try:
         info = prepare_candidate(run_dir, manifest, attempt, git_identity=git_identity,
@@ -5024,6 +5072,40 @@ def retain_matthews_partial_candidate(run_dir, manifest, attempt):
         attempt["matthews_partial_candidate"] = {"state": "refused"}
         return
     attempt["matthews_partial_candidate"] = {"state": "sealed_unadmitted", **info}
+
+
+def promote_matthews_partial_candidate(run_dir, manifest, attempt, *, candidate_only):
+    """Promote a rechecked partial gate projection into the existing checkpoint."""
+    from matthews_partial.checkpoint import recheck_candidate
+
+    candidate = attempt.get("matthews_partial_candidate") or {}
+    if manifest.get("config", {}).get("pipeline") is not True or candidate.get("state") != "sealed_unadmitted":
+        return None
+    try:
+        recheck_candidate(run_dir, manifest, attempt, git_identity=git_identity,
+                          target_sha256=manifest_database_target_sha256(manifest),
+                          settled_rcs=(0, 1, COHORT_SETTLED_FAILURE_EXIT))
+        path = run_dir / candidate["gate_path"]
+        stats = validate_source_artifact(path, "matthews", attempt["started_at"],
+            require_strict_freshness=True, expected_generation_id=manifest["run_id"],
+            expected_generation_started_at=manifest["started_at"],
+            expected_transactions=tuple(manifest["config"]["transactions"]))
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+        if _cleanup_unknown_in_chain(exc):
+            raise GlobalStageError("Matthews candidate worker settlement unknown") from exc
+        return None
+    checkpoint = manifest["sources"]["matthews"]
+    if candidate_only:
+        identity = path.stat()
+        checkpoint["candidate"] = {"path": candidate["gate_path"], "attempt_started_at": attempt["started_at"],
+            "attempt_number": attempt["number"], "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+            identity.st_mtime_ns, identity.st_ctime_ns], "bytes": identity.st_size}
+        checkpoint["state"] = "candidate"
+    else:
+        checkpoint["artifact"] = {**stats, "path": candidate["gate_path"], "attempt_started_at": attempt["started_at"]}
+        checkpoint["state"] = "validated"
+    save_manifest(run_dir, manifest)
+    return path, stats
 
 
 def prepare_franklin_partial_candidate(run_dir, manifest, attempt, *, candidate_only):
@@ -5517,6 +5599,9 @@ def collect_source(
             pump_source_evidence(run_dir, manifest)
             if source == "matthews":
                 retain_matthews_partial_candidate(run_dir, manifest, attempt)
+                partial = promote_matthews_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             if source == "franklin-street" and rc == 1:
                 partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
                 if partial:
@@ -5583,6 +5668,9 @@ def collect_source(
             )
             if source == "matthews":
                 retain_matthews_partial_candidate(run_dir, manifest, attempt)
+                partial = promote_matthews_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
+                if partial:
+                    return partial
             if source == "franklin-street":
                 partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
                 if partial:
@@ -5679,7 +5767,7 @@ def _admit_current_inventory(
             artifact,
             source,
             info.get("attempt_started_at") or info["started_at"],
-            require_strict_freshness=franklin_partial_candidate(manifest, source),
+            require_strict_freshness=(franklin_partial_candidate(manifest, source) or matthews_partial_candidate(manifest, source)),
             expected_generation_id=manifest["run_id"],
             expected_generation_started_at=manifest["started_at"],
             expected_transactions=TRANSACTIONS,
@@ -5704,6 +5792,11 @@ def _admit_current_inventory(
             from cre_jll_partial import admit as admit_jll_partial
             return admit_jll_partial(artifact, manifest, report, current_code_sha=git_sha,
                                      current_git_dirty=git_dirty, phase=phase)
+        if matthews_partial_candidate(manifest, source):
+            from matthews_partial.checkpoint import admit_gate
+            return admit_gate(artifact, run_dir, manifest, report, git_identity=lambda: (git_sha, git_dirty),
+                              target_sha256=manifest_database_target_sha256(manifest), phase=phase,
+                              settled_rcs=(0, 1, COHORT_SETTLED_FAILURE_EXIT))
         if franklin_partial_candidate(manifest, source):
             from cre_franklin_site_admission import admit as admit_franklin
             return admit_franklin(artifact, manifest, report, code_sha=git_sha, dirty=git_dirty,
@@ -5786,7 +5879,7 @@ def gate_source(
                 artifact = prepare_owned(run_dir, manifest, getattr(_OWNER_CHECK.get(), "__self__", None))
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or matthews_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
                 or nai_post_partial_candidate(manifest, source)):
             if nai_post_partial_candidate(manifest, source):
                 from nai_partial.admission import NaiSourceProbeRefusal, run_identity_probe
@@ -5967,6 +6060,7 @@ def subset_ingest_arguments(run_dir, manifest, source):
             else "--colliers-partial-claims" if colliers_partial_candidate(manifest, source)
             else "--jll-partial-claims" if jll_partial_candidate(manifest, source)
             else "--franklin-site-claims" if franklin_partial_candidate(manifest, source)
+            else "--matthews-partial-claims" if matthews_partial_candidate(manifest, source)
             else "--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims")
     return [flag, str(path),
             "--checkpoint-ingest-attempt", attempt,
@@ -5979,7 +6073,7 @@ def _run_nai_owned_command(argv, log_path, manifest):
 
     owner = getattr(_OWNER_CHECK.get(), "__self__", None)
     if not isinstance(owner, SharedLock):
-        raise GlobalStageError("NAI partial command lacks its coordinator owner")
+        raise GlobalStageError("partial command lacks its coordinator owner")
     require_pipeline_owner(manifest, _OWNER_LEASE.get())
     owner._require_authority()
     directory = owner._owned_directory_fd()
@@ -5987,7 +6081,7 @@ def _run_nai_owned_command(argv, log_path, manifest):
     if (owner.path.resolve() != canonical_shared_lock_dir().resolve() or owner.authority_fd < 0
             or owner.recovery_sync_fd < 0 or not owner.authority_token
             or owner.authority_generation != owner.lease_token):
-        raise GlobalStageError("NAI partial command authority differs")
+        raise GlobalStageError("partial command authority differs")
     env = safe_process_env()
     env.update({"CRE_TIER_LOCK_AUTHORITY_FD": str(owner.authority_fd),
                 "CRE_TIER_LOCK_SYNC_FD": str(owner.recovery_sync_fd),
@@ -6020,7 +6114,7 @@ def dry_run_source(
             sql_dir,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         ) + subset_ingest_arguments(run_dir, manifest, source)
-    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if (nai_post_partial_candidate(manifest, source) or matthews_partial_candidate(manifest, source))
           else run_command(argv, log_path, env=safe_process_env()))
     sql_path = sql_dir / "ingest.sql"
     sql_info = None
@@ -6103,10 +6197,38 @@ def ingest_source(
     }
     checkpoint["state"] = "ingesting"
     save_manifest(run_dir, manifest)
-    rc = (_run_nai_owned_command(argv, log_path, manifest) if nai_post_partial_candidate(manifest, source)
+    rc = (_run_nai_owned_command(argv, log_path, manifest) if (nai_post_partial_candidate(manifest, source) or matthews_partial_candidate(manifest, source))
           else run_command(argv, log_path, env=safe_process_env()))
     checkpoint["ingest"]["finished_at"] = utc_now()
     checkpoint["ingest"]["rc"] = rc
+    if rc != 0 and matthews_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "settled_matthews_partial_ingest", "subprocess_rc": rc, "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        try:
+            observed = matthews_partial_readback(run_dir, manifest, env_file)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            raise GlobalStageError("Matthews partial write requires exact reconciliation") from exc
+        recovery_path = run_dir / "recovery" / "matthews-partial-validation.json"
+        atomic_write_json(recovery_path, observed)
+        recovery = checkpoint["ingest_recovery"]
+        recovery.update(validation_path=_relative_to_run(recovery_path, run_dir), validation_sha256=sha256_file(recovery_path))
+        if observed.get("occupied_jobs") == observed.get("matching_jobs") == observed.get("verified_jobs") == 0:
+            recovery.update(outcome="exact_rollback", readback_ok=True)
+            checkpoint["state"] = "settled_ingest_failed"
+            save_manifest(run_dir, manifest)
+            if not verified_matthews_partial_rollback(run_dir, manifest):
+                checkpoint["state"] = "ingest_recovery_required"
+                save_manifest(run_dir, manifest)
+                raise GlobalStageError("Matthews rollback proof changed")
+            raise SettledIngestFailure("Matthews partial write failed with exact rollback")
+        if observed.get("occupied_jobs") == observed.get("matching_jobs") == observed.get("verified_jobs") == 1:
+            recovery.update(outcome="exact_commit", readback_ok=True)
+            checkpoint["state"] = "ingested"
+            save_manifest(run_dir, manifest)
+            return
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("Matthews partial write outcome remains uncertain")
     if rc != 0:
         checkpoint["ingest_recovery"] = {
             "reason": "nonzero_live_ingest_result",
@@ -6541,7 +6663,7 @@ def run_aggregate_gate(
     for source, artifact in zip(selected, artifacts):
         if (current_inventory.admission_configuration(manifest["config"], source)
                 or jll_partial_candidate(manifest, source) or franklin_partial_candidate(manifest, source)
-                or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
+                or matthews_partial_candidate(manifest, source) or colliers_partial_candidate(manifest, source) or lyon_partial_candidate(manifest, source)
                 or nai_post_partial_candidate(manifest, source)):
             _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
             atomic_write_json(output, result)
@@ -6778,6 +6900,11 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    if matthews_partial_candidate(manifest, source):
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {"reason": "interrupted_matthews_partial_ingest", "readback_ok": False}
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("interrupted Matthews partial ingest requires settled-owner reconciliation")
     if nai_post_partial_candidate(manifest, source):
         checkpoint["state"] = "ingest_recovery_required"
         checkpoint["ingest_recovery"] = {"reason": "interrupted_nai_post_partial_ingest", "readback_ok": False}
@@ -7160,6 +7287,64 @@ def nai_post_partial_readback(run_dir, manifest, env_file):
     return result
 
 
+def matthews_partial_readback(run_dir, manifest, env_file):
+    """Read exact receipt on bound target; caller must own a settled writer."""
+    from matthews_partial.checkpoint import _read_private
+    from matthews_partial.worker import run_readback
+
+    source = "matthews"
+    checkpoint = manifest["sources"][source]
+    arguments = subset_ingest_arguments(run_dir, manifest, source)
+    if len(arguments) < 2:
+        raise GlobalStageError("Matthews partial readback claims are missing")
+    claim_path = Path(arguments[1])
+    envelope = json.loads(_read_private(claim_path))
+    target = manifest_database_target_sha256(manifest)
+    value = run_readback(run_dir / checkpoint["artifact"]["path"], envelope,
+                         target_sha256=target, attempt_id=checkpoint["subset_ingest_attempt_id"], env_file=env_file)
+    subset_ingest_arguments(run_dir, manifest, source)
+    return {**value, "artifact_sha256": checkpoint["artifact"]["sha256"],
+            "generation_id": manifest["run_id"], "database_target_sha256": target,
+            "attempt_id": checkpoint["subset_ingest_attempt_id"],
+            "source_held_count": envelope["binding"]["source_held_count"],
+            "candidate_count": envelope["binding"]["candidate_count"], "whole_source_coverage": False}
+
+
+def verified_matthews_partial_rollback(run_dir, manifest):
+    """Recheck the settled-owner exact-rollback evidence before peers continue."""
+    checkpoint = manifest["sources"]["matthews"]
+    recovery, ingest = checkpoint.get("ingest_recovery") or {}, checkpoint.get("ingest") or {}
+    relative = recovery.get("validation_path")
+    if (recovery.get("outcome") != "exact_rollback" or recovery.get("readback_ok") is not True
+            or type(ingest.get("rc")) is not int or ingest["rc"] == 0 or not ingest.get("finished_at")
+            or not isinstance(relative, str)):
+        return False
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "recovery":
+        return False
+    try:
+        evidence_path = run_dir / path
+        if evidence_path.is_symlink() or sha256_file(evidence_path) != recovery.get("validation_sha256"):
+            return False
+        evidence = _load_json(evidence_path)
+        from matthews_partial.checkpoint import _read_private
+        from matthews_partial.worker import context
+        arguments = subset_ingest_arguments(run_dir, manifest, "matthews")
+        envelope = json.loads(_read_private(Path(arguments[1])))
+        code, dirty = git_identity()
+        context(run_dir / checkpoint["artifact"]["path"], envelope, code_sha=code, dirty=dirty,
+                target_sha256=manifest_database_target_sha256(manifest), attempt_id=checkpoint["subset_ingest_attempt_id"])
+        subset_ingest_arguments(run_dir, manifest, "matthews")
+        return (all(type(evidence.get(key)) is int and evidence[key] == 0
+                    for key in ("occupied_jobs", "matching_jobs", "verified_jobs"))
+                and evidence.get("artifact_sha256") == checkpoint["artifact"]["sha256"]
+                and evidence.get("generation_id") == manifest["run_id"]
+                and evidence.get("database_target_sha256") == manifest_database_target_sha256(manifest)
+                and evidence.get("attempt_id") == ingest.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id"))
+    except (OSError, KeyError, IndexError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def franklin_partial_readback(run_dir, manifest, env_file):
     """Revalidate sealed claims and read exact site-card identities and job."""
     from cre_franklin_site_admission import ingest_subset_context, run_readback
@@ -7392,6 +7577,25 @@ def verify_validation_readback(
                   and type(observed.get("new_missing_canonical_count", 0)) is int
                   and 0 <= observed.get("new_missing_canonical_count", 0) <= observed["expected"])
             checkpoint["readback"] = {"ok": ok, "kind": "lyon_partial_search",
+                                      "whole_source_coverage": False, "observation": observed}
+            if not ok:
+                failures.append(source)
+            continue
+        if matthews_partial_candidate(manifest, source):
+            observed = validation.get("matthews_partial_readback")
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            ok = (isinstance(observed, dict)
+                  and all(type(observed.get(key)) is int and observed[key] == 1
+                          for key in ("occupied_jobs", "matching_jobs", "verified_jobs"))
+                  and observed.get("artifact_sha256") == artifact.get("sha256") == binding.get("artifact_sha256")
+                  and observed.get("generation_id") == binding.get("generation_id") == manifest.get("run_id")
+                  and observed.get("database_target_sha256") == binding.get("database_target_sha256")
+                  and observed.get("attempt_id") == checkpoint.get("subset_ingest_attempt_id")
+                  and observed.get("candidate_count") == binding.get("candidate_count")
+                  and observed.get("source_held_count") == binding.get("source_held_count")
+                  and observed.get("whole_source_coverage") is False)
+            checkpoint["readback"] = {"ok": ok, "kind": "matthews_existing_parent_partial",
+                                      "generation_id": binding.get("generation_id"),
                                       "whole_source_coverage": False, "observation": observed}
             if not ok:
                 failures.append(source)
@@ -7991,6 +8195,9 @@ def run_final_validation(
         atomic_write_json(output, result)
     if (sources is None or "lyon-stahl" in sources) and lyon_partial_candidate(manifest, "lyon-stahl"):
         result["lyon_partial_readback"] = lyon_partial_readback(run_dir, manifest, env_file)
+        atomic_write_json(output, result)
+    if (sources is None or "matthews" in sources) and matthews_partial_candidate(manifest, "matthews"):
+        result["matthews_partial_readback"] = matthews_partial_readback(run_dir, manifest, env_file)
         atomic_write_json(output, result)
     if (sources is None or "franklin-street" in sources) and franklin_partial_candidate(manifest, "franklin-street"):
         result["franklin_partial_readback"] = franklin_partial_readback(run_dir, manifest, env_file)

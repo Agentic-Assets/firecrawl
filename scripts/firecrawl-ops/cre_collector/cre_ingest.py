@@ -7701,6 +7701,7 @@ def main():
     ap.add_argument("--colliers-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--lyon-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--matthews-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-claims", default=None, help=argparse.SUPPRESS)
@@ -7752,6 +7753,13 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.matthews_partial_claims:
+        try:
+            from matthews_partial.worker import run_ingest
+            run_ingest(args)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            sys.exit(f"refusing Matthews partial ingest: {exc}")
+        return
     if args.nai_post_claims:
         try:
             from nai_partial.admission import run_ingest

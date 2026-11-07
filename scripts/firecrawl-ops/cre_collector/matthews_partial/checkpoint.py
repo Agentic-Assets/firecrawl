@@ -11,7 +11,8 @@ import stat
 from pathlib import Path
 
 from cre_ingest import parse_strict_freshness_timestamp
-from cre_matthews_partial_fill import stage_observations
+
+from matthews_partial.fill import stage_observations
 
 
 def derive(raw, *, generation_id, generation_started_at, attempt_started_at, attempt_finished_at):
@@ -181,9 +182,22 @@ def prepare_candidate(run_dir, manifest, attempt, *, git_identity, settled_rcs=(
             os.fsync(stream.fileno())
     finally:
         os.close(fd)
+    gate = gate_projection(raw, result)
+    gate_bytes = json.dumps(gate, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    gate_path = root / "sources" / f"matthews-partial-gate-attempt-{attempt['number']}.json"
+    gate_fd = os.open(gate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(gate_fd, "wb", closefd=False) as stream:
+            stream.write(gate_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(gate_fd)
     return {"path": str(destination.relative_to(root)), "sha256": hashlib.sha256(encoded).hexdigest(),
             "bytes": len(encoded), "original_path": original_rel, "original_sha256": expected_sha,
-            "candidate_count": len(result["rows"]), "held_count": len(result["held"]), "attempt_rc": attempt["rc"]}
+            "gate_path": str(gate_path.relative_to(root)), "gate_sha256": hashlib.sha256(gate_bytes).hexdigest(),
+            "gate_bytes": len(gate_bytes), "candidate_count": len(result["rows"]),
+            "held_count": len(result["held"]), "attempt_rc": attempt["rc"]}
 
 
 def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256, settled_rcs=(0, 1)):
@@ -209,23 +223,29 @@ def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256
             or candidate.get("original_sha256") != attempt.get("rejected_artifact_sha256")):
         raise ValueError("Matthews candidate owner or target changed")
     if (type(attempt.get("number")) is not int or attempt["number"] < 1
-            or candidate.get("path") != f"sources/matthews-partial-fill-attempt-{attempt['number']}.json"):
+            or candidate.get("path") != f"sources/matthews-partial-fill-attempt-{attempt['number']}.json"
+            or candidate.get("gate_path") != f"sources/matthews-partial-gate-attempt-{attempt['number']}.json"):
         raise ValueError("Matthews candidate path changed")
     relative = Path(candidate.get("original_path") or "")
     if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "rejected":
         raise ValueError("Matthews original path changed")
     original = _read_private(root / relative)
     raw_candidate = _read_private(root / candidate["path"])
+    raw_gate = _read_private(root / candidate["gate_path"])
     if (hashlib.sha256(original).hexdigest() != candidate["original_sha256"]
             or hashlib.sha256(raw_candidate).hexdigest() != candidate.get("sha256")
-            or len(raw_candidate) != candidate.get("bytes")):
+            or len(raw_candidate) != candidate.get("bytes")
+            or hashlib.sha256(raw_gate).hexdigest() != candidate.get("gate_sha256")
+            or len(raw_gate) != candidate.get("gate_bytes")):
         raise ValueError("Matthews sealed evidence changed")
     recomputed = derive(original, generation_id=manifest["run_id"], generation_started_at=manifest["started_at"],
                         attempt_started_at=attempt["started_at"], attempt_finished_at=attempt["finished_at"])
     if (json.loads(raw_candidate) != recomputed or candidate.get("candidate_count") != len(recomputed["rows"])
-            or candidate.get("held_count") != len(recomputed["held"])):
+            or candidate.get("held_count") != len(recomputed["held"])
+            or json.loads(raw_gate) != gate_projection(original, recomputed)):
         raise ValueError("Matthews candidate differs from source")
     if (_read_private(root / relative) != original or _read_private(root / candidate["path"]) != raw_candidate
+            or _read_private(root / candidate["gate_path"]) != raw_gate
             or git_identity() != (manifest["collector_git_sha"], False)):
         raise ValueError("Matthews evidence or code changed during recheck")
     return recomputed
@@ -274,3 +294,71 @@ def gate_projection(raw, candidate):
          "error": "matthews_partial_incomplete", "listingsCollected": sum(row["transactionMode"] == tx for row in emitted.values())}
         for tx in ("sale", "lease")], "listings": list(emitted.values()),
         "totalListings": len(emitted), "brokers": source["brokers"]}
+
+
+def admit_gate(artifact_path, run_dir, manifest, report, *, git_identity, target_sha256, phase, settled_rcs=(0, 1)):
+    """Qualify only the bound partial projection under an existing live gate."""
+    from cre_current_inventory_admission import validate_report_scope
+    from cre_gate import count_artifacts
+
+    if phase not in ("source", "aggregate"):
+        raise ValueError("invalid Matthews gate phase")
+    checkpoint = manifest["sources"]["matthews"]
+    attempts = checkpoint.get("attempts") or []
+    if not attempts:
+        raise ValueError("Matthews gate attempt missing")
+    attempt = attempts[-1]
+    data = recheck_candidate(run_dir, manifest, attempt, git_identity=git_identity,
+                             target_sha256=target_sha256, settled_rcs=settled_rcs)
+    candidate = attempt["matthews_partial_candidate"]
+    artifact = Path(artifact_path)
+    if (artifact != Path(run_dir) / candidate["gate_path"]
+            or checkpoint.get("artifact", {}).get("sha256") != candidate["gate_sha256"]
+            or checkpoint.get("artifact", {}).get("matthews_partial") is not True):
+        raise ValueError("Matthews gate artifact binding differs")
+    current, errors, sources, _, rejects = count_artifacts([str(artifact)], True)
+    if (sources != {"matthews"} or errors.get("matthews") != "matthews_partial_incomplete"
+            or rejects != 0 or current.get("matthews") != len(data["rows"])):
+        raise ValueError("Matthews gate counts differ")
+    validate_report_scope(report, manifest, "matthews", artifact)
+    summary, gate = report["summary"], report["per_source"]["matthews"]
+    if (summary.get("mode") != "live" or summary.get("torow_errors") != 0
+            or summary.get("baseline_updated") is not False or summary.get("baseline_update_sources") != []
+            or gate.get("current_active") != len(data["rows"])):
+        raise ValueError("Matthews gate scope differs")
+    if gate.get("verdict") == "ok_additive_verified_subset":
+        raw_pair = gate.get("raw_verdict"), gate.get("raw_reason")
+    else:
+        raw_pair = gate.get("verdict"), gate.get("reason")
+    allowed = {("first_seen", "no baseline row; cannot gate (first sight); a source pass also errored this run"),
+               ("hold", "source pass error: matthews_partial_incomplete")}
+    if raw_pair not in allowed or gate.get("mark_missing_safe") is not False:
+        raise ValueError("Matthews gate reason differs")
+    binding = {"schema": "matthews-existing-parent-partial-v1", "scope": "matthews_existing_parent_partial_v1",
+               "source_key": "matthews", "artifact_sha256": candidate["gate_sha256"],
+               "candidate_sha256": candidate["sha256"], "source_artifact_sha256": candidate["original_sha256"],
+               "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+               "database_target_sha256": target_sha256, "candidate_count": len(data["rows"]),
+               "source_held_count": len(data["held"]), "whole_source_coverage": False}
+    if phase == "aggregate" and checkpoint.get("gate", {}).get("current_inventory_proof") != binding:
+        raise ValueError("Matthews source gate binding changed")
+    gate.update(raw_verdict=raw_pair[0], raw_reason=raw_pair[1], verdict="ok_additive_verified_subset",
+                reason="Matthews existing-parent peers admitted as partial; unresolved observations remain held",
+                mark_missing_safe=False, admission_scope=binding["scope"], current_inventory_proof=binding)
+    for key in ("hold_sources", "mark_missing_safe_sources"):
+        if isinstance(summary.get(key), list):
+            summary[key] = [value for value in summary[key] if value != "matthews"]
+    if isinstance(summary.get("mark_missing_safe_brokerages"), list):
+        summary["mark_missing_safe_brokerages"] = [value for value in summary["mark_missing_safe_brokerages"] if value != "matthews"]
+    if isinstance(report.get("per_brokerage"), dict) and isinstance(report["per_brokerage"].get("matthews"), dict):
+        report["per_brokerage"]["matthews"]["mark_missing_safe"] = False
+    if isinstance(summary.get("verdict_counts"), dict):
+        counts = {}
+        for value in report["per_source"].values():
+            verdict = value.get("verdict")
+            counts[verdict] = counts.get(verdict, 0) + 1
+        summary["verdict_counts"] = counts
+    report["scope"] = {"kind": binding["scope"] if phase == "source" else "collector_registry_verified_subset",
+                       "transactions": ["sale", "lease"], "whole_source_coverage": False}
+    manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
+    return binding

@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from cre_matthews_partial_fill import stage_observations
+from matthews_partial.fill import stage_observations
 
 
 def valid():

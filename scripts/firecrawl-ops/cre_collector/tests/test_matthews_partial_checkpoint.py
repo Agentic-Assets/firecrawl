@@ -3,12 +3,16 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_matthews_partial_checkpoint import (
+from matthews_partial.checkpoint import (
+    admit_gate,
     derive,
     gate_projection,
     prepare_candidate,
@@ -48,7 +52,10 @@ class MatthewsCandidateTest(unittest.TestCase):
         self.assertFalse(candidate["mark_missing_safe"])
 
     def test_gate_projection_counts_partial_without_canonical_authority(self):
+        from datetime import datetime
+
         from cre_artifact_scope import require_canonical_artifact
+        from cre_checkpoint_refresh import _validate_source_artifact_local
         from cre_gate import count_artifacts, select_baseline_updates
 
         raw, candidate = project(artifact())
@@ -58,6 +65,10 @@ class MatthewsCandidateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"gate.json"; path.write_text(json.dumps(gate))
             counts, errors, sources, _, rejects = count_artifacts([str(path)], True)
+            stats = _validate_source_artifact_local(path, "matthews", "2026-11-06T23:59:00Z",
+                require_strict_freshness=True, expected_generation_id="fixture",
+                expected_generation_started_at="2026-11-06T23:58:00Z", now=datetime(2026,11,7,0,3,tzinfo=UTC))
+            self.assertTrue(stats["matthews_partial"])
         self.assertEqual(counts,{"matthews":1})
         self.assertEqual(errors,{"matthews":"matthews_partial_incomplete"})
         self.assertEqual(sources,{"matthews"}); self.assertEqual(rejects,0)
@@ -84,7 +95,7 @@ class MatthewsCandidateTest(unittest.TestCase):
             attempt={"number": 1, "rc": 1, "started_at": "2026-11-06T23:59:00Z", "finished_at": "2026-11-07T00:02:00Z",
                 "rejected_artifact": "rejected/matthews.json", "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
             manifest={"run_id":"fixture", "started_at":"2026-11-06T23:58:00Z", "collector_git_sha":"a"*40,
-                "collector_git_dirty":False, "preflight":{"database_target":{"algorithm":"sha256","value":"b"*64}}, "sources":{"matthews":{"attempts":[attempt]}}, "config":{
+                "collector_git_dirty":False, "preflight":{"database_target":{"algorithm":"sha256","value":"b"*64}}, "scope":{}, "sources":{"matthews":{"attempts":[attempt]}}, "config":{
                 "transactions":["sale","lease"], "max_items":0, "additive":True, "mark_missing":False,
                 "status_activation":False, "sources":["matthews"]}}
             from cre_checkpoint_refresh import retain_matthews_partial_candidate
@@ -98,6 +109,65 @@ class MatthewsCandidateTest(unittest.TestCase):
             candidate=root/result["path"]; self.assertEqual(candidate.stat().st_mode & 0o777,0o600)
             verified = recheck_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False),target_sha256="b"*64,settled_rcs=(0,1,80))
             self.assertEqual(verified["rows"][0]["external_id"],"example")
+            gate_path = root/result["gate_path"]
+            from datetime import datetime
+
+            from cre_checkpoint_refresh import (
+                _validate_source_artifact_local,
+                promote_matthews_partial_candidate,
+            )
+            manifest["config"]["pipeline"]=True
+            def validate_bound(path, *args, **kwargs):
+                return _validate_source_artifact_local(path,*args,now=datetime(2026,11,7,0,3,tzinfo=UTC),**kwargs)
+            with patch("cre_checkpoint_refresh.git_identity",return_value=("a"*40,False)), \
+                 patch("cre_checkpoint_refresh.validate_source_artifact",side_effect=validate_bound), \
+                 patch("cre_checkpoint_refresh.save_manifest"):
+                promoted=promote_matthews_partial_candidate(root,manifest,attempt,candidate_only=False)
+            self.assertEqual(promoted[0],gate_path)
+            self.assertEqual(manifest["sources"]["matthews"]["state"],"validated")
+            self.assertTrue(manifest["sources"]["matthews"]["artifact"]["matthews_partial"])
+            def report():
+                return {"generated_for_artifact":str(gate_path),"per_source":{"matthews":{"current_active":1,
+                    "verdict":"hold","reason":"source pass error: matthews_partial_incomplete","mark_missing_safe":False}},
+                    "summary":{"mode":"live","torow_errors":0,"baseline_updated":False,"baseline_update_sources":[],
+                    "hold_sources":["matthews"],"mark_missing_safe_sources":[],"verdict_counts":{}},"per_brokerage":{}}
+            source_report=report()
+            proof=admit_gate(gate_path,root,manifest,source_report,git_identity=lambda:("a"*40,False),
+                target_sha256="b"*64,phase="source",settled_rcs=(0,1,80))
+            manifest["sources"]["matthews"]["gate"]={"current_inventory_proof":proof}
+            aggregate=report()
+            self.assertEqual(admit_gate(gate_path,root,manifest,aggregate,git_identity=lambda:("a"*40,False),
+                target_sha256="b"*64,phase="aggregate",settled_rcs=(0,1,80)),proof)
+            self.assertFalse(proof["whole_source_coverage"])
+            from reporting.partial_qualification import (
+                matthews_partial_child,
+                partial_member_report_matches,
+            )
+            manifest["config"]["pipeline"] = True
+            manifest["sources"]["matthews"]["artifact"]["staged_unique"] = 1
+            manifest["sources"]["matthews"]["gate"].update(verdict="ok_additive_verified_subset",mark_missing_safe=False,
+                admission_scope="matthews_existing_parent_partial_v1")
+            manifest["sources"]["matthews"]["subset_ingest_attempt_id"]="d"*32
+            observation={"occupied_jobs":1,"matching_jobs":1,"verified_jobs":1,"held":[],"updated":["example"],
+                "held_reasons":{},"artifact_sha256":result["gate_sha256"],"generation_id":"fixture",
+                "database_target_sha256":"b"*64,"attempt_id":"d"*32,"candidate_count":1,"source_held_count":1,
+                "whole_source_coverage":False}
+            checkpoint=manifest["sources"]["matthews"]
+            checkpoint["readback"]={"ok":True,"kind":"matthews_existing_parent_partial","whole_source_coverage":False,
+                "observation":observation}
+            self.assertTrue(matthews_partial_child(manifest))
+            self.assertTrue(partial_member_report_matches({"matthews_partial_readback":observation},checkpoint,"matthews","fixture"))
+            bad_report=copy.deepcopy(observation); bad_report["verified_jobs"]=0
+            self.assertFalse(partial_member_report_matches({"matthews_partial_readback":bad_report},checkpoint,"matthews","fixture"))
+            manifest["config"].pop("pipeline")
+            from matthews_partial.worker import context
+            envelope={"manifest":manifest,"source_report":source_report,"aggregate_report":aggregate,
+                "binding":proof,"attempt_id":"d"*32}
+            bound=context(gate_path,envelope,code_sha="a"*40,dirty=False,target_sha256="b"*64,attempt_id="d"*32)
+            self.assertEqual(bound["rows"][0]["external_id"],"example")
+            invalid=copy.deepcopy(envelope); invalid["aggregate_report"]["per_source"]["matthews"]["current_inventory_proof"]["candidate_count"]=99
+            with self.assertRaises(ValueError):
+                context(gate_path,invalid,code_sha="a"*40,dirty=False,target_sha256="b"*64,attempt_id="d"*32)
             with self.assertRaisesRegex(ValueError,"target changed"):
                 recheck_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False),target_sha256="c"*64,settled_rcs=(0,1,80))
             candidate.write_bytes(candidate.read_bytes()+b" ")
@@ -126,6 +196,58 @@ class MatthewsCandidateTest(unittest.TestCase):
             self.assertEqual(attempt["matthews_partial_candidate"]["state"], "sealed_unadmitted")
             self.assertEqual((root / attempt["rejected_artifact"]).read_bytes(), raw)
             self.assertFalse(candidate.exists())
+
+    def test_direct_writer_without_inherited_owner_is_refused_before_claim_read(self):
+        root=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            result=subprocess.run([sys.executable,str(root/"cre_ingest.py"),"--in",str(Path(directory)/"missing.json"),
+                "--matthews-partial-claims",str(Path(directory)/"missing-claims.json"),"--checkpoint-ingest-attempt","d"*32,
+                "--expected-db-target-sha256","b"*64,"--require-strict-freshness","--dry-run"],
+                cwd=root,env={"PATH":os.environ["PATH"]},text=True,capture_output=True,check=False,timeout=30)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn("descriptor is missing",result.stderr)
+            self.assertNotIn("missing-claims.json",result.stderr)
+
+    def test_settled_nonzero_reconciles_commit_rollback_or_uncertainty(self):
+        import cre_checkpoint_refresh as refresh
+
+        def make_manifest():
+            return {"run_id":"fixture","collector_git_sha":"a"*40,"preflight":{"database_target":{"algorithm":"sha256","value":"b"*64}},
+                "config":{"sources":["matthews"]},"sources":{"matthews":{
+                "state":"dry_run_passed","artifact":{"path":"sources/matthews.json","sha256":"c"*64,"matthews_partial":True},
+                "subset_ingest_attempt_id":"d"*32}}}
+        for counts, outcome in (((0,0,0),"rollback"),((1,1,1),"commit"),((1,0,0),"unknown")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory); manifest=make_manifest()
+                observed={"occupied_jobs":counts[0],"matching_jobs":counts[1],"verified_jobs":counts[2],
+                    "artifact_sha256":"c"*64,"generation_id":"fixture","database_target_sha256":"b"*64,"attempt_id":"d"*32}
+                with patch("cre_checkpoint_refresh.subset_ingest_arguments",return_value=["--matthews-partial-claims",str(root/"claims.json")]), \
+                     patch("matthews_partial.checkpoint._read_private",return_value=b"{}"), \
+                     patch("matthews_partial.worker.context",return_value={}), \
+                     patch("cre_checkpoint_refresh.git_identity",return_value=("a"*40,False)), \
+                     patch("cre_checkpoint_refresh._run_nai_owned_command",return_value=1), \
+                     patch("cre_checkpoint_refresh.matthews_partial_readback",return_value=observed), \
+                     patch("cre_checkpoint_refresh.save_manifest"):
+                    if outcome=="rollback":
+                        with self.assertRaises(refresh.SettledIngestFailure):
+                            refresh.ingest_source(root,manifest,"matthews",root/"sources/matthews.json",None)
+                        self.assertTrue(refresh.verified_matthews_partial_rollback(root,manifest))
+                    elif outcome=="commit":
+                        refresh.ingest_source(root,manifest,"matthews",root/"sources/matthews.json",None)
+                        self.assertEqual(manifest["sources"]["matthews"]["ingest_recovery"]["outcome"],"exact_commit")
+                    else:
+                        with self.assertRaisesRegex(refresh.GlobalStageError,"uncertain"):
+                            refresh.ingest_source(root,manifest,"matthews",root/"sources/matthews.json",None)
+                        self.assertEqual(manifest["sources"]["matthews"]["state"],"ingest_recovery_required")
+
+    def test_interrupted_unsettled_owner_never_replays(self):
+        import cre_checkpoint_refresh as refresh
+
+        manifest={"config":{},"sources":{"matthews":{"artifact":{"matthews_partial":True}}}}
+        with (tempfile.TemporaryDirectory() as directory, patch("cre_checkpoint_refresh.save_manifest"),
+              self.assertRaisesRegex(refresh.GlobalStageError,"settled-owner reconciliation")):
+            refresh.recover_interrupted_ingest(Path(directory),manifest,"matthews",None)
+        self.assertEqual(manifest["sources"]["matthews"]["state"],"ingest_recovery_required")
 
     def test_duplicate_identities_are_held_not_merged(self):
         data=artifact(); data["sources"][0]["retainedObservations"].append(copy.deepcopy(data["sources"][0]["retainedObservations"][1]))

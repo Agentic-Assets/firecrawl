@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cre_matthews_partial_fill import fill_sql, readback_sql, stage_observations
+from matthews_partial.fill import fill_sql, readback_sql, stage_observations
 
 
 def run(*args, input_text=None):
