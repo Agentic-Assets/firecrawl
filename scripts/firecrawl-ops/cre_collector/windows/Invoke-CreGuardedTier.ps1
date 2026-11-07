@@ -23,6 +23,9 @@ param(
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedTargetSha256,
+    [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$FreshSeriesId,
+    [ValidatePattern('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$')][string]$PriorityFromSeriesId,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
@@ -59,6 +62,20 @@ if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
 }
 if ($PSBoundParameters.ContainsKey('PageCap') -and $Tier -ne 'series') { throw '-PageCap requires series.' }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
+if ($PSBoundParameters.ContainsKey('FreshSeriesId')) {
+    if ($Tier -ne 'series' -or $CheckOnly) { throw '-FreshSeriesId requires a series invocation.' }
+    $locatorDate = [DateTime]::MinValue
+    if (-not [DateTime]::TryParseExact($FreshSeriesId.Substring(0, 18), "yyyy-MM-dd'T'HHmmss'Z'",
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$locatorDate)) {
+        throw '-FreshSeriesId timestamp is invalid.'
+    }
+}
+if ($PSBoundParameters.ContainsKey('ExpectedTargetSha256') -and -not $FreshSeriesId) {
+    throw '-ExpectedTargetSha256 requires a preallocated series.'
+}
+if ($PSBoundParameters.ContainsKey('PriorityFromSeriesId') -and (-not $FreshSeriesId -or -not $ExpectedTargetSha256)) {
+    throw '-PriorityFromSeriesId requires a target-bound preallocated series.'
+}
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
     throw '-SourceWorkers requires -Pipeline.'
 }
@@ -828,6 +845,7 @@ $record = [ordered]@{
 if ($DaumSubsetPolicy -cne 'tenure-only-v1') { $record['daumSubsetPolicy'] = $DaumSubsetPolicy }
 if ($Tier -eq 'series') {
     $record['workDeadlineSeconds'] = $WorkDeadlineSeconds
+    if ($PSBoundParameters.ContainsKey('FreshSeriesId')) { $record['freshSeriesId'] = $FreshSeriesId }
     $record['acknowledgeDatabaseWrites'] = [bool]$AcknowledgeDatabaseWrites
 }
 try {
@@ -919,6 +937,9 @@ try {
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
+            if ($FreshSeriesId) { $arguments += @('--fresh-series-id', $FreshSeriesId) }
+            if ($ExpectedTargetSha256) { $arguments += @('--expected-database-target-sha256', $ExpectedTargetSha256) }
+            if ($PriorityFromSeriesId) { $arguments += @('--priority-from-series-id', $PriorityFromSeriesId) }
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }
@@ -973,5 +994,16 @@ if ($result -ne 0 -or $NotificationMode -eq 'StartFinish') {
         try { Write-CreAudit $auditPath $record }
         catch { Write-Error 'Windows post-notification audit publication failed; the prior receipt may omit the notification outcome.' -ErrorAction Continue }
     }
+}
+if ($FreshSeriesId -and $ExpectedTargetSha256 -and $result -ne 0 -and
+    $record.dispatch -ceq 'not_attempted' -and $record.status -cin @(
+        'local_api_not_ready_no_dispatch', 'startup_admission_deadline_no_dispatch',
+        'notification_config_refused_no_dispatch', 'admission_refused')) {
+    # Final output from this exact native process, after the final dispatch
+    # decision. Missing output or a crash is never a no-work receipt.
+    $noWork = [ordered]@{ schema='cre-dispatch-no-work/v1'; seriesId=$FreshSeriesId;
+        expectedSha=$ExpectedSha; targetSha256=$ExpectedTargetSha256;
+        source=$selectedSourceArgument; reason=$record.status } | ConvertTo-Json -Compress
+    Write-Output ('CRE_DISPATCH_NO_WORK:' + $noWork)
 }
 exit $result

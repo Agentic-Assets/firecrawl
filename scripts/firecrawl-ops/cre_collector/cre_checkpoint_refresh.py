@@ -8717,6 +8717,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
+    parser.add_argument("--expected-parent-db-target-sha256", default=None,
+                        help="internal preallocated-dispatch target binding")
     parser.add_argument("--source-evidence-policy", default=None)
     parser.add_argument("--source-evidence-policy-sha256", default=None)
     parser.add_argument("--source-evidence-env-file", default=None)
@@ -8995,6 +8997,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     lock_dir = checkpoint_lock_dir(args.lock_dir)
     database_target = database_target_fingerprint(args.env_file)
+    if args.expected_parent_db_target_sha256 is not None:
+        if ((not args.pipeline and len(sources) != 1) or args.resume
+                or re.fullmatch(r"[a-f0-9]{64}", args.expected_parent_db_target_sha256) is None
+                or database_target != {"algorithm": "sha256", "value": args.expected_parent_db_target_sha256}):
+            raise RefreshError("preallocated dispatch child database target differs")
     git_sha, git_dirty = git_identity()
     if git_dirty and not args.allow_dirty:
         raise RefreshError("refusing operational refresh from a dirty checkout")

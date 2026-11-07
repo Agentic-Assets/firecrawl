@@ -206,6 +206,7 @@ function Get-CreHandoffNativeFrontends {
                           $process.CreationDate.ToUniversalTime().Ticks -eq $ancestors[[int]$id]
         if($id -eq $PID -and $matchingAncestor) {$ownVisible=$true}
         if(-not $matchingAncestor -and ($process.CommandLine -like '*Invoke-CreGuardedTier.ps1*' -or
+           $process.CommandLine -like '*Invoke-CreDispatcherWake.ps1*' -or
            $process.CommandLine -like '*Invoke-CreCodeHandoff.ps1*' -or $process.CommandLine -like '*deploy-windows.ps1*' -or
            $process.CommandLine -like '*finalize-tasks.ps1*')) {$frontends+=@([ordered]@{pid=[int]$id;name=[string]$process.Name})}
     }

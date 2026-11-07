@@ -513,6 +513,38 @@ foreach($row in $combined) {
 $fixture.tasks.Remove($daum.key)
 foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
 $fixture.successor=$false;$fixture.events.Clear()
+$scanner=@{key='dispatcher-snapshot';task_path='\Agentic Assets\CRE\';task_name='Dispatcher Snapshot'}
+$drainer=@{key='dispatcher-drain';task_path='\Agentic Assets\CRE\';task_name='Dispatcher Drain'}
+$rows=@($rows[0..2])+@($scanner,$drainer)
+$dispatcher=Join-Path $native 'scripts/firecrawl-ops/cre_collector/windows/Invoke-CreDispatcherWake.ps1'
+foreach($row in @($scanner,$drainer)) {
+ $doc=[Xml.XmlDocument]::new();$doc.XmlResolver=$null;$doc.LoadXml([string]$snapshot[0].xml)
+ $ns=[Xml.XmlNamespaceManager]::new($doc.NameTable);$ns.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
+ $argument='"-NoProfile" "-NonInteractive" "-File" "'+$dispatcher+'" "-ExpectedSha" "'+$old+'"'
+ if($row.key -ceq 'dispatcher-drain') {$argument+=' "-DrainOnly"'}
+ $doc.SelectSingleNode('/t:Task/t:Actions/t:Exec/t:Arguments',$ns).InnerText=$argument
+ $enabled=$row.key -ceq 'dispatcher-snapshot'
+ $fixture.tasks[$row.key]=@{xml=(Set-CreHandoffEnabledXml $doc.OuterXml $enabled);enabled=$enabled}
+}
+$dispatcherRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark');wsl=$release.wsl}
+$dispatcherSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $dispatcherRelease $old $new)
+if($dispatcherSnapshot.Count -ne 5) {throw 'Dispatcher fleet discovery failed'}
+$savedDrain=$fixture.tasks[$drainer.key].xml
+$fixture.tasks[$drainer.key].xml=$savedDrain.Replace('"-DrainOnly"','"-Unknown"')
+try {$null=Get-CreReviewedTaskSnapshot $dispatcherRelease $old $new;throw 'unknown dispatcher option accepted'} catch {if($_.Exception.Message -ceq 'unknown dispatcher option accepted'){throw}}
+$fixture.tasks[$drainer.key].xml=$savedDrain
+$dispatcherDigest=Get-CreReviewedSnapshotDigest $dispatcherRelease $dispatcherSnapshot $old $new
+Invoke-CreReviewedTaskHold $dispatcherRelease $dispatcherSnapshot $old $new $dispatcherDigest $assertOwner
+Invoke-CreReviewedTaskRepin $dispatcherRelease $dispatcherSnapshot $old $new $dispatcherDigest $assertOwner
+Invoke-CreReviewedTaskRestore $dispatcherRelease $dispatcherSnapshot $old $new $dispatcherDigest $assertOwner
+foreach($row in $dispatcherSnapshot) {
+ $actual=$fixture.tasks[$row.key]
+ $expected=Set-CreHandoffEnabledXml (Pin-ReviewedXml ([string]$row.xml) $old $new) $row.enabled
+ if($actual.enabled -ne $row.enabled -or (Get-CreTaskContract ([string]$actual.xml)) -cne (Get-CreTaskContract $expected)) {throw 'Dispatcher fleet changed beyond pin or enabled state'}
+}
+$fixture.tasks.Remove($scanner.key);$fixture.tasks.Remove($drainer.key)
+foreach($row in $snapshot) {$fixture.tasks[$row.key].xml=[string]$row.xml;$fixture.tasks[$row.key].enabled=$row.enabled}
+$fixture.successor=$false;$fixture.events.Clear()
 $matthews=@{key='enrich:matthews';task_path='\Agentic Assets\CRE\';task_name='Enrichment - matthews'}
 $rows=@($rows[0..2])+@($matthews)
 $matthewsXml=$base.Replace('newmark','matthews').Replace('"-DeadlineSeconds" "300"','"-DeadlineSeconds" "900"')

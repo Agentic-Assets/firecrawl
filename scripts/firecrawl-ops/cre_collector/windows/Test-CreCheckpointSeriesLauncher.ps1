@@ -41,6 +41,7 @@ $admission = @($ast.FindAll({ param($node) $node -is [Management.Automation.Lang
 $readiness = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi' }, $true))[0]
 $sha = 'a' * 40
 $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '3600', '-AcknowledgeDatabaseWrites')
+$freshSeriesId = '2026-11-06T010203Z-012345abcdef'
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
@@ -61,6 +62,13 @@ $cases = @(
     @{ Name = 'pyramid-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'pyramid-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
+    @{ Name = 'fresh-series-locator'; Args = $series + @('-FreshSeriesId', $freshSeriesId); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId },
+    @{ Name = 'fresh-series-target'; Args = $series + @('-FreshSeriesId', $freshSeriesId, '-ExpectedTargetSha256', ('b' * 64)); Exit = 0; Dispatch = $true; FreshSeriesId = $freshSeriesId; TargetHash = ('b' * 64) },
+    @{ Name = 'fresh-no-work'; Args = $series + @('-FreshSeriesId', $freshSeriesId, '-ExpectedTargetSha256', ('b' * 64)); Exit = 1; Dispatch = $false; ReadinessDenied = $true; NoWork = $true },
+    @{ Name = 'target-without-fresh'; Args = $series + @('-ExpectedTargetSha256', ('b' * 64)); Exit = 1; Dispatch = $false },
+    @{ Name = 'fresh-invalid-date'; Args = $series + @('-FreshSeriesId', '2026-02-30T010203Z-012345abcdef'); Exit = 1; Dispatch = $false },
+    @{ Name = 'fresh-invalid-id'; Args = $series + @('-FreshSeriesId', '../bad'); Exit = 1; Dispatch = $false },
+    @{ Name = 'fresh-nonseries'; Args = @('-Tier', 'monitor', '-Source', 'hanley', '-ExpectedSha', $sha, '-FreshSeriesId', $freshSeriesId); Exit = 1; Dispatch = $false },
     @{ Name = 'interra-current'; Args = @('-Tier', 'series', '-Source', 'interra-realty', '-AdmitCurrentInventorySource', 'interra-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'buildout-current'; Args = @('-Tier', 'series', '-Source', 'faris-lee', '-AdmitCurrentInventorySource', 'faris-lee', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'buildout-wrong-source'; Args = @('-Tier', 'series', '-Source', 'faris-lee', '-AdmitCurrentInventorySource', 'kiser-group', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
@@ -174,6 +182,12 @@ foreach ($case in $cases) {
     [IO.File]::WriteAllText($scriptFile, $source, (New-Object Text.UTF8Encoding($true)))
     $result = [CreWindowsCapture.Capture]::Run($hostExecutable, (@('-NoProfile', '-NonInteractive', '-File', $scriptFile) + $case.Args), (Join-Path $caseRoot 'stdout'), (Join-Path $caseRoot 'stderr'), $null)
     Assert-True (-not $result.Failed -and $result.NativeExitCode -eq $case.Exit) ("Unexpected host result: " + $case.Name)
+    if ($case.ContainsKey('NoWork')) {
+        $lines = @([IO.File]::ReadAllLines((Join-Path $caseRoot 'stdout')) | Where-Object { $_.StartsWith('CRE_DISPATCH_NO_WORK:') })
+        Assert-True ($lines.Count -eq 1) 'Settled no-dispatch requires exactly one native marker.'
+        $noWork = $lines[0].Substring('CRE_DISPATCH_NO_WORK:'.Length) | ConvertFrom-Json
+        Assert-True ($noWork.seriesId -ceq $freshSeriesId -and $noWork.targetSha256 -ceq ('b' * 64) -and $noWork.reason -ceq 'local_api_not_ready_no_dispatch') 'Native marker must bind locator, target and reason.'
+    }
     Assert-True ([IO.File]::Exists($argvPath) -eq $case.Dispatch) ("Unexpected dispatch: " + $case.Name)
     if ($case.ContainsKey('CpuRecovery')) {
         $sampleCount = [int][IO.File]::ReadAllText($admissionPath)
@@ -218,6 +232,13 @@ foreach ($case in $cases) {
         $jllDetailConcurrency = @{ 1 = 1; 2 = 2; 6 = 2 }[$resolvedConcurrency]
         foreach ($expected in @("JLL_DETAIL_CONCURRENCY=$jllDetailConcurrency", "JLL_INVESTOR_DETAIL_CONCURRENCY=$jllDetailConcurrency", 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1', 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000', 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1', 'python3', ($expectedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py'))) {
             Assert-True ($forwarded -contains $expected) ('Missing conservative profile argv: ' + $expected)
+        }
+        if ($case.ContainsKey('FreshSeriesId')) {
+            Assert-True (($forwarded -join '|').Contains('--fresh-series-id|' + $case.FreshSeriesId)) 'Fresh locator must cross the native boundary exactly.'
+            if ($case.ContainsKey('TargetHash')) { Assert-True (($forwarded -join '|').Contains('--expected-database-target-sha256|' + $case.TargetHash)) 'Target must cross the native boundary exactly.' }
+            Assert-True ($admissionAudit.freshSeriesId -ceq $case.FreshSeriesId) 'The requested locator must be recorded before dispatch.'
+        } else {
+            Assert-True (-not ($forwarded -contains '--fresh-series-id')) 'Omitted locator must retain existing invocation behavior.'
         }
         $resolvedAttempts = if ($case.ContainsKey('Attempts')) { [int]$case.Attempts } else { 3 }
         $resolvedPageCap = if ($case.ContainsKey('PageCap')) { [int]$case.PageCap } else { 0 }

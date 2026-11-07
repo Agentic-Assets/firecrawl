@@ -60,6 +60,40 @@ def test_next_generation_derives_order_from_settled_bound_evidence(tmp_path, mon
     assert prior["sources"]["cbre"]["state"] == "interrupted"
 
 
+def test_preallocated_successor_uses_exact_predecessor_even_when_suffix_sorts_first(tmp_path, monkeypatch):
+    prior_dir, current_dir, current, prior, child, _receipt = case(tmp_path, monkeypatch)
+    prior_id = "2026-10-15T120000Z-ffffffffffff"
+    current_id = "2026-10-15T120000Z-000000000000"
+    prior_dir.rename(tmp_path / prior_id)
+    current_dir.rename(tmp_path / current_id)
+    prior_dir, current_dir = tmp_path / prior_id, tmp_path / current_id
+    prior.update(series_id=prior_id, finished_at="2026-10-16T00:00:00Z")
+    (prior_dir / "manifest.json").write_text(json.dumps(prior))
+    current["series_id"] = current_id
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw:
+        (prior_dir / "runs" / RUN_ID / "manifest.json", child))
+    result = series.scheduled_deadline_priority(tmp_path, current_dir, current, predecessor_id=prior_id)
+    assert result["previous_series"] == prior_id
+    assert result["order"] == ["savills", "colliers", "cbre"]
+
+
+def test_preallocated_first_run_uses_actual_prior_start_not_hash_order(tmp_path, monkeypatch):
+    prior_dir, current_dir, current, prior, child, _receipt = case(tmp_path, monkeypatch)
+    prior_id = "2026-10-15T120000Z-ffffffffffff"
+    current_id = "2026-10-15T120000Z-000000000000"
+    prior_dir.rename(tmp_path / prior_id)
+    current_dir.rename(tmp_path / current_id)
+    prior_dir, current_dir = tmp_path / prior_id, tmp_path / current_id
+    prior.update(series_id=prior_id, finished_at="2026-10-16T00:00:00Z")
+    (prior_dir / "manifest.json").write_text(json.dumps(prior))
+    current["series_id"] = current_id
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw:
+        (prior_dir / "runs" / RUN_ID / "manifest.json", child))
+    result = series.scheduled_deadline_priority(tmp_path, current_dir, current)
+    assert result["previous_series"] == prior_id
+    assert result["order"] == ["savills", "colliers", "cbre"]
+
+
 @pytest.mark.parametrize("tamper", ["unknown_write", "unsettled", "foreign_child", "foreign_target", "altered_report"])
 def test_uncertain_or_tampered_prior_does_not_reorder(tmp_path, monkeypatch, tamper):
     prior_dir, current_dir, current, _prior, child, receipt = case(tmp_path, monkeypatch)
@@ -123,6 +157,21 @@ def test_order_is_forwarded_to_one_fresh_child_with_full_scope(tmp_path, monkeyp
         series.run_pipeline_series(tmp_path, manifest, env_file=None)
     assert captured[captured.index("--sources") + 1] == "cbre,savills"
     assert captured[captured.index("--pipeline-dispatch-order") + 1] == "savills,cbre"
+
+
+def test_preallocated_parent_forwards_exact_target_to_fresh_child(tmp_path, monkeypatch):
+    settings = config(pipeline=True, sources=["cbre", "savills"])
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings,
+        database_target={"algorithm": "sha256", "value": "c" * 64})
+    manifest["preallocated_expected_target_sha256"] = "c" * 64
+    captured = []
+    def stop_after_capture(argv, **kwargs):
+        captured.extend(argv)
+        raise RuntimeError("synthetic stop before child start")
+    monkeypatch.setattr(series.subprocess, "Popen", stop_after_capture)
+    with pytest.raises(RuntimeError, match="synthetic stop"):
+        series.run_pipeline_series(tmp_path, manifest, env_file=None)
+    assert captured[captured.index("--expected-parent-db-target-sha256") + 1] == "c" * 64
 
 
 @pytest.mark.parametrize("order", ["cbre", "cbre,cbre", "cbre,jll"])

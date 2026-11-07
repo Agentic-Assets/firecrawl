@@ -139,7 +139,8 @@ Do not run an applied trial while a full refresh owns the canonical lock.
 ## Protection and operator controls
 
 The Linux owner arms the existing canonical recovery fence before any native
-child, reuses checkpoint CPU/memory watchdogs and owns each subprocess group.
+child, reuses checkpoint memory safeguards and owns each subprocess group.
+On WSL, CPU is diagnostic only; native Linux and macOS retain their CPU guards.
 Enrichment claims are capped at50; monitor checks the complete selected-source
 inventory and its transaction is not limited by that batch parameter. The work
 deadline is30 to14400 seconds. Applied Matthews enrichment is limited to600
@@ -148,14 +149,12 @@ is refused before claims. Cleanup
 has the checkpoint's separate grace/join budgets; the work deadline does not
 preempt a blocked kernel call or certify cancellation of remote work.
 
-The PowerShell launcher measures whole-Windows CPU and physical memory using
-Microsoft's native APIs. It refuses admission at90% CPU or below8GiB available
-physical memory, and refuses missing, invalid, stale or unsupported-topology
-evidence. These are conservative local admission settings, not Microsoft
-standards. The Linux owner rejects stale/future Windows admission timestamps
-before work. This is start-time host admission. Later native Windows load is
-not monitored; Linux watchdogs observe the VM and visible cgroups. Retain the
-current WSL ceiling and reassess from measured runs.
+The PowerShell launcher measures available whole-Windows physical memory using
+Microsoft's native APIs. It refuses admission below 8 GiB or when that memory
+evidence is unavailable or invalid. It does not refuse work for Windows CPU
+utilization; WSL CPU measurements are diagnostic only. The Linux owner rejects
+stale or future Windows startup admission timestamps before work. Later native
+Windows load is not monitored by that startup sample.
 
 Linux receipts and guard journals are under `out/guarded-tiers/<run>/`.
 Windows launch audit receipts are under `out/windows-launcher/` in the Windows
@@ -422,7 +421,7 @@ there is no "latest run" selector. Request a stop from Windows with:
 The example ID is a placeholder. `-CheckOnly` prints the invocation without
 starting WSL or validating an owner. The wrapper forwards to
 `python3 cre_stop_guarded_tier.py --run-id ID --wait-seconds 45` in the selected
-Ubuntu clone. Stop requests skip Windows CPU admission. Wait is bounded to
+Ubuntu clone. Stop requests skip Windows startup admission. Wait is bounded to
 1–120 seconds; this does not preempt a blocked kernel call.
 
 New canonical lock directories and their immediate authority parents are
@@ -461,17 +460,59 @@ capability. New opt-in controlled series use the separate
 [series control contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md).
 Missing pidfd support,
 stale or malformed evidence, ownership changes and permission failures refuse
-the request. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
+the request. A future dispatcher may pass an optional preallocated
+`-FreshSeriesId` to a fresh Windows series invocation, binding the requested
+locator to the Windows audit before dispatch. The corresponding read-only
+`verify_preallocated_receipt` checks the exact series identity, producer SHA,
+target, full configuration and terminal local-settlement receipt. A locator or
+a terminal local receipt does not authorize another dispatch or prove a
+database outcome. The uninstalled local dispatcher WIP invokes the native
+Windows launcher with fresh admission and requires current ownership, child
+readback and unresolved-write/cursor evidence before a fresh continuation. It
+does not prove that an old trigger ran or that partial source coverage is complete.
+Existing tasks omit the locator. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
+
+The uninstalled WSL dispatcher entrypoint is `cre_local_dispatcher.py`: it
+accepts an internal UTC slot (`YYYYMMDDTHHMMSSZ_task`) and a JSON policy file.
+The policy binds `pipeline`, `sources`, `admissions`, `daum_subset`,
+`daum_subset_policy`, `concurrency`,
+`workers`, `page_cap`, `attempts`, `deadline_seconds`, `expected_sha`,
+`env_file`, `windows_launcher`, `windows_launcher_sha256`, `windows_repo`,
+`distro`, `linux_user`, `alert_file`, `notification_mode`, and, when discovered
+from Task Scheduler, the exact task identity and XML hash. It stores only
+file references and target fingerprints, not credential values. Before a real
+dispatch, the Windows launcher, its native helpers and source policy files
+must match the pinned commit. Each due slot is retained in the private local
+queue before process creation; an ambiguous attempt blocks later slots rather
+than being replayed. A proven native refusal with no dispatch is privately
+recorded and retries the same intent after a temporary delay; it has no child
+receipt. A settled source may receive another fresh continuation;
+stalled sources use separate delayed intents. Earlier eligible work goes first,
+and fresh due peers win ties so older continuations do not starve.
+An unclassified source failure or source-wide stop is held for the next normal
+configured opportunity, because its receipt does not establish whether an
+access refusal or a longer provider Retry-After applies.
+The scanner records unavailable historical policy intervals as unknown and uses
+the current policy for current eligible work; a fallback slot for an unsupported
+calendar is labeled as such and does not assert a past trigger. The launcher still
+performs its normal admission and notification behavior on every run.
+
+`Install-CreDispatcherTasks.ps1` previews a separate periodic snapshot task and
+drain task. This work remains untested and uninstalled. It does not yet provide
+a safe migration of the existing tasks: disabling them currently removes them
+from discovery, while leaving them enabled would also run their original
+actions. Enrichment tasks are not dispatched. Do not register the pair or change
+existing task actions until the migration, native tests and exact-head review
+have been completed. Split retries can generate additional StartFinish messages.
 
 ## Windows Task Scheduler installation and acceptance
 
 Before dispatch, the launcher shares one 90-second startup budget between
 anonymous HTTP 200 readiness at `http://127.0.0.1:3002/` (two-second request
-limit) and fresh Windows CPU/memory admission. Valid CPU pressure may wait and
-recheck both readiness and telemetry within that same budget; low memory or
-invalid/stale telemetry refuses immediately. A CPU sample cannot admit after
-the deadline. The existing audit records wait reasons, attempt counts and
+limit) and fresh Windows memory admission. Low memory or unavailable/invalid
+memory telemetry refuses; CPU utilization is not an admission veto. The
+existing audit records readiness, admission reason, attempt counts and
 elapsed time. API failure records `local_api_not_ready_no_dispatch`; exhausted
 startup admission records `startup_admission_deadline_no_dispatch`. Neither
 starts Linux work or Docker. Once dispatch begins, this startup wait never
