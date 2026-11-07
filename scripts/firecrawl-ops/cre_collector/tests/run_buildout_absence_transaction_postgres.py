@@ -95,6 +95,11 @@ def main():
             run(f"UPDATE credeals.cre_listings SET raw_data='{malformed_raw}'::jsonb WHERE id='{malformed['listing_id']}';")
             stale_invalid = create("invalid-latest", "84")
             run(f"UPDATE credeals.cre_listings SET raw_data=raw_data || '{{\"latestInventoryObservation\":null}}'::jsonb WHERE id='{stale_invalid['listing_id']}';")
+            # A historical claim on a different parent cannot establish a
+            # current identity, but it prevents a false disappearance.
+            create("candidate-ambiguous", "91")
+            old_ambiguous = create("old-ambiguous", "91")
+            run(f"UPDATE credeals.cre_listings SET raw_data=raw_data || '{{\"latestInventoryObservation\":null}}'::jsonb WHERE id='{old_ambiguous['listing_id']}';")
             run(f"UPDATE credeals.cre_listings SET title='user update',raw_data=raw_data || '{{\"url\":\"https://example.test/changed\"}}'::jsonb WHERE id='{stale['listing_id']}';")
             staged = {}
             for listing in artifact["listings"]:
@@ -123,7 +128,7 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "other:false:1"], state
+            assert state == ["99:false:1", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == ["disappeared:not_observed_in_complete_enumeration:faris-lee:" + scope["generation_id"]], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
@@ -154,7 +159,7 @@ def main():
                 receipt_json = json.dumps(receipt).replace("'", "''")
                 run(f"UPDATE credeals.cre_scrape_jobs SET notes=E'\\nCRE_BUILDOUT_OBSERVATION_V1:' || '{receipt_json}' WHERE id='{job}';")
             state_rows = run("SELECT external_id || ':' || status || ':' || (deleted_at IS NULL)::text FROM credeals.cre_listings ORDER BY external_id;").stdout.splitlines()
-            assert state_rows[:3] == ["99:active:true", "changed-preimage:active:true", "closed-visible:active:true"], state_rows
+            assert {"99:active:true", "changed-preimage:active:true", "closed-visible:active:true"} <= set(state_rows), state_rows
             assert run(f"SELECT count(*) FROM credeals.cre_listing_images WHERE listing_id='{absent['listing_id']}' AND url='https://example.test/prior-image';").stdout.strip() == "1"
             run(tx)
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "1"
@@ -177,14 +182,15 @@ def main():
             existing = create("legacy-native", "66")
             incoming = []
             for native, key in [("66", "new-conflict"), ("67", "new-a"),
-                                ("67", "new-b"), ("68", "healthy-peer")]:
+                                ("67", "new-b"), ("84", "new-historical-conflict"),
+                                ("68", "healthy-peer")]:
                 incoming.append(ingest.to_row({"sourceKey": source, "id": native,
                     "url": f"https://example.test/listings/?propertyId={key}"}, {}, later))
-            collision_sql = ingest.build_sql(incoming, [{"slug": source, "discovered": 4,
-                "saved": 4, "errors": 0, "notes": "synthetic"}], later, set())
+            collision_sql = ingest.build_sql(incoming, [{"slug": source, "discovered": 5,
+                "saved": 5, "errors": 0, "notes": "synthetic"}], later, set())
             run(collision_sql)
             assert run("SELECT external_id FROM credeals.cre_listings WHERE external_id IN "
-                       "('new-conflict','new-a','new-b','healthy-peer') ORDER BY external_id;").stdout.strip() == "healthy-peer"
+                       "('new-conflict','new-a','new-b','new-historical-conflict','healthy-peer') ORDER BY external_id;").stdout.strip() == "healthy-peer"
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{existing['listing_id']}';").stdout.strip() == "66"
             # Real ingest of a merged sale/lease property must allow later
             # updates and reappearance while still holding unrelated IDs.
@@ -239,8 +245,8 @@ def main():
             assert run("SELECT title FROM credeals.cre_listings WHERE external_id='flat-inventory';").stdout.strip() == "flat updated"
             # Retained older top-level context is not the current identity.
             run("UPDATE credeals.cre_listings SET raw_data=raw_data || "
-                "'{\"id\":\"999999\",\"url\":\"https://example.test/stale\"}'::jsonb "
-                "WHERE external_id IN ('dual-live','flat-inventory');")
+                "jsonb_build_object('id', CASE WHEN external_id='dual-live' THEN '999998' ELSE '999999' END, "
+                "'url','https://example.test/stale') WHERE external_id IN ('dual-live','flat-inventory');")
             scope2 = {**scope, "generation_id": "later-complete", "observed_at": "2026-11-20T00:00:00Z",
                       "artifact_sha256": "f" * 64}
             key2 = artifact_run_identity_from_digests([scope2["artifact_sha256"]])[0]

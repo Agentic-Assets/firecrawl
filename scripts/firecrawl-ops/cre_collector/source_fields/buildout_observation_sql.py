@@ -35,13 +35,15 @@ PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, exter
 WHERE s.slug={source} ORDER BY l.id FOR UPDATE OF l;
 END $$;
 CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS
+-- A historical ID is collision evidence, not a current identity. Include
+-- plausible claims even when the latest observation is missing or malformed.
 SELECT l.brokerage_id, l.external_id, claim.value #>> '{{}}' AS native_id
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id AND b.slug={source}
-CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('l.raw_data')}, '$.**.id') AS claim(value)
+CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS claim(value)
 UNION
 SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
-FROM _src s CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('s.raw_data')}, '$.**.id') AS claim(value)
+FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
 WHERE s.slug={source};
 CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
 -- Qualify each whole source-native shape before comparing it. A canonical
@@ -252,13 +254,13 @@ def sql_fragment(scope, prior, job_id, artifact_run_key):
         insert = f"""
 CREATE TEMP TABLE _buildout_current_native (native_id text PRIMARY KEY) ON COMMIT DROP;
 INSERT INTO _buildout_current_native VALUES {current_values};
--- Preserve any plausible historical native claim, including unqualified raw
--- shapes, so conflicting parents hold locally rather than being guessed away.
+-- Include older or malformed observations as collision evidence without using
+-- them to establish a current identity or a disappearance.
 CREATE TEMP TABLE _buildout_possible_native ON COMMIT DROP AS
 SELECT DISTINCT l.id AS listing_id, item.value #>> '{{}}' AS native_id
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
-CROSS JOIN LATERAL jsonb_path_query({_current_raw_sql('l.raw_data')}, '$.**.id') AS item(value)
+CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS item(value)
 WHERE b.slug={slug_sql}
   AND jsonb_typeof(item.value) IN ('number','string')
   AND (item.value #>> '{{}}') ~ '^[1-9][0-9]{{0,15}}$';
