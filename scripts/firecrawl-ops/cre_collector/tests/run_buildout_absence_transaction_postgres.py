@@ -30,7 +30,10 @@ from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute-disposable-fixture", action="store_true")
-    if not parser.parse_args().execute_disposable_fixture:
+    from source_fields.buildout import observation_sources
+    parser.add_argument("--source", choices=sorted(observation_sources()), default=SOURCE)
+    args = parser.parse_args()
+    if not args.execute_disposable_fixture:
         parser.error("explicit fixture opt-in required")
     migrations = ROOT.parent / "sql"
     name = "cre-absence-5337-" + uuid.uuid4().hex
@@ -66,10 +69,10 @@ def main():
                 + (migrations / "016_cre_listing_lifecycle.sql").read_text())
             run("\\set CRE_APPROVE_AVAILABLE_SPACE_COUNT 1\n\\set CRE_AVAILABLE_SPACE_COUNT_OPERATOR cayman\n\\set CRE_AVAILABLE_SPACE_COUNT_APPROVAL_REF AGENTIC-5337\n\\set CRE_AVAILABLE_SPACE_COUNT_CONFIRM 'APPLY 017_cre_available_space_count'\n" + (migrations / "017_cre_available_space_count.sql").read_text())
             run("\\set CRE_APPROVE_BUILDING_SOURCE_FACTS 1\n\\set CRE_BUILDING_SOURCE_FACTS_OPERATOR cayman\n\\set CRE_BUILDING_SOURCE_FACTS_APPROVAL_REF AGENTIC-5337\n\\set CRE_BUILDING_SOURCE_FACTS_CONFIRM 'APPLY 018_cre_building_source_facts'\n" + (migrations / "018_cre_building_source_facts.sql").read_text())
-            source = SOURCE
-            bid = run("SELECT id FROM credeals.cre_brokerages WHERE slug='faris-lee';").stdout.strip()
+            source = args.source
+            bid = run(f"SELECT id FROM credeals.cre_brokerages WHERE slug='{source}';").stdout.strip()
             proof_tmp = tempfile.TemporaryDirectory(prefix="cre-buildout-proof-")
-            _, artifact_path, artifact, manifest, _ = setup(Path(proof_tmp.name))
+            _, artifact_path, artifact, manifest, _ = setup(Path(proof_tmp.name), source=source)
             scope = prepare_inventory_observation_scope(artifact_path.read_bytes(), manifest, source,
                                                         current_code_sha=CODE, current_git_dirty=False,
                                                         current_target_sha256=TARGET)
@@ -133,7 +136,7 @@ def main():
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
             assert state == ["99:false:1", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
-            assert events == ["disappeared:not_observed_in_complete_enumeration:faris-lee:" + scope["generation_id"]], events
+            assert events == ["disappeared:not_observed_in_complete_enumeration:" + source + ":" + scope["generation_id"]], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
             receipt = run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip()
             receipt = json.loads(receipt)
@@ -195,6 +198,18 @@ def main():
             assert run("SELECT external_id FROM credeals.cre_listings WHERE external_id IN "
                        "('new-conflict','new-a','new-b','new-historical-conflict','healthy-peer') ORDER BY external_id;").stdout.strip() == "healthy-peer"
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{existing['listing_id']}';").stdout.strip() == "66"
+            # Equal native IDs belonging to different singleton brokerages do
+            # not conflict, including in a multi-source ingest transaction.
+            peer_source = "fortis-net-lease" if source != "fortis-net-lease" else "faris-lee"
+            mixed = [ingest.to_row({"sourceKey": sk, "id": "77777",
+                       "url": f"https://example.test/listings/?propertyId=source-{sk}"}, {}, later)
+                     for sk in (source, peer_source)]
+            mixed_jobs = [{"slug": sk, "discovered": 1, "saved": 1, "errors": 0,
+                           "notes": "synthetic"} for sk in (source, peer_source)]
+            run(ingest.build_sql(mixed, mixed_jobs, later, set()))
+            keys = ",".join("'" + row["external_id"] + "'" for row in mixed)
+            assert run(f"SELECT count(*) FROM credeals.cre_listings WHERE external_id IN ({keys});").stdout.strip() == "2"
+            assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='disappeared';").stdout.strip() == "1"
             # Real ingest of a merged sale/lease property must allow later
             # updates and reappearance while still holding unrelated IDs.
             def dual_row(ids, title, observed):

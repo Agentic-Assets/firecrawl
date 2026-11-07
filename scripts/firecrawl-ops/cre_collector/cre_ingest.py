@@ -4822,9 +4822,11 @@ DELETE FROM _src s USING _daum_identity_held h
  WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
 """)
 
-    if any(job["slug"] == "faris-lee" for job in job_meta):
+    from source_fields.buildout import observation_sources
+    observation_slugs = {job["slug"] for job in job_meta} & observation_sources()
+    if observation_slugs:
         from source_fields.buildout_observation_sql import identity_guard_sql
-        w(identity_guard_sql({"source_key": "faris-lee"}))
+        w(identity_guard_sql(observation_slugs))
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.
@@ -8411,7 +8413,10 @@ def main():
         from pathlib import Path
 
         from cre_checkpoint_refresh import git_identity
-        from source_fields.buildout import prepare_inventory_observation_scope
+        from source_fields.buildout import (
+            observation_sources,
+            prepare_inventory_observation_scope,
+        )
         try:
             claim_path = Path(args.checkpoint_buildout_observation)
             if (len(args.inputs) != 1 or args.dry_run or args.mark_missing or activate_status
@@ -8421,7 +8426,7 @@ def main():
             if hashlib.sha256(raw_claim).hexdigest() != args.checkpoint_buildout_observation_sha256:
                 raise ValueError("observation envelope changed")
             claim = json.loads(raw_claim)
-            if claim.get("source") != "faris-lee":
+            if claim.get("source") not in observation_sources():
                 raise ValueError("unsupported observation source")
             db_url, _ = load_db_url(args.env_file)
             assert_expected_database_target(db_url, args.expected_db_target_sha256)

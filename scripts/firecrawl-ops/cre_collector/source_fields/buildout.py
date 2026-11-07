@@ -535,6 +535,18 @@ def classify_prior_inventory_presence(validated, prior_bindings, source):
     return result
 
 
+def observation_sources():
+    """Registry-backed feeds whose brokerage has one identical source key."""
+    from cre_buildout_current_inventory import definitions
+    from cre_ingest import SOURCE_KEYS_BY_SLUG, SOURCE_TO_BROKERAGE
+
+    return frozenset(
+        source for source in definitions()
+        if SOURCE_TO_BROKERAGE.get(source) == (source, "")
+        and SOURCE_KEYS_BY_SLUG.get(source) == {source}
+    )
+
+
 def prepare_inventory_observation_scope(
     raw_artifact, manifest, source, *, current_code_sha, current_git_dirty, current_target_sha256
 ):
@@ -565,7 +577,7 @@ def prepare_inventory_observation_scope(
     digest = hashlib.sha256(raw_artifact).hexdigest()
     require(info.get("sha256") == digest and type(info.get("bytes")) is int and info["bytes"] == len(raw_artifact))
     registry = definitions()
-    require(source in registry)
+    require(source in registry and source in observation_sources())
     artifact = json.loads(raw_artifact)
     validated = validate_inventory(
         artifact, source, registry[source], manifest["run_id"], manifest["started_at"]

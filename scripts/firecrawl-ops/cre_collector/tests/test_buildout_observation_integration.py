@@ -6,6 +6,7 @@ import cre_ingest
 import cre_refresh_pipeline
 import cre_validate
 import pytest
+from source_fields.buildout import observation_sources
 from source_fields.buildout_observation_sql import readback
 from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 
@@ -21,6 +22,19 @@ def test_owner_binds_complete_artifact_and_partial_does_not_block_ingest(tmp_pat
     artifact["sources"][0]["currentInventoryProof"]["pages"].pop()
     path.write_text(json.dumps(artifact))
     assert refresh.prepare_buildout_observation(run, manifest, SOURCE, path, None) is None
+
+
+@pytest.mark.parametrize("source", sorted(observation_sources()))
+def test_each_singleton_source_binds_its_own_feed_and_rejects_cross_source(tmp_path, monkeypatch, source):
+    run, path, _, manifest, _ = setup(tmp_path, source=source)
+    monkeypatch.setattr(cre_refresh_pipeline, "require_pipeline_owner", lambda *_: None)
+    monkeypatch.setattr(refresh, "git_identity", lambda: (CODE, False))
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _: {"value": TARGET})
+    binding = refresh.prepare_buildout_observation(run, manifest, source, path, None)
+    assert binding["scope"]["source_key"] == source
+    other = next(item for item in sorted(observation_sources()) if item != source)
+    manifest["sources"][other] = manifest["sources"][source]
+    assert refresh.prepare_buildout_observation(run, manifest, other, path, None) is None
 
 
 @pytest.mark.parametrize("case", ["zero", "events_mismatch", "missing", "wrong_generation", "held_mismatch", "wrong_identity", "observed_native"])
@@ -53,9 +67,10 @@ def test_readback_requires_bound_receipt_even_when_zero(case, monkeypatch):
 
 
 @pytest.mark.parametrize("receipt_ok", [True, False])
-def test_interrupted_commit_requires_observation_receipt(tmp_path, monkeypatch, receipt_ok):
-    run, _, _, manifest, _ = setup(tmp_path)
-    checkpoint = manifest["sources"][SOURCE]
+@pytest.mark.parametrize("source", [SOURCE, "fortis-net-lease", "33-realty"])
+def test_interrupted_commit_requires_observation_receipt(tmp_path, monkeypatch, receipt_ok, source):
+    run, _, _, manifest, _ = setup(tmp_path, source=source)
+    checkpoint = manifest["sources"][source]
     checkpoint.update(state="ingesting", ingest={"buildout_observation": {"scope": {}}})
     def run_validation(argv, _log, **_kwargs):
         from pathlib import Path
@@ -71,11 +86,11 @@ def test_interrupted_commit_requires_observation_receipt(tmp_path, monkeypatch, 
         return {"disappeared": 0}
     monkeypatch.setattr(refresh, "buildout_observation_readback", observation)
     if receipt_ok:
-        refresh.recover_interrupted_ingest(run, manifest, SOURCE, None)
+        refresh.recover_interrupted_ingest(run, manifest, source, None)
         assert checkpoint["state"] == "ingested"
         assert checkpoint["ingest"]["buildout_observation_readback"] == {"disappeared": 0}
     else:
         with pytest.raises(refresh.GlobalStageError, match="exact readback"):
-            refresh.recover_interrupted_ingest(run, manifest, SOURCE, None)
+            refresh.recover_interrupted_ingest(run, manifest, source, None)
         assert checkpoint["state"] == "ingest_recovery_required"
         assert checkpoint["ingest_recovery"]["readback_ok"] is False
