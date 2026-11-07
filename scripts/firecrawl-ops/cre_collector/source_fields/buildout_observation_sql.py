@@ -38,6 +38,17 @@ FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(
 WHERE s.slug={source};
 CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
 CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS
+-- Include newly staged keys: they may conflict with a historical parent or
+-- another newly staged parent even though they do not yet join cre_listings.
+SELECT DISTINCT s.brokerage_id, s.external_id
+FROM _src s
+JOIN _buildout_identity_claims own
+  ON own.brokerage_id=s.brokerage_id AND own.external_id=s.external_id
+JOIN _buildout_identity_claims other
+  ON other.brokerage_id=own.brokerage_id AND other.native_id=own.native_id
+ AND other.external_id<>own.external_id
+WHERE s.slug={source} AND own.native_id IS NOT NULL
+UNION
 SELECT s.brokerage_id, s.external_id
 FROM _src s
 JOIN credeals.cre_listings l USING (brokerage_id, external_id)
@@ -87,7 +98,13 @@ SELECT jsonb_build_object(
  'notes', j.notes,
  'events', (SELECT count(*) FROM credeals.cre_listing_events e
             WHERE e.scrape_job_id=j.id AND e.event_type='disappeared'),
- 'matching', (SELECT count(*) FROM credeals.cre_listing_events e
+ 'applied', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                'listing_id', l.id::text, 'external_id', l.external_id,
+                'native_ids', (SELECT jsonb_agg(member.value->>'id' ORDER BY member.value->>'id')
+                  FROM jsonb_array_elements(CASE WHEN l.raw_data ? 'primary'
+                    THEN jsonb_build_array(l.raw_data->'primary', l.raw_data->'secondary_pass')
+                    ELSE jsonb_build_array(l.raw_data) END) member(value))) ORDER BY l.external_id)
+              FROM credeals.cre_listing_events e
               JOIN credeals.cre_listings l ON l.id=e.listing_id AND l.brokerage_id=e.brokerage_id
               JOIN credeals.cre_source_index si
                 ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id
@@ -96,7 +113,7 @@ SELECT jsonb_build_object(
                 AND si.source_key={_literal(scope['source_key'])}
                 AND si.url=e.source_url AND l.source_url=e.source_url
                 AND si.observation_present IS FALSE
-                AND si.presence_generation=e.presence_generation)) AS result
+                AND si.presence_generation=e.presence_generation), '[]'::jsonb)) AS result
 FROM credeals.cre_scrape_jobs j
 JOIN credeals.cre_brokerages b ON b.id=j.brokerage_id
 WHERE j.id={_uuid(job)} AND j.artifact_run_key={_literal(key)}
@@ -115,6 +132,7 @@ ROLLBACK;"""
         raise ValueError("observation receipt is missing or ambiguous")
     receipt = json.loads(notes.split(marker, 1)[1])
     ids = receipt.get("held_external_ids")
+    applied = receipt.get("applied")
     if (receipt.get("source") != scope["source_key"]
             or receipt.get("generation") != scope["generation_id"]
             or receipt.get("artifact_sha256") != scope["artifact_sha256"]
@@ -122,9 +140,17 @@ ROLLBACK;"""
             or type(receipt.get("identity_held")) is not int
             or not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids)
             or ids != sorted(set(ids)) or len(ids) != receipt["identity_held"]
+            or not isinstance(applied, list) or len(applied) != receipt["disappeared"]
+            or any(not isinstance(item, dict) or set(item) != {"listing_id", "external_id", "native_ids"}
+                   or not isinstance(item["listing_id"], str) or not isinstance(item["external_id"], str)
+                   or not item["external_id"] or not isinstance(item["native_ids"], list)
+                   or not item["native_ids"] or any(not isinstance(n, str) for n in item["native_ids"])
+                   or item["native_ids"] != sorted(set(item["native_ids"]))
+                   or set(item["native_ids"]) & set(scope["native_ids"]) for item in applied)
+            or [item["external_id"] for item in applied] != sorted({item["external_id"] for item in applied})
             or receipt["disappeared"] < 0
             or value.get("events") != receipt["disappeared"]
-            or value.get("matching") != receipt["disappeared"]):
+            or value.get("applied") != applied):
         raise ValueError("observation receipt and event readback differ")
     current, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(current).get("value") != target:
@@ -322,7 +348,15 @@ SET notes = COALESCE(j.notes, '') || E'\\nCRE_BUILDOUT_OBSERVATION_V1:' ||
     'disappeared', (SELECT count(*) FROM _buildout_observation_applied),
     'identity_held', (SELECT count(*) FROM _buildout_identity_held),
     'held_external_ids', COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id)
-                                   FROM _buildout_identity_held), '[]'::jsonb))::text
+                                   FROM _buildout_identity_held), '[]'::jsonb),
+    'applied', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'listing_id', a.listing_id::text, 'external_id', c.external_id,
+      'native_ids', (SELECT jsonb_agg(member.value->>'id' ORDER BY member.value->>'id')
+        FROM jsonb_array_elements(CASE WHEN c.raw_data ? 'primary'
+          THEN jsonb_build_array(c.raw_data->'primary', c.raw_data->'secondary_pass')
+          ELSE jsonb_build_array(c.raw_data) END) member(value))) ORDER BY c.external_id)
+      FROM _buildout_observation_applied a
+      JOIN _buildout_observation_candidate c ON c.listing_id=a.listing_id), '[]'::jsonb))::text
 WHERE j.id={job_sql} AND j.artifact_run_key={job_key_sql}
   AND position(E'\\nCRE_BUILDOUT_OBSERVATION_V1:' in COALESCE(j.notes, '')) = 0;
 """

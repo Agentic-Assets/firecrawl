@@ -126,7 +126,9 @@ def main():
             assert receipt == {"source": source, "generation": scope["generation_id"],
                                "artifact_sha256": scope["artifact_sha256"],
                                "disappeared": 1, "identity_held": 2,
-                               "held_external_ids": ["dual", "other"]}, receipt
+                               "held_external_ids": ["dual", "other"],
+                               "applied": [{"listing_id": absent["listing_id"],
+                                            "external_id": "99", "native_ids": ["99"]}]}, receipt
             from source_fields.buildout_observation_sql import readback
             def fixture_query(_psql, _url, sql, **_kwargs):
                 result = run(sql)
@@ -164,6 +166,20 @@ def main():
             run(script)
             assert run("SELECT observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "true:2"
             assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='reappeared';").stdout.strip() == "1"
+            # New canonical keys must not bypass the cross-parent native-ID
+            # guard, whether the other claimant is old or also newly staged.
+            existing = create("legacy-native", "66")
+            incoming = []
+            for native, key in [("66", "new-conflict"), ("67", "new-a"),
+                                ("67", "new-b"), ("68", "healthy-peer")]:
+                incoming.append(ingest.to_row({"sourceKey": source, "id": native,
+                    "url": f"https://example.test/listings/?propertyId={key}"}, {}, later))
+            collision_sql = ingest.build_sql(incoming, [{"slug": source, "discovered": 4,
+                "saved": 4, "errors": 0, "notes": "synthetic"}], later, set())
+            run(collision_sql)
+            assert run("SELECT external_id FROM credeals.cre_listings WHERE external_id IN "
+                       "('new-conflict','new-a','new-b','healthy-peer') ORDER BY external_id;").stdout.strip() == "healthy-peer"
+            assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{existing['listing_id']}';").stdout.strip() == "66"
             proof_tmp.cleanup()
             print("PASS: actual schema and ingest builder, absent and held peers, concurrent replay, wrong job and stale source job refused, preserved status, actual ingest reappearance")
         finally:

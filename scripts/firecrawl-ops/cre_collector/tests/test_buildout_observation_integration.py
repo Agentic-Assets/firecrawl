@@ -24,19 +24,23 @@ def test_owner_binds_complete_artifact_and_partial_does_not_block_ingest(tmp_pat
     assert refresh.prepare_buildout_observation(run, manifest, SOURCE, path, None) is None
 
 
-@pytest.mark.parametrize("case", ["zero", "events_mismatch", "missing", "wrong_generation", "held_mismatch"])
+@pytest.mark.parametrize("case", ["zero", "events_mismatch", "missing", "wrong_generation", "held_mismatch", "wrong_identity", "observed_native"])
 def test_readback_requires_bound_receipt_even_when_zero(case, monkeypatch):
     scope = {"database_target_sha256": TARGET, "artifact_sha256": "c" * 64,
-             "source_key": SOURCE, "generation_id": "run_1"}
+             "source_key": SOURCE, "generation_id": "run_1", "native_ids": ["10"]}
     receipt = {"source": SOURCE, "generation": "run_1", "artifact_sha256": "c" * 64,
-               "disappeared": 0, "identity_held": 0, "held_external_ids": []}
+               "disappeared": 0, "identity_held": 0, "held_external_ids": [], "applied": []}
     if case == "wrong_generation":
         receipt["generation"] = "other"
     if case == "held_mismatch":
         receipt["identity_held"] = 1
+    if case in {"wrong_identity", "observed_native"}:
+        receipt["disappeared"] = 1
+        receipt["applied"] = [{"listing_id": "id", "external_id": "key", "native_ids": ["10" if case == "observed_native" else "11"]}]
     notes = "job\nCRE_BUILDOUT_OBSERVATION_V1:" + json.dumps(receipt)
-    value = {"notes": notes if case != "missing" else "job", "events": 0,
-             "matching": 1 if case == "events_mismatch" else 0}
+    value = {"notes": notes if case != "missing" else "job",
+             "events": 1 if case in {"events_mismatch", "wrong_identity", "observed_native"} else 0,
+             "applied": receipt["applied"] if case != "wrong_identity" else [{"listing_id": "other", "external_id": "key", "native_ids": ["11"]}]}
     monkeypatch.setattr(cre_ingest, "load_db_url", lambda _: ("db", "env"))
     monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url", lambda _: {"value": TARGET})
     monkeypatch.setattr(cre_ingest, "find_psql", lambda: "psql")
