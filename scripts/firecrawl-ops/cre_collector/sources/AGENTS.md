@@ -337,7 +337,9 @@ Foundry retains its source schema through a thin wrapper. Lyon-Stahl captures
 held/rejected non-shell page context at its existing detail-fetch boundary.
 In strict Matthews collection, an observed detail HTTP 307 is held as an
 unverified temporary redirect while eligible peers continue under existing
-pacing and the run deadline. The collector retains the raw
+pacing and the run deadline only after response cancellation and owned dispatcher
+destruction are acknowledged. Unknown cleanup stops dispatch and retains the
+checkpoint recovery fence. The collector retains the raw
 status, requested URL, transaction and observation clocks, not an inferred
 destination or disappearance. The source still fails with private retained
 observations, so these peers do not become an admitted partial ingest. Strict
@@ -345,7 +347,13 @@ collector invocations also append these outcomes to the shared private attempt
 spool as each completes; direct invocations without a checkpoint use a private
 temporary spool and report its path. Spool initialization, write or sealing
 failures are reported without stopping eligible source collection; no missing
-evidence is claimed retained. Interrupted spools remain unverified;
+evidence is claimed retained. When both a direct no-output spool and its private
+fallback artifact fail, stderr reports the loss and stdout contains an
+unverified evidence-only status projection. Allowlisted non-Matthews identity,
+location and transaction fields and referenced broker names/companies appear only
+when private-evidence checks pass; other fields are explicitly omitted. Otherwise
+no rows appear and the loss is reported. Matthews observations never
+appear in this projection. Interrupted spools remain unverified;
 synchronous writes survive ordinary process termination, while fsync and a
 bound receipt are produced only on normal sealing, so no OS-crash durability
 or ingestion authority is claimed. Other

@@ -772,7 +772,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
   };
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url, index) => {
     try {
-      const response = await matthewsFetch(url, true, requireFreshDetails(), requireFreshDetails());
+      const response = await matthewsFetch(url, true, requireFreshDetails(), requireFreshDetails(), requireFreshDetails());
       if (requireFreshDetails() && response.status === 307) {
         observations[index] = {
           schema: "matthews-detail-redirect-observation/v1",

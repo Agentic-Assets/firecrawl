@@ -92,18 +92,25 @@ function interruptedFixture(dir: string, hang: boolean, redirect = true): string
     import fs from "node:fs"; import {syncBuiltinESMExports} from "node:module";
     const originalMkdtemp=fs.mkdtempSync, originalOpen=fs.openSync, originalWrite=fs.writeSync, originalSync=fs.fsyncSync;
     let spoolFd=null, spoolWrites=0;
-    fs.mkdtempSync=(prefix,...args)=>{if(process.env.FAIL_SPOOL_INIT==="1" && String(prefix).includes("cre-matthews-partial-")) throw new Error("synthetic spool init failure"); return originalMkdtemp(prefix,...args)};
+    fs.mkdtempSync=(prefix,...args)=>{if(process.env.FAIL_SPOOL_INIT==="1" && String(prefix).includes("cre-matthews-partial-")) throw new Error("synthetic spool init failure"); if(process.env.FAIL_FALLBACK_INIT==="1" && String(prefix).includes("cre-terminal-partial-")) throw new Error("synthetic fallback failure"); return originalMkdtemp(prefix,...args)};
     fs.openSync=(path,...args)=>{const fd=originalOpen(path,...args); if(String(path).includes("cre-matthews-partial-") && String(path).endsWith("attempt-1.jsonl")) spoolFd=fd; return fd};
     fs.writeSync=(fd,...args)=>{if(process.env.FAIL_SPOOL_WRITE==="1" && fd===spoolFd && ++spoolWrites>1) throw new Error("synthetic spool write failure"); return originalWrite(fd,...args)};
     fs.fsyncSync=fd=>{if(process.env.FAIL_SPOOL_SYNC==="1" && fd===spoolFd) throw new Error("synthetic spool sync failure"); return originalSync(fd)};
     syncBuiltinESMExports();
+    const {registerHooks}=await import("node:module");
+    const brokerModule=${JSON.stringify(pathToFileURL(join(root, "lib/broker.ts")).href)};
+    const stub="data:text/javascript,"+encodeURIComponent('import {brokerRef} from '+JSON.stringify(brokerModule)+'; export async function srcFoundryCommercial(){return {company:"Synthetic",sourceUrl:"https://secret.invalid/PRIVATE_URL",method:"PRIVATE_METHOD",totalAvailable:1,listings:[{id:"public-peer",name:process.env.STUB_SECRET||"Public Peer",url:"https://example.test/public-peer",extraFacts:{unknown:"PRIVATE_NESTED_VALUE"},brokerIds:[brokerRef({name:"Public Broker",company:"Synthetic"})],...(process.env.STUB_PRIVATE==="1" ? {rawSrs:{key:"PRIVATE_VALUE"},srsRawRetention:{private:true}} : {})}]}}');
+    registerHooks({resolve(s,c,next){if(process.env.STUB_PEER==="1" && c.parentURL?.endsWith("/collect.ts") && s==="./sources/foundry-commercial.js") return {url:stub,shortCircuit:true};return next(s,c)}});
     const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
     net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
     await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
     const host="https://www.matthews.com", urls=["good-peer","redirect","later"].map(x=>host+"/properties/"+x);
     globalThis.fetch=async input=>{const url=String(input);
       if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
-      if(url===urls[1] && ${JSON.stringify(redirect)}) return new Response(null,{status:307,headers:{location:"/listings"}});
+      if(url===urls[1] && ${JSON.stringify(redirect)}) {
+        if(process.env.FAIL_REDIRECT_CLEANUP==="1") return {ok:false,status:307,headers:new Headers({location:"/listings"}),body:{cancel:()=>Promise.reject(new Error("unsettled"))}};
+        return new Response(null,{status:307,headers:{location:"/listings"}});
+      }
       if(url===urls[2] && ${JSON.stringify(hang)}) return new Promise(()=>{});
       if(url===urls[0]||url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
       throw new Error("UNEXPECTED_FIXTURE_URL");
@@ -253,5 +260,75 @@ test("partial direct call without output retains private fallback when spool ini
     assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
     assert.equal(artifact.sources[0].partialCapture.state,"failed");
     assert.ok(artifact.sources[0].retainedObservations.some((x: any)=>x.outcome==="held_temporary_redirect"));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+for (const mixed of [false,true]) {
+  test(`failed private fallback produces safe status projection${mixed ? " with healthy peer source" : ""}`, () => {
+    const dir=mkdtempSync(join(tmpdir(),"matthews-fallback-loss-"));
+    try {
+      const preload=interruptedFixture(dir,false,true);
+      const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+        "collect.ts",`--source=${mixed ? "matthews,foundry-commercial" : "matthews"}`,"--transaction=sale"],
+        {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1",FAIL_FALLBACK_INIT:"1",STUB_PEER:mixed ? "1" : "0"},encoding:"utf8",timeout:30000});
+      assert.ifError(child.error); assert.notEqual(child.status,0);
+      assert.match(child.stderr,/private fallback artifact could not be retained; observations may be lost/);
+      assert.doesNotMatch(child.stdout,/PRIVATE_|matthews-completed-parse|held_temporary_redirect|good-peer|secret\.invalid/);
+      const artifact=JSON.parse(child.stdout);
+      assert.equal(artifact.runMeta.evidenceOnly,true);
+      assert.equal(artifact.runMeta.evidencePurpose,"private_retention_failed");
+      assert.equal(artifact.runMeta.coverage,"unverified");
+      assert.equal(artifact.sources.find((x: any)=>x.sourceKey==="matthews").failed,true);
+      if(mixed) {
+        const peer=artifact.sources.find((x: any)=>x.sourceKey==="foundry-commercial");
+        assert.equal(peer.failed,false); assert.equal(peer.listingsCollected,1);
+        assert.equal(artifact.runMeta.peerRowsAvailable,true);
+        assert.equal(artifact.listings.length,1); assert.equal(artifact.listings[0].id,"public-peer");
+        assert.deepEqual(artifact.listings[0].brokerIds,[0]); assert.equal(artifact.brokers[0].name,"Public Broker");
+        assert.equal(artifact.totalListings,1);
+      } else {assert.deepEqual(artifact.listings,[]); assert.deepEqual(artifact.brokers,[]); assert.equal(artifact.totalListings,0);}
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+}
+
+test("private peer evidence forces status-only projection on fallback failure", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-private-peer-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews,foundry-commercial","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1",FAIL_FALLBACK_INIT:"1",STUB_PEER:"1",STUB_PRIVATE:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.match(child.stderr,/Private peer evidence prevents row projection; peer data was not retained/);
+    assert.doesNotMatch(child.stdout,/PRIVATE_|public-peer|secret\.invalid/);
+    const artifact=JSON.parse(child.stdout);
+    assert.equal(artifact.runMeta.peerRowsAvailable,false); assert.deepEqual(artifact.listings,[]);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("unknown 307 cleanup stops collector before later source dispatch", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-cleanup-unknown-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews,foundry-commercial","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_REDIRECT_CLEANUP:"1",STUB_PEER:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.equal(child.status,71,child.stderr);
+    assert.match(child.stderr,/redirect response cleanup unknown; source dispatch stopped/);
+    assert.doesNotMatch(child.stderr,/collecting foundry-commercial/);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test("known secret in a canonical peer field forces status-only fallback", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-secret-peer-"));
+  try {
+    const preload=interruptedFixture(dir,false,true);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews,foundry-commercial","--transaction=sale"],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",TMPDIR:dir,FAIL_SPOOL_INIT:"1",FAIL_FALLBACK_INIT:"1",STUB_PEER:"1",STUB_SECRET:"SYNTHETIC_SECRET_012345"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.doesNotMatch(child.stdout,/SYNTHETIC_SECRET_012345|public-peer/);
+    const artifact=JSON.parse(child.stdout);
+    assert.equal(artifact.runMeta.peerRowsAvailable,false); assert.deepEqual(artifact.listings,[]);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

@@ -148,6 +148,8 @@ class ProcessCleanupUnknown(RefreshError):
 
 
 # Only the internal worker's known-settled return paths emit these codes.
+MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT = 71
+COHORT_MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT = 92
 COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
@@ -3990,6 +3992,8 @@ def run_cohort_collection_worker(
         attempt_log,
         env=env,
     )
+    if source == "matthews" and rc == MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT:
+        return COHORT_MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT
     if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
         return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
     if source == "pyramid-brokerage":
@@ -5472,6 +5476,11 @@ def collect_source(
             )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
+        if source == "matthews" and rc == MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT:
+            attempt["error"] = "Matthews redirect cleanup unknown"
+            checkpoint["state"] = "collect_infrastructure_failed"
+            save_manifest(run_dir, manifest)
+            raise ProcessCleanupUnknown("Matthews redirect cleanup unknown")
         mark_source_document_settlement(manifest, attempt)
         if attempt.get("native_source_evidence"):
             from source_evidence import native_pages
@@ -8825,6 +8834,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 daum_verified_subset=args.admit_daum_verified_subset,
                 daum_subset_policy=args.daum_subset_policy,
             )
+            if (args._cohort_collect_source == "matthews"
+                    and worker_rc == COHORT_MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT):
+                return worker_rc
             if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
                 return worker_rc
             if (
