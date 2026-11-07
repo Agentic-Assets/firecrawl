@@ -361,7 +361,11 @@ transport and access failures keep their existing stop behavior. This does not
 prove sitemap coverage, tenure, source freshness or lifecycle authority.
 
 Matthews captures accessible non-shell pages that fail parsing or identity
-validation. If strict Matthews collection fails, its typed error also carries
+validation. Settled detail parse and identity failures are held while other
+selected details continue; the transaction still fails as partial and does not
+admit these records for ingest. Challenge shells retain outcome metadata without
+page context. Transport failures and unknown cleanup retain their existing stop
+and recovery-fence behavior. If strict Matthews collection fails, its typed error also carries
 the already completed parses after the shared mapper settles active workers.
 Their accepted mapper, source counts, redirect/404 exclusions, status, tenure
 and lifecycle gates remain authoritative for canonical output. Private captures

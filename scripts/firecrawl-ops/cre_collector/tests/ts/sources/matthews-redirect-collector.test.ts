@@ -348,3 +348,34 @@ test("later unknown cleanup takes precedence over earlier ordinary failure and s
     assert.doesNotMatch(child.stderr,/collecting foundry-commercial/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
+
+
+test("settled identity failure retains later peers without admitting the partial source", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matthews-identity-peer-"));
+  try {
+    const preload = join(dir, "preload.mjs"), out = join(dir, "artifact.json");
+    writeFileSync(preload, `
+      import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+      const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
+      net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+      await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
+      const host="https://www.matthews.com", urls=["bad", "good-a", "good-b"].map(x=>host+"/properties/"+x);
+      globalThis.fetch=async input=>{ const url=String(input);
+        if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
+        if(url===urls[0]) return new Response('<html><head><link rel="canonical" href="'+host+'/properties/different"></head><body><section><h1 id="propertyTitle">Bad identity</h1></section></body></html>');
+        if(url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+        throw new Error("UNEXPECTED_FIXTURE_URL");
+      };
+    `);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,"collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
+    const artifact=JSON.parse(readFileSync(out,"utf8"));
+    assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
+    assert.match(artifact.sources[0].error,/1 detail parse or identity failure/);
+    const observations=artifact.sources[0].retainedObservations;
+    assert.equal(observations.filter((x:any)=>x.schema==="matthews-completed-parse-observation/v1").length,2);
+    assert.ok(observations.some((x:any)=>x.schema==="matthews-detail-observation/v1" && x.requestedUrl.endsWith("/bad")));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
