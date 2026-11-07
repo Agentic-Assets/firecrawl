@@ -203,7 +203,8 @@ def setup_collection(
         database.extend(unit["sources"])
         for source in unit["sources"]:
             owner["sources"][source]["readback"] = {"ok": True}
-        unit.update(validation_path="synthetic-readback", validation_sha256="c" * 64)
+        unit.update(validation_path="synthetic-readback", validation_sha256="c" * 64,
+                    aggregate_gate={"baseline_advisory_reasons": {}})
 
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", finalize)

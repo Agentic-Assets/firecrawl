@@ -321,6 +321,156 @@ def test_preseal_hold_writes_nothing_while_other_unit_gets_full_audit_and_readba
     }
 
 
+@pytest.mark.parametrize("current", [1365, 1367])
+@pytest.mark.parametrize("closed_pipeline", [("cbre", "svn"), ("svn", "cbre")], indirect=True)
+def test_count_shortfall_uses_partial_gates_and_keeps_peer(closed_pipeline, current):
+    import cre_checkpoint_series as series
+    from cre_gate import verdict_for
+
+    case = closed_pipeline
+    verdict, reason, missing_safe, median = verdict_for(
+        current, False, None, {"median": 1953}, 100, 0.30
+    )
+    assert verdict == "hold"
+
+    def count_hold(report):
+        info = report["per_source"].get("cbre")
+        if info is not None:
+            info.update(current_active=current, baseline_median=median,
+                        verdict=verdict, reason=reason, mark_missing_safe=missing_safe)
+
+    case.mutations["gate_report"] = count_hold
+    assert case.run() == []
+    assert ("write", "cbre") in case.events
+    assert ("write", "svn") in case.events
+    assert case.gate_calls["cbre"] >= 2
+    result = case.manifest["pipeline"]["source_results"]["cbre"]
+    unit = next(unit for unit in case.manifest["pipeline"]["units"] if unit["unit_id"] == result["unit_id"])
+    assert unit["aggregate_gate"]["baseline_advisory_holds"] == ["cbre"]
+    assert result["partial"] is True and result["whole_source_coverage"] is False
+    assert result["baseline_hold_reason"] == reason
+    assert case.manifest["pipeline"]["status"] == "partial"
+    assert series.count_hold_pipeline_member(case.manifest, "cbre")
+    assert not series.count_hold_pipeline_member(case.manifest, "svn")
+    tampered = copy.deepcopy(case.manifest)
+    tampered["pipeline"]["source_results"]["cbre"]["baseline_hold_reason"] = "different"
+    assert not series.count_hold_pipeline_member(tampered, "cbre")
+    tampered = copy.deepcopy(case.manifest)
+    next(u for u in tampered["pipeline"]["units"] if u["unit_id"] == result["unit_id"])["aggregate_gate"]["baseline_advisory_holds"] = []
+    assert not series.count_hold_pipeline_member(tampered, "cbre")
+    assert case.manifest["config"]["admit_baseline_hold_additively"] is False
+    source_gate = json.loads((case.root / case.manifest["sources"]["cbre"]["gate"]["path"]).read_text())
+    info = source_gate["per_source"]["cbre"]
+    assert info["raw_verdict"] == "hold"
+    assert info["raw_reason"] == reason
+    assert info["verdict"] == "ok_additive_coverage_hold"
+    assert info["mark_missing_safe"] is False
+    assert source_gate["scope"]["whole_source_coverage"] is False
+    assert case.manifest["scope"]["whole_source_coverage"] is False
+    assert not any("--mark-missing" in command or "--activate-status" in command for command in case.commands)
+
+
+def test_count_shortfall_threshold_and_source_error_precedence():
+    from cre_gate import verdict_for
+
+    assert verdict_for(1368, False, None, {"median": 1953}, 100, 0.30)[0] == "ok"
+    verdict, reason, _, _ = verdict_for(1365, True, "offline", {"median": 1953}, 100, 0.30)
+    assert verdict == "hold"
+    assert not refresh.subset_gate_can_admit({"verdict": verdict, "reason": reason})
+
+
+@pytest.mark.parametrize("verdicts", [("ok", "hold"), ("hold", "ok")])
+def test_count_shortfall_survives_source_aggregate_baseline_drift(closed_pipeline, verdicts):
+    import cre_checkpoint_series as series
+
+    case = closed_pipeline
+    case.gates["cbre"] = list(verdicts)
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+
+    def count_hold(report):
+        info = report["per_source"].get("cbre")
+        if info is not None and info["verdict"] == "hold":
+            info.update(current_active=1365, baseline_median=1953, reason=reason)
+
+    case.mutations["gate_report"] = count_hold
+    assert case.run() == []
+    result = case.manifest["pipeline"]["source_results"]["cbre"]
+    assert result["baseline_hold_source_reason"] == (reason if verdicts[0] == "hold" else None)
+    assert result["baseline_hold_aggregate_reason"] == (reason if verdicts[1] == "hold" else None)
+    assert result["baseline_hold_reason"] == reason
+    assert series.count_hold_pipeline_member(case.manifest, "cbre")
+    assert case.manifest["pipeline"]["status"] == "partial"
+    assert refresh.has_admitted_count_hold(case.manifest)
+    assert ("write", "svn") in case.events
+    unit = next(unit for unit in case.manifest["pipeline"]["units"] if "cbre" in unit["sources"])
+    report = json.loads((case.root / unit["aggregate_gate"]["path"]).read_text())
+    assert report["per_source"]["cbre"]["mark_missing_safe"] is False
+    assert "cbre" not in report["summary"]["mark_missing_safe_brokerages"]
+
+
+def test_count_shortfall_handled_pipeline_resumes_without_replay(tmp_path, monkeypatch):
+    import cre_checkpoint_series as series
+
+    config = series.series_config(
+        sources=["cbre", "svn"], page_cap=400, concurrency=1, attempts_per_source=1,
+        max_resume_age_hours=24, max_host_cpu_percent=90, cpu_sustain_seconds=30,
+        cpu_sample_seconds=2, nice=15, pipeline=True,
+    )
+    parent = series.new_manifest(tmp_path, git_sha=SHA, config=config)
+    for key, row in parent["sources"].items():
+        row.update(state="qualified_partial_subset" if key == "cbre" else "complete",
+                   checkpoint_run="runs/2026-07-29T120000Z", attempts=[{}])
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+    child = {
+        "status": "additive_scope_complete_coverage_hold",
+        "config": {"additive": True, "mark_missing": False, "status_activation": False},
+        "sources": {"cbre": {"gate": {"verdict": "ok_additive_coverage_hold",
+            "raw_verdict": "hold", "raw_reason": reason, "mark_missing_safe": False,
+            "admission_scope": "additive_coverage_hold"}}},
+        "pipeline": {"source_results": {"cbre": {"unit_id": "unit-0001",
+            "qualification": "additive_coverage_hold", "partial": True,
+            "whole_source_coverage": False, "baseline_hold_reason": reason,
+            "baseline_hold_source_reason": reason, "baseline_hold_aggregate_reason": reason}},
+            "units": [{"unit_id": "unit-0001", "sources": ["cbre"],
+                "aggregate_gate": {"baseline_advisory_holds": ["cbre"],
+                    "baseline_advisory_reasons": {"cbre": reason},
+                    "mark_missing_safe_brokerages": [], "non_ok_sources": []}}]},
+    }
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw: (tmp_path / "manifest.json", child))
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *a, **kw: True)
+    monkeypatch.setattr(series, "_pipeline_has_unresolved", lambda *a: False)
+    monkeypatch.setattr(series, "document_incomplete", lambda *a: False)
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
+    assert series.run_pipeline_series(tmp_path, parent, env_file=None) == 0
+    assert parent["status"] == "qualified_partial_subset"
+    assert all(len(row["attempts"]) == 1 for row in parent["sources"].values())
+
+
+def test_count_shortfall_with_conversion_errors_never_enters_a_write_unit(closed_pipeline):
+    case = closed_pipeline
+
+    def corrupt_conversion(report):
+        if "cbre" in report["per_source"]:
+            report["per_source"]["cbre"]["reason"] = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+            report["summary"]["torow_errors"] = 1
+
+    case.mutations["gate_report"] = corrupt_conversion
+    with pytest.raises(refresh.GlobalStageError, match="conversion errors"):
+        case.run()
+    assert not any(event[0] == "write" for event in case.events)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("additive", False), ("mark_missing", True), ("status_activation", True),
+    ("additive", None), ("mark_missing", None), ("status_activation", None),
+])
+def test_count_shortfall_requires_explicit_safe_write_policy(closed_pipeline, field, value):
+    case = closed_pipeline
+    case.manifest["config"][field] = value
+    assert not refresh.gate_verdict_is_admitted(case.manifest, "ok_additive_coverage_hold", source="cbre")
+    assert not refresh.additive_coverage_hold_enabled(case.manifest["config"])
+
+
 def test_all_preseal_holds_leave_no_database_units_or_writes(closed_pipeline):
     case = closed_pipeline
     case.gates["svn"] = ["first_seen"]

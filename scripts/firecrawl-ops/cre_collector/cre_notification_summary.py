@@ -726,11 +726,19 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         result.update(subset_fields)
         if inventory_only:
             result["verified_inventory_only"] = inventory_only
-        if config.get("admit_baseline_hold_additively") is True:
+        if child.get("status") == "additive_scope_complete_coverage_hold":
+            from cre_checkpoint_refresh import admitted_count_hold
+
+            result["partial"] = True
             result["whole_source_coverage"] = False
-            result["baseline_hold_retained"] = (
-                child.get("status") == "additive_scope_complete_coverage_hold"
+            result["baseline_hold_retained"] = True
+            result["baseline_hold_reason"] = (
+                (checkpoint["gate"].get("raw_reason") if admitted_count_hold(checkpoint) else None)
+                or child.get("aggregate_gate", {}).get("baseline_advisory_reasons", {}).get(source)
             )
+        elif config.get("admit_baseline_hold_additively") is True:
+            result["whole_source_coverage"] = False
+            result["baseline_hold_retained"] = False
         if transaction_breakdown is not None:
             result["transaction_breakdown"] = transaction_breakdown
         return result
@@ -1077,6 +1085,8 @@ def verified_pipeline_summary(
             source_readback = checkpoint.get("readback")
             source_gate = checkpoint.get("gate")
             source_binding = source_gate.get("current_inventory_proof") if isinstance(source_gate, dict) else None
+            from cre_checkpoint_series import count_hold_pipeline_member
+            count_partial = count_hold_pipeline_member(child, source)
             if source != "nai-global" and ((isinstance(source_artifact, dict) and source_artifact.get("nai_post_partial") is True)
                     or (isinstance(source_binding, dict) and (source_binding.get("schema") == "nai-public-post-partial-v1"
                         or source_binding.get("scope") == "nai_public_post_partial_v1"))):
@@ -1084,7 +1094,7 @@ def verified_pipeline_summary(
                 unverifiable.append(source)
                 continue
             nai_partial_candidate = (source == "nai-global" and (
-                parent_entry.get("state") == "qualified_partial_subset"
+                (parent_entry.get("state") == "qualified_partial_subset" and not count_partial)
                 or (isinstance(source_artifact, dict) and source_artifact.get("nai_post_partial") is True)
                 or (isinstance(source_readback, dict) and source_readback.get("kind") == "nai_public_post_partial")
                 or (isinstance(source_binding, dict) and (source_binding.get("schema") == "nai-public-post-partial-v1"
@@ -1097,7 +1107,7 @@ def verified_pipeline_summary(
                 continue
             lyon_partial_candidate = (
                 source == "lyon-stahl" and (
-                    parent_entry.get("state") == "qualified_partial_subset"
+                    (parent_entry.get("state") == "qualified_partial_subset" and not count_partial)
                     or (isinstance(source_artifact, dict) and source_artifact.get("lyon_partial") is True)
                     or (isinstance(source_readback, dict) and source_readback.get("kind") == "lyon_partial_search")
                     or (isinstance(source_binding, dict) and (
@@ -1111,7 +1121,7 @@ def verified_pipeline_summary(
                 continue
             colliers_partial_candidate = (
                 source == "colliers" and (
-                    parent_entry.get("state") == "qualified_partial_subset"
+                    (parent_entry.get("state") == "qualified_partial_subset" and not count_partial)
                     or (isinstance(source_artifact, dict) and source_artifact.get("colliers_partial") is True)
                     or (isinstance(source_readback, dict) and source_readback.get("kind") == "colliers_partial_window")
                     or (isinstance(source_binding, dict) and (
@@ -1128,7 +1138,7 @@ def verified_pipeline_summary(
                 continue
             franklin_partial_candidate = (
                 source == "franklin-street" and (
-                    parent_entry.get("state") == "qualified_partial_subset"
+                    (parent_entry.get("state") == "qualified_partial_subset" and not count_partial)
                     or (isinstance(source_artifact, dict) and source_artifact.get("franklin_partial") is True)
                     or (isinstance(source_readback, dict) and source_readback.get("kind") == "franklin_site_partial")
                     or (isinstance(source_binding, dict) and (
@@ -1136,7 +1146,7 @@ def verified_pipeline_summary(
                         or source_binding.get("scope") == "franklin_site_partial_v1"))))
             jll_partial_candidate = (
                 source == "jll-investor"
-                and (parent_entry.get("state") == "qualified_partial_subset"
+                and ((parent_entry.get("state") == "qualified_partial_subset" and not count_partial)
                      or (isinstance(source_artifact, dict) and source_artifact.get("jll_partial") is True)
                      or (isinstance(source_readback, dict) and source_readback.get("kind") == "jll_investor_partial")
                      or (isinstance(source_gate, dict) and (
@@ -1153,7 +1163,7 @@ def verified_pipeline_summary(
                     or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
                     or jll_partial_candidate or colliers_partial_candidate or lyon_partial_candidate
-                    or franklin_partial_candidate or nai_partial_candidate) else "complete"))
+                    or franklin_partial_candidate or nai_partial_candidate or count_partial) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1456,6 +1466,11 @@ def verified_pipeline_summary(
         for source, count, checkpoint, unit, inventory_only, jll_summary, jll_breakdown in qualified:
             row = {"source_key": source, "verified_listings": count}
             row.update(jll_summary if jll_summary is not None else _subset_summary_fields(child, source, count))
+            from cre_checkpoint_series import count_hold_pipeline_member
+            count_partial = count_hold_pipeline_member(child, source)
+            if count_partial:
+                row.update(partial=True, whole_source_coverage=False,
+                           baseline_hold_reason=child["pipeline"]["source_results"][source]["baseline_hold_reason"])
             if inventory_only:
                 row["verified_inventory_only"] = inventory_only
             breakdown = None
@@ -1564,7 +1579,7 @@ def verified_pipeline_summary(
             )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
-            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street", "nai-global"}:
+            if row.get("partial") is True and not count_partial and source not in {"lyon-stahl", "franklin-street", "nai-global"}:
                 require(breakdown is not None)
             result_rows.append(row)
         for descriptor, name, limit, raw in snapshots:

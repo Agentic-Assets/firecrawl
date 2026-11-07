@@ -1500,6 +1500,17 @@ def run_bounded_pipeline(
                             "generation_id": manifest["run_id"],
                             "artifact_sha256": checkpoint["artifact"]["sha256"],
                         }
+                        source_reason = (checkpoint["gate"]["raw_reason"]
+                                         if refresh.admitted_count_hold(checkpoint) else None)
+                        aggregate_reason = (unit["aggregate_gate"].get("baseline_advisory_reasons") or {}).get(source)
+                        if source_reason is not None or aggregate_reason is not None:
+                            state["source_results"][source].update(
+                                qualification="additive_coverage_hold", partial=True,
+                                whole_source_coverage=False,
+                                baseline_hold_reason=source_reason or aggregate_reason,
+                                baseline_hold_source_reason=source_reason,
+                                baseline_hold_aggregate_reason=aggregate_reason,
+                            )
                         if refresh.verified_subset_candidate(manifest, source):
                             binding = checkpoint.get("gate", {}).get("current_inventory_proof", {})
                             state["source_results"][source].update(

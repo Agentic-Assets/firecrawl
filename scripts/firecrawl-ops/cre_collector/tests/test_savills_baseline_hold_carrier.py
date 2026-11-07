@@ -196,7 +196,7 @@ def test_actual_gate_producer_to_private_summary(evidence, monkeypatch):
     result = read(evidence, source="savills")
     assert result["verified_listings"] == 3
     assert result["transaction_breakdown"]["sale"] == 2
-    assert series._reconciled_state(old_child, cfg) == "complete"
+    assert series._reconciled_state(old_child, cfg) == "qualified_partial_subset"
     assert result["baseline_hold_retained"] is True
     assert result["whole_source_coverage"] is False
     parent["config"].pop("admit_baseline_hold_additively")

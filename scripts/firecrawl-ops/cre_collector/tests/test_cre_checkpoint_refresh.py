@@ -4068,6 +4068,40 @@ def test_aggregate_gate_hold_prevents_completion(tmp_path, monkeypatch):
     assert manifest["aggregate_gate"]["hold_sources"] == ["svn"]
 
 
+def test_aggregate_clear_does_not_restore_prior_held_brokerage_safety(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(run_dir, git_sha="abc", git_dirty=False,
+                                    sources=("cbre", "svn"), page_cap=400, concurrency=1)
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+    manifest["sources"]["cbre"]["gate"] = {
+        "verdict": "ok_additive_coverage_hold", "raw_verdict": "hold", "raw_reason": reason,
+        "mark_missing_safe": False, "admission_scope": "additive_coverage_hold",
+    }
+    for source in ("cbre", "svn"):
+        path = run_dir / "sources" / f"{source}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        manifest["sources"][source]["artifact"] = {"path": f"sources/{source}.json"}
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(run_dir / "aggregate-gate.json", {
+            "per_source": {source: {"verdict": "ok", "mark_missing_safe": True}
+                           for source in ("cbre", "svn")},
+            "summary": {"hold_sources": [], "mark_missing_safe_sources": ["cbre", "svn"],
+                        "mark_missing_safe_brokerages": ["cbre", "svn"], "torow_errors": 0},
+        })
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.run_aggregate_gate(run_dir, manifest, None)
+    report = json.loads((run_dir / "aggregate-gate.json").read_text())
+    assert report["per_source"]["cbre"]["mark_missing_safe"] is False
+    assert report["per_brokerage"]["cbre"]["mark_missing_safe"] is False
+    assert "cbre" not in report["summary"]["mark_missing_safe_brokerages"]
+    assert report["per_source"]["svn"]["mark_missing_safe"] is True
+    assert report["scope"]["whole_source_coverage"] is False
+
+
 def test_subset_aggregate_gate_strips_whole_source_missing_safe_claim(
     tmp_path, monkeypatch
 ):

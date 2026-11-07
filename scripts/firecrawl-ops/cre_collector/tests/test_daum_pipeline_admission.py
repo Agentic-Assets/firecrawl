@@ -378,7 +378,8 @@ def test_ordinary_unit_finishes_while_real_contained_daum_collects(
             assert admit(artifact, owner, report, "aggregate") == binding
         for source in unit["sources"]:
             owner["sources"][source]["readback"] = {"ok": True}
-        unit.update(validation_path="synthetic-db-proof", validation_sha256="c" * 64)
+        unit.update(validation_path="synthetic-db-proof", validation_sha256="c" * 64,
+                    aggregate_gate={"baseline_advisory_reasons": {}})
         if unit["sources"] == [OTHER]:
             with released.open("x") as marker:
                 marker.write("ordinary synthetic DB unit completed")

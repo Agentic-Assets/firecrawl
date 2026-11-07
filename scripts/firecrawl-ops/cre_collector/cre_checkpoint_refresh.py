@@ -5591,6 +5591,33 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
     )
 
 
+def additive_coverage_hold_enabled(config: Mapping[str, Any]) -> bool:
+    """Count shortfalls can only be advisory in a non-lifecycle write."""
+    return (
+        config.get("additive") is True
+        and config.get("mark_missing") is False
+        and config.get("status_activation") is False
+    )
+
+
+def admitted_count_hold(checkpoint: Mapping[str, Any]) -> bool:
+    gate = checkpoint.get("gate") or {}
+    return (
+        gate.get("verdict") == "ok_additive_coverage_hold"
+        and gate.get("raw_verdict") == "hold"
+        and gate.get("mark_missing_safe") is False
+        and gate.get("admission_scope") == "additive_coverage_hold"
+        and subset_gate_can_admit({"verdict": "hold", "reason": gate.get("raw_reason")})
+    )
+
+
+def has_admitted_count_hold(manifest: Mapping[str, Any]) -> bool:
+    return (any(admitted_count_hold(checkpoint) for checkpoint in manifest["sources"].values())
+            or bool((manifest.get("aggregate_gate") or {}).get("baseline_advisory_holds"))
+            or any((unit.get("aggregate_gate") or {}).get("baseline_advisory_holds")
+                   for unit in (manifest.get("pipeline") or {}).get("units", [])))
+
+
 def gate_verdict_is_admitted(
     manifest: Mapping[str, Any], verdict: Any, *, source: str | None = None
 ) -> bool:
@@ -5599,13 +5626,17 @@ def gate_verdict_is_admitted(
     transactions = tuple(manifest["config"]["transactions"])
     if transactions != TRANSACTIONS:
         return verdict == "ok_additive_subset"
-    if manifest["config"].get("admit_baseline_hold_additively") is True:
-        return verdict in {"ok", "ok_additive_coverage_hold"}
     if manifest["config"].get("current_inventory_admissions"):
-        return verdict in {"ok", current_inventory.VERDICT}
+        if verdict in {"ok", current_inventory.VERDICT}:
+            return True
+        if source is None or current_inventory.admission_configuration(manifest["config"], source):
+            return False
     if manifest["config"].get("current_inventory_admission"):
         return verdict == current_inventory.VERDICT
-    return verdict == "ok"
+    return verdict == "ok" or (
+        verdict == "ok_additive_coverage_hold"
+        and additive_coverage_hold_enabled(manifest["config"])
+    )
 
 
 def _admit_current_inventory(
@@ -5712,9 +5743,7 @@ def gate_source(
 ) -> None:
     checkpoint = manifest["sources"][source]
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
-    additive_hold_enabled = (
-        manifest["config"].get("admit_baseline_hold_additively") is True
-    )
+    additive_hold_enabled = additive_coverage_hold_enabled(manifest["config"])
     suffix = _partial_window_suffix(checkpoint, source)
     gate_path = run_dir / "gates" / f"{source}{suffix}.json"
     log_path = run_dir / "logs" / f"{source}{suffix}-gate.log"
@@ -6590,9 +6619,7 @@ def run_aggregate_gate(
             atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     per_source = result.get("per_source") or {}
-    additive_hold_enabled = (
-        manifest["config"].get("admit_baseline_hold_additively") is True
-    )
+    additive_hold_enabled = additive_coverage_hold_enabled(manifest["config"])
     additive_coverage_holds = sorted(
         source
         for source, info in per_source.items()
@@ -6604,7 +6631,12 @@ def run_aggregate_gate(
             and subset_gate_can_admit(info)
         )
     )
-    limited_admission = not full_transaction_scope or bool(additive_coverage_holds)
+    source_coverage_holds = {
+        source for source in selected
+        if additive_hold_enabled and admitted_count_hold(manifest["sources"][source])
+    }
+    limited_admission = (not full_transaction_scope or bool(additive_coverage_holds)
+                         or bool(source_coverage_holds))
     if limited_admission:
         summary = result.get("summary")
         if (
@@ -6624,7 +6656,7 @@ def run_aggregate_gate(
             "transactions": list(manifest["config"]["transactions"]),
             "whole_source_coverage": False,
         }
-        if additive_coverage_holds:
+        if additive_coverage_holds or source_coverage_holds:
             manifest["scope"]["kind"] = "collector_registry_additive_coverage_hold"
             manifest["scope"]["whole_source_coverage"] = False
         baseline_advisory_holds: list[str] = []
@@ -6649,7 +6681,8 @@ def run_aggregate_gate(
                     )
                     if info["raw_verdict"] == "hold":
                         baseline_advisory_holds.append(source)
-                info["mark_missing_safe"] = False
+                if not full_transaction_scope or source in additive_coverage_holds or source in source_coverage_holds:
+                    info["mark_missing_safe"] = False
                 info["admission_scope"] = (
                     scope_kind
                     if additive_admitted
@@ -6665,7 +6698,16 @@ def run_aggregate_gate(
             for source, info in per_source.items()
             if isinstance(info, dict) and info.get("verdict") == "hold"
         )
-        summary["mark_missing_safe_brokerages"] = []
+        from cre_gate import rollup_brokerages
+        result["per_brokerage"] = rollup_brokerages(per_source)
+        summary["mark_missing_safe_sources"] = sorted(
+            source for source, info in per_source.items()
+            if isinstance(info, dict) and info.get("mark_missing_safe") is True
+        )
+        summary["mark_missing_safe_brokerages"] = sorted(
+            slug for slug, info in result["per_brokerage"].items()
+            if info.get("mark_missing_safe") is True
+        )
         atomic_write_json(output, result)
     configured_sources = set(selected)
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()
@@ -6688,6 +6730,10 @@ def run_aggregate_gate(
         "baseline_advisory_holds": (
             (result.get("summary") or {}).get("baseline_advisory_holds") or []
         ),
+        "baseline_advisory_reasons": {
+            source: per_source[source].get("raw_reason")
+            for source in additive_coverage_holds
+        },
         "non_ok_sources": non_ok_sources,
         "mark_missing_safe_brokerages": (
             (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []
@@ -8564,9 +8610,8 @@ def render_report(manifest: Mapping[str, Any]) -> str:
             if (
                 tuple((manifest.get("config") or {}).get("transactions") or ())
                 == TRANSACTIONS
-                and not (manifest.get("aggregate_gate") or {}).get(
-                    "baseline_advisory_holds"
-                )
+                and not has_admitted_count_hold(manifest)
+                and not (manifest.get("aggregate_gate") or {}).get("baseline_advisory_holds")
             )
             else (
                 "- Scope admission: additive transaction subset only; no whole-source coverage or lifecycle claim."
@@ -9399,18 +9444,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 validate_serial_sources(run_dir, manifest, args.env_file, sources, serial_holds)
             quiesce_resource_guards(memory_guard, cpu_guard)
             manifest["status"] = (
-                "additive_scope_complete_current_inventory"
+                "additive_scope_complete_coverage_hold"
+                if has_admitted_count_hold(manifest)
+                else "additive_scope_complete_current_inventory"
                 if manifest["config"].get("current_inventory_admission") or manifest["config"].get("current_inventory_admissions")
                 else (
                     "selected_transaction_scope_complete"
                     if transactions != TRANSACTIONS
-                    else (
-                        "additive_scope_complete_coverage_hold"
-                        if (manifest.get("aggregate_gate") or {}).get(
-                            "baseline_advisory_holds"
-                        )
-                        else "supported_scope_complete"
-                    )
+                    else "supported_scope_complete"
                 )
             )
             if any(verified_subset_candidate(manifest, source) for source in manifest["config"]["sources"]):

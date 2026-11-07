@@ -143,6 +143,62 @@ def test_series_continues_source_local_failure_then_completes(tmp_path, monkeypa
     assert manifest["sources"]["jll"]["state"] == "complete"
 
 
+def test_serial_count_hold_qualifies_and_dispatches_next_source(tmp_path, monkeypatch):
+    cfg = config(("cbre", "svn"))
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=cfg)
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+    held = {
+        "status": "additive_scope_complete_coverage_hold", "error": None,
+        "config": series._expected_child_config("cbre", cfg),
+        "sources": {"cbre": {"gate": {"verdict": "ok_additive_coverage_hold",
+            "raw_verdict": "hold", "raw_reason": reason, "mark_missing_safe": False,
+            "admission_scope": "additive_coverage_hold"}}},
+        "scope": {"kind": "collector_registry_additive_coverage_hold", "whole_source_coverage": False},
+        "aggregate_gate": {"hold_sources": [], "non_ok_sources": [], "rc": 2,
+            "baseline_advisory_holds": ["cbre"], "baseline_advisory_reasons": {"cbre": reason},
+            "mark_missing_safe_brokerages": []},
+    }
+    starts = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def __init__(self, argv, **_kwargs):
+            starts.append(argv[argv.index("--sources") + 1])
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(series.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(series, "_load_child_manifest", lambda root, *, source, **kw: (
+        tmp_path / "runs" / source / "manifest.json",
+        held if source == "cbre" else {"status": series.SUCCESS_STATUS, "error": None},
+    ))
+    assert series._reconciled_state(held, cfg) == "qualified_partial_subset"
+    assert not series._child_succeeded(held, config(("svn",)))
+    assert series.run_series(tmp_path, manifest, env_file=None, retry_failed=False) == 0
+    assert starts == ["cbre", "svn"]
+    assert manifest["sources"]["cbre"]["state"] == "qualified_partial_subset"
+    assert manifest["sources"]["svn"]["state"] == "complete"
+    assert manifest["status"] == "qualified_partial_subset"
+
+    recovered = series.new_manifest(tmp_path, git_sha="a" * 40, config=cfg)
+    recovered["sources"]["cbre"].update(
+        state="running", checkpoint_run="runs/held", attempts=[{"started_at": "2026-11-06T12:00:00Z"}]
+    )
+    held.update(run_id="held", collector_git_sha="a" * 40,
+                started_at="2026-11-06T12:00:01Z", finished_at="2026-11-06T12:01:00Z")
+    path = tmp_path / "runs" / "held" / "manifest.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(held), encoding="utf-8")
+    series.reconcile_stale_running_sources(tmp_path, recovered)
+    assert recovered["sources"]["cbre"]["state"] == "qualified_partial_subset"
+    assert recovered["sources"]["svn"]["state"] == "pending"
+
+
 def test_series_stops_immediately_on_resource_guard(tmp_path, monkeypatch):
     manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=config())
     starts = []

@@ -456,6 +456,39 @@ def read_pipeline(evidence, source_keys=None):
     return summary.verified_pipeline_summary(**args)
 
 
+@pytest.mark.parametrize("source_hold,aggregate_hold", [(True, True), (True, False), (False, True)])
+def test_serial_count_hold_reports_partial_from_bound_evidence(evidence, source_hold, aggregate_hold):
+    import cre_checkpoint_series as series
+    from test_cre_checkpoint_series import config as series_config
+
+    parent, child = evidence["values"]["parent"], evidence["values"]["child"]
+    cfg = series_config((SOURCE,))
+    reason = "current_active 3 below 70% of baseline median 102 (threshold 72)"
+    parent["config"] = cfg
+    parent["status"] = "qualified_partial_subset"
+    parent["sources"][SOURCE].update(state="qualified_partial_subset",
+                                     checkpoint_status="additive_scope_complete_coverage_hold")
+    evidence["values"]["control"]["status"] = "qualified_partial_subset"
+    child["config"] = series._expected_child_config(SOURCE, cfg)
+    child["status"] = "additive_scope_complete_coverage_hold"
+    child["scope"] = {"kind": "collector_registry_additive_coverage_hold", "whole_source_coverage": False}
+    child["sources"][SOURCE]["gate"] = (
+        {"verdict": "ok_additive_coverage_hold", "raw_verdict": "hold", "raw_reason": reason,
+         "mark_missing_safe": False, "admission_scope": "additive_coverage_hold"}
+        if source_hold else {"verdict": "ok"}
+    )
+    child["aggregate_gate"] = {"rc": 2, "hold_sources": [], "non_ok_sources": [],
+        "baseline_advisory_holds": [SOURCE] if aggregate_hold else [],
+        "baseline_advisory_reasons": {SOURCE: reason} if aggregate_hold else {},
+        "mark_missing_safe_brokerages": []}
+    evidence["save"]()
+    result = read(evidence)
+    assert result["partial"] is True
+    assert result["whole_source_coverage"] is False
+    assert result["baseline_hold_retained"] is True
+    assert result["baseline_hold_reason"] == reason
+
+
 def test_real_private_receipts_prove_only_exact_current_inventory(
     evidence, monkeypatch
 ):
@@ -839,6 +872,34 @@ def test_pipeline_marks_complete_only_when_every_selected_source_qualifies(evide
     assert result["failed_source_keys"] == []
     assert result["pending_source_keys"] == []
     assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+
+
+def test_pipeline_count_hold_reports_verified_rows_as_partial(evidence):
+    setup = pipeline_evidence(evidence)
+    parent, child = setup["parent"], setup["child"]
+    reason = "current_active 1365 below 70% of baseline median 1953 (threshold 1367)"
+    child["config"].update(additive=True, mark_missing=False, status_activation=False)
+    child["sources"][SOURCE]["gate"] = {
+        "verdict": "ok_additive_coverage_hold", "raw_verdict": "hold",
+        "raw_reason": reason, "mark_missing_safe": False,
+        "admission_scope": "additive_coverage_hold",
+    }
+    child["pipeline"]["units"][0]["aggregate_gate"] = {
+        "baseline_advisory_holds": [SOURCE], "mark_missing_safe_brokerages": [],
+        "baseline_advisory_reasons": {SOURCE: reason}, "non_ok_sources": [],
+    }
+    result = child["pipeline"]["source_results"][SOURCE]
+    result.update(qualification="additive_coverage_hold", partial=True,
+                  whole_source_coverage=False, baseline_hold_reason=reason,
+                  baseline_hold_source_reason=reason, baseline_hold_aggregate_reason=reason)
+    parent["sources"][SOURCE].update(state="qualified_partial_subset", pipeline_result=result)
+    evidence["save"]()
+    summary_result = read_pipeline(evidence, [SOURCE, setup["source2"]])
+    row = next(row for row in summary_result["per_source_summaries"] if row["source_key"] == SOURCE)
+    assert row["verified_listings"] == 3
+    assert row["partial"] is True and row["whole_source_coverage"] is False
+    assert row["baseline_hold_reason"] == reason
+    assert summary_result["complete"] is False
 
 
 def test_legacy_cli_contract_remains_single_source(evidence, capsys):
