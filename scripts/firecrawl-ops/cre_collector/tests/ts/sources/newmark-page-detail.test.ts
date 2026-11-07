@@ -26,3 +26,39 @@ test("holds stale or duplicate identity and ambiguous unit",()=>{
   [claim,witness,html.replace("</main>","<div class=\"property-detail\"></div></main>"),200],
  ] as const) assert.equal(extractNewmarkPage(item,w,page,status),null);
 });
+
+const fullUrl = "https://www.nmrk.com/properties/203-n-wisconsin-street-port-washington-sale";
+const fullClaim = { externalId: "203-n-wisconsin-street-port-washington-sale", url: fullUrl };
+const fullWitness = {
+  recordId: "synthetic-record", slug: fullClaim.externalId, sourceUrl: fullUrl,
+  address: "203 N Wisconsin Street", city: "Port Washington", state: "Wisconsin", zip: "53074",
+};
+const fullHtml = readFileSync(new URL("../../fixtures/newmark-property-detail-full-address.html", import.meta.url), "utf8");
+
+test("accepts exact full street address when the H1 is a marketing title", () => {
+  assert.equal(extractNewmarkPage(fullClaim, fullWitness, fullHtml, 200)?.prose, "Synthetic property description.");
+  const normalized = fullHtml.replace("203 N Wisconsin Street, Port Washington, Wisconsin 53074",
+    "203  n WISCONSIN Street,   Port Washington, WISCONSIN 53074");
+  assert.equal(extractNewmarkPage(fullClaim, fullWitness, normalized, 200)?.prose, "Synthetic property description.");
+});
+
+test("full address layout refuses each mismatched witness component and ambiguous page", () => {
+  for (const changed of [
+    { address: "205 N Wisconsin Street" }, { city: "Milwaukee" },
+    { state: "Minnesota" }, { zip: "53075" }, { address: "203 N Wisconsin Street Suite 2" },
+  ]) assert.equal(extractNewmarkPage(fullClaim, { ...fullWitness, ...changed }, fullHtml, 200), null);
+  for (const page of [
+    fullHtml.replace("203 N Wisconsin Street,", "205 N Wisconsin Street,"),
+    fullHtml.replace("Port Washington,", "Milwaukee,"),
+    fullHtml.replace("Wisconsin 53074", "Minnesota 53074"),
+    fullHtml.replace("53074", "53075"),
+    fullHtml.replace("203 N Wisconsin Street,", "203 N Wisconsin Street Suite 2,"),
+    fullHtml.replace("Historic Poole Property</h1>", " </h1>"),
+    fullHtml.replace("</main>", '<div class="property-detail"></div></main>'),
+    fullHtml.replace("</h1>", '</h1><p class="street-address">duplicate</p>'),
+    fullHtml.replace('rel="canonical" href="' + fullUrl, 'rel="canonical" href="https://www.nmrk.com/properties/unrelated'),
+    fullHtml.replace('property="og:url" content="' + fullUrl, 'property="og:url" content="https://www.nmrk.com/properties/unrelated'),
+  ]) assert.equal(extractNewmarkPage(fullClaim, fullWitness, page, 200), null);
+  assert.equal(extractNewmarkPage({ ...fullClaim, externalId: "unrelated" }, fullWitness, fullHtml, 200), null);
+  assert.equal(extractNewmarkPage(fullClaim, fullWitness, fullHtml, 403), null);
+});
