@@ -126,14 +126,15 @@ for (const status of [401, 403, 418, 429]) {
   });
 }
 
-test("strict Matthews bounds repeated temporary redirects and retains settled holds", async t => {
-  const requests = provider(t, Array.from({ length: 60 }, () => 307), true);
+test("strict Matthews continues past more than 50 redirects to retain a valid peer", async t => {
+  const requests = provider(t, [...Array.from({ length: 60 }, () => 307), page(60)], true);
   await assert.rejects(srcMatthews("sale", Infinity, false), (error: unknown) => {
     assert.ok(error instanceof RetainedSourceError);
-    assert.match(error.message, /hold limit reached/);
-    assert.ok(error.retainedObservations.length >= 50);
-    assert.ok(error.retainedObservations.length <= 51);
+    assert.match(error.message, /partial: 60 temporary redirect/);
+    const observations = error.retainedObservations as any[];
+    assert.equal(observations.filter(x => x.outcome === "held_temporary_redirect").length, 60);
+    assert.ok(observations.some(x => x.schema === "matthews-completed-parse-observation/v1"));
     return true;
   });
-  assert.ok(!requests.includes(detail(59)));
+  assert.ok(requests.includes(detail(60)));
 });
