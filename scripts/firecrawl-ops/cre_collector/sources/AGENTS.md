@@ -349,9 +349,9 @@ temporary spool and report its path. Spool initialization, write or sealing
 failures are reported without stopping eligible source collection; no missing
 evidence is claimed retained. When both a direct no-output spool and its private
 fallback artifact fail, stderr reports the loss and stdout contains an
-unverified evidence-only status projection. Allowlisted non-Matthews identity,
+unverified evidence-only status projection. Allowlisted non-Matthews name,
 location and transaction fields and referenced broker names/companies appear only
-when private-evidence checks pass; other fields are explicitly omitted. Otherwise
+when private-evidence checks pass; IDs, URLs and all other fields are explicitly omitted. Otherwise
 no rows appear and the loss is reported. Matthews observations never
 appear in this projection. Interrupted spools remain unverified;
 synchronous writes survive ordinary process termination, while fsync and a

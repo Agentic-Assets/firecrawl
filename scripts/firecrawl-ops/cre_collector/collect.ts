@@ -541,32 +541,10 @@ async function main() {
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
-  } else if (!OUT_PATH && sources.some(source => source.sourceKey === "essex-realty" &&
-      Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
-        value?.schema === "essex-inventory-mismatch-v1"))) {
-    const path = writeTerminalCollectorArtifact(undefined, json);
-    console.error(`Essex private evidence artifact: ${path}`);
-    const safeProjection = !partialCaptureAttached &&
-      !sources.some(source => source.sourceKey !== "essex-realty" &&
-        Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
-      !listings.some(listing => listing.srsRawRetention || listing.buildoutRawRetention ||
-        listing.kidderRawRetention || listing.newmarkNimRawRetention);
-    if (safeProjection) {
-      const projection = { ...out,
-        runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "essex_private_sidecar_projection" },
-        sources: sources.map(source => {
-          if (source.sourceKey !== "essex-realty") return source;
-          const { retainedObservations, ...entry } = source;
-          return entry;
-        }),
-      };
-      writeCollectorArtifact(undefined, JSON.stringify(projection), false);
-    } else {
-      console.error("Other private evidence prevents a stdout projection; use the private artifact.");
-      process.exitCode = 1;
-    }
-  } else if (!OUT_PATH && matthewsSpoolUnavailable && privateEvidence &&
-      sources.some(source => source.sourceKey === "matthews")) {
+  } else if (!OUT_PATH && privateEvidence && sources.some(source => source.sourceKey === "matthews") &&
+      (matthewsSpoolUnavailable || sources.some(source => source.sourceKey === "essex-realty" &&
+        Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
+          value?.schema === "essex-inventory-mismatch-v1")))) {
     try {
       const path = writeTerminalCollectorArtifact(undefined, json);
       console.error(`Matthews private fallback artifact: ${path}`);
@@ -618,20 +596,13 @@ async function main() {
       });
       const rowProjection = peerRows.map(listing => {
         const row: Record<string, unknown> = { sourceKey: listing.sourceKey };
-        if (!safeText(listing.id) || !/^[a-zA-Z0-9._:/-]+$/.test(listing.id)) safeProjection = false;
-        else row.id = listing.id;
+        // Without source-specific proof an ID or URL path can itself contain
+        // opaque credentials. Neither belongs in this emergency stdout view.
+        if (!safeText(listing.name)) safeProjection = false;
         for (const field of ["name", "transactionType", "transactionMode", "street", "city", "state"]) {
           if (listing[field] === undefined || listing[field] === null) continue;
           if (!safeText(listing[field])) safeProjection = false;
           else row[field] = listing[field];
-        }
-        if (listing.url !== undefined && listing.url !== null) {
-          try {
-            const url = new URL(listing.url);
-            if (!safeText(listing.url) || !["http:", "https:"].includes(url.protocol) ||
-                url.username || url.password || url.search || url.hash) safeProjection = false;
-            else row.url = listing.url;
-          } catch { safeProjection = false; }
         }
         if (Array.isArray(listing.brokerIds)) row.brokerIds = listing.brokerIds.map((id: number) => remap.get(id));
         return row;
@@ -641,7 +612,7 @@ async function main() {
         runMeta: { mode: MONITOR ? "monitor" : "full", evidenceOnly: true,
           evidencePurpose: "private_retention_failed", coverage: "unverified",
           peerRowsAvailable: safeProjection, withheldPeerRows,
-          omittedFields: "Only source, identity, name, transaction, location, URL and broker name/company are projected" },
+          omittedFields: "Only source, name, transaction, location and broker name/company are projected; IDs, URLs and other fields omitted" },
         sources: sources.map(source => ({
           sourceKey: requestedSources.includes(source.sourceKey) ? source.sourceKey : "unknown",
           transaction: ["sale", "lease"].includes(source.transaction) ? source.transaction : null,
@@ -660,6 +631,30 @@ async function main() {
       writeCollectorArtifact(undefined, JSON.stringify(projection), false);
     }
     process.exitCode = 1;
+  } else if (!OUT_PATH && sources.some(source => source.sourceKey === "essex-realty" &&
+      Array.isArray(source.retainedObservations) && source.retainedObservations.some((value: any) =>
+        value?.schema === "essex-inventory-mismatch-v1"))) {
+    const path = writeTerminalCollectorArtifact(undefined, json);
+    console.error(`Essex private evidence artifact: ${path}`);
+    const safeProjection = !partialCaptureAttached &&
+      !sources.some(source => source.sourceKey !== "essex-realty" &&
+        Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) &&
+      !listings.some(listing => listing.srsRawRetention || listing.buildoutRawRetention ||
+        listing.kidderRawRetention || listing.newmarkNimRawRetention);
+    if (safeProjection) {
+      const projection = { ...out,
+        runMeta: { ...out.runMeta, evidenceOnly: true, evidencePurpose: "essex_private_sidecar_projection" },
+        sources: sources.map(source => {
+          if (source.sourceKey !== "essex-realty") return source;
+          const { retainedObservations, ...entry } = source;
+          return entry;
+        }),
+      };
+      writeCollectorArtifact(undefined, JSON.stringify(projection), false);
+    } else {
+      console.error("Other private evidence prevents a stdout projection; use the private artifact.");
+      process.exitCode = 1;
+    }
   } else if (franklinFallback && !OUT_PATH) writeFranklinProjection();
   else {
     try { writeCollectorArtifact(OUT_PATH, json, privateEvidence); }
