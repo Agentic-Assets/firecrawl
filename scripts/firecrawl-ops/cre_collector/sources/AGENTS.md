@@ -11,6 +11,17 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+Source adapters should isolate a settled record-local failure, retain its
+available observations and continue eligible peers through an implemented,
+tested partial path. Investigate redirects and changed URLs with source evidence;
+do not treat a redirect or missing optional field as proof a listing disappeared.
+Report partial coverage and preserve identity, timestamps and conflicting values.
+Only a complete, source-appropriate enumeration can support an absence event;
+retain the listing and never infer a sale or lease from disappearance. The
+scheduled absence and full-history paths remain work in progress under
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
 DAUM detail captures available-space blocks as source text and serialized DOM
 HTML in `daumAvailableSpaceObservations`, including conflicting values. These
 observations do not establish tenure or full-source coverage. The optional
