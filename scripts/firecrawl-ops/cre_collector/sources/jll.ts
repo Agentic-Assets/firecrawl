@@ -526,6 +526,18 @@ function jllSalePriceText(price: JllNormalizedPrice): string | null {
   return jllPriceUsd(price) === null ? null : price.text;
 }
 
+// Preserve each provider assertion, including conflicting spelling variants.
+// Refuse to copy a credential-bearing malformed control into listing data.
+function jllSafeObservation(entry: unknown): unknown {
+  return /(?:password|secret|authorization|api[_-]?key|access[_-]?token|"(?:token|signature|key)"\s*:|[?&](?:token|signature|key)=)/i.test(JSON.stringify(entry) ?? "")
+    ? { withheld: "credential-like-content" } : entry;
+}
+function jllSourcePriceControls(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([key]) =>
+    ["hideprice", "pricewithholdingcontrol"].includes(key.toLowerCase()),
+  ).map(([key, entry]) => [key, jllSafeObservation(entry)]));
+}
 function jllWithholdingControl(
   value: unknown,
   key: string,
@@ -897,7 +909,7 @@ export function jllGraphqlItemToListing(
     ? item.tenureTypes.map((value: any) => clean(value)).filter(Boolean)
     : [];
 
-  return prune({
+  const listing = prune({
     id,
     name: clean(item?.title) ?? clean(item?.address),
     transactionType: tx === "sale" ? "Sale" : "Lease",
@@ -931,10 +943,13 @@ export function jllGraphqlItemToListing(
       tenureTypes,
       surfaceAreas: item?.surfaceAreas,
       priceWithholdingControl,
-      sourceHidePrice: ["boolean", "number", "string"].includes(typeof item?.hidePrice)
-        ? item.hidePrice : undefined,
     },
   });
+  listing.jllSearchResult.sourceControlEntries = jllSourcePriceControls(item);
+  for (const key of ["salePrice", "rentPrice"]) {
+    if (Object.hasOwn(item, key)) listing.jllSearchResult[`${key}Observation`] = jllSafeObservation(item[key]);
+  }
+  return listing;
 }
 
 export function parseJllGraphqlSearchPage(
@@ -1678,12 +1693,14 @@ export async function enrichJllListing(
       ) {
         options.onCompletedNative404?.();
       }
-      return prune({
+      const failed = prune({
         ...(retainPublicFacts ? base : basePriceWithheld
           ? jllWithheldPublicProjection(base)
           : jllRedactSensitivePriceFields(base)),
         detailError: "missing property in __NEXT_DATA__",
       });
+      if (retainPublicFacts) failed.jllSearchResult = base.jllSearchResult;
+      return failed;
     }
 
     const detailId = clean(property.id);
@@ -1878,19 +1895,19 @@ export async function enrichJllListing(
       longitude: num(property.longitude) ?? base.longitude,
       salePriceUsd: hiddenPrice
         ? null
-        : salePrice.sourceShape === "absent"
-          ? jllPriceUsd(baseSalePrice)
-          : jllPriceUsd(salePrice),
+        : retainPublicFacts
+          ? jllPriceUsd(salePrice) ?? jllPriceUsd(baseSalePrice)
+          : salePrice.sourceShape === "absent" ? jllPriceUsd(baseSalePrice) : jllPriceUsd(salePrice),
       salePriceText: hiddenPrice
         ? null
-        : salePrice.sourceShape === "absent"
-          ? jllSalePriceText(baseSalePrice)
-          : jllSalePriceText(salePrice),
+        : retainPublicFacts
+          ? jllSalePriceText(salePrice) ?? jllSalePriceText(baseSalePrice)
+          : salePrice.sourceShape === "absent" ? jllSalePriceText(baseSalePrice) : jllSalePriceText(salePrice),
       leaseRateText: hiddenPrice
         ? null
-        : rentPrice.sourceShape === "absent"
-          ? jllLeasePriceText(baseLeasePrice)
-          : jllLeasePriceText(rentPrice),
+        : retainPublicFacts
+          ? jllLeasePriceText(rentPrice) ?? jllLeasePriceText(baseLeasePrice)
+          : rentPrice.sourceShape === "absent" ? jllLeasePriceText(baseLeasePrice) : jllLeasePriceText(rentPrice),
       sizeText: hiddenPrice
         ? (jllSafePublicText(
             clean(property.surfaceArea) ?? publicBase.sizeText,
@@ -1920,8 +1937,6 @@ export async function enrichJllListing(
           ? (jllSafePublicText(pageProps?.relativeUrl) ?? undefined)
           : clean(pageProps?.relativeUrl),
         pricing,
-        sourceHidePrice: ["boolean", "number", "string"].includes(typeof property.hidePrice)
-          ? property.hidePrice : undefined,
         tenureTypes: hiddenPrice ? undefined : property.tenureTypes,
         propertyTypes: hiddenPrice ? undefined : property.propertyTypes,
         labels: hiddenPrice ? undefined : property.labels,
@@ -1955,6 +1970,13 @@ export async function enrichJllListing(
         },
       },
     });
+    if (retainPublicFacts) {
+      listing.jllSearchResult = base.jllSearchResult;
+      listing.jllDetail.sourceControlEntries = jllSourcePriceControls(property);
+      for (const key of ["salePrice", "rentPrice"]) {
+        if (Object.hasOwn(property, key)) listing.jllDetail[`${key}Observation`] = jllSafeObservation(property[key]);
+      }
+    }
     return preserveJllSubleaseFact(listing, property.isSubleaseOnly);
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
@@ -1969,7 +1991,9 @@ export async function enrichJllListing(
       failurePricing === null
         ? redacted.jllDetail
         : { ...(redacted.jllDetail ?? {}), pricing: failurePricing };
-    return prune({ ...redacted, jllDetail: detail, detailError: String(err) });
+    const failed = prune({ ...redacted, jllDetail: detail, detailError: String(err) });
+    if (retainPublicFacts) failed.jllSearchResult = base.jllSearchResult;
+    return failed;
   }
 }
 

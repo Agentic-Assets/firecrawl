@@ -472,7 +472,8 @@ test("JLL GraphQL retains reported prices and controls and rejects unsafe identi
   assert.equal(unknownControl.salePriceText, "$3,250,000");
   assert.deepEqual(unknownControl.jllSearchResult, {
     priceWithholdingControl: "unknown",
-    sourceHidePrice: "not-a-boolean",
+    sourceControlEntries: {hidePrice: "not-a-boolean"},
+    salePriceObservation: {amount: 3250000, currency: "USD"},
   });
   const contradictory = jllGraphqlItemToListing(
     {
@@ -508,6 +509,8 @@ test("JLL GraphQL retains reported prices and controls and rejects unsafe identi
   );
   assert.equal(duplicate.salePriceUsd, 3250000);
   assert.equal(duplicate.jllSearchResult.priceWithholdingControl, "unknown");
+  assert.deepEqual(duplicate.jllSearchResult.sourceControlEntries, {hidePrice: false, HIDEPRICE: null});
+  assert.deepEqual(contradictory.jllSearchResult.sourceControlEntries, {hidePrice: true, PRICEWITHHOLDINGCONTROL: "withheld", HiDePrIcE: false});
   assert.throws(
     () =>
       jllGraphqlItemToListing(
@@ -2396,8 +2399,8 @@ test("JLL v2 retains source prices and prose with hidden controls", async () => 
     }, "sale", "office", 1, 1);
     const result = await enrichJllListing(base);
     assert.equal(result.salePriceUsd, 3250000);
-    assert.equal(result.jllSearchResult.sourceHidePrice, true);
-    assert.equal(result.jllDetail.sourceHidePrice, true);
+    assert.equal(result.jllSearchResult.sourceControlEntries.hidePrice, true);
+    assert.equal(result.jllDetail.sourceControlEntries.hidePrice, true);
     assert.equal(result.jllDetail.pricing.visibility, "withheld");
     assert.equal(result.jllDetail.pricing.sale.normalizedAmount, 3250000);
     assert.match(result.markdown, /3,250,000/);
@@ -2406,4 +2409,47 @@ test("JLL v2 retains source prices and prose with hidden controls", async () => 
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
     rmSync(cacheDir, {recursive: true, force: true});
   }
+});
+
+test("JLL search retains non-USD and unsupported-unit price observations", () => {
+  const row = jllGraphqlItemToListing({id: "foreign", pageUrl: "/listings/foreign",
+    hidePrice: {nested: null, enabled: false}, HidePrice: true,
+    salePrice: {amount: 15, currency: "EUR", unit: "lot"},
+    rentPrice: {amount: 25, currency: "CAD", unit: "sf/year"}}, "lease", "office", 1, 1);
+  assert.equal(row.leaseRateText, undefined);
+  assert.deepEqual(row.jllSearchResult.rentPriceObservation, {amount: 25, currency: "CAD", unit: "sf/year"});
+  assert.deepEqual(row.jllSearchResult.salePriceObservation, {amount: 15, currency: "EUR", unit: "lot"});
+  assert.deepEqual(row.jllSearchResult.sourceControlEntries, {hidePrice: {nested: null, enabled: false}, HidePrice: true});
+});
+
+test("JLL v2 keeps usable search price when matched detail price is malformed", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-v2-malformed-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    const url = "https://property.jll.com/listings/v2-malformed";
+    writeJllDetailCache(url, {rawHtml: '<script id="__NEXT_DATA__" type="application/json">' +
+      JSON.stringify({props: {pageProps: {property: {id: "v2-malformed", pageUrl: "/listings/v2-malformed",
+        hidePrice: false, HIDEPRICE: null, salePrice: {}}, brokers: []}}}) + "</script>",
+      markdown: "", links: [], images: []});
+    const base = jllGraphqlItemToListing({id: "v2-malformed", pageUrl: "/listings/v2-malformed",
+      hidePrice: true, salePrice: {amount: 1000000, currency: "USD"}}, "sale", "office", 1, 1);
+    const result = await enrichJllListing(base);
+    assert.equal(result.salePriceUsd, 1000000);
+    assert.deepEqual(result.jllSearchResult.salePriceObservation, {amount: 1000000, currency: "USD"});
+    assert.deepEqual(result.jllDetail.salePriceObservation, {});
+    assert.deepEqual(result.jllDetail.sourceControlEntries, {hidePrice: false, HIDEPRICE: null});
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, {recursive: true, force: true});
+  }
+});
+test("JLL source observation with credential-like content is withheld", () => {
+  const row = jllGraphqlItemToListing({id: "credential", pageUrl: "/listings/credential",
+    hidePrice: {token: "synthetic-secret"}, rentPrice: {amount: 25, currency: "CAD", token: "synthetic-secret"}},
+    "lease", "office", 1, 1);
+  assert.deepEqual(row.jllSearchResult.sourceControlEntries.hidePrice, {withheld: "credential-like-content"});
+  assert.deepEqual(row.jllSearchResult.rentPriceObservation, {withheld: "credential-like-content"});
+  assert.doesNotMatch(JSON.stringify(row), /synthetic-secret/);
 });

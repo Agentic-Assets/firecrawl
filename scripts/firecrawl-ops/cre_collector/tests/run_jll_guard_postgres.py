@@ -48,6 +48,43 @@ def main():
                                  {}, "2026-11-04T00:00:30Z")
         sql(ingest.build_sql([retained], job, "2026-11-04T00:00:30Z", set()))
         assert sql("SELECT sale_price_usd::text || '|' || description || '|' || (raw_data#>>'{jllSearchResult,priceWithholdingControl}') FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1000000|Asking $1,000,000|withheld"
+        # A legacy withheld/unknown observation is sparse; an old mixed marker
+        # must not erase populated values or existing child labels.
+        sql("""UPDATE credeals.cre_listings SET cap_rate=0.05, noi=50000, markdown='Price $1,000,000', raw_data=raw_data || jsonb_build_object('priorSentinel','retained') WHERE external_id='synthetic-jll';
+                INSERT INTO credeals.cre_listing_contacts(listing_id,name,title)
+                SELECT id,'Agent','Price $1,000,000' FROM credeals.cre_listings
+                WHERE external_id='synthetic-jll';
+                INSERT INTO credeals.cre_listing_documents(listing_id,doc_type,title,url)
+                SELECT id,'brochure','Price $1,000,000','https://example.test/brochure.pdf'
+                FROM credeals.cre_listings WHERE external_id='synthetic-jll';""")
+        for control in (True, "unknown"):
+            legacy = ingest.to_row({**item, "hidePrice": control, "photos": [],
+                                    "salePriceUsd": None, "description": None}, {},
+                                   "2026-11-04T00:00:40Z")
+            sql(ingest.build_sql([legacy], job, "2026-11-04T00:00:40Z", set()))
+            assert sql("SELECT sale_price_usd::text || '|' || description FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1000000|Asking $1,000,000"
+            assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Agent';") == "Price $1,000,000"
+            assert sql("SELECT title FROM credeals.cre_listing_documents WHERE url='https://example.test/brochure.pdf';") == "Price $1,000,000"
+            assert sql("SELECT count(*) FROM credeals.cre_listing_images;") == "12"
+            assert sql("SELECT (cap_rate=0.05 AND noi=50000 AND markdown='Price $1,000,000' AND raw_data->>'priorSentinel'='retained')::text FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "true"
+        mixed = ingest.to_row({**item, "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},
+                               "jllPriceWithheld": True, "salePriceUsd": None,
+                               "description": None, "preserveChildCollections": True}, {},
+                              "2026-11-04T00:00:50Z")
+        sql(ingest.build_sql([mixed], job, "2026-11-04T00:00:50Z", set()))
+        assert sql("SELECT sale_price_usd::text || '|' || description FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1000000|Asking $1,000,000"
+        assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Agent';") == "Price $1,000,000"
+        assert sql("SELECT title FROM credeals.cre_listing_documents WHERE url='https://example.test/brochure.pdf';") == "Price $1,000,000"
+        for reverse in (False, True):
+            v2 = ingest.to_row({**item, "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},
+                                "salePriceUsd": 1100000, "preserveChildCollections": True}, {},
+                               "2026-11-04T00:00:55Z")
+            legacy = ingest.to_row({**item, "hidePrice": True, "salePriceUsd": None,
+                                    "preserveChildCollections": True}, {}, "2026-11-04T00:00:55Z")
+            combined = ingest.merge_rows(legacy, v2) if reverse else ingest.merge_rows(v2, legacy)
+            sql(ingest.build_sql([combined], job, "2026-11-04T00:00:55Z", set()))
+            assert sql("SELECT sale_price_usd::text FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1100000"
+            assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Agent';") == "Price $1,000,000"
         before = sql("SELECT count(*) FROM credeals.cre_listing_images;")
         assert int(before) == 12, before
         jobs_before = sql("SELECT count(*) FROM credeals.cre_scrape_jobs;")

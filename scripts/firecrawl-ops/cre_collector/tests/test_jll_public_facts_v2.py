@@ -34,6 +34,8 @@ def test_mixed_legacy_and_v2_passes_keep_v2_fact():
     assert merged["raw_data"]["primary"]["jllPublicFactsRetention"]["schema"] == "jll-public-facts-retention/v2"
     merged_again = ci.merge_rows(merged, row(False, "lease"))
     assert merged_again["sale_price_usd"] == 1000000
+    reverse = ci.merge_rows(row(False, "lease"), row())
+    assert reverse["sale_price_usd"] == 1000000
 
 def test_v2_foreign_currency_lease_is_not_promoted_to_usd():
     listing = {"sourceKey": "jll", "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},

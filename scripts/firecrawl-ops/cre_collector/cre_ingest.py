@@ -4448,24 +4448,22 @@ WHERE p.image_id IS NULL;
         '$.**.freshnessProvenance.detailScope ? (@ == "first_party_detail_api")'
       )
     )"""
-    # Price visibility is an explicit, canonical-JLL provider fact, unlike a
-    # sparse ordinary update. ``jllPriceWithheld`` is staged by
-    # _safe_jll_raw_data and carried above a dual sale/lease raw wrapper by
-    # merge_rows. Scope it to the resolved JLL source as well as the target
-    # brokerage: an arbitrary non-JLL raw payload must not be able to trigger
-    # JLL's destructive privacy transition merely by using the same key.
-    jll_price_withheld_row_sql = f"""(
-      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'
-      AND EXISTS (
-        SELECT 1
-        FROM credeals.cre_brokerages b_jll
-        WHERE b_jll.id = t.brokerage_id
-          AND {source_key_sql("EXCLUDED", "b_jll")} = 'jll'
-      )
+    # A legacy withheld marker describes missing projected data, not authority
+    # to erase existing facts. V2 may also carry that marker from an old pass.
+    jll_price_withheld_row_sql = "false"
+    jll_price_withheld_stage_sql = "false"
+    jll_legacy_sparse_row_sql = f"""(
+      COALESCE(EXCLUDED.raw_data->>'jllPriceWithheld' = 'true', false)
+      AND EXISTS (SELECT 1 FROM credeals.cre_brokerages b_jll
+                  WHERE b_jll.id = t.brokerage_id
+                    AND {source_key_sql("EXCLUDED", "b_jll")} = 'jll')
+      AND NOT jsonb_path_exists(EXCLUDED.raw_data,
+        '$.**.jllPublicFactsRetention ? (@.schema == "jll-public-facts-retention/v2")')
     )"""
-    jll_price_withheld_stage_sql = f"""(
-      s.raw_data->>'jllPriceWithheld' = 'true'
-      AND {staged_source_key_sql} = 'jll'
+    jll_legacy_sparse_stage_sql = f"""(
+      COALESCE(s.raw_data->>'jllPriceWithheld' = 'true', false) AND {staged_source_key_sql} = 'jll'
+      AND NOT jsonb_path_exists(s.raw_data,
+        '$.**.jllPublicFactsRetention ? (@.schema == "jll-public-facts-retention/v2")')
     )"""
     jll_contact_title_clear_sql = _jll_hidden_label_sql("c.title")
     jll_contact_license_clear_sql = _jll_hidden_label_sql("c.license")
@@ -5456,8 +5454,8 @@ WITH ins AS (
         -- sole authority: never retain a prior title/highlight when a sparse
         -- withheld pass omits it, because the row builder has already applied
         -- the narrow title redaction and omitted all highlights.
-        title             = CASE WHEN {jll_price_withheld_row_sql}
-                                 THEN EXCLUDED.title
+        title             = CASE WHEN {jll_legacy_sparse_row_sql}
+                                 THEN t.title
                                  {newmark_generic_title_case}ELSE COALESCE(EXCLUDED.title, t.title) END,
         address           = COALESCE(EXCLUDED.address, t.address),
         city              = COALESCE(EXCLUDED.city, t.city),
@@ -5619,6 +5617,13 @@ WITH ins AS (
                               ELSE EXCLUDED.scraped_at
                             END,
         raw_data          = CASE
+                              WHEN {jll_legacy_sparse_row_sql}
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                  'latestJllLegacyObservation', jsonb_build_object(
+                                    'sourceKey', 'jll', 'jllPriceWithheld', true,
+                                    'ingestScrapedAt', EXCLUDED.scraped_at,
+                                    'searchControl', EXCLUDED.raw_data#>'{jllSearchResult,priceWithholdingControl}',
+                                    'detailPricing', EXCLUDED.raw_data#>'{jllDetail,pricing}'))
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.daumUnknownTenure ? (@ == true)')
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages db WHERE db.id=EXCLUDED.brokerage_id AND db.slug='daum-commercial')
                                 THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
@@ -5978,6 +5983,7 @@ END $$;
         .replace("{jll_prior_partial_source_sql}", jll_prior_partial_source_sql)
         .replace("{jll_prior_partial_target_sql}", jll_prior_partial_target_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
+        .replace("{jll_legacy_sparse_row_sql}", jll_legacy_sparse_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
@@ -6052,7 +6058,9 @@ CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND NOT ({jll_legacy_sparse_stage_sql})
   AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
@@ -6075,22 +6083,19 @@ CREATE TEMP TABLE _child_additive ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
 JOIN _prior_vals p
   ON p.brokerage_id = s.brokerage_id
  AND p.external_id = s.external_id
 WHERE ({avison_price_sql.get('transition_predicate', 'false')})
+   OR ({jll_legacy_sparse_stage_sql})
    OR jsonb_path_exists(s.raw_data, '$.**.detailError')
    OR jsonb_path_exists(
         s.raw_data,
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
       );
 
--- A current JLL withholding control is a privacy boundary even when the
--- detail request failed.  Such rows take the additive path above, which
--- normally preserves old child labels via COALESCE/ON CONFLICT.  Keep every
--- child identity, URL, and non-price display label, but clear persisted labels
--- matching the withholding redaction contract so an earlier public asking-
--- price label cannot survive this observation.
+-- Legacy label clearing is disabled; sparse replays preserve current children.
 CREATE TEMP TABLE _jll_withheld_child_label_clear ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _child_additive additive
