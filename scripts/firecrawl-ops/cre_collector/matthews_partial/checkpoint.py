@@ -52,11 +52,26 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                     if isinstance(row, dict) and row.get("transactionMode") == tx]
         if error:
             errors += 1
-            match = re.fullmatch(
-                rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held(?:; ([0-9]+) settled HTTP detail failure\(s\) held)?", error
-            ) if isinstance(error, str) else None
-            if not match or selected:
-                raise ValueError("Matthews partial failure is not a settled supported case")
+            typed = entry.get("matthewsPartialOutcome")
+            if "matthewsPartialOutcome" in entry:
+                if (not isinstance(typed, dict)
+                        or set(typed) != {"schema", "transaction", "temporaryRedirects", "detailFailures", "httpFailures"}
+                        or typed.get("schema") != "matthews-partial-outcome/v1"
+                        or typed.get("transaction") != tx
+                        or any(type(typed.get(key)) is not int or typed[key] < 0
+                               for key in ("temporaryRedirects", "detailFailures", "httpFailures"))):
+                    raise ValueError("Matthews typed partial outcome invalid")
+                counts = (typed["temporaryRedirects"], typed["detailFailures"], typed["httpFailures"])
+            else:
+                # Only older artifacts lack the versioned source outcome.
+                match = re.fullmatch(
+                    rf"Error: Matthews strict {tx} partial: ([0-9]+) temporary redirect\(s\) held; ([0-9]+) detail parse or identity failure\(s\) held(?:; ([0-9]+) settled HTTP detail failure\(s\) held)?", error
+                ) if isinstance(error, str) else None
+                if not match:
+                    raise ValueError("Matthews partial failure is not a settled supported case")
+                counts = (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+            if selected:
+                raise ValueError("Matthews partial failure emitted canonical rows")
             observations = entry.get("retainedObservations")
             if not isinstance(observations, list) or not observations:
                 raise ValueError("Matthews partial observations missing")
@@ -68,7 +83,7 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             http_failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-http-observation/v1"
                                 and item.get("outcome") == "held_http_error" and item.get("httpStatus") in (404, 410)
                                 and item.get("requestedTransaction") == tx for item in observations)
-            if ((redirects, failures, http_failures) != (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+            if ((redirects, failures, http_failures) != counts
                     or redirects + failures + http_failures == 0):
                 raise ValueError("Matthews held observations differ from failure receipt")
             for ordinal, observation in enumerate(observations):
@@ -77,6 +92,8 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                 else:
                     held.append({"transaction": tx, "ordinal": ordinal, "reason": "source_observation_held"})
         else:
+            if "matthewsPartialOutcome" in entry:
+                raise ValueError("Matthews typed outcome missing partial failure")
             if type(entry.get("listingsCollected")) is not int or entry["listingsCollected"] != len(selected):
                 raise ValueError("Matthews successful transaction count differs")
             for ordinal, row in selected:

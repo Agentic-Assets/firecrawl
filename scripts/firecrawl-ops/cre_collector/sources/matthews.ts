@@ -714,6 +714,18 @@ export function matthewsParsedCoverage(
   };
 }
 
+/** A settled, record-local partial, distinct from provider or cleanup failure. */
+export class MatthewsPartialOutcomeError extends Error {
+  readonly outcome: Readonly<{ schema: "matthews-partial-outcome/v1"; transaction: Tx;
+    temporaryRedirects: number; detailFailures: number; httpFailures: number }>;
+
+  constructor(tx: Tx, temporaryRedirects: number, detailFailures: number, httpFailures: number) {
+    super(`Matthews strict ${tx} partial: ${temporaryRedirects} temporary redirect(s) held; ${detailFailures} detail parse or identity failure(s) held; ${httpFailures} settled HTTP detail failure(s) held`);
+    this.outcome = Object.freeze({ schema: "matthews-partial-outcome/v1", transaction: tx,
+      temporaryRedirects, detailFailures, httpFailures });
+  }
+}
+
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?: PartialPageSpool): Promise<SourceResult> {
   const { detailUrls, inventoryObservedAt } = await matthewsFreshInventory();
 
@@ -899,7 +911,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
     }
   }).catch(error => retain(cleanupUnknown ?? error));
   if (heldRedirects || heldDetailFailures || heldHttpFailures) {
-    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held; ${heldDetailFailures} detail parse or identity failure(s) held; ${heldHttpFailures} settled HTTP detail failure(s) held`));
+    retain(new MatthewsPartialOutcomeError(tx, heldRedirects, heldDetailFailures, heldHttpFailures));
   }
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),

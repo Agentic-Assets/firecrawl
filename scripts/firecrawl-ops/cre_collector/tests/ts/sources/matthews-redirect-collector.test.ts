@@ -430,6 +430,14 @@ from pathlib import Path
 from matthews_partial.checkpoint import derive,gate_projection
 from cre_artifact_scope import require_canonical_artifact
 raw=Path(sys.argv[1]).read_bytes()
+data=json.loads(raw)
+partial=next(x for x in data["sources"] if x.get("matthewsPartialOutcome"))
+typed=partial["matthewsPartialOutcome"]
+assert typed["schema"] == "matthews-partial-outcome/v1"
+assert typed["temporaryRedirects"] == (1 if ${status} == 307 else 0)
+assert typed["httpFailures"] == (0 if ${status} == 307 else 1)
+partial["error"]="renamed operator text"
+raw=json.dumps(data,separators=(",", ":")).encode()
 r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
 assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
 assert len(r["held"])==1 and r["mark_missing_safe"] is False

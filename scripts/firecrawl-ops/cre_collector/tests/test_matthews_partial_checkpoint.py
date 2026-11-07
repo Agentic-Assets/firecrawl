@@ -51,6 +51,28 @@ class MatthewsCandidateTest(unittest.TestCase):
         self.assertEqual([x["reason"] for x in candidate["held"]], ["source_observation_held", "invalid_completed_observation"])
         self.assertFalse(candidate["mark_missing_safe"])
 
+    def test_versioned_outcome_ignores_message_and_rejects_malformed_or_mismatched_receipts(self):
+        data = artifact()
+        partial = data["sources"][0]
+        partial["matthewsPartialOutcome"] = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+            "temporaryRedirects": 1, "detailFailures": 0, "httpFailures": 0}
+        partial["error"] = "Human wording can change without affecting admission"
+        _, candidate = project(data)
+        self.assertEqual(candidate["rows"][0]["external_id"], "example")
+        for mutate in (lambda outcome: outcome.update(schema="matthews-partial-outcome/v2"),
+                       lambda outcome: outcome.update(transaction="lease"),
+                       lambda outcome: outcome.update(temporaryRedirects=True),
+                       lambda outcome: outcome.update(httpFailures=1),
+                       lambda outcome: outcome.update(extra="untrusted")):
+            bad = copy.deepcopy(data)
+            mutate(bad["sources"][0]["matthewsPartialOutcome"])
+            with self.subTest(outcome=bad["sources"][0]["matthewsPartialOutcome"]), self.assertRaises(ValueError):
+                project(bad)
+        bad = copy.deepcopy(data)
+        bad["sources"][0]["error"] = ""
+        with self.assertRaises(ValueError):
+            project(bad)
+
     def test_invalid_duplicate_does_not_poison_accepted_ordinal(self):
         item = artifact()
         bad = copy.deepcopy(item["sources"][0]["retainedObservations"][1])
