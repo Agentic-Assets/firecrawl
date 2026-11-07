@@ -733,9 +733,10 @@ that tracking references are up to date. Refresh and review the deployment's
 tracking state separately before using this admission.
 
 Windows evidence requires the explicit SHA. The existing guarded-tier validator
-checks the timestamp after bounded Git inspection and before credential loading
-or output allocation; it must be no more than 15 seconds old and cannot be in the
-future. This means whole-Windows admission at startup only. It does not establish
+validates the timestamp after bounded Git inspection and before credential loading
+or output allocation. Its recorded timing identifies stale or future observations
+without blocking dispatch or representing them as fresh. This means the Windows
+memory observation applies at startup only. It does not establish
 continuous Windows CPU/RAM safety, and the timestamp is not rechecked or relabeled
 as fresh hours later at each source. Required Linux/VM CPU and memory guards stay
 unchanged. The current PowerShell launcher supports foreground series mode with
@@ -749,7 +750,7 @@ an ISO timestamp from JSON in PowerShell 7.5 or later, preserve its UTC marker w
 `ToUnixTimeMilliseconds`. Parsing a `DateTime` object's implicit local string
 can lose its UTC marker and introduce a timezone offset. The shipped launcher
 generates Unix milliseconds directly and does not use that conversion. Keep
-the existing stale/future checks; do not adjust clocks or admission evidence
+the stale/future diagnostic; do not adjust clocks or admission evidence
 to compensate for a parsing error.
 
 PowerShell 7.5+ can deserialize ISO JSON timestamps as `DateTime` values unless
