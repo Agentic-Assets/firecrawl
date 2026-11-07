@@ -328,6 +328,8 @@ def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None
             run_dir / checkpoint["candidate"]["path"], run_dir, manifest, source, attempt
         )
     )
+    if source == "matthews":
+        refresh.retain_matthews_partial_candidate(run_dir, manifest, attempt)
 
 
 def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:

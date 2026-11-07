@@ -370,7 +370,12 @@ the already completed parses after the shared mapper settles active workers.
 Their accepted mapper, source counts, redirect/404 exclusions, status, tenure
 and lifecycle gates remain authoritative for canonical output. Private captures
 require no native ID or address and do not turn those failures into acceptance.
-These integrations require separate production acceptance and are not deployed. Targeted enrichment paths are unchanged.
+A draft checkpoint path may seal an attempt-bound candidate from a settled
+rejected artifact while retaining failed source status. Its existing-parent fill
+transaction and exact job/parent/child readback remain disconnected from the
+checkpoint writer and recovery; no Matthews peer ingestion is enabled by this
+candidate. The private spool is not a durable history store. These integrations
+require separate production acceptance and are not deployed. Targeted enrichment paths are unchanged.
 
 On a strict identity failure, the intended `RetainedSourceError` preserves the
 original failure while carrying held context and otherwise accepted conflicting

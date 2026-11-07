@@ -4396,6 +4396,8 @@ def _finalize_cohort_collection(
         )
         seal_source_evidence(run_dir, manifest, item.source, item.attempt,
                              run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
+        if item.source == "matthews":
+            retain_matthews_partial_candidate(run_dir, manifest, item.attempt)
         if (item.source == "franklin-street" and rc == COHORT_SETTLED_FAILURE_EXIT
                 and prepare_franklin_partial_candidate(run_dir, manifest, item.attempt, candidate_only=candidate_only)):
             return True
@@ -4485,6 +4487,8 @@ def _finalize_cohort_collection(
         ) = archive_rejected_with_evidence(
             item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
+        if item.source == "matthews":
+            retain_matthews_partial_candidate(run_dir, manifest, item.attempt)
         if item.source == "franklin-street" and prepare_franklin_partial_candidate(
                 run_dir, manifest, item.attempt, candidate_only=candidate_only):
             return True
@@ -5007,6 +5011,21 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         raise
 
 
+def retain_matthews_partial_candidate(run_dir, manifest, attempt):
+    """Seal eligible peers for later admission without changing failed state."""
+    if not attempt.get("rejected_artifact") or not attempt.get("rejected_artifact_sha256"):
+        return
+    from cre_matthews_partial_checkpoint import prepare_candidate
+
+    try:
+        info = prepare_candidate(run_dir, manifest, attempt, git_identity=git_identity,
+                                 settled_rcs=(0, 1, COHORT_SETTLED_FAILURE_EXIT))
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        attempt["matthews_partial_candidate"] = {"state": "refused"}
+        return
+    attempt["matthews_partial_candidate"] = {"state": "sealed_unadmitted", **info}
+
+
 def prepare_franklin_partial_candidate(run_dir, manifest, attempt, *, candidate_only):
     """Publish preliminary Franklin cards; later gates still require exact claims."""
     relative = attempt.get("rejected_artifact")
@@ -5496,6 +5515,8 @@ def collect_source(
             seal_source_evidence(run_dir, manifest, source, attempt,
                                  run_dir / attempt["rejected_artifact"] if attempt["rejected_artifact"] else tmp_artifact)
             pump_source_evidence(run_dir, manifest)
+            if source == "matthews":
+                retain_matthews_partial_candidate(run_dir, manifest, attempt)
             if source == "franklin-street" and rc == 1:
                 partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
                 if partial:
@@ -5560,6 +5581,8 @@ def collect_source(
             ) = archive_rejected_with_evidence(
                 tmp_artifact, run_dir, manifest, source, attempt
             )
+            if source == "matthews":
+                retain_matthews_partial_candidate(run_dir, manifest, attempt)
             if source == "franklin-street":
                 partial = prepare_franklin_partial_candidate(run_dir, manifest, attempt, candidate_only=False)
                 if partial:
