@@ -754,6 +754,8 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
   const observations: unknown[] = new Array(take.length);
   const parsedObservations: unknown[] = new Array(take.length);
   let heldRedirects = 0;
+  let heldDetailFailures = 0;
+  let heldHttpFailures = 0;
   let cleanupUnknown: MatthewsRedirectCleanupUnknown | undefined;
   let spoolFailureReported = false;
   const record = (observation: unknown) => {
@@ -783,6 +785,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
         };
         record(observations[index]);
         heldRedirects++;
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
+      if (requireFreshDetails() && (response.status === 404 || response.status === 410)) {
+        observations[index] = {
+          schema: "matthews-detail-http-observation/v1", sourceKey: "matthews",
+          requestedUrl: url, requestedTransaction: tx, inventoryObservedAt,
+          detailObservedAt: observationNow(), httpStatus: response.status,
+          identity: "unverified", coverage: "unverified", outcome: "held_http_error",
+        };
+        record(observations[index]);
+        heldHttpFailures++;
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
@@ -825,7 +838,6 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
       }
       const detailObservedAt = observationNow();
       const retainPage = () => {
-        try { if (isSourceChallengeShell(html)) return; } catch { return; }
         const metadata = {
           schema: "matthews-detail-observation/v1",
           sourceKey: "matthews",
@@ -838,6 +850,10 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
           coverage: "unverified",
         };
         try {
+          if (isSourceChallengeShell(html)) {
+            observations[index] = { ...metadata, contextStatus: "omitted", reason: "challenge_shell" };
+            return;
+          }
           observations[index] = { ...metadata, contextStatus: "captured",
             pageContext: captureSourcePageContext(html, { sourceUrl: url, detailObservedAt,
               descriptionSelector: "section:has(#propertyTitle), .prose" }) };
@@ -854,14 +870,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
       } catch (error) {
         retainPage();
         if (observations[index]) record(observations[index]);
-        throw error;
+        if (!requireFreshDetails()) throw error;
+        console.error(`  matthews/${tx}: ${url} detail parse failed: ${error}`);
+        heldDetailFailures++;
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
       if (!listing) {
         retainPage();
         if (observations[index]) record(observations[index]);
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
         if (requireFreshDetails()) {
-          throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
+          heldDetailFailures++;
         }
       } else {
         parsedObservations[index] = { schema: "matthews-completed-parse-observation/v1",
@@ -879,8 +898,8 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean, spool?:
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
   }).catch(error => retain(cleanupUnknown ?? error));
-  if (heldRedirects) {
-    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held`));
+  if (heldRedirects || heldDetailFailures || heldHttpFailures) {
+    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held; ${heldDetailFailures} detail parse or identity failure(s) held; ${heldHttpFailures} settled HTTP detail failure(s) held`));
   }
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),

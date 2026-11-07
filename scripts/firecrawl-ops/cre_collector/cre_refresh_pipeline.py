@@ -321,13 +321,15 @@ def archive_failed_candidate(run_dir: Path, manifest: dict, source: str) -> None
     attempt = checkpoint["attempts"][-1]
     # Franklin may already have archived the original before derivation failed.
     # Keep both that evidence and any derived candidate in their private paths.
-    if source in {"franklin-street", "nai-global"} and attempt.get("rejected_artifact"):
+    if source in {"franklin-street", "nai-global", "matthews"} and attempt.get("rejected_artifact"):
         return
     attempt["rejected_artifact"], attempt["rejected_artifact_sha256"] = (
         refresh.archive_rejected_with_evidence(
             run_dir / checkpoint["candidate"]["path"], run_dir, manifest, source, attempt
         )
     )
+    if source == "matthews":
+        refresh.retain_matthews_partial_candidate(run_dir, manifest, attempt)
 
 
 def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
@@ -367,6 +369,18 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
             },
         )
     except refresh.ArtifactValidationError as source_error:
+        if source == "matthews":
+            attempts = checkpoint.get("attempts") or []
+            if not attempts or attempts[-1].get("number") != candidate.get("attempt_number"):
+                raise refresh.GlobalStageError("Matthews candidate attempt changed")
+            observed = path.lstat()
+            identity = [observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns, observed.st_ctime_ns]
+            if identity != candidate.get("file_identity"):
+                raise refresh.GlobalStageError("Matthews candidate changed after inspection")
+            archive_failed_candidate(run_dir, manifest, source)
+            if refresh.promote_matthews_partial_candidate(run_dir, manifest, attempts[-1], candidate_only=True):
+                return prepare_candidate(run_dir, manifest, source)
+            raise source_error
         if source == "nai-global":
             from datetime import datetime, timezone
             from nai_partial.inventory_recovery import _FRESHNESS_ERROR, prepare_owned
@@ -884,6 +898,7 @@ def run_database_unit(
         if (refresh.current_inventory.admission_configuration(manifest["config"], source)
                 or refresh.colliers_partial_candidate(manifest, source)
                 or refresh.franklin_partial_candidate(manifest, source)
+                or refresh.matthews_partial_candidate(manifest, source)
                 or refresh.lyon_partial_candidate(manifest, source)
                 or refresh.nai_post_partial_candidate(manifest, source)):
             aggregate = refresh._load_json(evidence / "aggregate-gate.json")
@@ -1366,6 +1381,7 @@ def run_bounded_pipeline(
                     # completed siblings therefore use the normal verified
                     # unit/baseline chain before a source-local rollback.
                     guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll", "daum-commercial"}
+                                    or (source == "matthews" and (manifest["sources"][source].get("attempts") or [{}])[-1].get("matthews_partial_candidate", {}).get("state") == "sealed_unadmitted")
                                     or refresh.colliers_partial_candidate(manifest, source)
                                     or (source == "colliers" and
                                         (manifest["sources"][source].get("attempts") or [{}])[-1]
@@ -1457,7 +1473,10 @@ def run_bounded_pipeline(
                         require_pipeline_owner(manifest, _OWNER_LEASE.get())
                         if isinstance(exc, refresh.SettledIngestFailure):
                             from recovery.atomic_ingest_rollback import verified_rollback as verify_atomic
-                            verified = len(sealed) == 1 and verify_atomic(run_dir, manifest, sealed[0])
+                            verified = (len(sealed) == 1 and
+                                (refresh.verified_matthews_partial_rollback(run_dir, manifest)
+                                 if sealed[0] == "matthews" and refresh.matthews_partial_candidate(manifest, "matthews")
+                                 else verify_atomic(run_dir, manifest, sealed[0])))
                         else:
                             verified = (len(sealed) == 1 and sealed[0] in {"pyramid-brokerage", "transwestern", "jll"}
                                         and verified_rollback(run_dir, manifest, sealed[0]))
@@ -1507,6 +1526,16 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "matthews-existing-parent-partial-v1":
+                                observed = (checkpoint.get("readback") or {}).get("observation") or {}
+                                state["source_results"][source].update(
+                                    candidate_count=binding.get("candidate_count"),
+                                    source_held_count=binding.get("source_held_count"),
+                                    held_count=len(observed.get("held") or []),
+                                    emitted_count=len(observed.get("updated") or []),
+                                    unchanged_count=binding.get("candidate_count", 0) - len(observed.get("held") or []) - len(observed.get("updated") or []),
+                                    visibility_limitation="active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history",
+                                )
                             if binding.get("schema") == "nai-public-post-partial-v1":
                                 state["source_results"][source]["visibility_limitation"] = (
                                     "new post rows with unknown status are excluded from active listing views")

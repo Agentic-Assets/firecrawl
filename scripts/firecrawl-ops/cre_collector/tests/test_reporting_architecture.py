@@ -35,7 +35,7 @@ def test_reusable_reporting_module_has_one_way_dependencies():
 
 
 def test_reporting_consumers_use_shared_source_checks_not_series_internals():
-    expected = {"franklin_partial_child", "lyon_partial_child", "colliers_partial_child"}
+    expected = {"franklin_partial_child", "lyon_partial_child", "colliers_partial_child", "matthews_partial_child"}
     for name in ("reporting/source_health.py", "cre_notification_summary.py"):
         tree = ast.parse((ROOT / name).read_text())
         shared = set()
@@ -45,6 +45,7 @@ def test_reporting_consumers_use_shared_source_checks_not_series_internals():
             if isinstance(node, ast.ImportFrom) and node.module == "cre_checkpoint_series":
                 assert not expected.intersection(alias.name for alias in node.names)
         assert expected | {"partial_member_report_matches"} <= shared
+    assert series.matthews_partial_child is partial.matthews_partial_child
     assert series.franklin_partial_child is partial.franklin_partial_child
     assert series.lyon_partial_child is partial.lyon_partial_child
     assert series.colliers_partial_child is partial.colliers_partial_child

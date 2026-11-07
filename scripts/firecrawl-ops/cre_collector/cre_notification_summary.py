@@ -577,6 +577,36 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         require(
             set(child["sources"]) == {source} and checkpoint.get("state") == "ingested"
         )
+        from reporting.partial_qualification import matthews_partial_child, partial_member_report_matches
+
+        if source == "matthews" and matthews_partial_child(child):
+            ingest = checkpoint.get("ingest") or {}
+            recovery = checkpoint.get("ingest_recovery") or {}
+            require(type(ingest.get("rc")) is int and
+                    (ingest["rc"] == 0 or
+                     (recovery.get("outcome") == "exact_commit" and recovery.get("readback_ok") is True)))
+            require(validation.get("path") == "validation.json")
+            report = read(child_fd, "validation.json", MAX_VALIDATION_REPORT_BYTES)
+            from cre_validate import require_full_validation_report
+            require_full_validation_report(report)
+            require(report.get("ok") is True)
+            require(partial_member_report_matches(report, checkpoint, source, run_id) is True)
+            observed = report["matthews_partial_readback"]
+            held, updated = observed.get("held"), observed.get("updated")
+            require(isinstance(held, list) and isinstance(updated, list))
+            require(len(held) + len(updated) <= observed["candidate_count"])
+            for descriptor, name, limit, raw in snapshots:
+                require(safe._read_at(descriptor, name, limit)[0] == raw)
+            return {"schema_version": 1, "verified": True, "source": source,
+                "collector_git_sha": expected_sha, "windows_admission_unix_ms": windows_admission_ms,
+                "series_id": selected.name, "invocation_id": invocation, "run_id": run_id,
+                "verified_listings": len(updated), "transaction_scope": ["sale", "lease"],
+                "measurement": "existing_parents_fields_filled", "quality_no_regression": True,
+                "local_settlement": "confirmed", "qualification": "qualified_partial_subset",
+                "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
+                "held_count": len(held), "source_held_count": observed["source_held_count"],
+                "candidate_count": observed["candidate_count"],
+                "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
         require(
             type(checkpoint.get("ingest", {}).get("rc")) is int
             and checkpoint["ingest"]["rc"] == 0
@@ -1126,6 +1156,18 @@ def verified_pipeline_summary(
                 failed.append(source)
                 unverifiable.append(source)
                 continue
+            if source != "matthews" and ((isinstance(source_artifact, dict) and source_artifact.get("matthews_partial") is True)
+                    or (isinstance(source_binding, dict) and (source_binding.get("schema") == "matthews-existing-parent-partial-v1"
+                        or source_binding.get("scope") == "matthews_existing_parent_partial_v1"))):
+                failed.append(source)
+                unverifiable.append(source)
+                continue
+            matthews_partial_candidate = (source == "matthews" and (
+                parent_entry.get("state") == "qualified_partial_subset"
+                or (isinstance(source_artifact, dict) and source_artifact.get("matthews_partial") is True)
+                or (isinstance(source_readback, dict) and source_readback.get("kind") == "matthews_existing_parent_partial")
+                or (isinstance(source_binding, dict) and (source_binding.get("schema") == "matthews-existing-parent-partial-v1"
+                    or source_binding.get("scope") == "matthews_existing_parent_partial_v1"))))
             franklin_partial_candidate = (
                 source == "franklin-street" and (
                     parent_entry.get("state") == "qualified_partial_subset"
@@ -1153,7 +1195,7 @@ def verified_pipeline_summary(
                     or parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
                     or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))
                     or jll_partial_candidate or colliers_partial_candidate or lyon_partial_candidate
-                    or franklin_partial_candidate or nai_partial_candidate) else "complete"))
+                    or franklin_partial_candidate or matthews_partial_candidate or nai_partial_candidate) else "complete"))
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )
@@ -1219,6 +1261,8 @@ def verified_pipeline_summary(
                 colliers_partial_candidate = True
             if source == "lyon-stahl" and "lyon_partial_readback" in validated_units[unit_id]:
                 lyon_partial_candidate = True
+            if source == "matthews" and "matthews_partial_readback" in validated_units[unit_id]:
+                matthews_partial_candidate = True
             if source == "franklin-street" and "franklin_partial_readback" in validated_units[unit_id]:
                 franklin_partial_candidate = True
             if source == "nai-global" and "nai_post_partial_readback" in validated_units[unit_id]:
@@ -1251,6 +1295,37 @@ def verified_pipeline_summary(
                            "held_count": binding["held_count"],
                            "visibility_limitation": "new post rows with unknown status are excluded from active listing views"}
                 qualified.append((source, count, checkpoint, unit, 0, summary, None))
+                continue
+            if matthews_partial_candidate:
+                from reporting.partial_qualification import matthews_partial_child, partial_member_report_matches
+
+                binding = source_binding if isinstance(source_binding, dict) else {}
+                artifact = source_artifact if isinstance(source_artifact, dict) else {}
+                ingest = checkpoint.get("ingest") or {}
+                recovery = checkpoint.get("ingest_recovery") or {}
+                observed = validated_units[unit_id].get("matthews_partial_readback") or {}
+                held, updated = observed.get("held"), observed.get("updated")
+                proven = (checkpoint.get("state") == "ingested" and type(ingest.get("rc")) is int
+                    and (ingest["rc"] == 0 or (recovery.get("outcome") == "exact_commit" and recovery.get("readback_ok") is True))
+                    and parent_entry.get("state") == "qualified_partial_subset" and matthews_partial_child(child)
+                    and partial_member_report_matches(validated_units[unit_id], checkpoint, source, run_id)
+                    and result.get("qualification") == "qualified_partial_subset" and result.get("partial") is True
+                    and result.get("whole_source_coverage") is False and isinstance(held, list) and isinstance(updated, list)
+                    and type(result.get("emitted_count")) is int and result["emitted_count"] == len(updated)
+                    and type(result.get("held_count")) is int and result["held_count"] == len(held)
+                    and result.get("source_held_count") == binding.get("source_held_count")
+                    and result.get("candidate_count") == binding.get("candidate_count")
+                    and result.get("artifact_sha256") == artifact.get("sha256"))
+                if not proven:
+                    failed.append(source)
+                    unverifiable.append(source)
+                    continue
+                summary = {"measurement": "existing_parents_fields_filled", "qualification": "qualified_partial_subset",
+                    "partial": True, "whole_source_coverage": False, "emitted_count": len(updated),
+                    "held_count": len(held), "source_held_count": binding["source_held_count"],
+                    "candidate_count": binding["candidate_count"],
+                    "visibility_limitation": "active existing parents only; fills 12 fields; pricing, new children and unsupported fields are not saved; new listing IDs and ambiguous or stale identities are held; private source evidence is not a durable history"}
+                qualified.append((source, len(updated), checkpoint, unit, 0, summary, None))
                 continue
             if franklin_partial_candidate:
                 from reporting.partial_qualification import partial_member_report_matches, franklin_partial_child
@@ -1564,7 +1639,7 @@ def verified_pipeline_summary(
             )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
-            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street", "nai-global"}:
+            if row.get("partial") is True and source not in {"lyon-stahl", "franklin-street", "nai-global", "matthews"}:
                 require(breakdown is not None)
             result_rows.append(row)
         for descriptor, name, limit, raw in snapshots:

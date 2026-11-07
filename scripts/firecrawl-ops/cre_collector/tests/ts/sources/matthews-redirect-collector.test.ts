@@ -353,6 +353,37 @@ test("later unknown cleanup takes precedence over earlier ordinary failure and s
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
+
+test("settled identity failure retains later peers without admitting the partial source", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matthews-identity-peer-"));
+  try {
+    const preload = join(dir, "preload.mjs"), out = join(dir, "artifact.json");
+    writeFileSync(preload, `
+      import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+      const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
+      net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+      await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
+      const host="https://www.matthews.com", urls=["bad", "good-a", "good-b"].map(x=>host+"/properties/"+x);
+      globalThis.fetch=async input=>{ const url=String(input);
+        if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
+        if(url===urls[0]) return new Response('<html><head><link rel="canonical" href="'+host+'/properties/different"></head><body><section><h1 id="propertyTitle">Bad identity</h1></section></body></html>');
+        if(url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+        throw new Error("UNEXPECTED_FIXTURE_URL");
+      };
+    `);
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,"collect.ts","--source=matthews","--transaction=sale",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1"},encoding:"utf8",timeout:30000});
+    assert.ifError(child.error); assert.notEqual(child.status,0);
+    assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
+    const artifact=JSON.parse(readFileSync(out,"utf8"));
+    assert.equal(artifact.runMeta.evidenceOnly,true); assert.deepEqual(artifact.listings,[]);
+    assert.match(artifact.sources[0].error,/1 detail parse or identity failure/);
+    const observations=artifact.sources[0].retainedObservations;
+    assert.equal(observations.filter((x:any)=>x.schema==="matthews-completed-parse-observation/v1").length,2);
+    assert.ok(observations.some((x:any)=>x.schema==="matthews-detail-observation/v1" && x.requestedUrl.endsWith("/bad")));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
 for (const spoolFails of [true, false]) test(`mixed Essex mismatch and failed private fallback report safe status with spool ${spoolFails ? "unavailable" : "available"}`, () => {
   const dir=mkdtempSync(join(tmpdir(),"matthews-essex-fallback-"));
   try {
@@ -367,5 +398,55 @@ for (const spoolFails of [true, false]) test(`mixed Essex mismatch and failed pr
     assert.equal(artifact.runMeta.evidenceOnly,true); assert.equal(artifact.runMeta.peerRowsAvailable,false);
     assert.deepEqual(artifact.listings,[]);
     assert.equal(artifact.sources.find((x: any)=>x.sourceKey==="essex-realty").failed,true);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+
+for (const status of [307, 404, 410]) test(`settled HTTP ${status} Matthews artifact derives generation-bound valid peers`, () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-partial-custody-"));
+  try {
+    const preload=join(dir,"preload.mjs"), out=join(dir,"artifact.json");
+    writeFileSync(preload, `
+      import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+      const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
+      net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+      await import(${JSON.stringify(pathToFileURL(join(root,"sources/matthews-transport.ts")).href)});
+      const host="https://www.matthews.com", urls=["redirect","good-sale","leasing-good"].map(x=>host+"/properties/"+x);
+      globalThis.fetch=async input=>{const url=String(input);
+        if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
+        if(url===urls[0]) return new Response(null,{status:${status},headers:{location:"/listings"}});
+        if(url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+        throw new Error("UNEXPECTED_FIXTURE_URL");
+      };
+    `);
+    const started=new Date(Date.now()-1000).toISOString();
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=both",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"fixture-generation",CRE_REFRESH_STARTED_AT:started},encoding:"utf8",timeout:30000});
+    const finished=new Date(Date.now()+1000).toISOString();
+    assert.ifError(child.error); assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
+    const check=`import json,sys
+from pathlib import Path
+from matthews_partial.checkpoint import derive,gate_projection
+from cre_artifact_scope import require_canonical_artifact
+raw=Path(sys.argv[1]).read_bytes()
+r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
+assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
+assert len(r["held"])==1 and r["mark_missing_safe"] is False
+g=gate_projection(raw,r)
+require_canonical_artifact(g,allow_matthews_partial_gate=True)
+try: require_canonical_artifact(g)
+except ValueError: pass
+else: raise AssertionError("partial gate artifact admitted as canonical")
+`;
+    const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
+    assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
+    if (status === 307 && process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
+      for (const mode of ["pipeline", "serial"]) {
+        const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",out,started,finished,mode],
+          {cwd:root,encoding:"utf8",timeout:90000});
+        assert.ifError(postgres.error); assert.equal(postgres.status,0,postgres.stderr);
+      }
+    }
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

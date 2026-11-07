@@ -354,7 +354,7 @@ def count_artifacts(inputs, quiet, *, coverage_evidence=None):
     for path in inputs:
         with open(path, encoding="utf-8" if coverage_evidence is not None else None) as f:
             data = json.load(f)
-        require_canonical_artifact(data)
+        require_canonical_artifact(data, allow_matthews_partial_gate=True)
         run_meta = data.get("runMeta") or {}
         scraped_at = scraped_at or run_meta.get("finishedAt") or run_meta.get("startedAt")
         sa = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()

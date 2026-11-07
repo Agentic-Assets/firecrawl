@@ -2030,3 +2030,115 @@ def test_colliers_multiwindow_notification_counts_verified_units_and_keeps_peer(
     rows = {row["source_key"]: row for row in result["per_source_summaries"]}
     assert "colliers" not in rows and "colliers" in result["unverifiable_source_keys"]
     assert "cbre" in rows
+
+
+@pytest.mark.parametrize("tamper", [None, "attempt", "target", "count", "readback"])
+def test_pipeline_matthews_partial_summary_preserves_verified_peer(evidence, tamper):
+    setup = pipeline_evidence(evidence, primary_source="matthews")
+    parent, child = setup["parent"], setup["child"]
+    qualify_pipeline_second_source(evidence, setup)
+    source = "matthews"
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"] = target
+    artifact.update(matthews_partial=True, staged_unique=3)
+    binding = {"schema": "matthews-existing-parent-partial-v1", "scope": "matthews_existing_parent_partial_v1",
+        "source_key": source, "artifact_sha256": artifact["sha256"], "candidate_sha256": "2" * 64,
+        "source_artifact_sha256": "1" * 64, "generation_id": RUN, "producer_sha": SHA,
+        "database_target_sha256": "d" * 64, "candidate_count": 3, "source_held_count": 1,
+        "whole_source_coverage": False}
+    observed = {"occupied_jobs":1,"matching_jobs":1,"verified_jobs":1,"held":["held"],"updated":["saved"],
+        "held_reasons":{"held":"identity_conflict_or_unknown"},"artifact_sha256":artifact["sha256"],
+        "generation_id":RUN,"attempt_id":"f"*32,"database_target_sha256":"d"*64,
+        "candidate_count":3,"source_held_count":1,"whole_source_coverage":False}
+    checkpoint.update(gate={"verdict":"ok_additive_verified_subset","mark_missing_safe":False,
+        "admission_scope":"matthews_existing_parent_partial_v1","current_inventory_proof":binding},
+        attempts=[{"rejected_artifact_sha256":"1"*64,"matthews_partial_candidate":{"gate_sha256":artifact["sha256"],
+            "sha256":"2"*64,"original_sha256":"1"*64,"candidate_count":3,"held_count":1}}],
+        subset_ingest_attempt_id="f"*32,
+        readback={"ok":True,"kind":"matthews_existing_parent_partial","whole_source_coverage":False,"observation":observed})
+    result=child["pipeline"]["source_results"][source]
+    result.update(qualification="qualified_partial_subset",partial=True,whole_source_coverage=False,
+                  emitted_count=1,held_count=1,unchanged_count=1,candidate_count=3,source_held_count=1)
+    parent["sources"][source]["state"]="qualified_partial_subset"
+    validation_path=evidence["series"]/"runs"/RUN/"pipeline/unit-0001/validation.json"
+    validation=json.loads(validation_path.read_text()); validation["matthews_partial_readback"]=copy.deepcopy(observed)
+    raw=json.dumps(validation,separators=(",", ":")).encode(); validation_path.write_bytes(raw)
+    digest=hashlib.sha256(raw).hexdigest(); child["pipeline"]["units"][0]["validation_sha256"]=digest
+    for key in (source,setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"]=digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"]=digest
+    if tamper=="attempt": checkpoint["subset_ingest_attempt_id"]="0"*32
+    elif tamper=="target": binding["database_target_sha256"]="0"*64
+    elif tamper=="count": result["emitted_count"]=3
+    elif tamper=="readback": observed["verified_jobs"]=0
+    evidence["save"]()
+    summary=read_pipeline(evidence,source_keys=[source,setup["source2"]])
+    rows={row["source_key"]:row for row in summary["per_source_summaries"]}
+    assert setup["source2"] in rows and summary["complete"] is False
+    if tamper is None:
+        assert rows[source]["partial"] is True and rows[source]["whole_source_coverage"] is False
+        assert rows[source]["verified_listings"]==1
+    else:
+        assert source not in rows and source in summary["unverifiable_source_keys"]
+
+
+@pytest.mark.parametrize("tamper", [None, "receipt", "target", "attempt"])
+def test_serial_matthews_notification_requires_bound_receipt_and_discloses_scope(evidence, monkeypatch, tamper):
+    import cre_checkpoint_series
+
+    monkeypatch.setattr(cre_checkpoint_series, "_child_succeeded", lambda child, config: True)
+    values = evidence["values"]
+    parent, child = values["parent"], values["child"]
+    source = "matthews"
+    parent["config"]["sources"] = child["config"]["sources"] = [source]
+    parent["status"] = child["status"] = values["control"]["status"] = "qualified_partial_subset"
+    parent["sources"][source] = parent["sources"].pop(SOURCE)
+    child["sources"][source] = child["sources"].pop(SOURCE)
+    parent["sources"][source].update(state="qualified_partial_subset", checkpoint_status=child["status"])
+    target = {"algorithm": "sha256", "value": "d" * 64}
+    parent["database_target"] = child["preflight"]["database_target"] = target
+    checkpoint = child["sources"][source]
+    artifact = checkpoint["artifact"]
+    artifact.update(matthews_partial=True, staged_unique=3)
+    binding = {"schema": "matthews-existing-parent-partial-v1", "scope": "matthews_existing_parent_partial_v1",
+        "source_key": source, "artifact_sha256": artifact["sha256"], "candidate_sha256": "2" * 64,
+        "source_artifact_sha256": "1" * 64, "generation_id": RUN, "producer_sha": SHA,
+        "database_target_sha256": "d" * 64, "candidate_count": 3, "source_held_count": 1,
+        "whole_source_coverage": False}
+    observed = {"occupied_jobs": 1, "matching_jobs": 1, "verified_jobs": 1, "held": ["new"],
+        "updated": ["saved"], "held_reasons": {"new": "identity_conflict_or_unknown"},
+        "artifact_sha256": artifact["sha256"], "generation_id": RUN, "attempt_id": "f" * 32,
+        "database_target_sha256": "d" * 64, "candidate_count": 3, "source_held_count": 1,
+        "whole_source_coverage": False}
+    checkpoint.update(gate={"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
+        "admission_scope": "matthews_existing_parent_partial_v1", "current_inventory_proof": binding},
+        attempts=[{"rejected_artifact_sha256": "1" * 64, "matthews_partial_candidate": {
+            "gate_sha256": artifact["sha256"], "sha256": "2" * 64, "original_sha256": "1" * 64,
+            "candidate_count": 3, "held_count": 1}}], subset_ingest_attempt_id="f" * 32,
+        readback={"ok": True, "kind": "matthews_existing_parent_partial",
+                  "whole_source_coverage": False, "observation": observed})
+    child["validation"]["path"] = "validation.json"
+    report = {"ok": True, "validation_profile": cre_validate.FULL_VALIDATION_PROFILE,
+        "audit_scope": cre_validate.VALIDATION_AUDIT_SCOPES[cre_validate.FULL_VALIDATION_PROFILE],
+        "queries": {name: [] for name in cre_validate.QUERIES},
+        "historical_primary_child_conflicts": [], "matthews_partial_readback": copy.deepcopy(observed)}
+    if tamper == "receipt":
+        report["matthews_partial_readback"]["verified_jobs"] = 0
+    elif tamper == "target":
+        binding["database_target_sha256"] = "0" * 64
+    elif tamper == "attempt":
+        checkpoint["subset_ingest_attempt_id"] = "0" * 32
+    path = evidence["series"] / "runs" / RUN / "validation.json"
+    path.write_text(json.dumps(report)); path.chmod(0o600)
+    evidence["save"]()
+    if tamper:
+        with pytest.raises(REFUSED):
+            read(evidence, source=source)
+    else:
+        result = read(evidence, source=source)
+        assert result["partial"] is True and result["whole_source_coverage"] is False
+        assert result["verified_listings"] == 1 and result["held_count"] == 1
+        limitation = result["visibility_limitation"]
+        assert all(term in limitation for term in ("12 fields", "pricing", "new children", "unsupported fields", "new listing IDs", "not a durable history"))
