@@ -5264,6 +5264,19 @@ DO $$ BEGIN
     AND s.raw_data ? 'colliersNativeObservations')
  THEN RAISE EXCEPTION 'Colliers native evidence key collision'; END IF;
 END $$;
+-- Preserve opaque CBRE partial observations across subsequent full upserts.
+-- The reserved member cannot come from incoming source data; ambiguity aborts.
+CREATE TEMP TABLE _cbre_partial_prior ON COMMIT DROP AS
+SELECT t.id, t.raw_data->'cbrePartialObservations' AS evidence
+FROM credeals.cre_listings t JOIN _src s
+ ON s.brokerage_id=t.brokerage_id AND s.external_id=t.external_id
+WHERE s.slug='cbre' AND s.external_id NOT LIKE 'dealflow:%'
+ AND jsonb_typeof(t.raw_data)='object' AND t.raw_data ? 'cbrePartialObservations';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _src s WHERE s.slug='cbre' AND s.external_id NOT LIKE 'dealflow:%'
+    AND s.raw_data ? 'cbrePartialObservations')
+ THEN RAISE EXCEPTION 'CBRE partial evidence key collision'; END IF;
+END $$;
 -- Preserve private Lyon search history when an ordinary full source upsert
 -- refreshes raw_data. Existing evidence is opaque; incoming collisions refuse.
 CREATE TEMP TABLE _lyon_search_prior ON COMMIT DROP AS
@@ -5751,6 +5764,15 @@ END $$;
 UPDATE credeals.cre_listings t
  SET raw_data=t.raw_data || jsonb_build_object('colliersNativeObservations',p.evidence)
 FROM _colliers_native_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM _cbre_partial_prior p JOIN _up u ON u.id=p.id
+             JOIN credeals.cre_listings t ON t.id=p.id WHERE jsonb_typeof(t.raw_data) IS DISTINCT FROM 'object')
+ THEN RAISE EXCEPTION 'CBRE partial evidence parent is not an object'; END IF;
+END $$;
+UPDATE credeals.cre_listings t
+ SET raw_data=t.raw_data || jsonb_build_object('cbrePartialObservations',p.evidence)
+FROM _cbre_partial_prior p JOIN _up u ON u.id=p.id WHERE t.id=p.id;
 
 DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM _daum_fallback_prior p JOIN _up u ON u.id=p.id
