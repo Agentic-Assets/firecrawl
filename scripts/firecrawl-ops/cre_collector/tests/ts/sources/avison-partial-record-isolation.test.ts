@@ -21,7 +21,7 @@ const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: bad
 async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json"
   | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error"
   | "bad-transaction" | "unknown-transaction" | "country-unknown" | "country-malformed"
-  | "country-canada" | "country-ca" | "country-mexico" | "country-uk" | "country-missing" | "country-unknown-code" | "country-conflict") {
+  | "country-inferred-il" | "country-inferred-ca" | "country-canada" | "country-ca" | "country-mexico" | "country-uk" | "country-missing" | "country-unknown-code" | "country-conflict") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -58,7 +58,9 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
                   : "record 0123456789abcdef0123456789abcdef extra" }
             : ordinaryFailure === "country-unknown" ? { ...bad, country: "unknown" }
             : ordinaryFailure === "country-malformed" ? { ...bad, country: { label: "unknown" } }
-            : ordinaryFailure === "country-missing" ? { ...bad, country: null }
+            : ordinaryFailure === "country-missing" ? { ...bad, country: null, state: null }
+            : ordinaryFailure === "country-inferred-il" ? { ...bad, country: null, state: "IL" }
+            : ordinaryFailure === "country-inferred-ca" ? { ...bad, country: "", state: "CA" }
             : ordinaryFailure === "country-unknown-code" ? { ...bad, country: "ZZ" }
             : ordinaryFailure === "country-canada" ? { ...bad, country: "Canada", state: "ON" }
             : ordinaryFailure === "country-ca" ? { ...bad, country: "CA", state: "ON" }
@@ -295,5 +297,19 @@ for (const mode of ["country-canada", "country-ca", "country-mexico", "country-u
     assert.deepEqual(observed.map(item => item.id), ["18194"]);
     assert.ok(!outcomes.some(item => item.id === "17000"));
     assert.ok(!calls.includes(badUrl));
+  });
+}
+
+for (const mode of ["country-inferred-il", "country-inferred-ca"] as const) {
+  test("missing country with US state " + mode, async () => {
+    const { source, failure, observed, outcomes, calls } = await runCase(false, mode);
+    assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
+    assert.deepEqual(observed.map(item => item.id), ["18194"]);
+    assert.ok(calls.includes(badUrl));
+    const held = outcomes.find(item => item.id === "17000");
+    assert.notEqual(held.reason, "selection_unclassified");
+    const sourceRow = JSON.parse(held.feedObservation.sourceRowJson);
+    assert.equal(sourceRow.country, mode === "country-inferred-il" ? null : "");
+    assert.equal(sourceRow.state, mode === "country-inferred-il" ? "IL" : "CA");
   });
 }

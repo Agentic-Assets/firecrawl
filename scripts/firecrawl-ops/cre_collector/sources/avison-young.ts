@@ -2827,8 +2827,10 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           return false;
         }
         const country = clean(row.country)?.toLowerCase();
-        if (!country || !AVISON_US_COUNTRIES.has(country)) {
-          const state = clean(row.state)?.toUpperCase();
+        const state = clean(row.state)?.toUpperCase();
+        const missingCountryWithUsState = (row.country == null || (typeof row.country === "string" && !row.country.trim()))
+          && !!state && AVISON_US_STATE_CODES.has(state);
+        if (!missingCountryWithUsState && (!country || !AVISON_US_COUNTRIES.has(country))) {
           // A foreign country together with an explicit US state is conflicting
           // source evidence, not a reason to silently exclude the row.
           if (!country || !AVISON_FOREIGN_COUNTRIES.has(country)
