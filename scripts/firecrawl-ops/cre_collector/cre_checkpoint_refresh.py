@@ -6054,6 +6054,62 @@ def dry_run_source(
     return True
 
 
+def prepare_buildout_observation(run_dir, manifest, source, artifact, env_file):
+    """Select the currently supported complete source without blocking ingest."""
+    from source_fields.buildout import (
+        observation_sources,
+        prepare_inventory_observation_scope,
+    )
+    if source not in observation_sources():
+        return None
+    from cre_refresh_pipeline import _OWNER_LEASE, require_pipeline_owner
+
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    sha, dirty = git_identity()
+    target = manifest_database_target_sha256(manifest)
+    if database_target_fingerprint(env_file).get("value") != target:
+        raise GlobalStageError("Buildout observation target changed")
+    try:
+        scope = prepare_inventory_observation_scope(
+            artifact.read_bytes(), manifest, source, current_code_sha=sha,
+            current_git_dirty=dirty, current_target_sha256=target)
+    except (ValueError, KeyError, TypeError, OSError):
+        return None
+    path = run_dir / "observations" / f"{source}-binding.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, {"source": source, "manifest": manifest})
+    return {"path": _relative_to_run(path, run_dir), "sha256": sha256_file(path),
+            "scope": scope}
+
+
+def buildout_observation_readback(run_dir, manifest, source, env_file):
+    from source_fields.buildout import prepare_inventory_observation_scope
+    from source_fields.buildout_observation_sql import readback
+
+    binding = manifest["sources"][source]["ingest"].get("buildout_observation")
+    if not isinstance(binding, dict):
+        raise ValueError("observation binding missing")  # noqa: TRY004 - recovery contract catches ValueError
+    path = run_dir / binding["path"]
+    if not path.is_relative_to(run_dir) or path.is_symlink() or sha256_file(path) != binding["sha256"]:
+        raise ValueError("observation binding changed")
+    claim = _load_json(path)
+    if claim.get("source") != source:
+        raise ValueError("observation source changed")
+    sha, dirty = git_identity()
+    artifact = run_dir / manifest["sources"][source]["artifact"]["path"]
+    scope = prepare_inventory_observation_scope(
+        artifact.read_bytes(), claim["manifest"], source, current_code_sha=sha,
+        current_git_dirty=dirty, current_target_sha256=manifest_database_target_sha256(manifest))
+    if scope != binding.get("scope") or scope["generation_id"] != manifest["run_id"]:
+        raise ValueError("observation inputs changed")
+    result = readback(scope, env_file)
+    if (git_identity() != (sha, False) or sha256_file(path) != binding["sha256"]
+            or sha256_file(artifact) != scope["artifact_sha256"]
+            or manifest_database_target_sha256(manifest) != scope["database_target_sha256"]):
+        raise ValueError("observation inputs changed during readback")
+    return result
+
+
 def ingest_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -6071,6 +6127,10 @@ def ingest_source(
         require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         expected_db_target_sha256=manifest_database_target_sha256(manifest),
     )
+    observation = prepare_buildout_observation(run_dir, manifest, source, artifact, env_file)
+    if observation is not None:
+        argv.extend(["--checkpoint-buildout-observation", str(run_dir / observation["path"]),
+                     "--checkpoint-buildout-observation-sha256", observation["sha256"]])
     subset = verified_subset_candidate(manifest, source)
     if subset:
         if checkpoint.get("state") != "dry_run_passed" and not dry_run_source(run_dir, manifest, source, artifact):
@@ -6104,7 +6164,10 @@ def ingest_source(
                      "--checkpoint-collector-git-sha", manifest["collector_git_sha"]])
         from cre_transwestern_rollback_result import expected_binding
         transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
+    from source_fields.buildout import observation_sources
     checkpoint["ingest"] = {
+        **({"buildout_observation": observation} if observation is not None else
+           ({"buildout_observation_unavailable": True} if source in observation_sources() else {})),
         **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage", "jll"} or subset or atomic_recovery else {}),
         "started_at": started,
         "finished_at": None,
@@ -6245,6 +6308,18 @@ def ingest_source(
         except (OSError, ValueError, TypeError):
             # Missing/invalid evidence never disables the raw final audit.
             checkpoint["ingest"]["image_transition"] = None
+    if observation is not None:
+        try:
+            from cre_refresh_pipeline import _OWNER_LEASE, require_pipeline_owner
+            require_pipeline_owner(manifest, _OWNER_LEASE.get())
+            checkpoint["ingest"]["buildout_observation_readback"] = buildout_observation_readback(
+                run_dir, manifest, source, env_file)
+            require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            checkpoint["state"] = "ingest_recovery_required"
+            checkpoint["ingest_recovery"] = {"reason": "buildout_observation_readback_failed", "readback_ok": False}
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("Buildout observation requires exact readback") from exc
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -7008,6 +7083,16 @@ def recover_interrupted_ingest(
     )
     recovery["artifact_run_job_match_ok"] = committed_job_exact
     recovery["readback_ok"] = readback["ok"] and committed_job_exact
+    if recovery["readback_ok"] and (checkpoint.get("ingest") or {}).get("buildout_observation"):
+        try:
+            checkpoint["ingest"]["buildout_observation_readback"] = buildout_observation_readback(
+                run_dir, manifest, source, env_file)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            checkpoint["state"] = "ingest_recovery_required"
+            recovery["readback_ok"] = False
+            recovery["reason"] = "buildout_observation_readback_failed"
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("interrupted Buildout observation requires exact readback") from exc
     if (recovery["reason"] == "settled_ingest_failure" and recovery["readback_ok"]
             and fenced_counts(validation, source, manifest["run_id"], expected_probe) != (1, 1)):
         checkpoint["state"] = "ingest_recovery_required"
