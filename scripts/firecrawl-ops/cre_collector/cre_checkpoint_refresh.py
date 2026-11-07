@@ -152,6 +152,11 @@ COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
 COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
+COHORT_SETTLED_KIDDER_EXITS = {401: 88, 403: 90, 429: 91}
+COHORT_KIDDER_CLEANUP_UNKNOWN_EXIT = 89
+KIDDER_TERMINAL_EXITS = {401: 72, 403: 74, 429: 75}
+KIDDER_CLEANUP_UNKNOWN_EXIT = 73
+KIDDER_TERMINAL_CODE = "KIDDER_INVENTORY_HTTP_TERMINAL"
 PYRAMID_GUARD_SETTLED_EXIT = 86
 DAUM_ALL_HELD_SETTLED_EXIT = 87
 PYRAMID_DENIED_EXITS = {401: 76, 403: 77}
@@ -165,9 +170,22 @@ COHORT_SETTLED_EXIT_CODES = frozenset(
     {
         0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT,
         COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
+        *COHORT_SETTLED_KIDDER_EXITS.values(),
         *COHORT_SETTLED_PYRAMID_DENIED_EXITS.values(),
     }
 )
+
+
+def cohort_exit_proves_settlement(source: str, rc: int | None) -> bool:
+    """Only the source owner may assert its source-specific settled outcome."""
+    if rc in {0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT}:
+        return True
+    return (
+        (source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT)
+        or (source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT)
+        or (source == "pyramid-brokerage" and rc in COHORT_SETTLED_PYRAMID_DENIED_EXITS.values())
+        or (source == "kidder-mathews" and rc in COHORT_SETTLED_KIDDER_EXITS.values())
+    )
 
 
 def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
@@ -3990,6 +4008,12 @@ def run_cohort_collection_worker(
         attempt_log,
         env=env,
     )
+    if source == "kidder-mathews":
+        for status, exit_code in KIDDER_TERMINAL_EXITS.items():
+            if rc == exit_code:
+                return COHORT_SETTLED_KIDDER_EXITS[status]
+    if source == "kidder-mathews" and rc == KIDDER_CLEANUP_UNKNOWN_EXIT:
+        return COHORT_KIDDER_CLEANUP_UNKNOWN_EXIT
     if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
         return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
     if source == "pyramid-brokerage":
@@ -4099,7 +4123,7 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
     for item in processes:
         try:
             nested_settlement_known &= (
-                item.process.returncode in COHORT_SETTLED_EXIT_CODES
+                cohort_exit_proves_settlement(item.source, item.process.returncode)
             )
         except (Exception, KeyboardInterrupt):  # noqa: BLE001 - missing proof stays unknown
             nested_settlement_known = False
@@ -4327,7 +4351,7 @@ def _finalize_cohort_collection(
         item.owned_group = OwnedProcessGroup.from_spawn(item.process)
     if not getattr(item.owned_group, "gone", False):
         _require_completed_group_settlement(item.owned_group)
-    if rc not in COHORT_SETTLED_EXIT_CODES:
+    if not cohort_exit_proves_settlement(item.source, rc):
         raise ProcessCleanupUnknown(
             f"cohort worker exit {rc} does not prove nested command settlement"
         )
@@ -4397,7 +4421,12 @@ def _finalize_cohort_collection(
             return True
         checkpoint["state"] = "collect_failed"
         terminal = None
-        if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+        if item.source == "kidder-mathews":
+            for status, exit_code in COHORT_SETTLED_KIDDER_EXITS.items():
+                if rc == exit_code:
+                    terminal = {"code": KIDDER_TERMINAL_CODE, "http_status": status}
+                    break
+        elif item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
             terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
         elif item.source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT:
             terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
@@ -4411,7 +4440,9 @@ def _finalize_cohort_collection(
             item.attempt["terminal_failure"] = terminal
             checkpoint["terminal_collection_failure"] = terminal
             item.attempt["error"] = (
-                "typed terminal required-detail HTTP 404; see private attempt log"
+                "typed terminal Kidder inventory response; see private attempt log"
+                if item.source == "kidder-mathews"
+                else "typed terminal required-detail HTTP 404; see private attempt log"
                 if item.source == "avison-young"
                 else "typed terminal Pyramid access denial; see private attempt log"
                 if item.source == "pyramid-brokerage"
@@ -5333,7 +5364,9 @@ def collect_colliers_main_chunks(
 def has_terminal_collection_failure(source: str, checkpoint: Mapping[str, Any]) -> bool:
     terminal = checkpoint.get("terminal_collection_failure")
     return isinstance(terminal, Mapping) and (
-        (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
+        (source == "kidder-mathews" and terminal.get("code") == KIDDER_TERMINAL_CODE
+         and terminal.get("http_status") in (401, 403, 429))
+        or (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
         or (source == "colliers-main" and terminal.get("code") == COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE)
         or (source == "pyramid-brokerage" and terminal.get("code") == PYRAMID_DENIED_FAILURE_CODE
             and terminal.get("http_status") in (401, 403))
@@ -5472,6 +5505,11 @@ def collect_source(
             )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
+        if source == "kidder-mathews" and rc == KIDDER_CLEANUP_UNKNOWN_EXIT:
+            attempt["error"] = "Kidder inventory response cleanup unknown"
+            checkpoint["state"] = "collect_infrastructure_failed"
+            save_manifest(run_dir, manifest)
+            raise ProcessCleanupUnknown("Kidder inventory response cleanup unknown")
         mark_source_document_settlement(manifest, attempt)
         if attempt.get("native_source_evidence"):
             from source_evidence import native_pages
@@ -5493,7 +5531,12 @@ def collect_source(
                     return partial
             checkpoint["state"] = "collect_failed"
             terminal = None
-            if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
+            if source == "kidder-mathews":
+                for status, exit_code in KIDDER_TERMINAL_EXITS.items():
+                    if rc == exit_code:
+                        terminal = {"code": KIDDER_TERMINAL_CODE, "http_status": status}
+                        break
+            elif source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
                 terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
             elif source == "colliers-main" and rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE:
                 terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
@@ -5507,7 +5550,9 @@ def collect_source(
                 attempt["terminal_failure"] = terminal
                 checkpoint["terminal_collection_failure"] = terminal
                 attempt["error"] = (
-                    "typed terminal required-detail HTTP 404; see private attempt log"
+                    "typed terminal Kidder inventory response; see private attempt log"
+                    if source == "kidder-mathews"
+                    else "typed terminal required-detail HTTP 404; see private attempt log"
                     if source == "avison-young"
                     else "typed terminal Pyramid access denial; see private attempt log"
                     if source == "pyramid-brokerage"
@@ -8825,6 +8870,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 daum_verified_subset=args.admit_daum_verified_subset,
                 daum_subset_policy=args.daum_subset_policy,
             )
+            if (args._cohort_collect_source == "kidder-mathews"
+                    and worker_rc in {*COHORT_SETTLED_KIDDER_EXITS.values(), COHORT_KIDDER_CLEANUP_UNKNOWN_EXIT}):
+                return worker_rc
             if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
                 return worker_rc
             if (

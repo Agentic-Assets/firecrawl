@@ -36,7 +36,8 @@ import { srcHanley } from "./sources/hanley.js";
 import { srcInterraRealty } from "./sources/interra-realty.js";
 import { preserveJllSubleaseFact, srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
-import { srcKidderMathews } from "./sources/kidder-mathews.js";
+import { srcKidderMathews, KidderSettledInventoryDenial, KidderInventoryCleanupUnknown,
+  KIDDER_INVENTORY_TERMINAL_EXIT, KIDDER_CLEANUP_UNKNOWN_EXIT } from "./sources/kidder-mathews.js";
 import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcLyonSearchPartial } from "./sources/lyon-search-observation.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
@@ -323,6 +324,20 @@ async function main() {
             process.exitCode = PYRAMID_DENIED_EXIT[err.status];
             return;
           }
+          break;
+        }
+        if (key === "kidder-mathews" && err instanceof KidderInventoryCleanupUnknown) {
+          console.error(`  ${key}/${tx} FAILED: inventory response cleanup unknown`);
+          process.exitCode = KIDDER_CLEANUP_UNKNOWN_EXIT;
+          return;
+        }
+        if (key === "kidder-mathews" && err instanceof KidderSettledInventoryDenial && [401, 403, 429].includes(err.status)) {
+          console.error(`  ${key}/${tx} FAILED: inventory HTTP ${err.status}`);
+          if (requestedSources.length === 1) {
+            process.exitCode = KIDDER_INVENTORY_TERMINAL_EXIT[err.status as 401 | 403 | 429];
+            return;
+          }
+          sources.push({ sourceKey: key, transaction: tx, supported: true, error: `inventory HTTP ${err.status}` });
           break;
         }
         if (err instanceof NativeEvidenceTerminalError) {

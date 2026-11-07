@@ -46,8 +46,12 @@ export type KidderMappingContext = {
 
 let kidderCache: KidderInventoryResult | null = null;
 let strictInventoryRequest: { key: string; promise: Promise<KidderInventoryResult> } | null = null;
-class KidderSettledInventoryDenial extends Error {}
-class KidderInventoryCleanupUnknown extends Error {}
+export const KIDDER_INVENTORY_TERMINAL_EXIT = { 401: 72, 403: 74, 429: 75 } as const;
+export const KIDDER_CLEANUP_UNKNOWN_EXIT = 73;
+export class KidderSettledInventoryDenial extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+export class KidderInventoryCleanupUnknown extends Error {}
 const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
 function kidderDisposition(row: any): CacheDisposition {
   return kidderCacheDisposition.get(row) ?? "live";
@@ -183,7 +187,7 @@ export async function kidderFetchCompleteInventory(
         if (!await cancelResponseBody(response.body, 1000)) {
           throw new KidderInventoryCleanupUnknown(message + "; response cleanup was not confirmed");
         }
-        throw new KidderSettledInventoryDenial(message);
+        throw new KidderSettledInventoryDenial(message, response.status);
       }
       throw new Error(message);
     }
