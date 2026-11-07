@@ -1,6 +1,7 @@
 import { captureKidderRaw, preserveKidderRaw } from "./pure/kidder-raw-retention.js";
 import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
+import { cancelResponseBody } from "../lib/response-body.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -18,6 +19,7 @@ const KIDDER_PAGE_SIZE = 50;
 // unstable boundaries between unsorted 50-row pages. Never deduplicate a feed
 // or accept a provider total beyond this bound as complete.
 export const KIDDER_STRICT_MAX_RESULTS = 8000;
+const KIDDER_COMPLETE_BODY = JSON.stringify({ startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false });
 export const KIDDER_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 export const KIDDER_INVENTORY_TIMEOUT_MS = 30_000;
 
@@ -43,6 +45,9 @@ export type KidderMappingContext = {
 };
 
 let kidderCache: KidderInventoryResult | null = null;
+let strictInventoryRequest: { key: string; promise: Promise<KidderInventoryResult> } | null = null;
+class KidderSettledInventoryDenial extends Error {}
+class KidderInventoryCleanupUnknown extends Error {}
 const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
 function kidderDisposition(row: any): CacheDisposition {
   return kidderCacheDisposition.get(row) ?? "live";
@@ -158,7 +163,7 @@ export async function kidderFetchCompleteInventory(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const requestBody = JSON.stringify({ startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false });
+    const requestBody = KIDDER_COMPLETE_BODY;
     const response = await fetchImpl(KIDDER_API, {
       method: "POST",
       headers: {
@@ -172,7 +177,16 @@ export async function kidderFetchCompleteInventory(
       redirect: "error",
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error("Kidder complete inventory HTTP " + response.status);
+    if (!response.ok) {
+      const message = "Kidder complete inventory HTTP " + response.status;
+      if ([401, 403, 429].includes(response.status)) {
+        if (!await cancelResponseBody(response.body, 1000)) {
+          throw new KidderInventoryCleanupUnknown(message + "; response cleanup was not confirmed");
+        }
+        throw new KidderSettledInventoryDenial(message);
+      }
+      throw new Error(message);
+    }
     if (Number(response.headers.get("content-length")) > maxBytes) {
       throw new Error("Kidder complete inventory exceeds " + maxBytes + " bytes");
     }
@@ -264,16 +278,38 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
   }
   if (kidderCache) kidderCache = null;
   if (strict) {
-    const data = await kidderFetchCompleteInventory();
-    kidderCache = {
-      items: data.results,
-      total: data.totalResultCount,
-      truncated: false,
-      inventoryObservedAt: observationNow(),
-      generationId,
-      strictValidated: true,
-    };
-    return kidderCache;
+    // Both transaction passes use the same fixed URL and complete-inventory
+    // request body. Share in-flight work and retain a settled denial or an
+    // unknown cleanup for this generation; other failures remain retryable.
+    const key = JSON.stringify([generationId, KIDDER_API, KIDDER_COMPLETE_BODY]);
+    if (strictInventoryRequest?.key === key) {
+      const shared = await strictInventoryRequest.promise;
+      return { ...shared, items: shared.items.map((row) => {
+        const copy = { ...row };
+        kidderCacheDisposition.set(copy, "generation_cache");
+        return copy;
+      }) };
+    }
+    const promise = kidderFetchCompleteInventory().then((data): KidderInventoryResult => ({
+      items: data.results, total: data.totalResultCount, truncated: false,
+      inventoryObservedAt: observationNow(), generationId, strictValidated: true,
+    }));
+    const request = { key, promise };
+    strictInventoryRequest = request;
+    try {
+      const result = await promise;
+      if (strictInventoryRequest === request) {
+        kidderCache = result;
+        strictInventoryRequest = null;
+      }
+      return result;
+    } catch (error) {
+      if (strictInventoryRequest === request && !(error instanceof KidderSettledInventoryDenial)
+          && !(error instanceof KidderInventoryCleanupUnknown)) {
+        strictInventoryRequest = null;
+      }
+      throw error;
+    }
   }
   const first = await kidderPost(0, strict);
   const firstPage = assertKidderInventoryPage(first, 0, null, strict);

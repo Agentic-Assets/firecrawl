@@ -1269,7 +1269,12 @@ total, returned count and unique `listing_key` set must agree within the
 inventory fails closed. The transport disables redirects and bounds the whole
 request/body read to 30 seconds and decoded content to 32 MiB. Generation-bound
 caching preserves the actual observation clock, and non-strict pagination is
-unchanged. Provider evidence and the guarded live acceptance are tracked by
+unchanged. Strict transaction passes share the exact complete-inventory request
+in flight; a 401, 403 or 429 is retained only after response-body cancellation
+is acknowledged, for that generation and process. Other failures remain retryable,
+except unconfirmed denial cleanup stays a distinct source-local hold for the
+generation to prevent overlap. Later processes do not inherit either state.
+Provider evidence and the guarded live acceptance are tracked by
 [AGENTIC-4269](https://linear.app/agenticassets/issue/AGENTIC-4269); transport
 success alone does not prove source-gate or database acceptance.
 
