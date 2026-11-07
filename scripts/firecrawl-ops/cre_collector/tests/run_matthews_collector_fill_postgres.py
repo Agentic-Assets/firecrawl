@@ -96,6 +96,11 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                     try:
                         refresh.gate_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["gate"]["verdict"]=="ok_additive_verified_subset"
+                        warnings=checkpoint["gate"]["current_inventory_proof"]["receipt_warnings"]
+                        if mode=="serial":
+                            assert len(warnings)==1 and warnings[0]["reported"]==[0,0,0] and warnings[0]["verified"]==[1,0,0]
+                        else:
+                            assert warnings==[]
                         assert refresh.dry_run_source(root,manifest,"matthews",gate_path)
                         if mode == "serial":
                             refresh.run_serial_aggregate_gate(root,manifest,str(env_file),owner_check=owner._require_authority)

@@ -467,8 +467,14 @@ else: raise AssertionError("partial gate artifact admitted as canonical")
     const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
     assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
     if (status === 307 && process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
+      const zeroOut=join(dir,"zero-count.json");
+      const zeroData=JSON.parse(readFileSync(out,"utf8"));
+      const zeroSource=zeroData.sources.find((item: any)=>item.matthewsPartialOutcome);
+      for (const key of ["temporaryRedirects","detailFailures","httpFailures"]) zeroSource.matthewsPartialOutcome[key]=0;
+      writeFileSync(zeroOut,JSON.stringify(zeroData),{mode:0o600});
       for (const mode of ["pipeline", "serial"]) {
-        const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",out,started,finished,mode],
+        const input=mode === "serial" ? zeroOut : out;
+        const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",input,started,finished,mode],
           {cwd:root,encoding:"utf8",timeout:90000});
         assert.ifError(postgres.error); assert.equal(postgres.status,0,postgres.stderr);
       }
