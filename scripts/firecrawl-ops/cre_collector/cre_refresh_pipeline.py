@@ -1357,24 +1357,9 @@ def run_bounded_pipeline(
                     if oversized_index is not None and active:
                         time.sleep(0.05)
                         continue
-                    take = (
-                        budget.max_pending
-                        if oversized_index is None
-                        else (oversized_index or 1)
-                    )
-                    # A Pyramid write owns a singleton unit. Previously
-                    # completed siblings therefore use the normal verified
-                    # unit/baseline chain before a source-local rollback.
-                    guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll", "daum-commercial"}
-                                    or refresh.colliers_partial_candidate(manifest, source)
-                                    or (source == "colliers" and
-                                        (manifest["sources"][source].get("attempts") or [{}])[-1]
-                                        .get("colliers_partial", {}).get("outcome") == "source_error")), None)
-                    if guarded is not None:
-                        index = ready.index(guarded)
-                        take = index if index else 1
-                    preparing = tuple(ready[:take])
-                    del ready[: len(preparing)]
+                    # Each source owns one write and one validation unit, so an
+                    # independently settled failure cannot strand earlier commits.
+                    preparing = (ready.pop(0),)
                     unit_id = f"unit-{len(state['units']) + 1:04d}"
                     unit = {
                         "unit_id": unit_id,

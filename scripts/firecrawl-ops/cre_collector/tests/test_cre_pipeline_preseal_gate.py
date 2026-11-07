@@ -508,7 +508,7 @@ def test_report_change_after_preseal_digest_stops_every_lane(
 
 
 @pytest.mark.parametrize(("verdict", "expected"), [("hold", "gate_blocked"), ("first_seen", "baseline_seed_required")])
-def test_hold_during_sibling_preparation_skips_source_before_sealing(closed_pipeline, monkeypatch, verdict, expected):
+def test_hold_after_source_preparation_skips_source_before_sealing(closed_pipeline, monkeypatch, verdict, expected):
     case = closed_pipeline
     case.gates["cbre"] = ["ok"]
     real_prepare = pipeline.prepare_candidate
@@ -516,13 +516,13 @@ def test_hold_during_sibling_preparation_skips_source_before_sealing(closed_pipe
     def prepare(run_dir, manifest, source):
         result = real_prepare(run_dir, manifest, source)
         case.events.append(("prepared", source))
-        if source == "svn":
+        if source == "cbre":
             case.gates["cbre"] = [verdict]
         return result
 
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     assert case.run(workers=2) == ["cbre"]
-    assert case.events.index(("prepared", "svn")) < case.events.index(("gate", "cbre"))
+    assert case.events.index(("prepared", "cbre")) < case.events.index(("gate", "cbre"))
     assert case.manifest["sources"]["cbre"]["state"] == expected
     assert ("write", "cbre") not in case.events
     assert ("write", "svn") in case.events

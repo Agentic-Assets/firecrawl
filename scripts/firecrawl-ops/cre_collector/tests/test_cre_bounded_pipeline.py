@@ -468,7 +468,7 @@ def test_pipeline_refills_during_slow_compute_and_db(tmp_path, monkeypatch, work
     )
     assert any(e[0] == "start" and first_db[2] <= e[2] < first_post[2] for e in events)
     assert len(first_db[1]) == 1  # did not wait to fill a ready cohort
-    assert all(len(unit["sources"]) <= 5 for unit in manifest["pipeline"]["units"])
+    assert all(len(unit["sources"]) == 1 for unit in manifest["pipeline"]["units"])
 
 
 def test_pipeline_same_provider_releases_lane_before_prior_db_finishes(
@@ -584,12 +584,12 @@ def test_pipeline_local_invalid_artifact_is_excluded_before_unit_seals(
     assert manifest["pipeline"]["source_results"]["transwestern"]["state"] == "verified"
 
 
-def test_pipeline_drains_ready_cohort_of_five_without_waiting_to_fill(
+def test_pipeline_drains_ready_sources_as_validated_singleton_units(
     tmp_path, monkeypatch
 ):
     manifest, _, failures = run_schedule(tmp_path, monkeypatch, 4)
     assert not failures
-    assert [len(unit["sources"]) for unit in manifest["pipeline"]["units"]] == [1, 5]
+    assert [len(unit["sources"]) for unit in manifest["pipeline"]["units"]] == [1] * len(SOURCES)
 
 
 @pytest.mark.parametrize("retained_cache", [False, True])
@@ -1173,6 +1173,35 @@ def test_settled_daum_ingest_failure_is_singleton_and_peer_continues(tmp_path, m
     failed = next(i for i, event in enumerate(events) if event[0] == "db_start" and "daum-commercial" in event[1])
     later = next(i for i, event in enumerate(events) if event[0] == "db_end" and "hanley" in event[1])
     assert prior < failed < later
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_non_daum_atomic_failure_keeps_prior_and_later_peers_independent(tmp_path, monkeypatch, valid):
+    kwargs = dict(sources=("transwestern", "savills", "hanley"),
+                  settled_ingest_failure="savills", atomic_rollback_valid=valid)
+    if not valid:
+        with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+            run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+        return
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+    assert failures == ["savills"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["transwestern"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["savills"]["reason"] == "settled_ingest_failure"
+    writes = [event[1] for event in events if event[0] == "db_start"]
+    assert all(len(sources) == 1 for sources in writes)
+    assert writes.index(("transwestern",)) < writes.index(("savills",)) < writes.index(("hanley",))
+
+
+@pytest.mark.parametrize("pair", [("cbre", "cbre-dealflow"), ("jll", "jll-investor"), ("colliers", "colliers-main")])
+def test_folded_brokerage_sources_each_reach_verified_singleton_unit(tmp_path, monkeypatch, pair):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, sources=pair)
+    assert failures == []
+    assert manifest["pipeline"]["status"] == "complete"
+    assert all(manifest["pipeline"]["source_results"][source]["state"] == "verified" for source in pair)
+    units = [event[1] for event in events if event[0] == "db_start"]
+    assert len(units) == 2 and set(units) == {(pair[0],), (pair[1],)}
 
 
 def test_daum_all_held_preseal_keeps_peer_running(tmp_path, monkeypatch):

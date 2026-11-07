@@ -2030,3 +2030,65 @@ def test_colliers_multiwindow_notification_counts_verified_units_and_keeps_peer(
     rows = {row["source_key"]: row for row in result["per_source_summaries"]}
     assert "colliers" not in rows and "colliers" in result["unverifiable_source_keys"]
     assert "cbre" in rows
+
+
+def test_settled_atomic_ingest_failure_notifies_only_verified_peer(evidence):
+    setup = pipeline_evidence(evidence, second_source="daum-commercial")
+    child = setup["child"]
+    child["sources"]["daum-commercial"]["state"] = "settled_ingest_failed"
+    child["pipeline"]["source_results"]["daum-commercial"] = {
+        "state": "failed", "reason": "settled_ingest_failure", "unit_id": "unit-0002"}
+    child["pipeline"]["units"].append({"unit_id": "unit-0002", "sources": ["daum-commercial"], "state": "source_held"})
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=[SOURCE, "daum-commercial"])
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["daum-commercial"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert "verified_listings" not in result
+
+@pytest.mark.parametrize("case", ["valid", "tampered", "oversized"])
+def test_pipeline_many_singleton_validation_reports_are_bounded_and_verified(evidence, case):
+    setup = pipeline_evidence(evidence)
+    qualify_pipeline_second_source(evidence, setup)
+    parent, child = setup["parent"], setup["child"]
+    sources = [SOURCE, "cbre"] + [f"peer-{index:02d}" for index in range(49)]
+    for source in sources[2:]:
+        setup["source2"] = source
+        qualify_pipeline_second_source(evidence, setup)
+    parent["config"]["sources"] = sources
+    child["config"]["sources"] = sources
+    pipeline = child["pipeline"]
+    template = pipeline["units"][0]
+    report_path = evidence["series"] / "runs" / RUN / template["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    report["fixture_padding"] = "x" * 390000
+    raw = json.dumps(report, separators=(",", ":")).encode()
+    assert len(raw) * len(sources) > 16 * 1024 * 1024
+    digest = hashlib.sha256(raw).hexdigest()
+    pipeline["units"] = []
+    for index, source in enumerate(sources, 1):
+        unit_id = f"unit-{index:04d}"
+        relative = f"pipeline/{unit_id}/validation.json"
+        unit = copy.deepcopy(template)
+        unit.update(unit_id=unit_id, sources=[source], validation_path=relative, validation_sha256=digest)
+        pipeline["units"].append(unit)
+        path = evidence["series"] / "runs" / RUN / relative
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        result = pipeline["source_results"][source]
+        result.update(unit_id=unit_id, validation_path=relative, validation_sha256=digest)
+        parent["sources"][source]["pipeline_result"] = copy.deepcopy(result)
+    last_path = evidence["series"] / "runs" / RUN / pipeline["units"][-1]["validation_path"]
+    if case == "tampered":
+        last_path.write_bytes(raw + b" ")
+    elif case == "oversized":
+        last_path.write_bytes(raw + b" " * summary.MAX_VALIDATION_REPORT_BYTES)
+    evidence["save"]()
+    if case != "valid":
+        with pytest.raises(REFUSED):
+            read_pipeline(evidence, source_keys=sources)
+        return
+    result = read_pipeline(evidence, source_keys=sources)
+    assert result["verified"] is True
+    assert {row["source_key"] for row in result["per_source_summaries"]} == set(sources)
