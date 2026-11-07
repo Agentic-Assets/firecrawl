@@ -183,4 +183,49 @@ def prepare_candidate(run_dir, manifest, attempt, *, git_identity, settled_rcs=(
         os.close(fd)
     return {"path": str(destination.relative_to(root)), "sha256": hashlib.sha256(encoded).hexdigest(),
             "bytes": len(encoded), "original_path": original_rel, "original_sha256": expected_sha,
-            "candidate_count": len(result["rows"]), "held_count": len(result["held"])}
+            "candidate_count": len(result["rows"]), "held_count": len(result["held"]), "attempt_rc": attempt["rc"]}
+
+
+def recheck_candidate(run_dir, manifest, attempt, *, git_identity, target_sha256, settled_rcs=(0, 1)):
+    """Rederive a sealed candidate before write/readback on the bound target."""
+    root = Path(run_dir)
+    config = manifest.get("config") or {}
+    checkpoint = (manifest.get("sources") or {}).get("matthews") or {}
+    target = (manifest.get("preflight") or {}).get("database_target") or {}
+    candidate = attempt.get("matthews_partial_candidate") or {}
+    attempts = checkpoint.get("attempts") or []
+    if (root.name != manifest.get("run_id") or manifest.get("collector_git_dirty") is not False
+            or git_identity() != (manifest.get("collector_git_sha"), False)
+            or not re.fullmatch(r"[a-f0-9]{40}", str(manifest.get("collector_git_sha") or ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", str(target_sha256 or ""))
+            or target.get("algorithm") != "sha256" or target.get("value") != target_sha256
+            or config.get("transactions") != ["sale", "lease"] or config.get("max_items") != 0
+            or config.get("additive") is not True or config.get("mark_missing") is not False
+            or config.get("status_activation") is not False or "matthews" not in config.get("sources", [])
+            or not attempts or attempts[-1] is not attempt or candidate.get("state") != "sealed_unadmitted"
+            or type(attempt.get("rc")) is not int or attempt["rc"] not in settled_rcs
+            or candidate.get("attempt_rc") != attempt["rc"]
+            or candidate.get("original_path") != attempt.get("rejected_artifact")
+            or candidate.get("original_sha256") != attempt.get("rejected_artifact_sha256")):
+        raise ValueError("Matthews candidate owner or target changed")
+    if (type(attempt.get("number")) is not int or attempt["number"] < 1
+            or candidate.get("path") != f"sources/matthews-partial-fill-attempt-{attempt['number']}.json"):
+        raise ValueError("Matthews candidate path changed")
+    relative = Path(candidate.get("original_path") or "")
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "rejected":
+        raise ValueError("Matthews original path changed")
+    original = _read_private(root / relative)
+    raw_candidate = _read_private(root / candidate["path"])
+    if (hashlib.sha256(original).hexdigest() != candidate["original_sha256"]
+            or hashlib.sha256(raw_candidate).hexdigest() != candidate.get("sha256")
+            or len(raw_candidate) != candidate.get("bytes")):
+        raise ValueError("Matthews sealed evidence changed")
+    recomputed = derive(original, generation_id=manifest["run_id"], generation_started_at=manifest["started_at"],
+                        attempt_started_at=attempt["started_at"], attempt_finished_at=attempt["finished_at"])
+    if (json.loads(raw_candidate) != recomputed or candidate.get("candidate_count") != len(recomputed["rows"])
+            or candidate.get("held_count") != len(recomputed["held"])):
+        raise ValueError("Matthews candidate differs from source")
+    if (_read_private(root / relative) != original or _read_private(root / candidate["path"]) != raw_candidate
+            or git_identity() != (manifest["collector_git_sha"], False)):
+        raise ValueError("Matthews evidence or code changed during recheck")
+    return recomputed

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cre_matthews_partial_checkpoint import derive, prepare_candidate
+from cre_matthews_partial_checkpoint import derive, prepare_candidate, recheck_candidate
 from tests.test_matthews_partial_fill import valid
 
 
@@ -60,7 +60,7 @@ class MatthewsCandidateTest(unittest.TestCase):
             attempt={"number": 1, "rc": 1, "started_at": "2026-11-06T23:59:00Z", "finished_at": "2026-11-07T00:02:00Z",
                 "rejected_artifact": "rejected/matthews.json", "rejected_artifact_sha256": hashlib.sha256(raw).hexdigest()}
             manifest={"run_id":"fixture", "started_at":"2026-11-06T23:58:00Z", "collector_git_sha":"a"*40,
-                "collector_git_dirty":False, "sources":{"matthews":{"attempts":[attempt]}}, "config":{
+                "collector_git_dirty":False, "preflight":{"database_target":{"algorithm":"sha256","value":"b"*64}}, "sources":{"matthews":{"attempts":[attempt]}}, "config":{
                 "transactions":["sale","lease"], "max_items":0, "additive":True, "mark_missing":False,
                 "status_activation":False, "sources":["matthews"]}}
             from cre_checkpoint_refresh import retain_matthews_partial_candidate
@@ -72,6 +72,13 @@ class MatthewsCandidateTest(unittest.TestCase):
             self.assertEqual(result["original_sha256"],hashlib.sha256(raw).hexdigest())
             self.assertEqual(result["candidate_count"],1)
             candidate=root/result["path"]; self.assertEqual(candidate.stat().st_mode & 0o777,0o600)
+            verified = recheck_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False),target_sha256="b"*64,settled_rcs=(0,1,80))
+            self.assertEqual(verified["rows"][0]["external_id"],"example")
+            with self.assertRaisesRegex(ValueError,"target changed"):
+                recheck_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False),target_sha256="c"*64,settled_rcs=(0,1,80))
+            candidate.write_bytes(candidate.read_bytes()+b" ")
+            with self.assertRaisesRegex(ValueError,"evidence changed"):
+                recheck_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False),target_sha256="b"*64,settled_rcs=(0,1,80))
             candidate.unlink(); original.write_bytes(raw+b" "); attempt["rc"] = 1
             with self.assertRaisesRegex(ValueError,"hash changed"):
                 prepare_candidate(root,manifest,attempt,git_identity=lambda:("a"*40,False))
