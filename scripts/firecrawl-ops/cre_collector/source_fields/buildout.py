@@ -489,7 +489,7 @@ def classify_prior_inventory_presence(validated, prior_bindings, source):
     for page in pages:
         rows = page.get("rows") if isinstance(page, dict) else None
         if not isinstance(rows, list):
-            raise ValueError("invalid validated inventory rows")
+            raise ValueError("invalid validated inventory rows")  # noqa: TRY004 - invalid evidence contract
         for row in rows:
             native = row.get("id") if isinstance(row, dict) else None
             if (not isinstance(native, str) or not re.fullmatch(r"[1-9][0-9]{0,15}", native)
@@ -497,7 +497,7 @@ def classify_prior_inventory_presence(validated, prior_bindings, source):
                 raise ValueError("invalid validated inventory identity")
             observed.add(native)
     if not isinstance(prior_bindings, list):
-        raise ValueError("invalid prior bindings")
+        raise ValueError("invalid prior bindings")  # noqa: TRY004 - invalid evidence contract
     claims = defaultdict(int)
     external_claims = defaultdict(int)
     for prior in prior_bindings:
@@ -507,7 +507,7 @@ def classify_prior_inventory_presence(validated, prior_bindings, source):
         if isinstance(prior.get("external_id"), str):
             external_claims[prior["external_id"]] += 1
         if prior.get("source_key") == source and isinstance(ids, list):
-            for native in set(item for item in ids if isinstance(item, str)):
+            for native in {item for item in ids if isinstance(item, str)}:
                 claims[native] += 1
     result = {"not_observed": [], "still_observed": [], "held": []}
     for prior in prior_bindings:

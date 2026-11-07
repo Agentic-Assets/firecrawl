@@ -3,7 +3,6 @@
 import json
 
 import pytest
-
 from source_fields.buildout import classify_prior_inventory_presence, validate_inventory
 from test_buildout_current_inventory import SOURCE, buildout, setup
 
@@ -47,6 +46,13 @@ def test_ambiguous_missing_or_wrong_source_prior_bindings_are_held(tmp_path):
 def test_invalid_feed_identity_is_not_interpreted_as_absence():
     with pytest.raises(ValueError, match="inventory identity"):
         classify_prior_inventory_presence({"pages": [{"rows": [{"id": None}]}]}, [], SOURCE)
+
+
+def test_invalid_evidence_retains_value_error_contract():
+    with pytest.raises(ValueError, match="invalid validated inventory rows"):
+        classify_prior_inventory_presence({"pages": [{"rows": None}]}, [], SOURCE)
+    with pytest.raises(ValueError, match="invalid prior bindings"):
+        classify_prior_inventory_presence({"pages": [{"rows": [{"id": "1"}]}]}, None, SOURCE)
 
 
 def test_incomplete_page_proof_is_refused_before_classification(tmp_path):

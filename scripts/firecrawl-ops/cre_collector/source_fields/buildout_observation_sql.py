@@ -4,7 +4,10 @@ import json
 import re
 from uuid import UUID, uuid5
 
-from source_fields.buildout import classify_prior_inventory_presence, qualify_prior_inventory_binding
+from source_fields.buildout import (
+    classify_prior_inventory_presence,
+    qualify_prior_inventory_binding,
+)
 
 
 def _literal(value):
@@ -108,8 +111,13 @@ SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;
 
 def readback(scope, env_file):
     """Read the artifact-keyed assessment and its events on the bound target."""
-    from cre_ingest import (_RUN_UUID_NAMESPACE, artifact_run_identity_from_digests,
-                            database_target_fingerprint_from_url, find_psql, load_db_url)
+    from cre_ingest import (
+        _RUN_UUID_NAMESPACE,
+        artifact_run_identity_from_digests,
+        database_target_fingerprint_from_url,
+        find_psql,
+        load_db_url,
+    )
     from cre_validate import PIN_STRING_LITERALS, _run_psql_script, parse_tsv
 
     target = scope["database_target_sha256"]
@@ -192,7 +200,11 @@ def sql_fragment(scope, prior, job_id, artifact_run_key):
     locks and compares each preimage again, holding changed records locally.
     A caller must independently verify current owner, target and sealed proof.
     """
-    from cre_ingest import SOURCE_KEYS_BY_SLUG, SOURCE_TO_BROKERAGE, artifact_run_identity_from_digests
+    from cre_ingest import (
+        SOURCE_KEYS_BY_SLUG,
+        SOURCE_TO_BROKERAGE,
+        artifact_run_identity_from_digests,
+    )
 
     source = scope["source_key"]
     generation = scope["generation_id"]

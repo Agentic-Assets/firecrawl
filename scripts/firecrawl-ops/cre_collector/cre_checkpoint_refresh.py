@@ -6040,7 +6040,7 @@ def buildout_observation_readback(run_dir, manifest, source, env_file):
 
     binding = manifest["sources"][source]["ingest"].get("buildout_observation")
     if not isinstance(binding, dict):
-        raise ValueError("observation binding missing")
+        raise ValueError("observation binding missing")  # noqa: TRY004 - recovery contract catches ValueError
     path = run_dir / binding["path"]
     if not path.is_relative_to(run_dir) or path.is_symlink() or sha256_file(path) != binding["sha256"]:
         raise ValueError("observation binding changed")

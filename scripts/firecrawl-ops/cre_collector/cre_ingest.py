@@ -8409,6 +8409,7 @@ def main():
     buildout_observation_context = None
     if args.checkpoint_buildout_observation is not None:
         from pathlib import Path
+
         from cre_checkpoint_refresh import git_identity
         from source_fields.buildout import prepare_inventory_observation_scope
         try:

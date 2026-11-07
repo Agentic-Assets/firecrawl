@@ -5,23 +5,26 @@ Run from a standalone no-hardlinks clone. This does not test an ingest caller.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
-import re
-import time
 import tempfile
+import time
 import uuid
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import cre_ingest as ingest
 from cre_ingest import artifact_run_identity_from_digests
-from source_fields.buildout import prepare_inventory_observation_scope, qualify_prior_inventory_binding
-from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
+from source_fields.buildout import (
+    prepare_inventory_observation_scope,
+    qualify_prior_inventory_binding,
+)
 from source_fields.buildout_observation_sql import sql_fragment
+from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 
 
 def main():
@@ -42,7 +45,7 @@ def main():
         subprocess.run(["docker", "start", name], check=True, stdout=subprocess.DEVNULL, timeout=30)
         for _ in range(60):
             ready = subprocess.run(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
             if ready.returncode == 0:
                 break
             time.sleep(0.25)
@@ -50,12 +53,12 @@ def main():
             raise RuntimeError("fixture database failed to start")
         base = ["docker", "exec", "-i", name, "psql", "-h", "127.0.0.1", "-X", "-qAt", "-U", "postgres", "-v", "ON_ERROR_STOP=1"]
         def run(sql, *, check=True):
-            result = subprocess.run(base, input=sql, cwd=migrations, text=True, capture_output=True, timeout=60)
+            result = subprocess.run(base, input=sql, cwd=migrations, text=True, capture_output=True, timeout=60, check=False)
             if check and result.returncode:
                 raise RuntimeError(result.stderr[-4000:])
             return result
         try:
-            schema = re.sub(r"^\\i (\S+)\s*$", lambda match: (migrations / match[1]).read_text(), (migrations / "000_run_all.sql").read_text(), flags=re.M)
+            schema = re.sub(r"^\\i (\S+)\s*$", lambda match: (migrations / match[1]).read_text(), (migrations / "000_run_all.sql").read_text(), flags=re.MULTILINE)
             run(schema)
             run("\\set CRE_APPROVE_LISTING_LIFECYCLE 1\n\\set CRE_LISTING_LIFECYCLE_OPERATOR cayman\n"
                 "\\set CRE_LISTING_LIFECYCLE_APPROVAL_REF AGENTIC-5337\n"
@@ -85,7 +88,7 @@ def main():
                 return qualify_prior_inventory_binding(source, listing, index)
             absent = create("99", "99")
             run(f"INSERT INTO credeals.cre_listing_images(listing_id,url) VALUES ('{absent['listing_id']}','https://example.test/prior-image');")
-            still_seen = create("closed-visible", "40")
+            create("closed-visible", "40")
             stale = create("changed-preimage", "88")
             create("duplicate-a", "77")
             create("duplicate-b", "77")
