@@ -104,6 +104,11 @@ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION credeals.fixture_del
             time.sleep(.05)
         else:
             raise AssertionError("writer did not reach delayed commit")
+        timeout_sql = settled_readback_sql(late, late_binding).replace("lock_timeout = '30s'", "lock_timeout = '100ms'")
+        timed_out = subprocess.run(["docker", "exec", "-i", name, "psql", "-U", "postgres",
+            "-X", "-q", "-tA", "-v", "ON_ERROR_STOP=1"], input=timeout_sql, text=True,
+            capture_output=True, check=False, timeout=10)
+        assert timed_out.returncode != 0 and "lock timeout" in timed_out.stderr, timed_out.stderr
         writer.kill()
         writer.wait(timeout=10)
         assert json.loads(sql(readback_sql(late, late_binding)))["occupied_jobs"] == 0

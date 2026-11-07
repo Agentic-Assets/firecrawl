@@ -251,6 +251,40 @@ class MatthewsCandidateTest(unittest.TestCase):
                             refresh.ingest_source(root,manifest,"matthews",root/"sources/matthews.json",None)
                         self.assertEqual(manifest["sources"]["matthews"]["state"],"ingest_recovery_required")
 
+    def test_serial_readback_timeout_preserves_global_recovery_authority(self):
+        import cre_checkpoint_refresh as refresh
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {"run_id": "fixture", "collector_git_sha": "a" * 40,
+                "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
+                "config": {"sources": ["matthews"]}, "sources": {"matthews": {
+                "state": "dry_run_passed", "artifact": {"path": "sources/matthews.json",
+                "sha256": "c" * 64, "matthews_partial": True}, "subset_ingest_attempt_id": "d" * 32}}}
+            path = root / ".cre.lock"
+            owner = refresh.SharedLock(path, recovery_required=True)
+            owner.acquire()
+            try:
+                with patch("cre_checkpoint_refresh.subset_ingest_arguments",return_value=["--matthews-partial-claims",str(root/"claims.json")]), \
+                     patch("matthews_partial.checkpoint._read_private",return_value=b"{}"), \
+                     patch("matthews_partial.worker.context",return_value={}), \
+                     patch("cre_checkpoint_refresh.git_identity",return_value=("a"*40,False)), \
+                     patch("cre_checkpoint_refresh._run_nai_owned_command",return_value=1), \
+                     patch("cre_checkpoint_refresh.matthews_partial_readback",side_effect=TimeoutError("lock timeout")), \
+                     patch("cre_checkpoint_refresh.save_manifest"):
+                    with self.assertRaises(refresh.GlobalStageError):
+                        refresh.ingest_source(root,manifest,"matthews",root/"sources/matthews.json",None)
+                self.assertTrue(refresh.serial_write_outcome_unknown(manifest))
+                # The same finalization condition in main must leave authority armed.
+                if not refresh.serial_write_outcome_unknown(manifest):
+                    owner.clear_recovery_requirement()
+            finally:
+                owner.release()
+            authority = path.with_name(path.name + ".authority")
+            self.assertTrue(authority.read_text().endswith("recovery-required\n"))
+            with self.assertRaises(refresh.LockHeldError):
+                refresh.SharedLock(path).acquire()
+
     def test_interrupted_unsettled_owner_never_replays(self):
         import cre_checkpoint_refresh as refresh
 

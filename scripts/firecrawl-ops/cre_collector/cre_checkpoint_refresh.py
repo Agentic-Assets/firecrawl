@@ -6817,6 +6817,19 @@ def _serial_owner_scope(owner_check):
         _OWNER_CHECK.reset(check_token)
 
 
+def run_serial_aggregate_gate(run_dir, manifest, env_file, *, owner_check):
+    """Run aggregate subset dry-runs under the existing serial owner."""
+    with _serial_owner_scope(owner_check):
+        return run_aggregate_gate(run_dir, manifest, env_file)
+
+
+def serial_write_outcome_unknown(manifest):
+    """Retain global recovery authority while a serial live write is unresolved."""
+    return any(checkpoint.get("state") in {"ingesting", "ingest_recovery_required"}
+               for checkpoint in (manifest.get("sources") or {}).values()
+               if isinstance(checkpoint, dict))
+
+
 def ingest_admitted_sources(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -9545,7 +9558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     phase="aggregate_gate",
                     active_operation="aggregate_gate",
                 )
-                run_aggregate_gate(run_dir, manifest, args.env_file)
+                run_serial_aggregate_gate(run_dir, manifest, args.env_file, owner_check=lock._require_authority)
                 set_cpu_guard_context(
                     cpu_guard,
                     phase="ingest",
@@ -9707,6 +9720,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and not terminal_publication_failed
                 and guards_stopped
                 and not settlement_unknown
+                and not serial_write_outcome_unknown(manifest)
                 and not (manifest.get("pipeline") or {}).get("commit_outcome_unknown", False)
                 and not (manifest.get("pipeline") or {}).get("cursor_recovery_outcome_unknown", False)
                 and (details is None or details.owned_processes_reaped)
@@ -9728,6 +9742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     guards_stopped=guards_stopped,
                     nested_cleanup_confirmed=(
                         not settlement_unknown
+                        and not serial_write_outcome_unknown(manifest)
                         and not _cleanup_unknown_in_chain(sys.exception())
                         and (details is None or details.owned_processes_reaped)
                     ),

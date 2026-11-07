@@ -91,13 +91,16 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
             try:
                 canonical_lock.parent.mkdir(parents=True,exist_ok=True)
                 with refresh.SharedLock(canonical_lock, recovery_required=True) as owner:
-                    token=pipeline._OWNER_CHECK.set(owner._require_authority)
-                    lease=pipeline._OWNER_LEASE.set(owner.lease_token)
+                    token=pipeline._OWNER_CHECK.set(owner._require_authority) if mode == "pipeline" else None
+                    lease=pipeline._OWNER_LEASE.set(owner.lease_token) if mode == "pipeline" else None
                     try:
                         refresh.gate_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["gate"]["verdict"]=="ok_additive_verified_subset"
                         assert refresh.dry_run_source(root,manifest,"matthews",gate_path)
-                        refresh.run_aggregate_gate(root,manifest,str(env_file),sources=["matthews"])
+                        if mode == "serial":
+                            refresh.run_serial_aggregate_gate(root,manifest,str(env_file),owner_check=owner._require_authority)
+                        else:
+                            refresh.run_aggregate_gate(root,manifest,str(env_file),sources=["matthews"])
                         if mode == "serial":
                             assert refresh.ingest_admitted_sources(root,manifest,str(env_file),owner_check=owner._require_authority) == []
                         else:
@@ -109,7 +112,8 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                         assert refresh.verify_validation_readback(root,manifest,validation,persist_manifest=False)=={"ok":True,"failed_sources":[]}
                         assert checkpoint["readback"]["whole_source_coverage"] is False
                     finally:
-                        pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
+                        if mode == "pipeline":
+                            pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
                     owner.clear_recovery_requirement()
             finally:
                 cre_ingest.PSQL_CANDIDATES.remove(str(psql))
