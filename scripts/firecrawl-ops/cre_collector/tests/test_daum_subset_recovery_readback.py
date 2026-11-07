@@ -7,13 +7,18 @@ from pathlib import Path
 import pytest
 import cre_checkpoint_refresh as refresh
 import cre_daum_current_inventory as daum
+from cre_validate import FULL_VALIDATION_PROFILE, QUERIES, VALIDATION_AUDIT_SCOPES
 from test_cre_checkpoint_refresh import freshness_generation_row
 from test_daum_identity_partition import qualified_conflict
 from test_daum_verified_subset import complete, subset  # noqa: F401
 
 
-@pytest.mark.parametrize("fault", ["none", "claims_hash", "attempt", "gate", "generation", "wrong_count"])
-def test_recovery_reproves_held_subset_and_real_readback(subset, monkeypatch, fault):
+@pytest.mark.parametrize(("recovery_kind", "fault"), [
+    (kind, fault)
+    for kind in ("interrupted", "settled")
+    for fault in ("none", "claims_hash", "attempt", "gate", "generation", "wrong_count")
+] + [("settled", "fence")])
+def test_recovery_reproves_held_subset_and_real_readback(subset, monkeypatch, recovery_kind, fault):
     root, artifact, _data, manifest, report = subset
     binding, _ = qualified_conflict(subset)
     assert binding["emitted_count"] == 99
@@ -30,6 +35,8 @@ def test_recovery_reproves_held_subset_and_real_readback(subset, monkeypatch, fa
     checkpoint["subset_ingest_attempt_id"] = attempt
     checkpoint["daum_verified_subset_claims"] = {"path": str(claims), "sha256": refresh.sha256_file(claims), "attempt_id": attempt}
     checkpoint["ingest"] = {"attempt_id": attempt}
+    if recovery_kind == "settled":
+        checkpoint["ingest_recovery"] = {"reason": "settled_ingest_failure", "subprocess_rc": 1}
     info = checkpoint["artifact"]
     info.update(staged_unique=100, inventory_only=0, strict_freshness=True,
                 finished_at=manifest["started_at"], freshness_generation_id=manifest["run_id"],
@@ -45,6 +52,29 @@ def test_recovery_reproves_held_subset_and_real_readback(subset, monkeypatch, fa
     validation = {"queries": {"source_counts": [{"source_key": daum.SOURCE}],
                               "freshness_generations": [row], "inventory_only_index": [],
                               "artifact_run_jobs": [{"matching_jobs": "1"}]}}
+    if recovery_kind == "settled":
+        run_key, _ = refresh.artifact_run_identity_from_digests([info["sha256"]])
+        probe = {"database_target_sha256": refresh.manifest_database_target_sha256(manifest),
+                 "artifact_run_key_sha256": hashlib.sha256(run_key.encode()).hexdigest(),
+                 "attempt_id": checkpoint["ingest"]["attempt_id"]}
+        validation.update(
+            ok=True, validation_profile=FULL_VALIDATION_PROFILE,
+            audit_scope=VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE],
+            historical_primary_child_conflicts=[], artifact_run_probe=probe,
+            atomic_settlement_probe={**probe, "source": daum.SOURCE, "generation_id": manifest["run_id"]},
+        )
+        validation["queries"] = {
+            **{name: [] for name in QUERIES}, **validation["queries"],
+            "atomic_settlement": [{"matching_jobs": "1", "matching_generations": "0" if fault == "fence" else "1"}],
+            "inventory_generation_fingerprints": [
+                {"source_key": key, "row_count": "99" if key == daum.SOURCE else "0",
+                 "active_row_count": "99", "classified_row_count": "99",
+                 "unclassified_row_count": "0",
+                 "max_row_updated_at": manifest["started_at"],
+                 "max_observation_at": manifest["started_at"]}
+                for key in refresh.SOURCE_KEYS
+            ],
+        }
     def command(argv, _log, **_kwargs):
         Path(argv[argv.index("--out") + 1]).write_text(json.dumps(validation))
         return 0

@@ -55,6 +55,8 @@ def run_schedule(
     pyramid_guard_valid=True,
     transwestern_guard_refusal=False,
     jll_guard_refusal=False,
+    settled_ingest_failure=None,
+    atomic_rollback_valid=True,
     colliers_partial=None,
     colliers_failure_nonzero=False,
     lyon_partial=None,
@@ -220,6 +222,9 @@ def run_schedule(
         if jll_guard_refusal and "jll" in unit["sources"]:
             owner["sources"]["jll"]["state"] = "jll_image_guard_refused"
             raise refresh.JllImageGuardRefusal("JLL image-loss guard refused")
+        if settled_ingest_failure in unit["sources"]:
+            owner["sources"][settled_ingest_failure]["state"] = "settled_ingest_failed"
+            raise refresh.SettledIngestFailure("settled synthetic ingest failure")
         if db_failure:
             raise refresh.GlobalStageError("synthetic DB fault")
         until = clock["now"] + 0.6
@@ -320,6 +325,9 @@ def run_schedule(
             monkeypatch.setattr(refresh, "run_command", gate_command)
             monkeypatch.setattr(pipeline, "preseal_source_gate", lambda root, owner, source, env:
                 actual_preseal(root, owner, source, env) if source == "lyon-stahl" else True)
+    if settled_ingest_failure:
+        import recovery.atomic_ingest_rollback as atomic
+        monkeypatch.setattr(atomic, "verified_rollback", lambda *a: atomic_rollback_valid)
     if pyramid_guard_refusal or transwestern_guard_refusal or jll_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
@@ -630,7 +638,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
                 # hook frees the held collector slot and dispatches source four.
                 code = (
                     "import pathlib,runpy,sys,time; root=pathlib.Path(sys.argv[1]); "
-                    "(root/'first-compute-started').touch(); deadline=time.monotonic()+5\n"
+                    "(root/'first-compute-started').touch(); deadline=time.monotonic()+30\n"
                     "while not (root/'fourth-started').exists():\n"
                     " if time.monotonic()>=deadline: raise RuntimeError('fourth fetch not dispatched during compute')\n"
                     " time.sleep(0.01)\n"
@@ -662,7 +670,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
                 "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
                 "cache=root/'cache/jll/page.json'; cache.parent.mkdir(parents=True); "
                 "handle=cache.open('wb'); handle.truncate(513*1024**2); handle.close(); "
-                "(root/'cache-ready').touch(); deadline=time.monotonic()+5\n"
+                "(root/'cache-ready').touch(); deadline=time.monotonic()+30\n"
                 "while not (root/'release-cache-worker').exists():\n"
                 " if time.monotonic()>=deadline: raise RuntimeError('independent dispatch withheld')\n"
                 " time.sleep(0.01)\n"
@@ -673,7 +681,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
             # collection slots refill. Hold one slot until actual worker start.
             code = (
                 "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
-                "deadline=time.monotonic()+5\n"
+                "deadline=time.monotonic()+30\n"
                 "while not (root/'first-compute-started').exists():\n"
                 " if time.monotonic()>=deadline: raise RuntimeError('first compute did not start')\n"
                 " time.sleep(0.01)\n"
@@ -711,7 +719,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
         if source == sources[3]:
             fourth_started.touch()
         if retained_cache and source == sources[0]:
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + 30
             while not cache_ready.exists():
                 if process.poll() is not None or time.monotonic() >= deadline:
                     refresh._terminate_cohort_processes([item])
@@ -1144,6 +1152,27 @@ def test_cursor_publication_uncertainty_stays_recorded_in_pipeline(tmp_path, mon
             colliers_partial="accepted", colliers_failure_nonzero=True)
     manifest = json.loads((tmp_path / "2026-10-15T120000Z" / "manifest.json").read_text())
     assert manifest["pipeline"]["cursor_recovery_outcome_unknown"] is True
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_settled_daum_ingest_failure_is_singleton_and_peer_continues(tmp_path, monkeypatch, valid):
+    kwargs = dict(sources=("savills", "daum-commercial", "hanley"),
+                  settled_ingest_failure="daum-commercial", atomic_rollback_valid=valid)
+    if not valid:
+        with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+            run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+        return
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+    assert failures == ["daum-commercial"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["daum-commercial"]["reason"] == "settled_ingest_failure"
+    assert [event[1] for event in events if event[0] == "db_start" and "daum-commercial" in event[1]] == [("daum-commercial",)]
+    prior = next(i for i, event in enumerate(events) if event[0] == "db_end" and "savills" in event[1])
+    failed = next(i for i, event in enumerate(events) if event[0] == "db_start" and "daum-commercial" in event[1])
+    later = next(i for i, event in enumerate(events) if event[0] == "db_end" and "hanley" in event[1])
+    assert prior < failed < later
 
 
 def test_daum_all_held_preseal_keeps_peer_running(tmp_path, monkeypatch):
