@@ -4022,6 +4022,7 @@ def build_sql(
     newmark_page_attempt=None,
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
+    buildout_observation_context=None,
 ):
     def daum_marker(payload):
         if not isinstance(payload, dict):
@@ -4238,6 +4239,22 @@ WHERE p.image_id IS NULL;
         }
         for jm in job_meta
     ]
+    buildout_observation_fragment = ""
+    if buildout_observation_context is not None:
+        # WIP builder-only integration: no CLI or checkpoint caller enables it.
+        # The owner, actual target and sealed source proof remain caller duties.
+        scope = buildout_observation_context.get("scope")
+        prior = buildout_observation_context.get("prior")
+        if not isinstance(scope, dict) or (prior is not None and not isinstance(prior, list)):
+            raise ValueError("invalid Buildout observation context")
+        mapping = SOURCE_TO_BROKERAGE.get(scope.get("source_key"))
+        if (mapping is None or len(job_meta) != 1 or job_meta[0]["slug"] != mapping[0]
+                or any(row.get("slug") != mapping[0] for row in rows)
+                or sorted(row.get("external_id") for row in rows) != scope.get("staged_external_ids")
+                or mark_missing_slugs or targeted or inventory_only_rows or inventory_only_scopes):
+            raise ValueError("Buildout observation context does not match ingest scope")
+        from source_fields.buildout_observation_sql import sql_fragment
+        buildout_observation_fragment = sql_fragment(scope, prior, job_meta[0]["job_id"], artifact_run_key)
     svn_enrichment_ids = set(svn_enrichment_ids)
     if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
         raise ValueError("invalid SVN enrichment identity")
@@ -6026,6 +6043,9 @@ WHERE (p.observation_present = false OR pv.deleted_at IS NOT NULL)
   AND NOT ({detail_source_sql})
 ON CONFLICT DO NOTHING;
 """)
+    if buildout_observation_fragment:
+        w(buildout_observation_fragment)
+
     w(f"""-- Children: refresh wholesale only when the latest source row completed a
 -- detail pass. This protects previously good documents/images/contacts from
 -- transient errors and from deliberate API-only/base refresh modes.

@@ -533,3 +533,114 @@ def classify_prior_inventory_presence(validated, prior_bindings, source):
         else:
             result["not_observed"].append(prior)
     return result
+
+
+def prepare_inventory_observation_scope(
+    raw_artifact, manifest, source, *, current_code_sha, current_git_dirty, current_target_sha256
+):
+    """Bind a Buildout full-feed proof to its original checkpoint inputs.
+
+    This validates inputs only. It does not authenticate the checkpoint owner,
+    authorize an ingest, or establish a database watermark or readback.
+    """
+    import hashlib
+
+    from cre_buildout_current_inventory import definitions
+    from cre_current_inventory_admission import require
+
+    require(isinstance(raw_artifact, bytes))
+    require(isinstance(manifest, dict) and isinstance(source, str))
+    config = manifest.get("config") or {}
+    require(config.get("additive") is True and config.get("max_items") == 0)
+    require(tuple(config.get("transactions") or ()) == ("sale", "lease"))
+    require(config.get("mark_missing") is False and config.get("status_activation") is False)
+    require(manifest.get("collector_git_dirty") is False and current_git_dirty is False)
+    require(isinstance(current_code_sha, str) and re.fullmatch(r"[a-f0-9]{40}", current_code_sha))
+    require(manifest.get("collector_git_sha") == current_code_sha)
+    target = (manifest.get("preflight") or {}).get("database_target") or {}
+    require(target.get("algorithm") == "sha256")
+    require(isinstance(target.get("value"), str) and re.fullmatch(r"[a-f0-9]{64}", target["value"]))
+    require(current_target_sha256 == target["value"])
+    info = ((manifest.get("sources") or {}).get(source) or {}).get("artifact") or {}
+    digest = hashlib.sha256(raw_artifact).hexdigest()
+    require(info.get("sha256") == digest and type(info.get("bytes")) is int and info["bytes"] == len(raw_artifact))
+    registry = definitions()
+    require(source in registry)
+    artifact = json.loads(raw_artifact)
+    validated = validate_inventory(
+        artifact, source, registry[source], manifest["run_id"], manifest["started_at"]
+    )
+    # Include every provider row, even closed records, to avoid equating an
+    # inactive but visible source observation with absence from the feed.
+    native = sorted({row["id"] for page in validated["pages"] for row in page["rows"]})
+    return {
+        "source_key": source,
+        "generation_id": manifest["run_id"],
+        "generation_started_at": manifest["started_at"],
+        "collector_git_sha": current_code_sha,
+        "database_target_sha256": target["value"],
+        "artifact_sha256": digest,
+        "observed_at": artifact["runMeta"]["finishedAt"],
+        "native_ids": native,
+        "staged_external_ids": sorted(validated["staged"]),
+    }
+
+
+def qualify_prior_inventory_binding(source, listing, index):
+    """Conservatively bind a prior canonical row to source-native IDs.
+
+    These are candidate preimages only: the actual listing and index rows must
+    be locked and compared again inside the transaction that writes an event.
+    Unsupported or conflicting historical shapes return None.
+    """
+    if not isinstance(source, str) or not isinstance(listing, dict) or not isinstance(index, dict):
+        return None
+    external_id = listing.get("external_id")
+    source_url = listing.get("source_url")
+    if (not isinstance(listing.get("id"), str) or not listing["id"]
+            or not isinstance(listing.get("brokerage_id"), str) or not listing["brokerage_id"]
+            or not isinstance(index.get("last_enumerated_at"), str) or not index["last_enumerated_at"]
+            or not isinstance(external_id, str) or not external_id
+            or not isinstance(source_url, str) or not source_url
+            or listing.get("brokerage_id") != index.get("brokerage_id")
+            or external_id != index.get("external_id")
+            or index.get("source_key") != source or index.get("url") != source_url
+            or index.get("observation_present") is not True
+            or type(index.get("presence_generation")) is not int
+            or index["presence_generation"] < 0):
+        return None
+    raw = listing.get("raw_data")
+    if not isinstance(raw, dict):
+        return None
+    if "primary" in raw or "secondary_pass" in raw:
+        if set(raw) != {"primary", "secondary_pass"}:
+            return None
+        members = [raw["primary"], raw["secondary_pass"]]
+    else:
+        members = [raw]
+    if not all(isinstance(member, dict) and member.get("sourceKey") == source for member in members):
+        return None
+    ids = []
+    urls = []
+    for member in members:
+        value = member.get("id")
+        if type(value) is int:
+            value = str(value)
+        if (not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,15}", value)
+                or int(value) > 9007199254740991):
+            return None
+        url = member.get("url")
+        if not isinstance(url, str) or not url:
+            return None
+        ids.append(value)
+        urls.append(url)
+    if source_url not in urls or len(ids) != len(set(ids)):
+        return None
+    return {
+        "external_id": external_id, "source_key": source,
+        "native_ids": ids, "observation_present": True,
+        "listing_id": listing.get("id"), "brokerage_id": listing.get("brokerage_id"),
+        "source_url": source_url, "raw_data": raw,
+        "presence_generation": index["presence_generation"],
+        "last_enumerated_at": index.get("last_enumerated_at"),
+    }
