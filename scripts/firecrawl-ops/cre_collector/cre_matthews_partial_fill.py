@@ -131,10 +131,9 @@ WITH updated AS (
  FROM _matthews_candidates c JOIN _matthews_eligible e USING (external_id)
  WHERE l.id=e.id AND ({comparisons}) RETURNING l.id
 ) SELECT id FROM updated;
-SELECT c.external_id, CASE WHEN e.id IS NULL THEN 'held' WHEN u.id IS NULL THEN 'unchanged' ELSE 'updated' END,
-       to_jsonb(l) FROM _matthews_candidates c
+SELECT c.external_id, CASE WHEN e.id IS NULL THEN 'held' WHEN u.id IS NULL THEN 'unchanged' ELSE 'updated' END
+FROM _matthews_candidates c
 LEFT JOIN _matthews_eligible e USING (external_id)
-LEFT JOIN _matthews_updated u ON u.id=e.id
-LEFT JOIN credeals.cre_listings l ON l.id=e.id ORDER BY c.external_id;
+LEFT JOIN _matthews_updated u ON u.id=e.id ORDER BY c.external_id;
 COMMIT;
 """

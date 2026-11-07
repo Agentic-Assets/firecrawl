@@ -57,13 +57,13 @@ SELECT id,'https://example.test/old.jpg' FROM credeals.cre_listings WHERE extern
         staged=stage_observations([observation("known",name="Incoming title",description="New description",buildingSizeSqft=4000,capRatePct=6.5),
                                    observation("conflict",name="Conflicted"),observation("new",name="New")],"fixture","2026-11-06T23:59:00Z","2026-11-07T00:02:00Z")
         result=sql(fill_sql(staged))
-        assert "known|updated|" in result, result
-        assert "conflict|held|" in result and "new|held|" in result, result
+        assert "known|updated" in result, result
+        assert "conflict|held" in result and "new|held" in result, result
         reread=sql("""SELECT jsonb_build_object('title',title,'description',description,'status',status,'raw_data',raw_data,
 'size_sf',size_sf,'cap_rate',cap_rate,'images',(SELECT jsonb_agg(url) FROM credeals.cre_listing_images WHERE listing_id=l.id)) FROM credeals.cre_listings l WHERE external_id='known';""")
         assert json.loads(reread)=={"title":"Existing title","description":"New description","status":"active","raw_data":{"old":"retained"},"size_sf":4000,"cap_rate":0.065,"images":["https://example.test/old.jpg"]}, reread
         assert sql("SELECT count(*) FROM credeals.cre_listings;")=="2"
-        assert "known|unchanged|" in sql(fill_sql(staged))
+        assert "known|unchanged" in sql(fill_sql(staged))
         print("isolated postgres fill/readback passed")
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
