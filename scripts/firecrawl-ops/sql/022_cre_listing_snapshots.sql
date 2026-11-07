@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_snapshots (
   phase text NOT NULL CHECK (phase IN ('preimage', 'observation', 'postimage')),
   payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
   payload jsonb NOT NULL,
+  omissions jsonb NOT NULL DEFAULT '[]'::jsonb,
   captured_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (brokerage_id, external_id, artifact_run_key, phase, payload_sha256)
 );

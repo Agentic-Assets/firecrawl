@@ -14,6 +14,9 @@ def test_receipt_reports_omissions_without_treating_no_prior_as_failure(tmp_path
     assert read_receipt(path, "ingest:v1:test")["state"] == "reported_no_omissions"
     write_receipt(path, {"svn:observation:credential_like_content": 1})
     assert read_receipt(path, "ingest:v1:test")["state"] == "reported_omissions"
+    for outcome in ("captured_with_omissions", "duplicate_with_omissions", "child_lock_unavailable", "credential_identity_refused"):
+        write_receipt(path, {f"svn:preimage:{outcome}": 1})
+        assert read_receipt(path, "ingest:v1:test")["state"] == "reported_omissions"
 
 
 def test_invalid_missing_or_unbound_receipts_are_unknown(tmp_path):

@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -44,6 +45,14 @@ def main():
             return sql(ingest.build_sql([ingest.to_row(value, {}, stamp)], job, stamp, set(), artifact_run_key=key))
         first = apply(item, "test-initial")
         assert "store_unavailable" in first and sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id='history-fixture';") == "1"
+        from cre_listing_history_sql import read_receipt
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "ingest.log"
+            log.write_text(first + "\n")
+            parsed = read_receipt(log, "test-initial")
+            assert parsed["state"] == "reported_omissions"
+            assert parsed["outcomes"]["svn:observation:store_unavailable"] == 1
+            assert read_receipt(log, "wrong-key")["state"] == "unknown"
         sql("CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN BYPASSRLS;")
         migration = (directory / "022_cre_listing_snapshots.sql").read_text()
         refused = subprocess.run(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=migration, capture_output=True, text=True)
@@ -58,6 +67,11 @@ INSERT INTO credeals.cre_listing_links(listing_id,link_type,url,rel) SELECT id,'
         next_item = {**item, "name": "new", "latitude": None, "longitude": -80.1, "detailObservedAt": "2026-11-07T00:01:00Z"}
         receipt = apply(next_item, "test-second")
         assert "captured" in receipt, receipt
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "captured.log"
+            log.write_text(receipt + "\n")
+            assert read_receipt(log, "test-second")["state"] == "reported_no_omissions"
+            assert read_receipt(log, "wrong-key")["state"] == "unknown"
         assert sql("SELECT payload->'parent'->>'title' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-second' AND phase='preimage';") == "old"
         assert sql("SELECT string_agg(jsonb_array_length(payload->'children'->k)::text,',' ORDER BY k) FROM credeals.cre_listing_snapshots CROSS JOIN LATERAL unnest(ARRAY['cre_listing_contacts','cre_listing_documents','cre_listing_images','cre_listing_media','cre_listing_links']) k WHERE artifact_run_key='test-second' AND phase='preimage';") == "1,1,1,1,1"
         assert sql("SELECT payload->'raw_data'->>'name' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-second' AND phase='observation';") == "new"
@@ -88,6 +102,90 @@ CREATE TRIGGER test_fail_snapshot BEFORE INSERT ON credeals.cre_listing_snapshot
         assert failed.returncode != 0
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-rollback';") == "0"
         assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='history-fixture';") == "captured without history"
+        # An independent SQL child writer is not covered by the lifecycle
+        # advisory lock. Verify real row-lock interleavings in separate sessions.
+        sql("""INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url,title,status)
+SELECT id,'race-fixture','https://example.test/race','Race parent','active' FROM credeals.cre_brokerages WHERE slug='svn';
+INSERT INTO credeals.cre_listing_contacts(listing_id,name,title)
+SELECT id,'Race agent','Original title' FROM credeals.cre_listings WHERE external_id='race-fixture';""")
+        race_item = {"sourceKey": "svn", "id": "race-fixture", "url": "https://example.test/race",
+                     "name": "Race parent", "preserveChildCollections": True}
+        import cre_listing_history_sql as history
+        race_sql = ingest.build_sql([ingest.to_row(race_item, {}, stamp)], job, stamp, set(), artifact_run_key="test-race-held")
+        assert race_sql.count(history.BEFORE) == 1
+        race_sql = race_sql.replace(history.BEFORE, history.BEFORE + "\nSELECT pg_sleep(5);\n")
+        def background(application, statement):
+            proc = subprocess.Popen(["docker", "exec", "-i", "-e", f"PGAPPNAME={application}", name,
+                                     "psql", "-U", "postgres", "-X", "-q", "-tA", "-v", "ON_ERROR_STOP=1"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            proc.stdin.write(statement)
+            proc.stdin.close()
+            return proc
+        def wait_for_sleep(application):
+            for _ in range(100):
+                if sql(f"SELECT count(*) FROM pg_stat_activity WHERE application_name='{application}' AND wait_event='PgSleep';") == "1":
+                    return
+                time.sleep(.05)
+            raise AssertionError("synthetic concurrent session did not enter sleep")
+        racing_ingest = background("history-race-ingest", race_sql)
+        wait_for_sleep("history-race-ingest")
+        blocked = subprocess.run(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                                 input="SET statement_timeout='200ms'; UPDATE credeals.cre_listing_contacts SET title='Should not commit' WHERE name='Race agent';",
+                                 capture_output=True, text=True)
+        assert blocked.returncode != 0 and "statement timeout" in blocked.stderr
+        blocked_delete = subprocess.run(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                                        input="SET statement_timeout='200ms'; DELETE FROM credeals.cre_listing_contacts WHERE name='Race agent';",
+                                        capture_output=True, text=True)
+        assert blocked_delete.returncode != 0 and "statement timeout" in blocked_delete.stderr
+        # backfill_media_from_raw_data writes additive child INSERTs without the
+        # lifecycle advisory lock; its real FK still needs a parent key-share lock.
+        blocked_backfill = subprocess.run(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                                          input="SET statement_timeout='200ms'; INSERT INTO credeals.cre_listing_media(listing_id,media_type,url) SELECT id,'video','https://example.test/race-video' FROM credeals.cre_listings WHERE external_id='race-fixture';",
+                                          capture_output=True, text=True)
+        assert blocked_backfill.returncode != 0 and "statement timeout" in blocked_backfill.stderr
+        assert racing_ingest.wait(timeout=15) == 0, racing_ingest.stderr.read()
+        assert sql("SELECT payload->'children'->'cre_listing_contacts'->0->>'title' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-race-held' AND phase='preimage';") == "Original title"
+        # When an independent writer already holds the child row, history
+        # reports an omission while a child-preserving valid refresh commits.
+        racing_writer = background("history-race-writer", "BEGIN; UPDATE credeals.cre_listing_contacts SET title='Writer title' WHERE name='Race agent'; SELECT pg_sleep(5); COMMIT;")
+        wait_for_sleep("history-race-writer")
+        race_receipt = sql(ingest.build_sql([ingest.to_row(race_item, {}, stamp)], job, stamp, set(), artifact_run_key="test-race-busy"))
+        assert "child_lock_unavailable" in race_receipt
+        assert racing_writer.poll() is None
+        assert racing_writer.wait(timeout=15) == 0, racing_writer.stderr.read()
+        assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Race agent';") == "Writer title"
+        # Buildout preserves existing contacts when the staged contact set is
+        # empty even while other child types refresh. This row lock is extra.
+        empty_writer = background("history-race-empty", "BEGIN; UPDATE credeals.cre_listing_contacts SET title='Empty contact witness' WHERE name='Race agent'; SELECT pg_sleep(5); COMMIT;")
+        wait_for_sleep("history-race-empty")
+        empty_item = {key: value for key, value in race_item.items() if key != "preserveChildCollections"}
+        empty_receipt = sql(ingest.build_sql([ingest.to_row(empty_item, {}, stamp)], job, stamp, set(), artifact_run_key="test-race-empty"))
+        assert "child_lock_unavailable" in empty_receipt
+        assert empty_writer.poll() is None
+        assert empty_writer.wait(timeout=15) == 0, empty_writer.stderr.read()
+        assert sql("SELECT title FROM credeals.cre_listing_contacts WHERE name='Race agent';") == "Empty contact witness"
+        deleting_writer = background("history-race-delete", "BEGIN; DELETE FROM credeals.cre_listing_contacts WHERE name='Race agent'; SELECT pg_sleep(5); COMMIT;")
+        wait_for_sleep("history-race-delete")
+        delete_receipt = sql(ingest.build_sql([ingest.to_row(race_item, {}, stamp)], job, stamp, set(), artifact_run_key="test-race-delete"))
+        assert "child_lock_unavailable" in delete_receipt
+        assert deleting_writer.poll() is None
+        assert deleting_writer.wait(timeout=15) == 0, deleting_writer.stderr.read()
+        assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE name='Race agent';") == "0"
+        # A normal replacement must acquire the child lock anyway. Do not
+        # introduce the short optional-history timeout on this path: wait for
+        # the existing writer and capture its committed version before DELETE.
+        sql("""INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url,title,status)
+SELECT id,'replace-fixture','https://example.test/replace','Replace parent','active' FROM credeals.cre_brokerages WHERE slug='svn';
+INSERT INTO credeals.cre_listing_contacts(listing_id,name,title)
+SELECT id,'Replace agent','Prior title' FROM credeals.cre_listings WHERE external_id='replace-fixture';""")
+        replacing_writer = background("history-replace-writer", "BEGIN; UPDATE credeals.cre_listing_contacts SET title='Committed witness' WHERE name='Replace agent'; SELECT pg_sleep(2); COMMIT;")
+        wait_for_sleep("history-replace-writer")
+        replacement_item = {"sourceKey": "svn", "id": "replace-fixture", "url": "https://example.test/replace", "name": "Replace parent", "contactsDetailed": [{"name": "New agent"}]}
+        replace_receipt = sql(ingest.build_sql([ingest.to_row(replacement_item, {}, stamp)], job, stamp, set(), artifact_run_key="test-replacement-wait"))
+        assert replacing_writer.wait(timeout=15) == 0, replacing_writer.stderr.read()
+        assert "child_lock_unavailable" not in replace_receipt
+        assert sql("SELECT payload->'children'->'cre_listing_contacts'->0->>'title' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-replacement-wait' AND phase='preimage';") == "Committed witness"
+        assert sql("SELECT count(*) FROM credeals.cre_listing_contacts WHERE name='Replace agent';") == "0"
         # Explicit source-complete retirement captures both sides while retaining children.
         sql("""INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url,title,status)
 SELECT id,'retire-fixture','https://example.test/retire','Retained listing','active' FROM credeals.cre_brokerages WHERE slug='svn';
@@ -102,7 +200,15 @@ SELECT id,'https://example.test/retire.jpg','Retained image' FROM credeals.cre_l
         assert sql("SELECT jsonb_array_length(payload->'children'->'cre_listing_images') FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-retirement' AND external_id='retire-fixture' AND phase='postimage';") == "1"
         secret_item = {**next_item, "name": "valid peer", "sourceEvidence": {"token": "synthetic-secret"}}
         receipt = apply(secret_item, "test-credential")
-        assert "credential_like_content" in receipt
+        assert "captured_with_omissions" in receipt
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "redacted.log"
+            log.write_text(receipt + "\n")
+            parsed = read_receipt(log, "test-credential")
+            assert parsed["state"] == "reported_omissions"
+            assert parsed["outcomes"]["svn:observation:captured_with_omissions"] == 1
+            assert read_receipt(log, "wrong-key")["state"] == "unknown"
+        assert sql("SELECT payload->'raw_data'->>'name' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-credential' AND phase='observation';") == "valid peer"
         assert sql("SELECT title FROM credeals.cre_listings WHERE external_id='history-fixture';") == "valid peer"
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE payload::text LIKE '%synthetic-secret%';") == "0"
         for idx, extra in enumerate([
@@ -110,15 +216,36 @@ SELECT id,'https://example.test/retire.jpg','Retained image' FROM credeals.cre_l
             {"sourceEvidence": "https://example.test/a?X-Amz-Credential=synthetic-secret"},
             {"sourceEvidence": "https://example.test/a?%74oken=synthetic-secret"},
             {"sourceEvidence": "https://user:synthetic-secret@example.test/a"},
+            {"sourceEvidence": {"cookie": "synthetic-secret", "safe": "retained"}},
+            {"sourceEvidence": {"session_id": "synthetic-secret", "safe": "retained"}},
+            {"sourceEvidence": {"private_key": "synthetic-secret", "safe": "retained"}},
+            {"sourceEvidence": "https://example.test/a?session=synthetic-secret"},
         ]):
+            if idx in (4, 5, 6, 7):
+                from source_evidence.automatic import _refuse_credential_fields
+                try:
+                    _refuse_credential_fields(extra)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"existing admission did not flag synthetic case {idx}")
             response = apply({**next_item, **extra, "name": f"valid-{idx}"}, f"test-sensitive-{idx}")
-            assert "credential_like_content" in response
-            assert sql(f"SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-{idx}' AND phase='observation';") == "0"
+            assert "svn:observation:captured_with_omissions" in response, (idx, response)
+            assert sql(f"SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-{idx}' AND phase='observation';") == "1"
+            omissions_result = sql(f"SELECT jsonb_array_length(omissions)::text FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-{idx}' AND phase='observation';")
+            assert int(omissions_result) > 0, (idx, omissions_result)
+            if idx in (4, 5, 6):
+                assert sql(f"SELECT payload->'raw_data'->'sourceEvidence'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-{idx}' AND phase='observation';") == "retained"
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE payload::text LIKE '%synthetic-secret%';") == "0"
+        identity_item = {**next_item, "id": "https://example.test/a?token=synthetic-secret", "name": "valid identity peer"}
+        identity_result = apply(identity_item, "test-sensitive-identity")
+        assert "credential_identity_refused" in identity_result
+        assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE external_id LIKE '%synthetic-secret%';") == "0"
+        assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id LIKE '%synthetic-secret%';") == "1"
         allowed = apply({**next_item, "sourceEvidence": "https://example.test/a?listing=42", "name": "allowed-query"}, "test-allowed-query")
         assert "svn:observation:captured" in allowed
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-allowed-query' AND phase='observation';") == "1"
-        print("listing history: unavailable store, pre/source/post, children, replay, ACL, rollback and credential refusal passed")
+        print("listing history: receipt, redaction, rollback, access and concurrent child locks passed")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

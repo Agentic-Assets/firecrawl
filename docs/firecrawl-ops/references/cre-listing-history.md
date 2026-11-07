@@ -29,20 +29,41 @@ These statements do not establish production effective privileges or isolation:
 review schema defaults, role inheritance, RLS, and actual service callers before
 any separately authorized application. No production DDL follows from this PR.
 
-A conservative in-database admission scan refuses a whole snapshot when it
-finds credential-like keys, known signed URL parameters, URL userinfo, unknown
-percent-encoded URL queries, or escaped Unicode it cannot inspect. The receipt
-reports the refusal without logging the payload; normal canonical updates can
-continue. This scanner is not the existing source-evidence admission workflow,
-does not prove the absence of all secrets or private material, and needs
-independent privacy review before any activation. False positives are possible.
-No source-specific price-hiding rule or new source access authority is added.
+A conservative in-database projection withholds credential-labelled fields
+and suspicious strings, retaining the other fields and recording hashed paths
+and reasons in the snapshot. A credential-bearing external identity is refused
+because it is also an indexed metadata value. Known signed URL parameters,
+userinfo, unknown percent-encoded URL queries, embedded credential-labelled
+JSON and escaped Unicode that cannot be safely inspected are withheld. The
+receipt reports affected captures without logging their values. This SQL
+projection cannot invoke the existing Python source-evidence admission workflow
+inside the transaction. Selected synthetic cases are compared with that
+workflow, but equivalence, universal secret detection and private-material
+classification are not established; independent review is required. False
+positives are possible. No source-specific price-hiding rule or new source
+access authority is added.
+
+The canonical parent lock prevents ordinary foreign-key child inserts while
+snapshot capture is active. Existing child rows are locked in fixed table and
+row order before each parent snapshot, coordinating with independent child
+UPDATE and DELETE operations. Known child-replacement paths use the existing
+transaction lock timeout because the canonical DELETE needs these locks too.
+For preserving or uncertain paths, the additional snapshot lock uses 250 ms;
+a busy child produces `child_lock_unavailable` and the optional capture is
+skipped so a child-preserving refresh can continue. Empty staged contacts and
+Colliers contacts are treated conservatively because they may be retained;
+Avison and legacy JLL withholding-shaped inputs are also uncertain. That omission
+can leave the concurrent child version unavailable in history. Changes made entirely between
+refreshes and independent writers that do not follow the canonical lock
+protocol remain outside complete-history coverage. Snapshot locks do not prove
+all child writers, live schemas, or foreign-key constraints have been audited.
 
 There is no automatic deletion, time-to-live, fixed per-record cap or fixed
 history cap. The table grows with new physical snapshots, and backup capacity,
 restore procedure, monitoring and storage ownership must be qualified before
-production use. An absent table, detected sensitive content, unavailable child
-schema, or a caught insertion failure is counted by brokerage and phase in the
+production use. An absent table, withheld credential-like content, unavailable
+child schema, a busy child lock, or a caught insertion failure is counted by
+brokerage and phase in the
 post-commit `CRE_LISTING_HISTORY` receipt and checkpoint ingest manifest. A
 missing, malformed or unbound receipt is `unknown`; it does not stop eligible
 sources. These counts are not a per-record retry queue or proof of a backup.
