@@ -43,6 +43,8 @@ test("Matthews bounds a header stall even when fetch ignores abort", async (t) =
 test("matthewsTenureFromUrl classifies leasing slugs as lease", () => {
   assert.equal(matthewsTenureFromUrl("https://www.matthews.com/properties/leasing-abc"), "lease");
   assert.equal(matthewsTenureFromUrl("https://www.matthews.com/properties/panera-bread"), "sale");
+  assert.equal(matthewsTenureFromUrl("https://www.matthews.com/properties/LEASING-test"), "lease");
+  assert.equal(matthewsTenureFromUrl("https://www.matthews.com/properties/my-leasing-place"), "sale");
 });
 
 test("parseMatthewsDetail extracts core fields from server-rendered HTML", () => {

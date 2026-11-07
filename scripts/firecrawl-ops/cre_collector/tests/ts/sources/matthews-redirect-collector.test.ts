@@ -448,15 +448,17 @@ original=next(x for x in partial["retainedObservations"] if x.get("requestedUrl"
 duplicate=dict(original)
 wrong_source={**original,"sourceKey":"other","requestedUrl":"https://www.matthews.com/properties/wrong-source"}
 wrong_tx={**original,"requestedTransaction":"lease","requestedUrl":"https://www.matthews.com/properties/wrong-tx"}
-partial["retainedObservations"].extend([duplicate,wrong_source,wrong_tx])
+wrong_tenure={**original,"requestedUrl":"https://www.matthews.com/properties/leasing-wrong"}
+partial["retainedObservations"].extend([duplicate,wrong_source,wrong_tx,wrong_tenure])
 category="temporaryRedirects" if ${status} == 307 else "httpFailures"
-typed[category] += 3
+typed[category] += 4
 raw=json.dumps(data,separators=(",", ":")).encode()
 r=derive(raw,generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
 assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
-assert len(r["held"])==4 and r["mark_missing_safe"] is False
+assert len(r["held"])==5 and r["mark_missing_safe"] is False
 assert [x["reason"] for x in r["held"]].count("duplicate_held_identity")==1
 assert [x["reason"] for x in r["held"]].count("invalid_held_observation")==2
+assert [x["reason"] for x in r["held"]].count("held_tenure_mismatch")==1
 assert len(r["receipt_warnings"])==1
 g=gate_projection(raw,r)
 require_canonical_artifact(g,allow_matthews_partial_gate=True)

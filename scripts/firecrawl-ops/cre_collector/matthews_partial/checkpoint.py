@@ -110,6 +110,12 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
                     except ValueError:
                         valid_url = False
                     if valid_url:
+                        # Match sources/pure/matthews-identity.ts: only the
+                        # leasing- property family belongs to the lease pass.
+                        url_tx = "lease" if re.search(r"/properties/leasing-", url, re.IGNORECASE) else "sale"
+                        if url_tx != tx:
+                            held.append({"transaction": tx, "ordinal": ordinal, "reason": "held_tenure_mismatch"})
+                            continue
                         identity = re.sub(r"%[0-9a-fA-F]{2}", lambda m: m[0].lower(), parsed.path[12:])
                         if identity in requested_identities:
                             reason = "duplicate_held_identity"

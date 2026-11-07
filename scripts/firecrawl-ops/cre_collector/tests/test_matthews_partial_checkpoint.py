@@ -136,6 +136,34 @@ class MatthewsCandidateTest(unittest.TestCase):
         _, legacy = project(data)
         self.assertEqual(legacy["receipt_warnings"], candidate["receipt_warnings"])
 
+    def test_held_url_tenure_mismatch_is_warned_without_blocking_peers(self):
+        for tx, url in (("sale", "https://www.matthews.com/properties/leasing-mismatch"),
+                        ("lease", "https://www.matthews.com/properties/sale-mismatch")):
+            data = artifact()
+            entry = data["sources"][0]
+            held = entry["retainedObservations"][0]
+            held["requestedUrl"] = url
+            held["requestedTransaction"] = tx
+            if tx == "lease":
+                entry["transaction"] = "lease"
+                entry["error"] = entry["error"].replace("sale", "lease")
+                entry["retainedObservations"][1]["observation"]["transactionType"] = "Lease"
+                entry["retainedObservations"][1]["observation"].update(
+                    id="leasing-example", url="https://www.matthews.com/properties/leasing-example",
+                    canonicalUrl="https://www.matthews.com/properties/leasing-example")
+                data["sources"][1]["transaction"] = "sale"
+            valid = copy.deepcopy(held)
+            valid["requestedUrl"] = ("https://www.matthews.com/properties/leasing-held"
+                                      if tx == "lease" else "https://www.matthews.com/properties/sale-held")
+            entry["retainedObservations"].append(valid)
+            entry["error"] = entry["error"].replace("1 temporary", "2 temporary")
+            _, candidate = project(data)
+            with self.subTest(tx=tx):
+                self.assertEqual(len(candidate["rows"]), 1)
+                self.assertIn("held_tenure_mismatch", [x["reason"] for x in candidate["held"]])
+                self.assertEqual(candidate["receipt_warnings"][0]["reported"], [2,0,0])
+                self.assertEqual(candidate["receipt_warnings"][0]["verified"], [1,0,0])
+
     def test_completed_identity_also_held_isolated_from_unrelated_peer(self):
         data = artifact()
         held = data["sources"][0]["retainedObservations"][0]
