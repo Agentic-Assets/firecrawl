@@ -115,7 +115,13 @@ export class AvisonYoungTerminalDetailError extends Error {
 // These holds never authorize a complete source result or a database write.
 type AvisonRedirectObservation = { requestedUrl: string | null; finalUrl: string | null; urlsSanitized: true };
 export class AvisonYoungRecordDetailError extends Error {
-  constructor(message: string, readonly redirectObservations: AvisonRedirectObservation[] = []) { super(message); }
+  readonly validatedOfficialPages!: Array<{ url: string; doc: ScrapedDoc; observedAt: string }>;
+  constructor(message: string, readonly redirectObservations: AvisonRedirectObservation[] = [],
+    validatedOfficialPages: Array<{ url: string; doc: ScrapedDoc; observedAt: string }> = []) {
+    super(message);
+    // Do not make raw page content enumerable on the error or expose it in logs.
+    Object.defineProperty(this, "validatedOfficialPages", { value: validatedOfficialPages, enumerable: false });
+  }
 }
 export class AvisonYoungAccessDeniedError extends Error {
   readonly retryAfter: string | null;
@@ -2526,7 +2532,7 @@ export async function enrichAvisonYoungListing(
     return prune({ ...base, detailError: "missing public detail URLs" });
   }
 
-  const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
+  const docs: Array<{ doc: ScrapedDoc; url: string; observedAt: string }> = [];
   const errors: string[] = [];
   let recordDetailErrors = 0;
   let settledDetailErrors = 0;
@@ -2560,7 +2566,7 @@ export async function enrichAvisonYoungListing(
         }
         throw error;
       }
-      docs.push({ url, doc });
+      docs.push({ url, doc, observedAt: observationNow() });
     } catch (err) {
       // A settled denial on the separately hosted SharpLaunch page does not
       // authorize another attempt there. The source-owned official URL may
@@ -2640,7 +2646,14 @@ export async function enrichAvisonYoungListing(
   // A validated alternate must not conceal another URL's ordinary failure.
   // Keep this row held; the complete validated peers can still be spooled.
   if (requireLiveDetails && !strict && (recordDetailErrors || settledDetailErrors)) {
-    throw new AvisonYoungRecordDetailError(errors.join("; "), redirectObservations);
+    // Keep the record held. A separately validated official page remains
+    // source evidence, not a complete listing or an ingestion qualification.
+    const officialUrl = clean(base.externalUrl);
+    const officialPages = docs.filter(({ url }) => url === officialUrl && (() => {
+      try { const parsed = new URL(url); return parsed.protocol === "https:" && parsed.hostname === "www.avisonyoung.us"
+        && !parsed.username && !parsed.password && !parsed.port; } catch { return false; }
+    })());
+    throw new AvisonYoungRecordDetailError(errors.join("; "), redirectObservations, officialPages);
   }
   if (!docs.length) {
     if (requireLiveDetails && missingDetails.length === detailUrls.length) {
@@ -2962,7 +2975,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
     }
     return enriched;
   };
-  const outcomes: Array<{ id: string | null; state: string; sourceOrdinal?: number; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown }> = selectedProviderIds.map((id, index) => ({
+  const outcomes: Array<{ id: string | null; state: string; sourceOrdinal?: number; reason?: string; redirectObservations?: AvisonRedirectObservation[]; feedObservation?: unknown; validatedOfficialDetail?: unknown }> = selectedProviderIds.map((id, index) => ({
     id, state: "unattempted", ...(partialRowMode ? { sourceOrdinal: selected[index]!.sourceOrdinal } : {}),
   }));
   const evidenceRows = [...selectedRows];
@@ -3006,6 +3019,19 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           outcomes[index]!.reason = "unbound_response";
         } else if (error.message.includes("Avison Young detail has malformed content types")) {
           outcomes[index]!.reason = "malformed_content_type";
+        }
+        if (error.validatedOfficialPages.length) {
+          try {
+            const raw = JSON.stringify(error.validatedOfficialPages);
+            if (!apiKey || typeof raw !== "string" || containsCredential(raw, apiKey)) throw new Error();
+            outcomes[index]!.validatedOfficialDetail = {
+              sourceKey: "avison-young", requestedId: selectedProviderIds[index],
+              retainedAt: observationNow(), qualification: "page_identity_validated_record_held",
+              pages: error.validatedOfficialPages,
+            };
+          } catch {
+            outcomes[index]!.validatedOfficialDetail = { state: "retention_failed" };
+          }
         }
         heldIds.push(selectedProviderIds[index]!);
         return undefined;

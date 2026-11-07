@@ -118,6 +118,10 @@ https.request=(url,options,callback)=>{
       if(sale&&index===1)
         body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
+    if(mode==='valid-official-alternate')status=200;
+    if(mode==='valid-official-alternate' && index===1 && native){
+      status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
+    }
     if(mode==='one-bad-identity' && index===1){
       status=200;body='<html><main class="property-detail"><h1>Unrelated Subject</h1><p>Other building.</p></main></html>';
     }
@@ -1004,3 +1008,32 @@ def test_selected_row_partition_retains_original_ordinal_and_valid_peers(tmp_pat
             assert held["id"] is None and raw["id"] == {"toString": None, "valueOf": None}
     assert any(record["kind"] == "validated_detail" and record["transaction"] == "sale"
                and record["documents"][0]["id"] == "9003" for record in records)
+
+
+def test_actual_collector_retains_valid_official_detail_for_held_row(tmp_path):
+    preload, started, env = prepare(tmp_path, "valid-official-alternate")
+    env["AVISON_YOUNG_DETAIL_CONCURRENCY"] = "1"
+    attempt = {"number": 1, "avison-young_partial": custody.prepare(tmp_path, 1, "avison-young")}
+    env, _ = refresh.fresh_source_env("avison-young", tmp_path, base=env,
+                                     generation_started_at=started, attempt_number=1)
+    output = tmp_path / "artifact.json"
+    result = subprocess.run(command(preload, output), cwd=COLLECTOR, env=env,
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["runMeta"]["evidenceOnly"] is True
+    rejected, _ = refresh.archive_rejected_with_evidence(output, tmp_path, {}, "avison-young", attempt)
+    assert rejected and attempt["avison-young_partial"]["state"] == "sealed_local"
+    spool = tmp_path / attempt["avison-young_partial"]["path"]
+    records = [json.loads(line) for line in spool.read_text().splitlines()[1:]]
+    for tx, held, peer in (("sale", "9002", "9003"), ("lease", "9005", "9006")):
+        outcome = next(record for record in records if record["kind"] == "detail_outcomes" and record["transaction"] == tx)
+        row = next(item for item in outcome["documents"] if item["id"] == held)
+        assert row["state"] == "failed"
+        evidence = row["validatedOfficialDetail"]
+        assert evidence["qualification"] == "page_identity_validated_record_held"
+        assert evidence["pages"][0]["url"].endswith(f"/fixture-{tx}-1")
+        assert "Current property details" in evidence["pages"][0]["doc"]["rawHtml"]
+        assert any(record["kind"] == "validated_detail" and record["transaction"] == tx
+                   and str(record["documents"][0]["id"]) == peer for record in records)
+    assert "0123456789abcdef0123456789abcdef" not in spool.read_text()
