@@ -15,6 +15,29 @@ and 900-second catch-up rules describe their specific legacy recovery path, not
 normal resume. Existing executable checks still apply until the maintained
 runner is simplified; do not misrepresent a documentation change as a bypass.
 
+## Listing continuity and source absence
+
+An individual malformed, unavailable or redirected listing should not discard
+valid peers. Diagnose the actual response, hold the affected record and retain
+its source evidence, continue eligible records through a tested partial path,
+and report partial coverage. A source-wide denial, unsettled write or other
+unresolved shared failure must not be disguised as a record-local success.
+
+Retain existing listing fields and related contacts, documents and images when
+later observations omit or replace them; preserve source and observation time
+for historical values and contradictions. A complete, source-specific inventory
+can show that a previously observed identity is absent; record this as a
+disappearance with unknown cause, and record a later reappearance. A partial,
+failed or ambiguous inventory cannot establish disappearance. Do not infer sale,
+lease or withdrawal from absence alone, delete the listing, or assume a changed
+URL proves a different identity.
+
+These are required outcomes, not current guarantees. The scheduled additive
+series does not automatically record every disappearance and routine refreshes
+can replace prior raw data and child rows. Implement and verify the missing
+paths in [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
+and [AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
 > **ACTIVE production collector and ingest implementation.** The supervised
 > refresh and series entrypoints are `cre_checkpoint_refresh.py` and
 > `cre_checkpoint_series.py`; the Windows task wrapper and its acceptance gates
