@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from matthews_partial.checkpoint import admit_gate, derive, prepare_candidate
+from matthews_partial.checkpoint import derive, prepare_candidate
 
 
 def run(*args, input_text=None):
@@ -56,7 +56,6 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
         import cre_checkpoint_refresh as refresh
         import cre_ingest
         import cre_refresh_pipeline as pipeline
-        from matthews_partial.worker import run_readback
 
         code, dirty=refresh.git_identity()
         assert not dirty, "test must run on a clean committed tree"
@@ -81,27 +80,13 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                 expected_generation_id="fixture-generation",expected_generation_started_at=started)
             checkpoint=manifest["sources"]["matthews"]
             checkpoint["artifact"]={**stats,"path":info["gate_path"],"attempt_started_at":started}
-            def report():
-                return {"generated_for_artifact":str(gate_path),"per_source":{"matthews":{"current_active":2,
-                    "verdict":"hold","reason":"source pass error: matthews_partial_incomplete","mark_missing_safe":False}},
-                    "summary":{"mode":"live","torow_errors":0,"baseline_updated":False,"baseline_update_sources":[],
-                    "hold_sources":["matthews"],"mark_missing_safe_sources":[],"verdict_counts":{}},"per_brokerage":{}}
-            source_report=report()
-            proof=admit_gate(gate_path,root,manifest,source_report,git_identity=refresh.git_identity,
-                target_sha256=target["value"],phase="source")
-            checkpoint["gate"]={"current_inventory_proof":proof,"verdict":"ok_additive_verified_subset",
-                "mark_missing_safe":False,"admission_scope":"matthews_existing_parent_partial_v1"}
-            aggregate=report()
-            assert admit_gate(gate_path,root,manifest,aggregate,git_identity=refresh.git_identity,
-                target_sha256=target["value"],phase="aggregate")==proof
-            attempt_id=uuid.uuid4().hex; checkpoint["subset_ingest_attempt_id"]=attempt_id
-            envelope={"manifest":manifest,"source_report":source_report,"aggregate_report":aggregate,
-                "binding":proof,"attempt_id":attempt_id}
-            claims=root/"claims.json"; claims.write_text(json.dumps(envelope)); os.chmod(claims,0o600)
-            checkpoint["matthews_partial_claims"]={"path":str(claims),"sha256":refresh.sha256_file(claims),"attempt_id":attempt_id}
-            checkpoint["state"]="dry_run_passed"
             env_file=work/"synthetic.env"; env_file.write_text("POSTGRES_URL="+synthetic_url+"\n"); os.chmod(env_file,0o600)
-            psql=work/"psql-fixture"; psql.write_text("#!/bin/sh\nfor x in \"$@\"; do last=\"$x\"; done\ncat \"$last\" | docker exec -i "+container_id+" psql -U postgres -X -q -v ON_ERROR_STOP=1 -P pager=off -P footer=off -F '\\t' -A -f -\n")
+            psql=work/"psql-fixture"
+            psql.write_text("#!/bin/bash\nargs=(\"$@\")\nn=${#args[@]}\n"
+                "if (( n > 1 )) && [[ \"${args[n-2]}\" == '-f' && \"${args[n-1]}\" != '-' ]]; then\n"
+                "  file=\"${args[n-1]}\"; args[n-1]='-'; cat -- \"$file\" | docker exec -i "+container_id+
+                " psql -U postgres \"${args[@]}\"\nelse\n  exec docker exec -i "+container_id+
+                " psql -U postgres \"${args[@]}\"\nfi\n")
             os.chmod(psql,0o700)
             old_psql=os.environ.get("PSQL_BIN"); os.environ["PSQL_BIN"]=str(psql)
             cre_ingest.PSQL_CANDIDATES.insert(0,str(psql))
@@ -111,9 +96,14 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
                     token=pipeline._OWNER_CHECK.set(owner._require_authority)
                     lease=pipeline._OWNER_LEASE.set(owner.lease_token)
                     try:
+                        refresh.gate_source(root,manifest,"matthews",gate_path,str(env_file))
+                        assert checkpoint["gate"]["verdict"]=="ok_additive_verified_subset"
+                        assert refresh.dry_run_source(root,manifest,"matthews",gate_path)
+                        refresh.run_aggregate_gate(root,manifest,str(env_file),sources=["matthews"])
+                        attempt_id=checkpoint["subset_ingest_attempt_id"]
                         refresh.ingest_source(root,manifest,"matthews",gate_path,str(env_file))
                         assert checkpoint["state"]=="ingested" and checkpoint["ingest"]["rc"]==0
-                        proof_read=run_readback(gate_path,envelope,target_sha256=target["value"],attempt_id=attempt_id,env_file=str(env_file))
+                        proof_read=refresh.matthews_partial_readback(root,manifest,str(env_file))
                     finally:
                         pipeline._OWNER_CHECK.reset(token); pipeline._OWNER_LEASE.reset(lease)
             finally:
