@@ -21,7 +21,7 @@ const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: bad
 async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json"
   | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error"
   | "bad-transaction" | "unknown-transaction" | "country-unknown" | "country-malformed"
-  | "country-canada" | "country-ca" | "country-missing" | "country-unknown-code" | "country-conflict") {
+  | "country-canada" | "country-ca" | "country-mexico" | "country-uk" | "country-missing" | "country-unknown-code" | "country-conflict") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -62,6 +62,8 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
             : ordinaryFailure === "country-unknown-code" ? { ...bad, country: "ZZ" }
             : ordinaryFailure === "country-canada" ? { ...bad, country: "Canada", state: "ON" }
             : ordinaryFailure === "country-ca" ? { ...bad, country: "CA", state: "ON" }
+            : ordinaryFailure === "country-mexico" ? { ...bad, country: "Mexico", state: "CMX" }
+            : ordinaryFailure === "country-uk" ? { ...bad, country: "UK", state: "London" }
             : ordinaryFailure === "country-conflict" ? { ...bad, country: "Canada", state: "IL" }
             : ordinaryFailure === "missing-id" ? { ...bad, id: null }
             : ordinaryFailure === "unsafe-id" ? { ...bad, id: Number.MAX_SAFE_INTEGER + 1 }
@@ -286,7 +288,7 @@ for (const mode of ["country-unknown", "country-malformed", "country-missing", "
   });
 }
 
-for (const mode of ["country-canada", "country-ca"] as const) {
+for (const mode of ["country-canada", "country-ca", "country-mexico", "country-uk"] as const) {
   test(`country selection excludes evidenced foreign ${mode} and processes a valid peer`, async () => {
     const { failure, observed, outcomes, calls } = await runCase(false, mode);
     assert.equal(failure, undefined);
