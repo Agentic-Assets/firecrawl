@@ -470,3 +470,66 @@ def rebind_count_decision(original, staged, decision):
     if any(original.get(key) != staged.get(key) for key in witnesses):
         return {"values": {}, "blocked": ["available_space_count"]}
     return decision
+
+
+def classify_prior_inventory_presence(validated, prior_bindings, source):
+    """Classify source-qualified prior native IDs against a validated full feed.
+
+    This is an observation-only staging step. The caller must independently bind
+    the validated proof to the exact generation, target and owner, authenticate
+    prior bindings and serialize/recheck them in the ingest transaction. No
+    result here authorizes a database write or a lifecycle/status change.
+    """
+    if not isinstance(source, str) or not source or not isinstance(validated, dict):
+        raise ValueError("invalid inventory scope")
+    pages = validated.get("pages")
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("missing validated inventory pages")
+    observed = set()
+    for page in pages:
+        rows = page.get("rows") if isinstance(page, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("invalid validated inventory rows")
+        for row in rows:
+            native = row.get("id") if isinstance(row, dict) else None
+            if (not isinstance(native, str) or not re.fullmatch(r"[1-9][0-9]{0,15}", native)
+                    or int(native) > 9007199254740991):
+                raise ValueError("invalid validated inventory identity")
+            observed.add(native)
+    if not isinstance(prior_bindings, list):
+        raise ValueError("invalid prior bindings")
+    claims = defaultdict(int)
+    external_claims = defaultdict(int)
+    for prior in prior_bindings:
+        if not isinstance(prior, dict):
+            continue
+        ids = prior.get("native_ids")
+        if isinstance(prior.get("external_id"), str):
+            external_claims[prior["external_id"]] += 1
+        if prior.get("source_key") == source and isinstance(ids, list):
+            for native in set(item for item in ids if isinstance(item, str)):
+                claims[native] += 1
+    result = {"not_observed": [], "still_observed": [], "held": []}
+    for prior in prior_bindings:
+        if not isinstance(prior, dict):
+            result["held"].append(prior)
+            continue
+        identity = prior.get("external_id")
+        ids = prior.get("native_ids")
+        qualified = (
+            prior.get("source_key") == source
+            and isinstance(identity, str) and bool(identity)
+            and external_claims[identity] == 1
+            and prior.get("observation_present") is True
+            and isinstance(ids, list) and bool(ids)
+            and all(isinstance(item, str) and re.fullmatch(r"[1-9][0-9]{0,15}", item)
+                    and int(item) <= 9007199254740991 and claims[item] == 1 for item in ids)
+            and len(ids) == len(set(ids))
+        )
+        if not qualified:
+            result["held"].append(prior)
+        elif any(native in observed for native in ids):
+            result["still_observed"].append(prior)
+        else:
+            result["not_observed"].append(prior)
+    return result
