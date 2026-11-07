@@ -441,7 +441,7 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
   );
 });
 
-test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identities", () => {
+test("JLL GraphQL retains reported prices and controls and rejects unsafe identities", () => {
   const hidden = jllGraphqlItemToListing(
     {
       id: "1",
@@ -454,8 +454,8 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     1,
     1,
   );
-  assert.equal(hidden.salePriceUsd, undefined);
-  assert.equal(hidden.salePriceText, undefined);
+  assert.equal(hidden.salePriceUsd, 1000000);
+  assert.equal(hidden.salePriceText, "$1,000,000");
   const unknownControl = jllGraphqlItemToListing(
     {
       id: "2",
@@ -468,15 +468,12 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     1,
     1,
   );
-  assert.equal(unknownControl.salePriceUsd, undefined);
-  assert.equal(unknownControl.salePriceText, undefined);
+  assert.equal(unknownControl.salePriceUsd, 3250000);
+  assert.equal(unknownControl.salePriceText, "$3,250,000");
   assert.deepEqual(unknownControl.jllSearchResult, {
     priceWithholdingControl: "unknown",
+    sourceHidePrice: "not-a-boolean",
   });
-  assert.doesNotMatch(
-    JSON.stringify(unknownControl.jllSearchResult),
-    /not-a-boolean/,
-  );
   const contradictory = jllGraphqlItemToListing(
     {
       id: "3",
@@ -491,7 +488,7 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     1,
     1,
   );
-  assert.equal(contradictory.salePriceUsd, undefined);
+  assert.equal(contradictory.salePriceUsd, 3250000);
   assert.equal(
     contradictory.jllSearchResult.priceWithholdingControl,
     "withheld",
@@ -509,7 +506,7 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     1,
     1,
   );
-  assert.equal(duplicate.salePriceUsd, undefined);
+  assert.equal(duplicate.salePriceUsd, 3250000);
   assert.equal(duplicate.jllSearchResult.priceWithholdingControl, "unknown");
   assert.throws(
     () =>
@@ -2376,4 +2373,37 @@ test("JLL tenure types ride extra_facts deduped", () => {
     tenure_types: ["sale", "rent"],
   });
   assert.equal(jllStrandedStructured({ tenureTypes: [] }).extraFacts, undefined);
+});
+
+test("JLL v2 retains source prices and prose with hidden controls", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-v2-public-facts-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    const url = "https://property.jll.com/listings/v2-public-facts";
+    writeJllDetailCache(url, {
+      rawHtml: '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({props: {pageProps: {property: {
+          id: "v2-public-facts", pageUrl: "/listings/v2-public-facts",
+          hidePrice: true, salePrice: {amount: 3250000, currency: "USD"},
+          description: "The reported asking price is $3,250,000.",
+        }, brokers: []}}}) + "</script>",
+      markdown: "Asking $3,250,000", links: [], images: [],
+    });
+    const base = jllGraphqlItemToListing({
+      id: "v2-public-facts", pageUrl: "/listings/v2-public-facts",
+      hidePrice: true, salePrice: {amount: 1000000, currency: "USD"},
+    }, "sale", "office", 1, 1);
+    const result = await enrichJllListing(base);
+    assert.equal(result.salePriceUsd, 3250000);
+    assert.equal(result.jllSearchResult.sourceHidePrice, true);
+    assert.equal(result.jllDetail.sourceHidePrice, true);
+    assert.equal(result.jllDetail.pricing.visibility, "withheld");
+    assert.equal(result.jllDetail.pricing.sale.normalizedAmount, 3250000);
+    assert.match(result.markdown, /3,250,000/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, {recursive: true, force: true});
+  }
 });

@@ -42,6 +42,12 @@ def main():
         job = [{"slug":"jll", "discovered":1, "saved":1, "errors":0, "notes":"synthetic"}]
         row = ingest.to_row(item, {}, "2026-11-04T00:00:00Z")
         sql(ingest.build_sql([row], job, "2026-11-04T00:00:00Z", set()))
+        retained = ingest.to_row({**item, "jllPublicFactsRetention": {"schema": "jll-public-facts-retention/v2"},
+                                  "salePriceUsd": 1000000, "description": "Asking $1,000,000",
+                                  "jllSearchResult": {"priceWithholdingControl": "withheld"}},
+                                 {}, "2026-11-04T00:00:30Z")
+        sql(ingest.build_sql([retained], job, "2026-11-04T00:00:30Z", set()))
+        assert sql("SELECT sale_price_usd::text || '|' || description || '|' || (raw_data#>>'{jllSearchResult,priceWithholdingControl}') FROM credeals.cre_listings WHERE external_id='synthetic-jll';") == "1000000|Asking $1,000,000|withheld"
         before = sql("SELECT count(*) FROM credeals.cre_listing_images;")
         assert int(before) == 12, before
         jobs_before = sql("SELECT count(*) FROM credeals.cre_scrape_jobs;")

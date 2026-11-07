@@ -956,6 +956,13 @@ SharpLaunch `sale_unit_price` has no proven per-square-foot unit: retain it in
 `rawSharpLaunch` and `saleUnitPrice`, without promoting it to `salePricePerSf`.
 Canonical ingestion can derive per-square-foot price from known total and area.
 
+JLL GraphQL search and matching property details use
+`jll-public-facts-retention/v2`. Keep API-reported prices, prose and other
+available fields even when `hidePrice` is true or malformed; retain the source
+control as context. A control or an API-reported value does not establish what
+was visible on the publisher website. Explicit currency and unit rules still
+apply. Legacy artifacts without the v2 marker retain their historical replay
+behavior. This changes no source access, writer activation or lifecycle gates.
 Avison's public-feed producer uses `avison-public-facts-retention/v2`: retain
 reported asking values, prose and original `hide_price` controls regardless of
 their value. A flag is a source assertion, not proof of UI visibility or access.

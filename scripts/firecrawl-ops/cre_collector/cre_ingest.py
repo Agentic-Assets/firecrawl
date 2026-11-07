@@ -2448,9 +2448,20 @@ def _redact_jll_price_values(value, *, parent_key=None):
     return redacted
 
 
+def _jll_retains_public_facts(value):
+    if not isinstance(value, dict):
+        return False
+    if value.get("sourceKey") is not None:
+        return (value.get("sourceKey") == "jll" and value.get("jllPublicFactsRetention")
+                == {"schema": "jll-public-facts-retention/v2"})
+    return any(_jll_retains_public_facts(value.get(key)) for key in ("primary", "secondary_pass"))
+
+
 def _jll_raw_payload_withheld(value):
     """Find the safe withheld marker in direct or merged JLL raw payloads."""
     if not isinstance(value, dict):
+        return False
+    if _jll_retains_public_facts(value):
         return False
     if value.get("sourceKey") == "jll":
         return value.get(_JLL_WITHHELD_MARKER) is True or _jll_pricing_is_withheld(
@@ -2744,6 +2755,8 @@ def _safe_jll_raw_data(listing):
     """Copy only validated, redacted JLL pricing into raw_data staging."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
         return listing
+    if _jll_retains_public_facts(listing):
+        return listing
     detail = listing.get("jllDetail")
     has_pricing = isinstance(detail, dict) and "pricing" in detail
     safe_pricing = _safe_jll_pricing(detail.get("pricing")) if has_pricing else None
@@ -2850,6 +2863,8 @@ def _jll_withholding_control(value):
 
 
 def _jll_pricing_is_withheld(listing):
+    if _jll_retains_public_facts(listing):
+        return False
     if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
         return False
     detail = listing.get("jllDetail")
@@ -2884,10 +2899,13 @@ def _jll_pricing_has_foreign_lease_currency(listing):
         return False
     detail = listing.get("jllDetail")
     pricing = detail.get("pricing") if isinstance(detail, dict) else None
-    safe = _safe_jll_pricing(pricing)
-    if not isinstance(safe, dict) or safe.get("visibility") != "visible":
-        return False
-    lease = safe.get("lease")
+    if _jll_retains_public_facts(listing):
+        lease = pricing.get("lease") if isinstance(pricing, dict) else None
+    else:
+        safe = _safe_jll_pricing(pricing)
+        if not isinstance(safe, dict) or safe.get("visibility") != "visible":
+            return False
+        lease = safe.get("lease")
     if not isinstance(lease, dict) or lease.get("normalization") != "available":
         return False
     currency = lease.get("currency")
@@ -3653,6 +3671,7 @@ def merge_rows(a, b):
     jll_price_withheld = (
         _is_canonical_jll_staged_row(a)
         and _is_canonical_jll_staged_row(b)
+        and not (_jll_retains_public_facts(a["raw_data"]) or _jll_retains_public_facts(b["raw_data"]))
         and (
             _jll_raw_payload_withheld(a["raw_data"])
             or _jll_raw_payload_withheld(b["raw_data"])

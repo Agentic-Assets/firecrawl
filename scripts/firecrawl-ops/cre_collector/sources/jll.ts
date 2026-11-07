@@ -887,7 +887,6 @@ export function jllGraphqlItemToListing(
   }
 
   const priceWithholdingControl = jllWithholdingControl(item, "hidePrice");
-  const hiddenPrice = jllPriceWithheld(priceWithholdingControl);
   const salePrice = jllNormalizedPrice(item?.salePrice);
   const rentPrice = jllNormalizedPrice(item?.rentPrice);
   const buildingSizeSqft = jllSurfaceAreaSqft(item);
@@ -910,11 +909,11 @@ export function jllGraphqlItemToListing(
     country: "US",
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
-    salePriceUsd: tx === "sale" && !hiddenPrice ? jllPriceUsd(salePrice) : null,
+    salePriceUsd: tx === "sale" ? jllPriceUsd(salePrice) : null,
     salePriceText:
-      tx === "sale" && !hiddenPrice ? jllSalePriceText(salePrice) : null,
+      tx === "sale" ? jllSalePriceText(salePrice) : null,
     leaseRateText:
-      tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
+      tx === "lease" ? jllLeasePriceText(rentPrice) : null,
     sizeText:
       buildingSizeSqft === null
         ? null
@@ -926,11 +925,14 @@ export function jllGraphqlItemToListing(
     jllPropertyTypeFilters: [propertyType],
     jllSearchPages: [page],
     jllFilterTotals: { [propertyType]: total },
+    jllPublicFactsRetention: { schema: "jll-public-facts-retention/v2" },
     jllSearchResult: {
       propertyTypes,
       tenureTypes,
       surfaceAreas: item?.surfaceAreas,
       priceWithholdingControl,
+      sourceHidePrice: ["boolean", "number", "string"].includes(typeof item?.hidePrice)
+        ? item.hidePrice : undefined,
     },
   });
 }
@@ -1639,7 +1641,8 @@ export async function enrichJllListing(
     base,
     base?.jllSearchResult,
   );
-  const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
+  const retainPublicFacts = base?.jllPublicFactsRetention?.schema === "jll-public-facts-retention/v2";
+  const basePriceWithheld = !retainPublicFacts && jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
   try {
     let doc = await scrapeJllDetailDoc(base.url, { refresh: options.refresh });
@@ -1676,7 +1679,7 @@ export async function enrichJllListing(
         options.onCompletedNative404?.();
       }
       return prune({
-        ...(basePriceWithheld
+        ...(retainPublicFacts ? base : basePriceWithheld
           ? jllWithheldPublicProjection(base)
           : jllRedactSensitivePriceFields(base)),
         detailError: "missing property in __NEXT_DATA__",
@@ -1713,7 +1716,7 @@ export async function enrichJllListing(
       property,
       "hidePrice",
     );
-    const hiddenPrice = jllPriceWithheld(
+    const hiddenPrice = !retainPublicFacts && jllPriceWithheld(
       searchWithholdingControl,
       detailWithholdingControl,
     );
@@ -1724,7 +1727,8 @@ export async function enrichJllListing(
     );
     const baseLeasePrice = jllNormalizedPrice(base.leaseRateText);
     const pricing = {
-      visibility: hiddenPrice ? "withheld" : "visible",
+      visibility: jllPriceWithheld(searchWithholdingControl, detailWithholdingControl)
+        ? "withheld" : "visible",
       searchWithholdingControl,
       detailWithholdingControl,
       sale: jllPriceProvenance(salePrice, hiddenPrice),
@@ -1916,6 +1920,8 @@ export async function enrichJllListing(
           ? (jllSafePublicText(pageProps?.relativeUrl) ?? undefined)
           : clean(pageProps?.relativeUrl),
         pricing,
+        sourceHidePrice: ["boolean", "number", "string"].includes(typeof property.hidePrice)
+          ? property.hidePrice : undefined,
         tenureTypes: hiddenPrice ? undefined : property.tenureTypes,
         propertyTypes: hiddenPrice ? undefined : property.propertyTypes,
         labels: hiddenPrice ? undefined : property.labels,
@@ -1955,8 +1961,8 @@ export async function enrichJllListing(
     // The error path is also a visibility boundary.  Redact recursively so a
     // search-card askingPrice or an old nested jllDetail price cannot survive a
     // malformed detail field; preserve only safe control/provenance fields.
-    const redacted =
-      basePriceWithheld || failurePricing !== null
+    const redacted = retainPublicFacts ? base
+      : basePriceWithheld || failurePricing !== null
         ? jllWithheldPublicProjection(base)
         : jllRedactSensitivePriceFields(base);
     const detail =
