@@ -539,7 +539,7 @@ function Get-CreVerifiedSummary {
                 $unverifiableKeys = @($summary.unverifiable_source_keys)
                 if (@($unverifiableKeys | Sort-Object -Unique).Count -ne $unverifiableKeys.Count) { return $null }
                 foreach ($key in $unverifiableKeys) {
-                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','nai-global') -cnotcontains $key -or
+                    if (@('jll-investor','colliers','lyon-stahl','franklin-street','nai-global','matthews') -cnotcontains $key -or
                         @($summary.failed_source_keys) -cnotcontains $key) { return $null }
                 }
             }

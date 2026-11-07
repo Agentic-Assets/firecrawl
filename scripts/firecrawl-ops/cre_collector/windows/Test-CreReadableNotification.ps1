@@ -480,6 +480,27 @@ Assert-Cre ($null -ne $matthewsMixedRead -and $matthewsMixedText.Contains('*Matt
     $matthewsMixedText.Contains('reported 0/0/0; verified 1/0/0') -and $matthewsMixedText.Contains('*Newmark:* 100 listings verified') -and
     $matthewsMixedText.Contains('Whole brokerage incomplete')) "Pipeline Matthews warning and healthy sibling remain separately visible. Reader null: $($null -eq $matthewsMixedRead); text: $matthewsMixedText"
 
+$mixedMatthews['per_source_summaries'] = @([ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedMatthews['qualified_subset_source_keys'] = @()
+$mixedMatthews['failed_source_keys'] = @('matthews')
+$mixedMatthews['unverifiable_source_keys'] = @('matthews')
+Save-Summary $mixedMatthews
+$matthewsUnverified = Get-CreVerifiedSummary (New-Record) 'matthews-unverifiable'
+$matthewsUnverifiedText = Get-CreNotificationText (New-Record) 'Terminal' 1 $matthewsUnverified
+Assert-Cre ($null -ne $matthewsUnverified -and $matthewsUnverifiedText.Contains('*Newmark:* 100 listings verified by database readback') -and
+    $matthewsUnverifiedText.Contains('*Matthews:* Readback could not be verified') -and
+    $matthewsUnverifiedText.Contains('*Failed:* 0 | *Unverifiable:* 1') -and
+    $matthewsUnverifiedText.Contains('Partial result')) 'Unverifiable Matthews preserves the healthy peer and reports incomplete status.'
+$mixedMatthews['unverifiable_source_keys'] = @()
+Save-Summary $mixedMatthews
+$matthewsFailed = Get-CreVerifiedSummary (New-Record) 'matthews-failed'
+$matthewsFailedText = Get-CreNotificationText (New-Record) 'Terminal' 1 $matthewsFailed
+Assert-Cre ($null -ne $matthewsFailed -and $matthewsFailedText.Contains('*Newmark:* 100 listings verified by database readback') -and
+    $matthewsFailedText.Contains('*Matthews:* Failed; verified counts unavailable.') -and
+    $matthewsFailedText.Contains('*Failed:* 1') -and $matthewsFailedText.Contains('Partial result')) 'Failed Matthews preserves the healthy peer and does not claim verification.'
+$mixedMatthews['unverifiable_source_keys'] = @('newmark')
+Save-Summary $mixedMatthews
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'matthews-forged-unverifiable')) 'A verified peer cannot be forged into the unverifiable partition.'
 $Pipeline = $true; $selectedSourceKeys = @('colliers','lyon-stahl','franklin-street','newmark','savills')
 $selectedSourceArgument = $selectedSourceKeys -join ','
 $mixedSources = New-Summary
