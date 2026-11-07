@@ -44,7 +44,7 @@ export async function captureKidderTeamPage(fetchImpl: typeof fetch = fetch) {
       const bytes = await readBoundedBytes(reader, { maxBytes: MAX_BYTES, signal: controller.signal, deadlineAt });
       const html = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       return { ...parseKidderTeamPage(html, observationNow()), httpStatus: response.status,
-        responseSha256: createHash("sha256").update(bytes).digest("hex"), responseBytes: bytes.byteLength };
+        decodedBodySha256: createHash("sha256").update(bytes).digest("hex"), decodedBodyBytes: bytes.byteLength };
     } catch (error) {
       controller.abort();
       if (!await settleResponseBodyRead(reader, error, 1000)) throw new NativeEvidenceTerminalError("Kidder team response read cleanup unsettled", { cause: error });

@@ -250,6 +250,7 @@ async function main() {
   }> = [];
   let avisonOtherFailures = 0;
   let terminalCaptureFailure = false;
+  let kidderRetainedTerminal = false;
 
   sourceLoop: for (const key of requestedSources) {
     if (UNSUPPORTED[key]) {
@@ -330,6 +331,14 @@ async function main() {
           console.error(`  ${key}/${tx} FAILED: inventory response cleanup unknown`);
           process.exitCode = KIDDER_CLEANUP_UNKNOWN_EXIT;
           return;
+        }
+        if (key === "kidder-mathews" && err instanceof RetainedSourceError
+            && err.cause instanceof KidderSettledInventoryDenial && err.cause.status === 403) {
+          sources.push({ sourceKey: key, transaction: tx, supported: true,
+            error: "inventory HTTP 403", retainedObservations: err.retainedObservations });
+          console.error("Kidder inventory HTTP 403; unverified team evidence retained");
+          kidderRetainedTerminal = requestedSources.length === 1;
+          break;
         }
         if (key === "kidder-mathews" && err instanceof KidderSettledInventoryDenial && [401, 403, 429].includes(err.status)) {
           console.error(`  ${key}/${tx} FAILED: inventory HTTP ${err.status}`);
@@ -563,6 +572,7 @@ async function main() {
     console.error("no listings collected from any source");
     process.exitCode = avisonTerminal404 ? AVISON_YOUNG_TERMINAL_404_EXIT_CODE : 1;
   }
+  if (kidderRetainedTerminal) process.exitCode = KIDDER_INVENTORY_TERMINAL_EXIT[403];
 }
 
 // ---------- enrich mode ----------
