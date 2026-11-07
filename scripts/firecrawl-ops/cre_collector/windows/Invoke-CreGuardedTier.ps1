@@ -40,7 +40,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Run this launcher on Windows.' }
 
 # Preserve an explicitly selected V1. New DAUM subset runs use the shared V2 default.
 if (-not $PSBoundParameters.ContainsKey('DaumSubsetPolicy')) {
