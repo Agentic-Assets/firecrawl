@@ -400,3 +400,44 @@ for (const spoolFails of [true, false]) test(`mixed Essex mismatch and failed pr
     assert.equal(artifact.sources.find((x: any)=>x.sourceKey==="essex-realty").failed,true);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
+
+
+test("settled mixed Matthews artifact derives generation-bound valid peers", () => {
+  const dir=mkdtempSync(join(tmpdir(),"matthews-partial-custody-"));
+  try {
+    const preload=join(dir,"preload.mjs"), out=join(dir,"artifact.json");
+    writeFileSync(preload, `
+      import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+      const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
+      net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+      await import(${JSON.stringify(pathToFileURL(join(root,"sources/matthews-transport.ts")).href)});
+      const host="https://www.matthews.com", urls=["redirect","good-sale","leasing-good"].map(x=>host+"/properties/"+x);
+      globalThis.fetch=async input=>{const url=String(input);
+        if(url===host+"/sitemap.xml") return new Response("<urlset>"+urls.map(u=>"<url><loc>"+u+"</loc></url>").join("")+"</urlset>");
+        if(url===urls[0]) return new Response(null,{status:307,headers:{location:"/listings"}});
+        if(url===urls[1]||url===urls[2]) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+        throw new Error("UNEXPECTED_FIXTURE_URL");
+      };
+    `);
+    const started=new Date(Date.now()-1000).toISOString();
+    const child=spawnSync(process.execPath,["--import","tsx","--import",pathToFileURL(preload).href,
+      "collect.ts","--source=matthews","--transaction=both",`--out=${out}`],
+      {cwd:root,env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"fixture-generation",CRE_REFRESH_STARTED_AT:started},encoding:"utf8",timeout:30000});
+    const finished=new Date(Date.now()+1000).toISOString();
+    assert.ifError(child.error); assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
+    const check=`import json,sys
+from pathlib import Path
+from cre_matthews_partial_checkpoint import derive
+r=derive(Path(sys.argv[1]).read_bytes(),generation_id="fixture-generation",generation_started_at=sys.argv[2],attempt_started_at=sys.argv[2],attempt_finished_at=sys.argv[3])
+assert {x["external_id"] for x in r["rows"]}=={"good-sale","leasing-good"},r
+assert len(r["held"])==1 and r["mark_missing_safe"] is False
+`;
+    const verify=spawnSync("python3",["-c",check,out,started,finished],{cwd:root,encoding:"utf8",timeout:30000});
+    assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
+    if (process.env.CRE_MATTHEWS_POSTGRES_FIXTURE === "1") {
+      const postgres=spawnSync("python3",["tests/run_matthews_collector_fill_postgres.py",out,started,finished],
+        {cwd:root,encoding:"utf8",timeout:90000});
+      assert.ifError(postgres.error); assert.equal(postgres.status,0,postgres.stderr);
+    }
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
