@@ -40,6 +40,16 @@ For adapter completeness and reported UI data gaps, use the
 trace fresh public detail through artifacts, normalized/raw fields, children and
 consumer display; counts alone do not prove information fidelity.
 
+The operating goal is to keep valid listing peers moving when an individual
+record fails, retain prior listing details and record disappearance/reappearance
+from a complete source inventory without guessing the reason. A partial or
+failed enumeration cannot establish that a listing disappeared. The current
+scheduled additive refresh does not yet record every disappearance or preserve
+every prior raw field and child version. See
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255) for the
+implementation and verification work.
+
 ## Agent rule: verify counts before you quote or edit them
 
 Board totals, source counts, test counts, and scheduler state are point-in-time
