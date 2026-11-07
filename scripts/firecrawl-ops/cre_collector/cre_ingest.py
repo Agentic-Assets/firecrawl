@@ -4454,6 +4454,8 @@ WHERE p.image_id IS NULL;
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
+    import cre_listing_history_sql as listing_history
+    w(listing_history.SETUP)
     w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
@@ -5225,6 +5227,7 @@ SELECT t.id, t.brokerage_id, t.external_id,
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
 
+{listing_history.BEFORE}
 {avison_price_sql.get("transition_sql", "")}
 
 CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
@@ -5945,6 +5948,7 @@ DO $$ BEGIN
 END $$;
 
 """.replace("{newmark_generic_title_case}", "WHEN t.title ~ '[^[:space:]]' THEN t.title " if newmark_page_attempt and not newmark_page_requires_witness else "")
+        .replace("{listing_history.BEFORE}", listing_history.BEFORE)
         .replace("{newmark_generic_description_case}", "WHEN t.description ~ '[^[:space:]]' THEN t.description " if newmark_page_attempt and not newmark_page_requires_witness else "")
         .replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
         .replace("{newmark_partial_context_sql}", newmark_context_sql("(EXCLUDED.raw_data->'latestInventoryObservation')"))
@@ -6732,6 +6736,7 @@ LEFT JOIN credeals.cre_source_index si
 WHERE l.deleted_at IS NULL
   AND (si.id IS NULL OR si.last_enumerated_at < jm.finished_at);
 
+{listing_history.RETIRED_BEFORE}
 -- Include retirement before-values in the same history diff used for present
 -- rows. History is appended only after every current-row mutation below.
 INSERT INTO _prior_vals
@@ -7079,8 +7084,11 @@ BEGIN
   END IF;
 END $$;
 
+{listing_history.AFTER}
+{listing_history.RETIRED_AFTER if mark_missing_slugs else ""}
 COMMIT;
 """)
+    w(listing_history.RECEIPT)
     if jll_guard_binding is not None:
         from cre_jll_guard_result import result_sql
         w(result_sql(jll_guard_binding, "committed"))

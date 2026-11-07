@@ -6075,6 +6075,13 @@ def ingest_source(
           else run_command(argv, log_path, env=safe_process_env()))
     checkpoint["ingest"]["finished_at"] = utc_now()
     checkpoint["ingest"]["rc"] = rc
+    if rc == 0:
+        from cre_listing_history_sql import read_receipt
+        artifact_digest = (checkpoint.get("artifact") or {}).get("sha256")
+        expected_history_key = (artifact_run_identity_from_digests([artifact_digest])[0]
+                                if isinstance(artifact_digest, str)
+                                and re.fullmatch(r"[a-f0-9]{64}", artifact_digest) else None)
+        checkpoint["ingest"]["listing_history"] = read_receipt(log_path, expected_history_key)
     if rc != 0:
         checkpoint["ingest_recovery"] = {
             "reason": "nonzero_live_ingest_result",
