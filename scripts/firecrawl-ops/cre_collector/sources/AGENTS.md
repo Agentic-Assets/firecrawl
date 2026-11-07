@@ -324,6 +324,15 @@ unchanged. These are retention limits, not evidence of complete page coverage.
 The draft shared `lib/source-page-context` helper owns that bounded extraction;
 Foundry retains its source schema through a thin wrapper. Lyon-Stahl captures
 held/rejected non-shell page context at its existing detail-fetch boundary.
+In strict Matthews collection, an observed detail HTTP 307 is held as an
+unverified temporary redirect while eligible peers continue, up to 50 holds per
+transaction plus any already-started worker. The collector retains the raw
+status, requested URL, transaction and observation clocks, not an inferred
+destination or disappearance. The source still fails with private retained
+observations, so these peers do not become an admitted partial ingest. Other
+transport and access failures keep their existing stop behavior. This does not
+prove sitemap coverage, tenure, source freshness or lifecycle authority.
+
 Matthews captures accessible non-shell pages that fail parsing or identity
 validation. If strict Matthews collection fails, its typed error also carries
 the already completed parses after the shared mapper settles active workers.

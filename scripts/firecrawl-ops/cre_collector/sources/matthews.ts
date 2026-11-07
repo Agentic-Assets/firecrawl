@@ -752,6 +752,8 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   // unchanged. pmap settles already-started workers before rejecting.
   const observations: unknown[] = new Array(take.length);
   const parsedObservations: unknown[] = new Array(take.length);
+  let heldRedirects = 0;
+  const maxHeldRedirects = 50;
   const retain = (error: unknown): never => {
     const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])
       .filter((value) => value !== undefined);
@@ -760,7 +762,20 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   };
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url, index) => {
     try {
-      const response = await matthewsFetch(url, true);
+      const response = await matthewsFetch(url, true, requireFreshDetails(), requireFreshDetails());
+      if (requireFreshDetails() && response.status === 307) {
+        observations[index] = {
+          schema: "matthews-detail-redirect-observation/v1",
+          sourceKey: "matthews", requestedUrl: url, requestedTransaction: tx,
+          inventoryObservedAt, detailObservedAt: observationNow(), httpStatus: response.status,
+          identity: "unverified", coverage: "unverified", outcome: "held_temporary_redirect",
+        };
+        heldRedirects++;
+        if (heldRedirects >= maxHeldRedirects) {
+          throw new Error(`Matthews strict ${tx} temporary redirect hold limit reached`);
+        }
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
         response.status,
         response.location,
@@ -851,6 +866,9 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
   }).catch(retain);
+  if (heldRedirects) {
+    retain(new Error(`Matthews strict ${tx} partial: ${heldRedirects} temporary redirect(s) held`));
+  }
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
     parsed.filter((result) => result.providerNotFound).length,
