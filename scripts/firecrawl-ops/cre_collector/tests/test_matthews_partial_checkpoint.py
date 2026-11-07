@@ -22,7 +22,7 @@ from tests.test_matthews_partial_fill import valid
 
 
 def artifact():
-    held = {"schema": "matthews-detail-redirect-observation/v1", "sourceKey": "matthews", "outcome": "held_temporary_redirect", "httpStatus": 307, "requestedTransaction": "sale"}
+    held = {"schema": "matthews-detail-redirect-observation/v1", "sourceKey": "matthews", "outcome": "held_temporary_redirect", "httpStatus": 307, "requestedTransaction": "sale", "requestedUrl": "https://www.matthews.com/properties/redirect"}
     completed = valid(); completed["observation"]["transactionType"] = "Sale"
     return {"runMeta": {"mode": "full", "transactions": ["sale", "lease"], "maxItemsPerSource": None,
         "startedAt": "2026-11-06T23:59:30Z", "finishedAt": "2026-11-07T00:01:30Z", "freshness": {
@@ -62,7 +62,6 @@ class MatthewsCandidateTest(unittest.TestCase):
         for mutate in (lambda outcome: outcome.update(schema="matthews-partial-outcome/v2"),
                        lambda outcome: outcome.update(transaction="lease"),
                        lambda outcome: outcome.update(temporaryRedirects=True),
-                       lambda outcome: outcome.update(httpFailures=1),
                        lambda outcome: outcome.update(extra="untrusted")):
             bad = copy.deepcopy(data)
             mutate(bad["sources"][0]["matthewsPartialOutcome"])
@@ -72,6 +71,51 @@ class MatthewsCandidateTest(unittest.TestCase):
         bad["sources"][0]["error"] = ""
         with self.assertRaises(ValueError):
             project(bad)
+
+    def test_held_provenance_and_duplicate_are_isolated_from_valid_peer(self):
+        data = artifact()
+        original = data["sources"][0]["retainedObservations"][0]
+        typed = {"schema": "matthews-partial-outcome/v1", "transaction": "sale",
+                 "temporaryRedirects": 3, "detailFailures": 2, "httpFailures": 1}
+        data["sources"][0]["matthewsPartialOutcome"] = typed
+        detail = {"schema": "matthews-detail-observation/v1", "sourceKey": "other",
+                  "requestedTransaction": "lease", "requestedUrl": "https://www.matthews.com/properties/wrong",
+                  "httpStatus": 200}
+        wrong_tx = {**original, "requestedTransaction": "lease",
+                    "requestedUrl": "https://www.matthews.com/properties/wrong-tx"}
+        wrong_source = {**original, "sourceKey": "other",
+                        "requestedUrl": "https://www.matthews.com/properties/wrong-source"}
+        duplicate = copy.deepcopy(original)
+        http = {"schema": "matthews-detail-http-observation/v1", "sourceKey": "matthews",
+                "requestedTransaction": "sale", "requestedUrl": "https://www.matthews.com/properties/http",
+                "outcome": "held_http_error", "httpStatus": 404}
+        data["sources"][0]["retainedObservations"].extend([detail, wrong_tx, wrong_source, duplicate, http])
+        raw, candidate = project(data)
+        self.assertEqual([x["external_id"] for x in candidate["rows"]], ["example"])
+        self.assertEqual([x["reason"] for x in candidate["held"]],
+            ["source_observation_held", "invalid_held_observation", "invalid_held_observation",
+             "invalid_held_observation", "duplicate_held_identity", "source_observation_held"])
+        self.assertEqual(candidate["receipt_warnings"][0]["reported"], [3, 2, 1])
+        self.assertEqual(candidate["receipt_warnings"][0]["verified"], [1, 0, 1])
+        self.assertEqual(len(gate_projection(raw, candidate)["listings"]), 1)
+        # Old artifacts use the same provenance validation after legacy parsing.
+        data["sources"][0].pop("matthewsPartialOutcome")
+        data["sources"][0]["error"] = "Error: Matthews strict sale partial: 3 temporary redirect(s) held; 2 detail parse or identity failure(s) held; 1 settled HTTP detail failure(s) held"
+        _, legacy = project(data)
+        self.assertEqual(legacy["receipt_warnings"], candidate["receipt_warnings"])
+
+    def test_completed_identity_also_held_isolated_from_unrelated_peer(self):
+        data = artifact()
+        held = data["sources"][0]["retainedObservations"][0]
+        held["requestedUrl"] = "https://www.matthews.com/properties/example"
+        peer = copy.deepcopy(data["sources"][0]["retainedObservations"][1])
+        peer["observation"].update(id="peer", url="https://www.matthews.com/properties/peer",
+                                   canonicalUrl="https://www.matthews.com/properties/peer")
+        data["sources"][0]["retainedObservations"].append(peer)
+        raw, candidate = project(data)
+        self.assertEqual([x["external_id"] for x in candidate["rows"]], ["peer"])
+        self.assertIn("held_identity_conflict", [x["reason"] for x in candidate["held"]])
+        self.assertEqual([x["id"] for x in gate_projection(raw, candidate)["listings"]], ["peer"])
 
     def test_invalid_duplicate_does_not_poison_accepted_ordinal(self):
         item = artifact()

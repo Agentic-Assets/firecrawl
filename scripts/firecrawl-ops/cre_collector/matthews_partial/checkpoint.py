@@ -9,6 +9,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cre_ingest import parse_strict_freshness_timestamp
 
@@ -42,7 +43,8 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
     by_tx = {entry.get("transaction"): entry for entry in entries if isinstance(entry, dict)}
     if set(by_tx) != {"sale", "lease"} or len(by_tx) != len(entries):
         raise ValueError("Matthews transaction scope differs")
-    candidates, held = [], []
+    candidates, held, receipt_warnings = [], [], []
+    held_identities = set()
     errors = 0
     for tx, entry in by_tx.items():
         if entry.get("sourceKey") != "matthews" or entry.get("supported") is not True:
@@ -75,22 +77,53 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             observations = entry.get("retainedObservations")
             if not isinstance(observations, list) or not observations:
                 raise ValueError("Matthews partial observations missing")
-            redirects = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-redirect-observation/v1"
-                            and item.get("outcome") == "held_temporary_redirect" and item.get("httpStatus") == 307
-                            and item.get("requestedTransaction") == tx for item in observations)
-            failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-observation/v1"
-                           for item in observations)
-            http_failures = sum(isinstance(item, dict) and item.get("schema") == "matthews-detail-http-observation/v1"
-                                and item.get("outcome") == "held_http_error" and item.get("httpStatus") in (404, 410)
-                                and item.get("requestedTransaction") == tx for item in observations)
-            if ((redirects, failures, http_failures) != counts
-                    or redirects + failures + http_failures == 0):
-                raise ValueError("Matthews held observations differ from failure receipt")
+            verified_counts = [0, 0, 0]
+            requested_identities = set()
             for ordinal, observation in enumerate(observations):
                 if isinstance(observation, dict) and observation.get("schema") == "matthews-completed-parse-observation/v1":
                     candidates.append((tx, "retained", ordinal, observation))
-                else:
-                    held.append({"transaction": tx, "ordinal": ordinal, "reason": "source_observation_held"})
+                    continue
+                category = None
+                if isinstance(observation, dict):
+                    schema = observation.get("schema")
+                    if (schema == "matthews-detail-redirect-observation/v1"
+                            and observation.get("outcome") == "held_temporary_redirect"
+                            and type(observation.get("httpStatus")) is int and observation["httpStatus"] == 307):
+                        category = 0
+                    elif (schema == "matthews-detail-observation/v1"
+                            and type(observation.get("httpStatus")) is int and 200 <= observation["httpStatus"] < 300):
+                        category = 1
+                    elif (schema == "matthews-detail-http-observation/v1"
+                            and observation.get("outcome") == "held_http_error"
+                            and type(observation.get("httpStatus")) is int and observation["httpStatus"] in (404, 410)):
+                        category = 2
+                reason = "invalid_held_observation"
+                if category is not None and observation.get("sourceKey") == "matthews" and observation.get("requestedTransaction") == tx:
+                    url = observation.get("requestedUrl")
+                    try:
+                        parsed = urlsplit(url) if isinstance(url, str) else None
+                        valid_url = (parsed is not None and parsed.scheme == "https"
+                            and parsed.netloc == "www.matthews.com" and not parsed.query and not parsed.fragment
+                            and re.fullmatch(r"/properties/[^/]+", parsed.path)
+                            and not re.search(r"%(?![0-9a-fA-F]{2})", parsed.path)
+                            and all(ord(c) >= 33 and ord(c) != 127 for c in url))
+                    except ValueError:
+                        valid_url = False
+                    if valid_url:
+                        identity = re.sub(r"%[0-9a-fA-F]{2}", lambda m: m[0].lower(), parsed.path[12:])
+                        if identity in requested_identities:
+                            reason = "duplicate_held_identity"
+                        else:
+                            requested_identities.add(identity)
+                            held_identities.add((tx, identity))
+                            verified_counts[category] += 1
+                            reason = "source_observation_held"
+                held.append({"transaction": tx, "ordinal": ordinal, "reason": reason})
+            if sum(counts) == 0:
+                raise ValueError("Matthews partial receipt has no held outcome")
+            if tuple(verified_counts) != counts:
+                receipt_warnings.append({"transaction": tx, "reason": "held_receipt_counts_unverified",
+                                         "reported": list(counts), "verified": verified_counts})
         else:
             if "matthewsPartialOutcome" in entry:
                 raise ValueError("Matthews typed outcome missing partial failure")
@@ -113,6 +146,9 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
         except (ValueError, TypeError, KeyError, OverflowError):
             held.append({"transaction": tx, "ordinal": ordinal, "reason": "invalid_completed_observation"})
             continue
+        if (tx, one["external_id"]) in held_identities:
+            held.append({"transaction": tx, "ordinal": ordinal, "reason": "held_identity_conflict"})
+            continue
         accepted.append((tx, kind, ordinal, one))
     identities = {}
     urls = {}
@@ -133,7 +169,7 @@ def derive(raw, *, generation_id, generation_started_at, attempt_started_at, att
             "generation_started_at": generation_started_at, "attempt_started_at": attempt_started_at,
             "attempt_finished_at": attempt_finished_at, "started_at": meta["startedAt"],
             "finished_at": meta["finishedAt"], "rows": rows, "accepted_observations": accepted_observations, "held": held,
-            "coverage": "partial_unknown", "mark_missing_safe": False}
+            "receipt_warnings": receipt_warnings, "coverage": "partial_unknown", "mark_missing_safe": False}
 
 
 def _read_private(path):
