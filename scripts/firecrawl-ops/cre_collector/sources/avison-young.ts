@@ -2153,9 +2153,19 @@ export function extractAvisonYoungDetailContacts(
   return mergeAvisonYoungContacts(contacts);
 }
 
+// Only explicit, recognized country values can exclude a partial feed row.
+// Other values remain unclassified evidence rather than being treated as foreign.
+const AVISON_US_COUNTRIES = new Set(["us", "usa", "united states", "united states of america"]);
+const AVISON_FOREIGN_COUNTRIES = new Set([
+  "ca", "can", "canada", "mx", "mex", "mexico", "gb", "gbr", "uk", "united kingdom",
+]);
+const AVISON_US_STATE_CODES = new Set(
+  "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split(" "),
+);
+
 export function isAvisonYoungUsCompatible(row: any): boolean {
   const country = clean(row.country)?.toLowerCase();
-  if (country) return ["us", "usa", "united states", "united states of america"].includes(country);
+  if (country) return AVISON_US_COUNTRIES.has(country);
   const state = clean(row.state);
   return !!state && /^[A-Z]{2}$/.test(state);
 }
@@ -2816,8 +2826,13 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean,
           if (row.status !== "inactive") unclassified.push(entry);
           return false;
         }
-        if (!isAvisonYoungUsCompatible(row)) {
-          if (!clean(row.country)) unclassified.push(entry);
+        const country = clean(row.country)?.toLowerCase();
+        if (!country || !AVISON_US_COUNTRIES.has(country)) {
+          const state = clean(row.state)?.toUpperCase();
+          // A foreign country together with an explicit US state is conflicting
+          // source evidence, not a reason to silently exclude the row.
+          if (!country || !AVISON_FOREIGN_COUNTRIES.has(country)
+              || (state && AVISON_US_STATE_CODES.has(state))) unclassified.push(entry);
           return false;
         }
         const values = Array.isArray(row.transaction) ? row.transaction : [row.transaction];

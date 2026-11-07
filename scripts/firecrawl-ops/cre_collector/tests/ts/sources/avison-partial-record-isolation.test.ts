@@ -20,7 +20,8 @@ const bad = { ...row, id: 17000, order_id: 17000, url: badUrl, external_url: bad
 
 async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "missing-url" | "encoded-key" | "bad-row-json"
   | "missing-id" | "unsafe-id" | "bad-object-id" | "duplicate-id" | "mapping-error"
-  | "bad-transaction" | "unknown-transaction") {
+  | "bad-transaction" | "unknown-transaction" | "country-unknown" | "country-malformed"
+  | "country-canada" | "country-ca" | "country-missing" | "country-unknown-code" | "country-conflict") {
   const keys = ["CRE_REQUIRE_FRESH_DETAILS", "CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "CRE_REFRESH_GENERATION",
     "AVISON_YOUNG_DETAIL_TRANSPORT", "AVISON_YOUNG_DETAIL_CONCURRENCY"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
@@ -55,6 +56,13 @@ async function runCase(denied: boolean, ordinaryFailure?: "500" | "sdk403" | "mi
                 description: ordinaryFailure === "encoded-key"
                   ? "record " + String.fromCharCode(92) + "u0030" + "123456789abcdef0123456789abcdef"
                   : "record 0123456789abcdef0123456789abcdef extra" }
+            : ordinaryFailure === "country-unknown" ? { ...bad, country: "unknown" }
+            : ordinaryFailure === "country-malformed" ? { ...bad, country: { label: "unknown" } }
+            : ordinaryFailure === "country-missing" ? { ...bad, country: null }
+            : ordinaryFailure === "country-unknown-code" ? { ...bad, country: "ZZ" }
+            : ordinaryFailure === "country-canada" ? { ...bad, country: "Canada", state: "ON" }
+            : ordinaryFailure === "country-ca" ? { ...bad, country: "CA", state: "ON" }
+            : ordinaryFailure === "country-conflict" ? { ...bad, country: "Canada", state: "IL" }
             : ordinaryFailure === "missing-id" ? { ...bad, id: null }
             : ordinaryFailure === "unsafe-id" ? { ...bad, id: Number.MAX_SAFE_INTEGER + 1 }
             : ordinaryFailure === "bad-object-id" ? { ...bad, id: { toString: null, valueOf: null }, order_id: null }
@@ -262,3 +270,28 @@ test("encoded credential scan handles repeated overlapping literal keys", () => 
   assert.equal(containsCredential(overlapOnly, key, true), true);
   assert.equal(containsCredential(overlapOnly.split(key).join("[REDACTED_API_KEY]"), key, true), false);
 });
+
+
+for (const mode of ["country-unknown", "country-malformed", "country-missing", "country-unknown-code", "country-conflict"] as const) {
+  test(`country selection retains ${mode} as unclassified and processes a valid peer`, async () => {
+    const { source, failure, observed, outcomes, calls } = await runCase(false, mode);
+    assert.ok(failure instanceof source.AvisonYoungPartialDetailError);
+    assert.deepEqual(observed.map(item => item.id), ["18194"]);
+    const held = outcomes.find(item => item.id === "17000");
+    assert.equal(held.reason, "selection_unclassified");
+    assert.deepEqual(JSON.parse(held.feedObservation.sourceRowJson).country,
+      mode === "country-unknown" ? "unknown" : mode === "country-malformed" ? { label: "unknown" }
+        : mode === "country-missing" ? null : mode === "country-conflict" ? "Canada" : "ZZ");
+    assert.ok(!calls.includes(badUrl));
+  });
+}
+
+for (const mode of ["country-canada", "country-ca"] as const) {
+  test(`country selection excludes evidenced foreign ${mode} and processes a valid peer`, async () => {
+    const { failure, observed, outcomes, calls } = await runCase(false, mode);
+    assert.equal(failure, undefined);
+    assert.deepEqual(observed.map(item => item.id), ["18194"]);
+    assert.ok(!outcomes.some(item => item.id === "17000"));
+    assert.ok(!calls.includes(badUrl));
+  });
+}
