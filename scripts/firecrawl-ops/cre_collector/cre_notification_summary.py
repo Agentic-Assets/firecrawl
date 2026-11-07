@@ -27,7 +27,6 @@ MAX_TRANSACTION_ARTIFACT_BYTES = 16 * 1024 * 1024
 TRANSACTION_BREAKDOWN_BUDGET_SECONDS = 8.0
 PIPELINE_SOURCE_KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 MAX_VALIDATION_REPORT_BYTES = 4 * 1024 * 1024
-MAX_TOTAL_VALIDATION_REPORT_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_BINDING_BYTES = (1 << 63) - 1
 
 
@@ -1199,7 +1198,7 @@ def verified_pipeline_summary(
                     )
                 )
                 total_validation_bytes += len(validation_raw)
-                require(total_validation_bytes <= MAX_TOTAL_VALIDATION_REPORT_BYTES)
+                require(total_validation_bytes <= MAX_VALIDATION_REPORT_BYTES * len(selected_sources))
                 require(hashlib.sha256(validation_raw).hexdigest() == validation_sha)
                 validation = json.loads(validation_raw)
                 from cre_validate import require_full_validation_report
