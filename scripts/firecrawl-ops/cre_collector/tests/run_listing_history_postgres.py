@@ -237,6 +237,29 @@ SELECT id,'https://example.test/retire.jpg','Retained image' FROM credeals.cre_l
             if idx in (4, 5, 6):
                 assert sql(f"SELECT payload->'raw_data'->'sourceEvidence'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-{idx}' AND phase='observation';") == "retained"
         assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE payload::text LIKE '%synthetic-secret%';") == "0"
+        # Explicit object-key regressions from the independent c3a726b review.
+        key_bundle = {"refresh_token": "synthetic-credential-refresh",
+                      "security_token": "synthetic-credential-security",
+                      "signature": "synthetic-credential-signature",
+                      "sig": "synthetic-credential-sig",
+                      "key": "synthetic-credential-key",
+                      "nested": {"refreshToken": "synthetic-credential-nested", "safe": "nested retained"},
+                      "encoded": '{"sig":"synthetic-credential-encoded","safe":"inside string"}',
+                      "safe": "retained peer"}
+        key_result = apply({**next_item, "name": "key bundle", "sourceEvidence": key_bundle}, "test-sensitive-key-bundle")
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "key-bundle.log"
+            log.write_text(key_result + "\n")
+            parsed = read_receipt(log, "test-sensitive-key-bundle")
+            assert parsed["state"] == "reported_omissions"
+            assert parsed["outcomes"]["svn:observation:captured_with_omissions"] == 1
+        assert sql("SELECT payload->'raw_data'->'sourceEvidence'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-key-bundle' AND phase='observation';") == "retained peer"
+        assert sql("SELECT payload->'raw_data'->'sourceEvidence'->'nested'->>'safe' FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-key-bundle' AND phase='observation';") == "nested retained"
+        assert int(sql("SELECT jsonb_array_length(omissions) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-key-bundle' AND phase='observation';")) >= 7
+        assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE payload::text LIKE '%synthetic-credential-%';") == "0"
+        key_replay = apply({**next_item, "name": "key bundle", "sourceEvidence": key_bundle}, "test-sensitive-key-bundle")
+        assert "svn:observation:duplicate_with_omissions" in key_replay
+        assert sql("SELECT count(*) FROM credeals.cre_listing_snapshots WHERE artifact_run_key='test-sensitive-key-bundle' AND phase='observation';") == "1"
         identity_item = {**next_item, "id": "https://example.test/a?token=synthetic-secret", "name": "valid identity peer"}
         identity_result = apply(identity_item, "test-sensitive-identity")
         assert "credential_identity_refused" in identity_result

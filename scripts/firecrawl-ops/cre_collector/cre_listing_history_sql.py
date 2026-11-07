@@ -30,9 +30,9 @@ BEGIN
     v_result := '{}'::jsonb;
     FOR v_key, v_child IN SELECT key, value FROM jsonb_each(p_value) LOOP
       v_normalized := lower(regexp_replace(v_key, '([a-z0-9])([A-Z])', '\1_\2', 'g'));
-      v_sensitive := v_normalized ~ '(^|[^a-z0-9])(authorizations?|passwords?|passwds?|secrets?|credentials?|cookies?|api[ _-]?keys?|access[ _-]?tokens?|private[ _-]?keys?|session[ _-]?(tokens?|ids?|keys?))($|[^a-z0-9])'
+      v_sensitive := v_normalized ~ '(^|[^a-z0-9])(authorizations?|passwords?|passwds?|secrets?|credentials?|cookies?|api[ _-]?keys?|access[ _-]?tokens?|refresh[ _-]?tokens?|security[ _-]?tokens?|signatures?|private[ _-]?keys?|session[ _-]?(tokens?|ids?|keys?))($|[^a-z0-9])'
         OR v_normalized ~ '^(tokens?|sessions?)([ _-]?(value|id|key))?$'
-        OR v_normalized IN ('auth','bearer')
+        OR v_normalized IN ('auth','bearer','sig','key')
         OR v_key ~* 'https?://[^/[:space:]"<>]+@'
         OR v_key ~* '[?&#](token|access_token|api_key|apikey|authorization|auth|signature|sig|password|secret|session|access_key|access_key_id|awsaccesskeyid|googleaccessid|x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|x-goog-security-token|client_secret|key)=';
       IF v_sensitive THEN

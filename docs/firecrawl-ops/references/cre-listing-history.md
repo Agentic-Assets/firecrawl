@@ -39,8 +39,9 @@ receipt reports affected captures without logging their values. This SQL
 projection cannot invoke the existing Python source-evidence admission workflow
 inside the transaction. Selected synthetic cases are compared with that
 workflow, but equivalence, universal secret detection and private-material
-classification are not established; independent review is required. False
-positives are possible. No source-specific price-hiding rule or new source
+classification are not established; independent review is required. Bare `key`
+and `sig` object fields are conservatively withheld because their meanings
+are ambiguous; legitimate values can therefore be omitted. No source-specific price-hiding rule or new source
 access authority is added.
 
 The canonical parent lock prevents ordinary foreign-key child inserts while
