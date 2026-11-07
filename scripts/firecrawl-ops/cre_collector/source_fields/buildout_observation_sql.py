@@ -37,6 +37,32 @@ SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
 FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
 WHERE s.slug={source};
 CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
+-- Qualify each whole source-native shape before comparing it. A canonical
+-- property may have one flat observation or two merged sale/lease members.
+CREATE TEMP TABLE _buildout_identity_shapes ON COMMIT DROP AS
+SELECT s.brokerage_id, s.external_id, input.kind,
+       array_agg(member.value->>'id' ORDER BY member.value->>'id') AS native_ids
+FROM _src s JOIN credeals.cre_listings l USING (brokerage_id, external_id)
+CROSS JOIN LATERAL (VALUES ('prior', l.raw_data, l.source_url),
+                           ('incoming', s.raw_data, s.source_url)) AS input(kind, raw, url)
+CROSS JOIN LATERAL jsonb_array_elements(CASE
+  WHEN jsonb_typeof(input.raw) <> 'object' THEN '[]'::jsonb
+  WHEN input.raw ? 'primary' AND input.raw ? 'secondary_pass'
+       AND (input.raw - 'primary' - 'secondary_pass') = '{{}}'::jsonb
+    THEN jsonb_build_array(input.raw->'primary', input.raw->'secondary_pass')
+  WHEN NOT (input.raw ? 'primary') AND NOT (input.raw ? 'secondary_pass')
+    THEN jsonb_build_array(input.raw)
+  ELSE '[]'::jsonb END) AS member(value)
+WHERE s.slug={source}
+GROUP BY s.brokerage_id, s.external_id, s.slug, input.kind, input.url
+HAVING bool_and(COALESCE(jsonb_typeof(member.value)='object'
+       AND member.value->>'sourceKey'=s.slug
+       AND jsonb_typeof(member.value->'id') IN ('number','string')
+       AND CASE WHEN member.value->>'id' ~ '^[1-9][0-9]{{0,15}}$'
+                THEN (member.value->>'id')::numeric <= 9007199254740991 ELSE false END
+       AND NULLIF(member.value->>'url','') IS NOT NULL, false))
+   AND bool_or(member.value->>'url'=input.url)
+   AND count(DISTINCT member.value->>'id')=count(*);
 CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS
 -- Include newly staged keys: they may conflict with a historical parent or
 -- another newly staged parent even though they do not yet join cre_listings.
@@ -57,21 +83,12 @@ WHERE s.slug = {source} AND NOT COALESCE(
   si.source_key = {source} AND si.url = l.source_url
   AND s.source_url = l.source_url
   AND (si.last_enumerated_at IS NULL OR si.last_enumerated_at <= s.scraped_at)
-  AND jsonb_typeof(l.raw_data) = 'object'
-  AND jsonb_typeof(s.raw_data) = 'object'
-  AND l.raw_data->>'sourceKey' = {source}
-  AND s.raw_data->>'sourceKey' = {source}
-  AND l.raw_data->>'url' = l.source_url
-  AND s.raw_data->>'url' = s.source_url
-  AND l.raw_data->>'id' ~ '^[1-9][0-9]{{0,15}}$'
-  AND s.raw_data->>'id' = l.raw_data->>'id'
-  AND NOT EXISTS (
-    SELECT 1 FROM _buildout_identity_claims other
-    WHERE other.brokerage_id=l.brokerage_id AND other.external_id<>l.external_id
-      AND other.native_id=l.raw_data->>'id')
-  AND CASE WHEN l.raw_data->>'id' ~ '^[1-9][0-9]{{0,15}}$'
-           THEN (l.raw_data->>'id')::numeric <= 9007199254740991
-           ELSE false END,
+  AND EXISTS (SELECT 1 FROM _buildout_identity_shapes prior
+              JOIN _buildout_identity_shapes incoming USING (brokerage_id, external_id)
+              WHERE prior.brokerage_id=s.brokerage_id AND prior.external_id=s.external_id
+                AND prior.kind='prior' AND incoming.kind='incoming'
+                AND (prior.native_ids @> incoming.native_ids
+                     OR prior.native_ids <@ incoming.native_ids)),
   false);
 DELETE FROM _src s USING _buildout_identity_held h
 WHERE s.brokerage_id = h.brokerage_id AND s.external_id = h.external_id;
@@ -257,12 +274,12 @@ WHERE b.slug={slug_sql} AND si.source_key={source_sql} AND si.url=l.source_url
   AND si.observation_present IS TRUE AND si.last_enumerated_at IS NOT NULL
 GROUP BY l.id, l.brokerage_id, l.external_id, l.source_url, l.raw_data,
          si.presence_generation, si.last_enumerated_at
-HAVING bool_and(jsonb_typeof(member.value)='object'
+HAVING bool_and(COALESCE(jsonb_typeof(member.value)='object'
        AND member.value->>'sourceKey'={source_sql}
        AND jsonb_typeof(member.value->'id') IN ('number','string')
        AND CASE WHEN member.value->>'id' ~ '^[1-9][0-9]{{0,15}}$'
                  THEN (member.value->>'id')::numeric <= 9007199254740991 ELSE false END
-       AND NULLIF(member.value->>'url','') IS NOT NULL)
+       AND NULLIF(member.value->>'url','') IS NOT NULL, false))
    AND bool_or(member.value->>'url'=l.source_url)
    AND count(DISTINCT member.value->>'id')=count(*);
 INSERT INTO _buildout_observation_candidate

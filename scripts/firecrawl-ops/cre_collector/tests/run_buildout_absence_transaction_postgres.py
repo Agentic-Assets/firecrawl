@@ -89,6 +89,10 @@ def main():
             stale = create("changed-preimage", "88")
             create("duplicate-a", "77")
             create("duplicate-b", "77")
+            malformed = create("missing-member-source", "85")
+            malformed_raw = json.dumps({"primary": {"sourceKey": source, "id": "85", "url": malformed["source_url"]},
+                                        "secondary_pass": {"id": "86", "url": malformed["source_url"]}}).replace("'", "''")
+            run(f"UPDATE credeals.cre_listings SET raw_data='{malformed_raw}'::jsonb WHERE id='{malformed['listing_id']}';")
             run(f"UPDATE credeals.cre_listings SET title='user update',raw_data=raw_data || '{{\"url\":\"https://example.test/changed\"}}'::jsonb WHERE id='{stale['listing_id']}';")
             staged = {}
             for listing in artifact["listings"]:
@@ -117,7 +121,7 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "other:false:1"], state
+            assert state == ["99:false:1", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "missing-member-source:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == ["disappeared:not_observed_in_complete_enumeration:faris-lee:" + scope["generation_id"]], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
@@ -180,6 +184,50 @@ def main():
             assert run("SELECT external_id FROM credeals.cre_listings WHERE external_id IN "
                        "('new-conflict','new-a','new-b','healthy-peer') ORDER BY external_id;").stdout.strip() == "healthy-peer"
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{existing['listing_id']}';").stdout.strip() == "66"
+            # Real ingest of a merged sale/lease property must allow later
+            # updates and reappearance while still holding unrelated IDs.
+            def dual_row(ids, title, observed):
+                result = None
+                for index, native in enumerate(ids):
+                    mode = "sale" if index == 0 else "lease"
+                    listing = {"sourceKey": source, "id": native, "name": title,
+                               "transactionMode": mode, "transactionType": mode.title(),
+                               "url": f"https://example.test/listings/?propertyId=dual-live-{mode}"}
+                    row = ingest.to_row(listing, {}, observed)
+                    result = row if result is None else ingest.merge_rows(result, row)
+                return result
+            def ingest_rows(rows, observed):
+                jobs = [{"slug": source, "discovered": len(rows), "saved": len(rows),
+                         "errors": 0, "notes": "synthetic"}]
+                run(ingest.build_sql(rows, jobs, observed, set()))
+            first = "2026-11-09T00:00:00Z"
+            second = "2026-11-10T00:00:00Z"
+            third = "2026-11-11T00:00:00Z"
+            fourth = "2026-11-12T00:00:00Z"
+            fifth = "2026-11-13T00:00:00Z"
+            ingest_rows([dual_row(["101", "102"], "first", first)], first)
+            ingest_rows([dual_row(["101", "102"], "updated", second)], second)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "updated"
+            run(f"UPDATE credeals.cre_source_index SET observation_present=false, presence_generation=presence_generation+1 WHERE brokerage_id='{bid}' AND external_id='dual-live';")
+            ingest_rows([dual_row(["101", "102"], "returned", third)], third)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "returned"
+            assert run("SELECT count(*) FROM credeals.cre_listing_events e JOIN credeals.cre_listings l ON l.id=e.listing_id WHERE l.external_id='dual-live' AND e.event_type='reappeared';").stdout.strip() == "1"
+            # A previously merged property may later have one observed tenure,
+            # and a flat property may later gain a second supported tenure.
+            ingest_rows([dual_row(["101"], "flat", fourth)], fourth)
+            ingest_rows([dual_row(["101", "102"], "merged-again", fifth)], fifth)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "merged-again"
+            healthy = ingest.to_row({"sourceKey": source, "id": "104", "name": "peer",
+                      "url": "https://example.test/listings/?propertyId=other-peer"}, {}, fifth)
+            ingest_rows([dual_row(["201", "202"], "wrong identity", fifth), healthy], fifth)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "merged-again"
+            assert run("SELECT count(*) FROM credeals.cre_listings WHERE external_id='other-peer';").stdout.strip() == "1"
+            ingest_rows([dual_row(["101", "202"], "changed member", fifth)], fifth)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "merged-again"
+            malformed_incoming = dual_row(["101", "102"], "missing source", fifth)
+            del malformed_incoming["raw_data"]["secondary_pass"]["sourceKey"]
+            ingest_rows([malformed_incoming], fifth)
+            assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "merged-again"
             proof_tmp.cleanup()
             print("PASS: actual schema and ingest builder, absent and held peers, concurrent replay, wrong job and stale source job refused, preserved status, actual ingest reappearance")
         finally:
