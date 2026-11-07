@@ -39,3 +39,48 @@ test("collector keeps strict redirect peers private and fails without listings",
     assert.match(artifact.sources[0].error, /partial.*temporary redirect/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const heldTx of ["sale", "lease"] as const) {
+  test(`both transactions reject complete admission when ${heldTx} redirects`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "matthews-both-"));
+    try {
+      const preload = join(dir, "preload.mjs"), out = join(dir, "artifact.json");
+      const generationStartedAt = new Date(Date.now() - 10000).toISOString();
+      writeFileSync(preload, `
+        import net from "node:net"; import tls from "node:tls"; import http from "node:http"; import https from "node:https";
+        const deny=()=>{throw new Error("NETWORK_DENIED_BY_FIXTURE")};
+        net.Socket.prototype.connect=deny; tls.connect=deny; http.request=deny; https.request=deny;
+        await import(${JSON.stringify(pathToFileURL(join(root, "sources/matthews-transport.ts")).href)});
+        const host="https://www.matthews.com", sale=host+"/properties/good-sale", lease=host+"/properties/leasing-good-lease";
+        globalThis.fetch=async input=>{const url=String(input);
+          if(url===host+"/sitemap.xml") return new Response("<urlset><url><loc>"+sale+"</loc></url><url><loc>"+lease+"</loc></url></urlset>");
+          if(url===(${JSON.stringify(heldTx)} === "sale" ? sale : lease)) return new Response(null,{status:307,headers:{location:"/listings"}});
+          if(url===sale || url===lease) return new Response('<html><head><link rel="canonical" href="'+url+'"></head><body><section><h1 id="propertyTitle">Good peer</h1><div id="propertyPrice">Contact broker</div><div class="prose">Peer</div></section></body></html>');
+          throw new Error("UNEXPECTED_FIXTURE_URL");
+        };
+      `);
+      const child = spawnSync(process.execPath, ["--import", "tsx", "--import", pathToFileURL(preload).href,
+        "collect.ts", "--source=matthews", "--transaction=both", `--out=${out}`],
+        {cwd:root, env:{...process.env,CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"test-generation",CRE_REFRESH_STARTED_AT:generationStartedAt}, encoding:"utf8",timeout:30000});
+      assert.ifError(child.error); assert.doesNotMatch(child.stderr,/NETWORK_DENIED_BY_FIXTURE|UNEXPECTED_FIXTURE_URL/);
+      const artifact=JSON.parse(readFileSync(out,"utf8"));
+      assert.equal(artifact.listings.length,1);
+      assert.ok(artifact.sources.find((x: any)=>x.transaction===heldTx)?.error);
+      const check = `from pathlib import Path
+from cre_checkpoint_refresh import _validate_source_artifact_local, ArtifactValidationError
+from cre_gate import count_artifacts
+import sys
+p=Path(sys.argv[1])
+assert count_artifacts([p], True)[1].get("matthews")
+try:
+ _validate_source_artifact_local(p, "matthews", sys.argv[2], require_strict_freshness=True, expected_generation_id="test-generation", expected_generation_started_at=sys.argv[2])
+except ArtifactValidationError as e:
+ assert "reported an error" in str(e), str(e)
+else:
+ raise AssertionError("partial artifact accepted")
+`;
+      const verify=spawnSync("python3",["-c",check,out,generationStartedAt],{cwd:root,encoding:"utf8",timeout:30000});
+      assert.ifError(verify.error); assert.equal(verify.status,0,verify.stderr);
+    } finally { rmSync(dir,{recursive:true,force:true}); }
+  });
+}
