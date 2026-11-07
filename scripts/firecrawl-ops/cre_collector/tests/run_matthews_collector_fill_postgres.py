@@ -68,11 +68,12 @@ SELECT id, x, 'https://www.matthews.com/properties/'||x,'https://www.matthews.co
             synthetic_url="postgresql://postgres:synthetic-only@127.0.0.1/postgres"
             target=cre_ingest.database_target_fingerprint_from_url(synthetic_url)
             canonical_lock=refresh.canonical_shared_lock_dir()
-            manifest={"run_id":"fixture-generation","started_at":started,"collector_git_sha":code,"collector_git_dirty":False,
+            manifest={"schema_version":refresh.SCHEMA_VERSION,"run_id":"fixture-generation","started_at":started,"collector_git_sha":code,"collector_git_dirty":False,
                 "preflight":{"database_target":target,"shared_lock":str(canonical_lock)},
                 "scope":{"source_keys":["matthews"]},"sources":{"matthews":{"attempts":[attempt]}},
                 "config":{"pipeline":True,"sources":["matthews"],"transactions":["sale","lease"],"max_items":0,
-                    "additive":True,"mark_missing":False,"status_activation":False}}
+                    "additive":True,"mark_missing":False,"status_activation":False,"page_cap":0,"concurrency":1,
+                    "source_workers":1,"host_cpu_guard":{},"admit_baseline_hold_additively":False}}
             info=prepare_candidate(root,manifest,attempt,git_identity=refresh.git_identity)
             attempt["matthews_partial_candidate"]={"state":"sealed_unadmitted",**info}
             gate_path=root/info["gate_path"]
