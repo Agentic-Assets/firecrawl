@@ -111,6 +111,19 @@ historical prerequisites or operator switches to routine operation without a
 concrete need. Implement and verify any missing partial path before relying on
 it; guidance alone does not change runtime behavior.
 
+Preserve listing history even when a listing is no longer visible: retain prior
+fields, contacts, documents, images and source observations across refreshes.
+A complete, source-appropriate inventory can support recording that a previously
+observed listing disappeared, and a later sighting can support a reappearance
+event. Record the source and observation time; absence alone does not establish
+a sale, lease or other cause. An incomplete, failed or ambiguous inventory does
+not establish disappearance. The scheduled additive refresh does not yet record
+every disappearance, and ordinary refreshes do not yet preserve every prior field
+or child version. Implement and verify these goals under
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255); do not
+describe them as already achieved.
+
 For failed, stale or incomplete brokerage feeds, use the
 [`cre-source-investigation`](.agents/skills/cre-source-investigation/SKILL.md)
 skill. Check current official navigation and source URLs as well as the adapter;
