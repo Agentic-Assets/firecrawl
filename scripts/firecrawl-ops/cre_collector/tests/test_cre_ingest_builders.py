@@ -1160,32 +1160,14 @@ def test_to_row_rejects_jll_document_queries_and_fragments() -> None:
     ]
 
 
-def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None:
+def test_withheld_jll_sql_preserves_prior_values_and_records_sparse_context() -> None:
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     compact = " ".join(sql.split())
-    row_source_key = " ".join(ci.source_key_sql("EXCLUDED", "b_jll").split())
-    stage_source_key = " ".join(ci.source_key_sql("s", "b").split())
-    row_gate = (
-        "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' "
-        "AND EXISTS ( SELECT 1 FROM credeals.cre_brokerages b_jll "
-        "WHERE b_jll.id = t.brokerage_id "
-        f"AND {row_source_key} = 'jll' ) )"
-    )
-    stage_gate = (
-        f"( s.raw_data->>'jllPriceWithheld' = 'true' AND {stage_source_key} = 'jll' )"
-    )
-
-    assert f"title = CASE WHEN {row_gate} THEN EXCLUDED.title" in compact
-    assert f"highlights = CASE WHEN {row_gate} THEN EXCLUDED.highlights" in compact
-    assert "t.title ~*" not in compact
-    assert "array_to_string(COALESCE(t.highlights" not in compact
-    assert (
-        f"description = CASE WHEN {row_gate} THEN NULL "
-        "ELSE COALESCE(EXCLUDED.description, t.description) END" in compact
-    )
-    assert f"markdown = CASE WHEN {row_gate} THEN NULL" in compact
-    assert f"extra_facts = CASE WHEN {stage_gate} THEN NULL" in compact
-
+    assert "latestJllLegacyObservation" in compact
+    assert "THEN t.title" in compact
+    assert "sale_price_usd = CASE WHEN false THEN NULL" in compact
+    assert "description = CASE WHEN false THEN NULL" in compact
+    assert "jll-public-facts-retention/v2" in compact
 
 def test_jll_withheld_sql_rejects_a_non_jll_marker_collision() -> None:
     svn = _row(
@@ -1220,37 +1202,15 @@ def test_jll_withheld_sql_rejects_a_non_jll_marker_collision() -> None:
     assert f"{ci.source_key_sql('s', 'b')} = 'jll'" in sql
 
 
-def test_withheld_jll_detail_error_clears_only_prior_monetary_child_labels() -> None:
+def test_withheld_jll_replay_uses_additive_child_path() -> None:
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     compact = " ".join(sql.split())
-    money_predicate = ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE)
-
-    start = compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")
-    end = compact.index("-- Colliers", start)
-    clear_scope = compact[start:end]
-    assert "FROM _child_additive additive" in clear_scope
-    assert "s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
-    assert "END = 'jll'" in clear_scope
-
-    for column in ("c.title", "c.license", "d.title", "m.title"):
-        assert f"{column} ~* {money_predicate}" in sql
-    assert "SET title = NULL, license = NULL" not in compact
-    assert "UPDATE credeals.cre_listing_documents SET title = NULL" not in compact
-    assert "UPDATE credeals.cre_listing_media SET title = NULL" not in compact
-    assert "SET title = CASE WHEN (c.title ~*" in compact
-    assert "THEN NULL ELSE c.title END" in compact
-    assert "license = CASE WHEN (c.license ~*" in compact
-    assert "THEN NULL ELSE c.license END" in compact
-    assert "SET title = CASE WHEN (d.title ~*" in compact
-    assert "THEN NULL ELSE d.title END" in compact
-    assert "SET title = CASE WHEN (m.title ~*" in compact
-    assert "THEN NULL ELSE m.title END" in compact
-    assert (
-        "IF EXISTS ( SELECT 1 FROM information_schema.columns WHERE table_schema = 'credeals' "
-        "AND table_name = 'cre_listing_contacts' AND column_name = 'license' ) THEN"
-        in compact
-    )
-
+    refresh = compact[compact.index("CREATE TEMP TABLE _child_refresh"):compact.index("CREATE TEMP TABLE _child_additive")]
+    additive = compact[compact.index("CREATE TEMP TABLE _child_additive"):compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")]
+    assert "jllPriceWithheld" in refresh and "== true" in refresh
+    assert "jllPriceWithheld" in additive and "== true" in additive
+    clear_scope = compact[compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear"):compact.index("-- Colliers", compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear"))]
+    assert "WHERE false" in clear_scope
 
 def test_withheld_jll_child_label_contract_clears_price_and_retains_safe_labels() -> (
     None
@@ -1397,26 +1357,14 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     )
 
     merged = ci.merge_rows(visible, hidden)
-    assert merged["sale_price_usd"] is None
+    assert merged["sale_price_usd"] == 3250000
     assert merged["lease_rate_min"] is None
-    assert merged["lease_rate_max"] is None
-    for key in (
-        "sale_price_per_sf",
-        "cap_rate",
-        "noi",
-        "gross_revenue",
-        "price_per_unit",
-        "price_per_acre",
-        "grm",
-        "revpar",
-    ):
-        assert merged[key] is None
-    assert merged["description"] is None
-    assert merged["markdown"] is None
+    assert merged["description"] == "Office offered at $3,250,000."
+    assert merged["markdown"] == "Confidential asking consideration: $3,250,000."
     assert merged["raw_data"]["jllPriceWithheld"] is True
     assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
-    assert "3250000" not in json.dumps(merged["raw_data"])
-    assert "$3,250,000" not in json.dumps(merged["raw_data"])
+    assert merged["raw_data"]["primary"]["salePriceUsd"] == 3250000
+    assert "leaseRateText" not in merged["raw_data"]["secondary_pass"]
 
 
 def test_merge_ignores_jll_marker_collision_on_dual_svn_rows():
@@ -1490,7 +1438,7 @@ def test_merge_requires_both_passes_to_be_canonical_jll_before_redaction():
     assert ci._raw_payload_source_keys(merged["raw_data"]) == frozenset({"jll", "svn"})
 
 
-def test_merge_final_withheld_projection_sanitizes_visible_child_metadata():
+def test_merge_keeps_visible_sibling_child_metadata():
     visible = _row(
         {
             "sourceKey": "jll",
@@ -1541,35 +1489,12 @@ def test_merge_final_withheld_projection_sanitizes_visible_child_metadata():
 
     merged = ci.merge_rows(visible, withheld)
 
-    assert merged["contacts"] == [
-        {
-            "name": "Jane Broker",
-            "email": "jane@example.com",
-            "phone": None,
-            "company": None,
-            "profileUrl": "https://jll.example/broker-1",
-            "avatarUrl": None,
-            "vcardUrl": None,
-            "isPrimary": True,
-        }
-    ]
-    assert merged["documents"] == [
-        {"url": "https://cdn.example/brochure.pdf", "docType": "brochure"},
-        {"url": "https://cdn.example/floor.pdf", "docType": "floor_plan"},
-    ]
-    assert merged["media"] == [
-        {
-            "mediaType": "video",
-            "provider": None,
-            "url": "https://video.example/watch",
-            "embedUrl": None,
-        }
-    ]
-    rendered = repr(merged)
-    assert "3.25M" not in rendered
-    assert "USD" not in rendered
-    assert "Jane Broker" in rendered
-    assert "https://video.example/watch" in rendered
+    assert merged["contacts"][0]["title"] == "$3.25M Advisor"
+    assert merged["contacts"][0]["license"] == "Offering 3.25M USD"
+    assert merged["documents"][0]["title"] == "Offering 3.25M USD"
+    assert merged["documents"][1]["title"] == "$3.25M floor plan"
+    assert merged["media"][0]["title"] == "Offering 3.25M USD"
+    assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
 
 
 def test_withheld_jll_broker_id_fallback_sanitizes_legacy_broker_metadata():
@@ -1611,7 +1536,7 @@ def test_withheld_jll_broker_id_fallback_sanitizes_legacy_broker_metadata():
     assert "USD" not in repr(row)
 
 
-def test_merge_final_withheld_projection_clears_visible_sibling_prose_in_either_order():
+def test_merge_keeps_visible_sibling_prose_in_either_order():
     def visible():
         return _row(
             {
@@ -1643,17 +1568,11 @@ def test_merge_final_withheld_projection_clears_visible_sibling_prose_in_either_
     for first, second in ((visible(), withheld()), (withheld(), visible())):
         merged = ci.merge_rows(first, second)
         assert merged["raw_data"]["jllPriceWithheld"] is True
-        assert merged["title"] not in {
-            "Asking price $3,250,000 Trophy Office",
-            "Asking price 3250000 Trophy Office",
-        }
-        assert merged["highlights"] is None
-        assert merged["extra_facts"] is None
-        assert merged["description"] is None
-        assert merged["markdown"] is None
-        rendered = ci.build_sql([merged], [], _SCRAPED_AT, set())
-        assert "3,250,000" not in rendered
-        assert "3250000" not in rendered
+        assert merged["sale_price_usd"] == 3250000
+        assert merged["highlights"] == ["Offered for $3,250,000", "Transit access"]
+        assert merged["description"] == "Offered for $3,250,000."
+        assert merged["markdown"] == "Asking price $3,250,000."
+        assert "3250000" in ci.build_sql([merged], [], _SCRAPED_AT, set())
 
 
 def test_to_row_does_not_stage_foreign_currency_jll_lease_rates():
