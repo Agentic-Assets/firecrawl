@@ -156,6 +156,28 @@ def test_external_reports_ordinary_released_authority_as_snapshot(status_host):
     assert "does not establish writer admission" in result.stdout
 
 
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "file"])
+def test_external_reports_unsafe_lock_path(status_host, kind):
+    collector, _root, _env = status_host
+    daily = collector / "out" / "daily"
+    daily.mkdir(parents=True)
+    lock = daily / ".cre.lock"
+    if kind == "file":
+        lock.write_text("do not remove")
+    else:
+        target = daily / "target"
+        if kind == "symlink":
+            target.mkdir()
+        lock.symlink_to(target, target_is_directory=True)
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert "lock path is" in result.stdout
+    if kind == "file":
+        assert lock.read_text() == "do not remove"
+    else:
+        assert lock.is_symlink()
+
+
 @pytest.mark.parametrize("args", [("--scheduler",), ("--scheduler", "cron")])
 def test_scheduler_argument_fails_before_checks(status_host, args):
     _collector, root, _env = status_host

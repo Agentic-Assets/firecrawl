@@ -307,7 +307,9 @@ case "$AUTHORITY_STATE" in
   reclaiming) warn "authority reclaim is in progress or requires inspection; preserve its evidence" ;;
   *) warn "authority is unsafe, unreadable, changing or malformed; inspect before acting" ;;
 esac
-if [ -d "$LOCKDIR" ]; then
+if [ -L "$LOCKDIR" ]; then
+  warn "lock path is a symbolic link; preserve it and inspect authority before acting"
+elif [ -d "$LOCKDIR" ]; then
   lpid=""; lepoch=""
   [ -f "$LOCKDIR/pid" ] && read -r lpid lepoch <"$LOCKDIR/pid" 2>/dev/null || true
   lage=""
@@ -323,6 +325,8 @@ if [ -d "$LOCKDIR" ]; then
     warn "lock directory owner '${lpid:-unknown}' is not visible; inspect authority and settlement"
     note "do not remove lock artifacts; follow LOCK_AUTHORITY_RECOVERY.md for the observed state"
   fi
+elif [ -e "$LOCKDIR" ]; then
+  warn "lock path is not a directory; preserve it and inspect authority before acting"
 else
   note "no lock directory observed; this does not establish that no writer is active"
 fi
