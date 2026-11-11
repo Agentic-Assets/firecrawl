@@ -19,6 +19,10 @@ from cre_partial_cursor import read_cursor
 from cre_series_control import SeriesControlError, read_receipt
 from cre_stop_guarded_tier import StopRefused, _read_at, _safe_stat
 
+MAX_PARENT_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_CHILD_MANIFEST_BYTES = 32 * 1024 * 1024
+LEGACY_SETTLED_PRODUCER = "8471ede8087035f56d3ae9201f29330550d9a8d6"
+
 
 class SourceEvidenceRefusal(ValueError):
     """Settled Colliers-specific evidence cannot qualify; hold only this source."""
@@ -44,6 +48,142 @@ def _check_owner(owner):
     os.close(descriptor)
 
 
+def _legacy_journal_candidate(child):
+    """Recognize only the historical normal-return shape; not a settlement proof."""
+    try:
+        pipeline = child["pipeline"]
+        source = child["sources"]["colliers"]
+        windows = source["partial_windows"]
+        units = pipeline["units"]
+        worker_index = (source.get("colliers_partial_worker") or {}).get("window_index")
+        return (child.get("collector_git_sha") == LEGACY_SETTLED_PRODUCER
+                and child.get("collector_git_dirty") is False and child.get("status") == "failed"
+                and isinstance(pipeline, dict) and "commit_outcome_unknown" not in pipeline
+                and pipeline.get("status") == "partial" and "active_unit" in pipeline
+                and pipeline["active_unit"] is None and isinstance(units, list) and bool(units)
+                and all(isinstance(unit, dict) and unit.get("state") == "verified" for unit in units)
+                and isinstance(child.get("sources"), dict) and bool(child["sources"])
+                and all(isinstance(item, dict) and item.get("state") in {
+                    "ingested", "collect_failed", "artifact_rejected"}
+                    and not item.get("ingest_recovery") for item in child["sources"].values())
+                and source.get("state") == "ingested" and isinstance(windows, list) and bool(windows)
+                and all(isinstance(window, dict) and window.get("state") == "verified" for window in windows)
+                and type(worker_index) is int and worker_index == len(windows))
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
+def _legacy_journal_is_settled(series_dir, parent, run_dir, child, owner, target, position, cursor):
+    """Requalify an already published historical cursor without replay or writes."""
+    from cre_colliers_partial_checkpoint import verify_worker_artifact
+    from cre_series_control import _open_directories, _read_private_receipt
+
+    try:
+        if not _legacy_journal_candidate(child):
+            return False
+        parent_raw = _digest(series_dir / "manifest.json", MAX_PARENT_MANIFEST_BYTES)[0]
+        child_raw = _digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)[0]
+        if (not series._exact_json_equal(json.loads(parent_raw), parent)
+                or not series._exact_json_equal(json.loads(child_raw), child)):
+            return False
+        source = child["sources"]["colliers"]
+        windows, worker = source["partial_windows"], source["colliers_partial_worker"]
+        last, settlement, ingest = windows[-1], source["partial_cursor_settlement"], source["ingest"]
+        parent_source = parent["sources"]["colliers"]
+        attempts = parent_source["attempts"]
+        invocation = parent["latest_invocation_control"]["invocation_id"]
+        parent_receipt = read_receipt(series_dir, invocation)
+        last_child = parent_receipt["last_checkpoint"]
+        child_id, pid = last_child["child_invocation_id"], last_child["pid"]
+        if (parent.get("status") != "failed" or parent.get("collector_git_sha") != LEGACY_SETTLED_PRODUCER
+                or parent.get("database_target") != {"algorithm": "sha256", "value": target}
+                or child.get("preflight", {}).get("database_target") != parent["database_target"]
+                or child.get("preflight", {}).get("shared_lock") != str(owner.path)
+                or not series._exact_json_equal(child.get("config"), series._expected_child_config(
+                    ",".join(parent["config"]["sources"]), parent["config"]))
+                or not attempts or parent_source.get("checkpoint_run") != f"runs/{child['run_id']}"
+                or attempts[-1].get("series_control_child_id") != child_id
+                or parent_receipt.get("local_settlement") != "confirmed" or parent_receipt.get("status") != "failed"
+                or last_child.get("run_id") != child["run_id"]
+                or not isinstance(child_id, str) or re.fullmatch(r"[a-f0-9]{32}", child_id) is None
+                or type(pid) is not int or pid <= 1
+                or pid == os.getpgrp() or refresh._group_alive(pid)):
+            return False
+        times = [series._parse_utc_timestamp(value, field="legacy journal time") for value in (
+            parent["started_at"], child["started_at"], child["finished_at"], parent["finished_at"])]
+        if times != sorted(times):
+            return False
+        root, private, root_stat, private_stat = _open_directories(run_dir)
+        try:
+            control_raw, _ = _read_private_receipt(private, child_id + ".json")
+            control = json.loads(control_raw)
+            if (type(control.get("schema_version")) is not int or control["schema_version"] != 1
+                    or control.get("invocation_id") != invocation or control.get("child_invocation_id") != child_id
+                    or control.get("run_id") != child["run_id"] or control.get("collector_git_sha") != LEGACY_SETTLED_PRODUCER
+                    or control.get("pid") != pid or control.get("guards_stopped") is not True
+                    or control.get("nested_cleanup_confirmed") is not True or control.get("terminal_evidence_saved") is not True
+                    or control.get("pre_acquisition_refusal") is not False):
+                return False
+            root_now, private_now = run_dir.stat(follow_symlinks=False), os.stat(".series-control", dir_fd=root, follow_symlinks=False)
+            identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_uid, stat.st_mode)
+            if (identity(root_stat) != identity(root_now) or identity(private_stat) != identity(private_now)
+                    or _read_private_receipt(private, child_id + ".json")[0] != control_raw):
+                return False
+        finally:
+            os.close(private)
+            os.close(root)
+        binding = source["gate"]["current_inventory_proof"]
+        expected_cursor = {"schema": "cre-partial-cursor/v1", "sourceKey": "colliers", "targetSha256": target,
+                           "position": last["next_cursor"], "generation": child["run_id"],
+                           "artifactSha256": last["artifact_sha256"], "attemptId": last["attempt_id"],
+                           "outcome": "exact_commit"}
+        units = [unit for unit in child["pipeline"]["units"] if unit.get("unit_id") == last.get("unit_id")]
+        if (type(last.get("index")) is not int or last["index"] != len(windows)
+                or type(position) is not int or type(last.get("cursor")) is not int
+                or type(last.get("next_cursor")) is not int
+                or any(type(value) is not int for value in (settlement.get("cursor"), settlement.get("next_cursor"),
+                    worker.get("cursor"), binding.get("next_cursor")))
+                or last.get("outcome") != "exact_commit"
+                or position != last["next_cursor"] or not series._exact_json_equal(cursor, expected_cursor)
+                or settlement.get("state") != "settled" or settlement.get("attempt_id") != last["attempt_id"]
+                or settlement.get("artifact_sha256") != last["artifact_sha256"]
+                or settlement.get("cursor") != last["cursor"] or settlement.get("next_cursor") != position
+                or worker.get("state") != "settled" or type(worker.get("rc")) is not int or worker["rc"] != 0
+                or worker.get("cursor") != last["cursor"] or worker.get("receipt_path") != last["receipt_path"]
+                or worker.get("receipt_sha256") != last["receipt_sha256"]
+                or ingest.get("attempt_id") != last["attempt_id"] or type(ingest.get("rc")) is not int or ingest["rc"] != 0
+                or ingest.get("additive") is not True or ingest.get("mark_missing") is not False
+                or ingest.get("status_activation") is not False or not ingest.get("finished_at")
+                or source.get("subset_ingest_attempt_id") != last["attempt_id"]
+                or binding.get("artifact_sha256") != last["artifact_sha256"] or binding.get("next_cursor") != position
+                or not series._exact_json_equal(parent_source.get("pipeline_result"), last["result"])
+                or len(units) != 1 or units[0].get("sources") != ["colliers"]):
+            return False
+        previous = copy.deepcopy(last["checkpoint"])
+        if "partial_windows" in previous:
+            return False
+        projected = dict(child)
+        projected["sources"] = {**child["sources"], "colliers": previous}
+        projected["pipeline"] = {**child["pipeline"], "units": units,
+                                 "source_results": {**child["pipeline"]["source_results"], "colliers": last["result"]}}
+        verify_worker_artifact(run_dir / worker["artifact_path"], projected,
+                               current_code_sha=LEGACY_SETTLED_PRODUCER, current_git_dirty=False)
+        if not series.pipeline_source_qualified(projected, "colliers", run_dir=run_dir,
+                parent_started_at=parent["started_at"], parent_finished_at=parent["finished_at"],
+                parent_attempts=attempts):
+            return False
+        _check_owner(owner)
+        after_position, after_cursor = read_cursor(owner.path, "colliers", target)
+        if (_digest(series_dir / "manifest.json", MAX_PARENT_MANIFEST_BYTES)[0] != parent_raw
+                or _digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)[0] != child_raw
+                or not series._exact_json_equal(read_receipt(series_dir, invocation), parent_receipt)
+                or after_position != position or not series._exact_json_equal(after_cursor, cursor)):
+            return False
+        return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, StopRefused, SeriesControlError):
+        return False
+
+
 def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     """Bind a stopped series and its unverified last Colliers window.
 
@@ -59,7 +199,7 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     if (series_dir.is_symlink() or series_dir.parent.name != "checkpoint-series"
             or series_dir.parent.parent.name != "out"):
         raise ValueError("Colliers cursor recovery series path invalid")
-    parent_raw, parent_hash = _digest(series_dir / "manifest.json", 4 * 1024 * 1024)
+    parent_raw, parent_hash = _digest(series_dir / "manifest.json", MAX_PARENT_MANIFEST_BYTES)
     parent = json.loads(parent_raw)
     control = parent["latest_invocation_control"]["invocation_id"]
     receipt = read_receipt(series_dir, control)
@@ -73,7 +213,7 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     run_dir = series_dir / "runs" / run_id
     if run_dir.is_symlink() or (series_dir / "runs").is_symlink():
         raise ValueError("Colliers child path is not owned")
-    child_raw, child_hash = _digest(run_dir / "manifest.json", 4 * 1024 * 1024)
+    child_raw, child_hash = _digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)
     child = json.loads(child_raw)
     source = parent["sources"]["colliers"]
     attempts = source["attempts"]
@@ -234,8 +374,8 @@ def _qualify(series_dir: Path, owner: refresh.SharedLock) -> dict:
     if before_hash != unit["before_sha256"]:
         raise ValueError("Colliers before report changed")
     _check_owner(owner)
-    if (_digest(series_dir / "manifest.json", 4 * 1024 * 1024)[0] != parent_raw
-            or _digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0] != child_raw
+    if (_digest(series_dir / "manifest.json", MAX_PARENT_MANIFEST_BYTES)[0] != parent_raw
+            or _digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)[0] != child_raw
             or _digest(run_dir / before, 32 * 1024 * 1024)[0] != before_raw
             or read_receipt(series_dir, control) != receipt
             or read_cursor(owner.path, "colliers", target) != (position, cursor)):
@@ -277,7 +417,7 @@ def recover(series_dir: Path, owner: refresh.SharedLock, *, expected_target: str
                != initial["producer_sha"]):
         raise refresh.GlobalStageError("Colliers recovery verifier is not a clean reviewed descendant")
     run_dir = Path(initial["run_dir"])
-    child_raw, digest = _digest(run_dir / "manifest.json", 4 * 1024 * 1024)
+    child_raw, digest = _digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)
     if digest != initial["child_sha256"]:
         raise ValueError("Colliers recovery child changed")
     child = json.loads(child_raw)
@@ -407,7 +547,7 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
             child_path = candidate / "runs" / run_id
             child_exists = child_path.exists() or child_path.is_symlink()
             try:
-                parent = json.loads(_digest(candidate / "manifest.json", 4 * 1024 * 1024)[0])
+                parent = json.loads(_digest(candidate / "manifest.json", MAX_PARENT_MANIFEST_BYTES)[0])
                 bound = parent.get("sources", {}).get("colliers", {}).get("checkpoint_run") == f"runs/{run_id}"
             except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
                     AttributeError, StopRefused):
@@ -427,11 +567,13 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
                 unsafe_child = True
                 continue
             try:
-                candidate_child = json.loads(_digest(candidate_run / "manifest.json", 4 * 1024 * 1024)[0])
+                candidate_child = json.loads(_digest(candidate_run / "manifest.json", MAX_CHILD_MANIFEST_BYTES)[0])
                 candidate_source = candidate_child["sources"]["colliers"]
                 candidate_pipeline = candidate_child["pipeline"]
                 if (candidate_source.get("state") in {"ingesting", "ingest_recovery_required"}
-                        or candidate_pipeline.get("commit_outcome_unknown") is not False):
+                        or (candidate_pipeline.get("commit_outcome_unknown") is not False
+                            and not (len(matches) == 1 and matches[0][2]
+                                     and _legacy_journal_candidate(candidate_child)))):
                     raise refresh.GlobalStageError("Colliers prior write settlement remains unknown")
             except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError,
                     KeyError, AttributeError, StopRefused):
@@ -442,7 +584,7 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
         run_dir = series_dir / "runs" / run_id
         if run_dir.is_symlink() or (series_dir / "runs").is_symlink():
             raise SourceEvidenceRefusal("Colliers cursor child path is not owned")
-        child = json.loads(_digest(run_dir / "manifest.json", 4 * 1024 * 1024)[0])
+        child = json.loads(_digest(run_dir / "manifest.json", MAX_CHILD_MANIFEST_BYTES)[0])
         if not isinstance(child, dict) or child.get("run_id") != run_id:
             raise SourceEvidenceRefusal("Colliers cursor child identity differs")
     except (FileNotFoundError, NotADirectoryError, PermissionError, ValueError, TypeError, StopRefused) as exc:
@@ -462,6 +604,11 @@ def recover_prior_generation(owner: refresh.SharedLock, *, expected_target: str,
         raise SourceEvidenceRefusal("Colliers cursor history is malformed") from exc
     if not isinstance(windows, list) or not isinstance(child.get("pipeline"), dict):
         raise SourceEvidenceRefusal("Colliers cursor history is malformed")
+    if _legacy_journal_candidate(child):
+        if not _legacy_journal_is_settled(series_dir, parent, run_dir, child, owner,
+                                           expected_target, position, cursor):
+            raise refresh.GlobalStageError("Colliers historical journal settlement remains unknown")
+        return None  # Exact already-published legacy cursor; do not replay or publish.
     if source.get("state") in {"ingesting", "ingest_recovery_required"} or (
             child["pipeline"].get("commit_outcome_unknown") is not False):
         raise refresh.GlobalStageError("Colliers prior write settlement remains unknown")
