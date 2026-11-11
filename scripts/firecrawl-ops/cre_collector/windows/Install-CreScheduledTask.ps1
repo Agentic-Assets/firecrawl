@@ -43,7 +43,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'Run this installer on Windows.' }
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Run this installer on Windows.' }
 
 # Pure selection validation runs before readiness, telemetry or notification work.
 if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
