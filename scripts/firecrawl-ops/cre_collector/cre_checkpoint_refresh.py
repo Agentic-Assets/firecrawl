@@ -1337,7 +1337,10 @@ class SharedLock:
 
     @staticmethod
     def _authority_fields(descriptor: int) -> tuple[int, str, str, bool] | None:
-        raw = SharedLock._safe_authority_bytes(descriptor)
+        return SharedLock._authority_fields_bytes(SharedLock._safe_authority_bytes(descriptor))
+
+    @staticmethod
+    def _authority_fields_bytes(raw: bytes) -> tuple[int, str, str, bool] | None:
         if not raw.strip():
             return None
         try:
@@ -1568,7 +1571,10 @@ class SharedLock:
 
     @staticmethod
     def _authority_reclaim_state(descriptor: int) -> _AuthorityReclaimState | None:
-        raw = SharedLock._safe_authority_bytes(descriptor)
+        return SharedLock._authority_reclaim_state_bytes(SharedLock._safe_authority_bytes(descriptor))
+
+    @staticmethod
+    def _authority_reclaim_state_bytes(raw: bytes) -> _AuthorityReclaimState | None:
         try:
             parts = raw.decode("utf-8").strip().split()
         except UnicodeDecodeError as exc:
