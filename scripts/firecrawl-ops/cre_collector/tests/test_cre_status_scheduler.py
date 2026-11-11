@@ -19,6 +19,11 @@ def status_host(tmp_path):
     collector.mkdir(parents=True)
     shutil.copyfile(Path(__file__).resolve().parents[1] / "cre_status.sh", collector / "cre_status.sh")
     shutil.copyfile(Path(__file__).resolve().parents[1] / "cre_platform.py", collector / "cre_platform.py")
+    (collector / "scheduling").mkdir()
+    (collector / "scheduling" / "lock_status.py").write_text(
+        'import os, sys\nassert sys.dont_write_bytecode\n'
+        'print(os.environ.get("TEST_AUTHORITY_STATE", "absent"))\n', encoding="utf-8"
+    )
     (collector / "cre_ingest.py").write_text(
         'STATUS_SOURCE_PATHS = {"cbre": []}\n'
         'def load_db_url(_):\n    return "private-not-printed", "test-env-file"\n',
@@ -75,7 +80,7 @@ def test_external_ignores_launchd_and_tcc_but_checks_runtime(status_host, launch
     (daily / "cre-monitor.err.log").write_text("Operation not permitted\nprivate-secret", encoding="utf-8")
     result = run_status(status_host, "--scheduler", "external")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "no lock held" in result.stdout
+    assert "no lock directory observed" in result.stdout
     assert "Firecrawl API ready" in result.stdout
     assert "POSTGRES_URL env file found" in result.stdout
     assert "checkout is clean" in result.stdout
@@ -127,9 +132,76 @@ def test_external_reports_failed_run_and_stale_lock(status_host):
     result = run_status(status_host, "--scheduler", "external")
     assert result.returncode == 1
     assert "monitor: last run FAILED" in result.stdout
-    assert "stale lock present" in result.stdout
+    assert "lock directory owner '99999999' is not visible" in result.stdout
     assert "2 consecutive failures" in result.stdout
     assert lock.is_dir()
+
+
+@pytest.mark.parametrize("state", ["armed-visible", "armed-not-visible", "armed-unknown", "unsafe", "reclaiming"])
+def test_external_reports_unsettled_authority_without_lock_directory(status_host, state):
+    collector, _root, env = status_host
+    env["TEST_AUTHORITY_STATE"] = state
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert "no lock directory observed" in result.stdout
+    assert "no lock held" not in result.stdout
+    assert not (collector / "out" / "daily" / ".cre.lock").exists()
+
+
+def test_external_reports_ordinary_released_authority_as_snapshot(status_host):
+    _collector, _root, env = status_host
+    env["TEST_AUTHORITY_STATE"] = "normal-not-visible"
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 0
+    assert "does not establish writer admission" in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "file"])
+def test_external_reports_unsafe_lock_path(status_host, kind):
+    collector, _root, _env = status_host
+    daily = collector / "out" / "daily"
+    daily.mkdir(parents=True)
+    lock = daily / ".cre.lock"
+    if kind == "file":
+        lock.write_text("do not remove")
+    else:
+        target = daily / "target"
+        if kind == "symlink":
+            target.mkdir()
+        lock.symlink_to(target, target_is_directory=True)
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert "lock path is" in result.stdout
+    if kind == "file":
+        assert lock.read_text() == "do not remove"
+    else:
+        assert lock.is_symlink()
+
+
+@pytest.mark.parametrize("contents", ["malformed", '{"phase":"completed"}'])
+def test_external_warns_when_recovery_journal_completion_is_unverified(status_host, contents):
+    collector, _root, _env = status_host
+    daily = collector / "out" / "daily"
+    daily.mkdir(parents=True)
+    guard = daily / ".cre-quarantine-recovery.json"
+    guard.write_text(contents)
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert "completion is not evaluated" in result.stdout
+    assert guard.read_text() == contents
+
+
+@pytest.mark.parametrize("marker", ["capacity-benchmark-active.json", "capacity-benchmark-quarantine.json"])
+def test_external_warns_when_benchmark_interlock_is_present(status_host, marker):
+    collector, _root, _env = status_host
+    lock = collector / "out" / "daily" / ".cre.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{os.getpid()} {int(time.time())}\n")
+    (lock / marker).write_text("preserve")
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert f"benchmark interlock {marker} is present" in result.stdout
+    assert (lock / marker).read_text() == "preserve"
 
 
 @pytest.mark.parametrize("args", [("--scheduler",), ("--scheduler", "cron")])

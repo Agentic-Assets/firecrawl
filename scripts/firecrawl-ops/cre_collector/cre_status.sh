@@ -295,7 +295,30 @@ fi
 # Lock state: a lock held by a live process for far longer than any legitimate
 # run is the silent-skip failure mode (every tier then exits 0 doing nothing).
 LOCKDIR="$OUT_DAILY/.cre.lock"
-if [ -d "$LOCKDIR" ]; then
+AUTHORITY_STATE="$(PYTHONPATH="$DIR" python3 -B "$DIR/scheduling/lock_status.py" "$LOCKDIR.authority" 2>/dev/null)" || AUTHORITY_STATE="unsafe"
+case "$AUTHORITY_STATE" in
+  absent) note "no authority file observed; this snapshot does not establish writer admission" ;;
+  neutral) note "authority observed neutral; this snapshot does not establish writer admission" ;;
+  armed-visible) warn "recovery-fenced authority has a visible PID; owner and settlement are unconfirmed" ;;
+  armed-not-visible|armed-unknown) warn "recovery-fenced authority requires settlement review; see LOCK_AUTHORITY_RECOVERY.md" ;;
+  normal-visible) note "normal authority has a visible PID; owner state is not established by PID alone" ;;
+  normal-not-visible) note "normal authority PID is not visible; this snapshot does not establish writer admission" ;;
+  normal-unknown) warn "normal authority owner visibility is unknown; inspect lock and settlement before acting" ;;
+  reclaiming) warn "authority reclaim is in progress or requires inspection; preserve its evidence" ;;
+  *) warn "authority is unsafe, unreadable, changing or malformed; inspect before acting" ;;
+esac
+RECOVERY_GUARD="$OUT_DAILY/.cre-quarantine-recovery.json"
+if [ -e "$RECOVERY_GUARD" ] || [ -L "$RECOVERY_GUARD" ]; then
+  warn "quarantine recovery journal is present; completion is not evaluated by this status check"
+fi
+if [ -L "$LOCKDIR" ]; then
+  warn "lock path is a symbolic link; preserve it and inspect authority before acting"
+elif [ -d "$LOCKDIR" ]; then
+  for marker in capacity-benchmark-active.json capacity-benchmark-quarantine.json; do
+    if [ -e "$LOCKDIR/$marker" ] || [ -L "$LOCKDIR/$marker" ]; then
+      warn "benchmark interlock $marker is present; inspect it before acting"
+    fi
+  done
   lpid=""; lepoch=""
   [ -f "$LOCKDIR/pid" ] && read -r lpid lepoch <"$LOCKDIR/pid" 2>/dev/null || true
   lage=""
@@ -303,16 +326,18 @@ if [ -d "$LOCKDIR" ]; then
   if [ -n "${lpid:-}" ] && kill -0 "$lpid" 2>/dev/null; then
     if [ -n "$lage" ] && [ "$lage" -gt $(( 18 * 3600 )) ]; then
       warn "lock held by live pid $lpid for $(human_age "$lage") (exceeds 18h; possible hung run)"
-      note "if confirmed hung: stop the owner, preserve lock artifacts, and use governed quarantine recovery; never manually delete the canonical lock"
+      note "if confirmed hung: stop the owner, preserve lock artifacts, and follow LOCK_AUTHORITY_RECOVERY.md"
     else
-      ok "lock held by live pid $lpid${lage:+ ($(human_age "$lage"))} (a tier is running)"
+      note "lock directory PID $lpid is visible${lage:+ ($(human_age "$lage"))}; ownership is not established by PID alone"
     fi
   else
-    warn "stale lock present (owner '${lpid:-unknown}' not alive); governed SharedLock may reclaim an ordinary stale directory"
-    note "do not manually remove the canonical lock or authority; preserve interlocked/ambiguous residue for governed quarantine recovery"
+    warn "lock directory owner '${lpid:-unknown}' is not visible; inspect authority and settlement"
+    note "do not remove lock artifacts; follow LOCK_AUTHORITY_RECOVERY.md for the observed state"
   fi
+elif [ -e "$LOCKDIR" ]; then
+  warn "lock path is not a directory; preserve it and inspect authority before acting"
 else
-  ok "no lock held (no tier running)"
+  note "no lock directory observed; this does not establish that no writer is active"
 fi
 
 # ---------------------------------------------------------------------------
