@@ -12,6 +12,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,7 +79,10 @@ def main():
                                                         current_target_sha256=TARGET)
             jobkey = artifact_run_identity_from_digests([scope["artifact_sha256"]])[0]
             job = str(uuid.uuid5(ingest._RUN_UUID_NAMESPACE, f"{jobkey}:{source}"))
-            old_time = "2026-11-06T00:00:00Z"
+            observed = datetime.fromisoformat(scope["observed_at"].replace("Z", "+00:00"))
+            def at(days):
+                return (observed + timedelta(days=days)).isoformat()
+            old_time = at(-2)
             def create(label, native):
                 listing_id = str(uuid.uuid4())
                 url = "https://example.test/" + label
@@ -172,12 +176,12 @@ def main():
             wrong_job = sql_fragment(scope, [absent], str(uuid.uuid4()), jobkey)
             assert run("BEGIN; SET LOCAL standard_conforming_strings=on;\n" + wrong_job + "\nCOMMIT;", check=False).returncode != 0
             newer_job = str(uuid.uuid4())
-            run(f"INSERT INTO credeals.cre_scrape_jobs(id,brokerage_id,status,artifact_run_key,completed_at) VALUES ('{newer_job}','{bid}','completed','newer-synthetic-job','2026-11-08T00:00:00Z');")
+            run(f"INSERT INTO credeals.cre_scrape_jobs(id,brokerage_id,status,artifact_run_key,completed_at) VALUES ('{newer_job}','{bid}','completed','newer-synthetic-job','{at(1)}');")
             assert run(tx, check=False).returncode != 0
-            older = dict(scope, generation_id="older", observed_at="2026-11-05T00:00:00Z")
+            older = dict(scope, generation_id="older", observed_at=at(-3))
             assert run("BEGIN; SET LOCAL standard_conforming_strings=on;\n" + sql_fragment(older, [absent], job, jobkey) + "\nCOMMIT;", check=False).returncode != 0
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "1"
-            later = "2026-11-08T00:00:00Z"
+            later = at(1)
             row = ingest.to_row({"sourceKey": source, "id": "99", "url": "https://example.test/99"}, {}, later)
             script = ingest.build_sql([row], [{"slug": source, "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}], later, set())
             run(script)
@@ -227,11 +231,7 @@ def main():
                 jobs = [{"slug": source, "discovered": len(rows), "saved": len(rows),
                          "errors": 0, "notes": "synthetic"}]
                 run(ingest.build_sql(rows, jobs, observed, set()))
-            first = "2026-11-09T00:00:00Z"
-            second = "2026-11-10T00:00:00Z"
-            third = "2026-11-11T00:00:00Z"
-            fourth = "2026-11-12T00:00:00Z"
-            fifth = "2026-11-13T00:00:00Z"
+            first, second, third, fourth, fifth = (at(day) for day in range(2, 7))
             ingest_rows([dual_row(["101", "102"], "first", first)], first)
             ingest_rows([dual_row(["101", "102"], "updated", second)], second)
             assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "updated"
@@ -265,7 +265,7 @@ def main():
             run("UPDATE credeals.cre_listings SET raw_data=raw_data || "
                 "jsonb_build_object('id', CASE WHEN external_id='dual-live' THEN '999998' ELSE '999999' END, "
                 "'url','https://example.test/stale') WHERE external_id IN ('dual-live','flat-inventory');")
-            scope2 = {**scope, "generation_id": "later-complete", "observed_at": "2026-11-20T00:00:00Z",
+            scope2 = {**scope, "generation_id": "later-complete", "observed_at": at(8),
                       "artifact_sha256": "f" * 64}
             key2 = artifact_run_identity_from_digests([scope2["artifact_sha256"]])[0]
             jobs2 = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows),
@@ -282,7 +282,7 @@ def main():
                  patch("cre_validate._run_psql_script", side_effect=fixture_query):
                 assessed = readback(scope2, None)
                 assert {"dual-live", "flat-inventory"} <= {row["external_id"] for row in assessed["applied"]}
-            returned = "2026-11-21T00:00:00Z"
+            returned = at(9)
             ingest_rows([dual_row(["101", "102"], "dual returned again", returned),
                          ingest.to_row({**flat_input, "name": "flat returned"}, {}, returned)], returned)
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
