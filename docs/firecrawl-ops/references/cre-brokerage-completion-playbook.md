@@ -141,6 +141,16 @@ field and child retention. The existing guard holds
 ambiguous rows, but a verified committed subset and continued broad-run
 qualification are not yet implemented for every Buildout hold.
 
+For a Buildout listing with missing contacts, inspect `buildoutContactMapping`
+for an invalid container or entry count, then compare usable mapped contacts,
+the original provider record and database children. The inventory feed preserves
+prior children and adds usable current contacts; an invalid optional contact is
+not proof that the listing disappeared. `buildoutRawRetention` can report an
+omitted record when its existing size or validity limit is exceeded: do not
+claim raw evidence was retained in that case. Handle the listing's incomplete
+contact evidence separately from independently proven inventory completeness,
+and avoid copying contact details into diagnostic logs.
+
 ## Verify at the appropriate boundary
 
 | Work being done | Required verification at this stage |
