@@ -5,6 +5,7 @@ Run from a standalone no-hardlinks clone. This tests the ingest SQL builder, not
 the full collector CLI.
 """
 import argparse
+import copy
 import json
 import re
 import subprocess
@@ -19,7 +20,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
+from test_buildout_current_inventory import CODE, SOURCE, TARGET, refresh, setup
 
 import cre_ingest as ingest
 from cre_ingest import artifact_run_identity_from_digests
@@ -28,7 +29,14 @@ from source_fields.buildout import (
     qualify_prior_inventory_binding,
 )
 from source_fields.buildout_observation_sql import sql_fragment
-from source_fields.buildout_partial_receipt import experimental_sql, replay_fence_sql, validate_partition_consistency
+from source_fields.buildout_partial_receipt import (
+    experimental_readback_sql,
+    experimental_sql,
+    prepare_expected_bindings,
+    replay_fence_sql,
+    validate_partial_readback,
+    validate_partition_consistency,
+)
 
 
 def main():
@@ -77,6 +85,32 @@ def main():
             bid = run(f"SELECT id FROM credeals.cre_brokerages WHERE slug='{source}';").stdout.strip()
             proof_tmp = tempfile.TemporaryDirectory(prefix="cre-buildout-proof-")
             _, artifact_path, artifact, manifest, _ = setup(Path(proof_tmp.name), source=source)
+            # Add a real, separately identifiable healthy sale observation so
+            # the fixture proves both a held identity and a committed peer.
+            example = next(item for item in artifact["listings"] if item["id"] == "10")
+            healthy = copy.deepcopy(example)
+            healthy["id"] = "50"
+            healthy["url"] = healthy["canonicalUrl"] = example["url"].replace("dual-sale", "healthy-sale")
+            artifact["listings"].append(healthy)
+            artifact["totalListings"] += 1
+            for entry in artifact["sources"]:
+                entry["totalAvailableOnSource"] += 1
+                proof = entry["currentInventoryProof"]
+                proof["total"] += 1
+                for page in proof["pages"]:
+                    page["total"] += 1
+                last = copy.deepcopy(proof["pages"][-1])
+                last["index"] += 1
+                last["endpoint"] = last["endpoint"].replace("page=1", "page=2")
+                last["rows"] = [copy.deepcopy(proof["pages"][0]["rows"][0])]
+                last["rows"][0]["id"] = "50"
+                last["rows"][0]["showLink"] = healthy["url"]
+                proof["pages"].append(last)
+                if entry["transaction"] == "sale":
+                    entry["listingsCollected"] += 1
+                    for key in ("listings", "inventoryObserved", "authoritativeInventoryFeed", "childPreservationRows"):
+                        entry["freshness"][key] += 1
+            refresh(artifact_path, artifact, manifest, source=source)
             scope = prepare_inventory_observation_scope(artifact_path.read_bytes(), manifest, source,
                                                         current_code_sha=CODE, current_git_dirty=False,
                                                         current_target_sha256=TARGET)
@@ -238,7 +272,7 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
             candidate_receipt = json.loads(receipt_line.removeprefix("PARTITION_RECEIPT:"))
             candidate_rows = json.loads(rows_line.removeprefix("PARTITION_ROWS:"))
             partial = validate_partition_consistency(scope, "a" * 32, candidate_receipt, candidate_rows)
-            assert partial["held"] == ["dual", "other"] and partial["emitted_count"] == len(rows) - 2
+            assert partial["held"] == ["dual", "other"] and partial["emitted_count"] == 1
             assert run(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip() == "0"
             committed = experimental_tx.replace("ROLLBACK;", "COMMIT;", 1)
             run(committed)
@@ -248,7 +282,10 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
             persisted = run(f"SELECT split_part(split_part(notes, E'\\nCRE_BUILDOUT_PARTITION_V1:', 2), "
                             f"E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 1) FROM credeals.cre_scrape_jobs WHERE id='{job}';")
             stored_receipt = json.loads(persisted.stdout)
-            assert stored_receipt == candidate_receipt
+            # A new parent's UUID is generated again after the rolled-back
+            # trial, so only stable fields must match across those attempts.
+            assert {k: v for k, v in stored_receipt.items() if k != "emitted"} == {
+                k: v for k, v in candidate_receipt.items() if k != "emitted"}
             assert json.loads(run(held_snapshot_sql).stdout) == held_before
             from cre_validate import persisted_freshness_provenance
             actual = json.loads(run(f"SELECT COALESCE(jsonb_agg(jsonb_build_object('external_id',l.external_id,"
@@ -258,6 +295,13 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
                                for row in actual if persisted_freshness_provenance(row["raw_data"], source_key=source)
                                .get("generation_id") == scope["generation_id"]]
             assert validate_partition_consistency(scope, "a" * 32, stored_receipt, generation_rows) == partial
+            verified_scope, expected = prepare_expected_bindings(artifact_path.read_bytes(), manifest, source,
+                                                                  producer_sha=CODE, target_sha=TARGET)
+            assert verified_scope == scope
+            single_snapshot = json.loads(run(experimental_readback_sql(scope, "a" * 32)).stdout)
+            assert single_snapshot["receipt"] == stored_receipt
+            assert validate_partial_readback(scope, "a" * 32, expected, single_snapshot["receipt"],
+                                             single_snapshot["snapshot"]) == partial
             replay = run(committed, check=False)
             assert replay.returncode != 0 and "requires reconciliation before replay" in replay.stderr
             # The legacy builder must also refuse, even if the original
@@ -278,7 +322,7 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:true:0", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "legacy-dual:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
+            assert state == ["99:true:0", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "healthy:true:0", "invalid-latest:true:0", "legacy-dual:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == [], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
