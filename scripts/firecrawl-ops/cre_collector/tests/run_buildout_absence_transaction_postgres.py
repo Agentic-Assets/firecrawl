@@ -286,9 +286,10 @@ def main():
             scope2 = {**scope, "generation_id": "later-complete", "observed_at": at(10),
                       "artifact_sha256": "f" * 64}
             key2 = artifact_run_identity_from_digests([scope2["artifact_sha256"]])[0]
+            rows2 = [dict(row, scraped_at=scope2["observed_at"]) for row in rows]
             jobs2 = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows),
                       "errors": 0, "notes": "synthetic", "finished_at": scope2["observed_at"]}]
-            run(ingest.build_sql(rows, jobs2, scope2["observed_at"], set(), artifact_run_key=key2,
+            run(ingest.build_sql(rows2, jobs2, scope2["observed_at"], set(), artifact_run_key=key2,
                                  finished_at=scope2["observed_at"],
                                  buildout_observation_context={"scope": scope2, "prior": None}))
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
