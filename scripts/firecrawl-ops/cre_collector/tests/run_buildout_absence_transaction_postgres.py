@@ -1,7 +1,8 @@
 """Disposable, local-only PostgreSQL proof of a WIP SQL fragment.
 
 Requires --execute-disposable-fixture; never accepts an external database URL.
-Run from a standalone no-hardlinks clone. This does not test an ingest caller.
+Run from a standalone no-hardlinks clone. This tests the ingest SQL builder, not
+the full collector CLI.
 """
 import argparse
 import json
@@ -125,11 +126,9 @@ def main():
             prior_raw = json.dumps({"sourceKey": source, "id": "98", "url": conflict["source_url"]}).replace("'", "''")
             run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{conflict_id}','{bid}','other','{conflict['source_url']}','active','{prior_raw}'::jsonb);"
                 f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','other','{source}','{conflict['source_url']}',false,1,'{old_time}');")
-            conflict_present = next(row for row in rows if row["external_id"] == "dual")
-            present_id = str(uuid.uuid4())
-            present_raw = json.dumps({"sourceKey": source, "id": "89", "url": conflict_present["source_url"]}).replace("'", "''")
-            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{present_id}','{bid}','dual','{conflict_present['source_url']}','active','{present_raw}'::jsonb);"
-                f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','dual','{source}','{conflict_present['source_url']}',true,0,'{old_time}');")
+            # One provider-native ID under a different historical external key
+            # reproduces the Greysteel URL-key transition without rekeying it.
+            create("legacy-dual", "10")
             jobs = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows), "errors": 0, "notes": "synthetic", "finished_at": scope["observed_at"]}]
             tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
                                   finished_at=scope["observed_at"],
@@ -139,7 +138,7 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:true:0", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
+            assert state == ["99:true:0", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "legacy-dual:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
             assert events == [], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
@@ -175,8 +174,8 @@ def main():
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
             # Simulate resolving the two conflicting fixture parents. Replaying
             # the old artifact must not create events outside its first receipt.
-            run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id IN ('dual','other');"
-                f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id IN ('dual','other');")
+            run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');"
+                f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');")
             run(tx)
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
             assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "true"
