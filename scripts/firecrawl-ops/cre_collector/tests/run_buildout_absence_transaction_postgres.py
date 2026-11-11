@@ -1,7 +1,8 @@
 """Disposable, local-only PostgreSQL proof of a WIP SQL fragment.
 
 Requires --execute-disposable-fixture; never accepts an external database URL.
-Run from a standalone no-hardlinks clone. This does not test an ingest caller.
+Run from a standalone no-hardlinks clone. This tests the ingest SQL builder, not
+the full collector CLI.
 """
 import argparse
 import json
@@ -125,11 +126,9 @@ def main():
             prior_raw = json.dumps({"sourceKey": source, "id": "98", "url": conflict["source_url"]}).replace("'", "''")
             run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{conflict_id}','{bid}','other','{conflict['source_url']}','active','{prior_raw}'::jsonb);"
                 f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','other','{source}','{conflict['source_url']}',false,1,'{old_time}');")
-            conflict_present = next(row for row in rows if row["external_id"] == "dual")
-            present_id = str(uuid.uuid4())
-            present_raw = json.dumps({"sourceKey": source, "id": "89", "url": conflict_present["source_url"]}).replace("'", "''")
-            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,status,raw_data) VALUES ('{present_id}','{bid}','dual','{conflict_present['source_url']}','active','{present_raw}'::jsonb);"
-                f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','dual','{source}','{conflict_present['source_url']}',true,0,'{old_time}');")
+            # One provider-native ID under a different historical external key
+            # reproduces the Greysteel URL-key transition without rekeying it.
+            create("legacy-dual", "10")
             jobs = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows), "errors": 0, "notes": "synthetic", "finished_at": scope["observed_at"]}]
             tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
                                   finished_at=scope["observed_at"],
@@ -139,18 +138,17 @@ def main():
                 for attempt in attempts:
                     attempt.result()
             state = run("SELECT external_id || ':' || observation_present::text || ':' || presence_generation::text FROM credeals.cre_source_index ORDER BY external_id;").stdout.splitlines()
-            assert state == ["99:false:1", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "dual:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
+            assert state == ["99:true:0", "candidate-ambiguous:true:0", "changed-preimage:true:0", "closed-visible:true:0", "duplicate-a:true:0", "duplicate-b:true:0", "invalid-latest:true:0", "legacy-dual:true:0", "missing-member-source:true:0", "old-ambiguous:true:0", "other:false:1"], state
             events = run("SELECT event_type || ':' || source_value FROM credeals.cre_listing_events;").stdout.splitlines()
-            assert events == ["disappeared:not_observed_in_complete_enumeration:" + source + ":" + scope["generation_id"]], events
+            assert events == [], events
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
             receipt = run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip()
             receipt = json.loads(receipt)
             assert receipt == {"source": source, "generation": scope["generation_id"],
                                "artifact_sha256": scope["artifact_sha256"],
-                               "disappeared": 1, "identity_held": 2,
+                               "disappeared": 0, "identity_held": 2,
                                "held_external_ids": ["dual", "other"],
-                               "applied": [{"listing_id": absent["listing_id"],
-                                            "external_id": "99", "native_ids": ["99"]}]}, receipt
+                               "applied": []}, receipt
             from source_fields.buildout_observation_sql import readback
             def fixture_query(_psql, _url, sql, **_kwargs):
                 result = run(sql)
@@ -173,16 +171,50 @@ def main():
             assert {"99:active:true", "changed-preimage:active:true", "closed-visible:active:true"} <= set(state_rows), state_rows
             assert run(f"SELECT count(*) FROM credeals.cre_listing_images WHERE listing_id='{absent['listing_id']}' AND url='https://example.test/prior-image';").stdout.strip() == "1"
             run(tx)
-            assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "1"
+            assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
+            # Simulate resolving the two conflicting fixture parents. Replaying
+            # the old artifact must not create events outside its first receipt.
+            run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');"
+                f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');")
+            run(tx)
+            assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
+            assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "true"
+            # A new, unambiguous source generation can establish absence.
+            clean_scope = {**scope, "generation_id": "clean-complete", "observed_at": at(1),
+                           "artifact_sha256": "e" * 64}
+            clean_key = artifact_run_identity_from_digests([clean_scope["artifact_sha256"]])[0]
+            clean_rows = [dict(row, scraped_at=clean_scope["observed_at"]) for row in rows]
+            clean_jobs = [{**jobs[0], "finished_at": clean_scope["observed_at"]}]
+            run(ingest.build_sql(clean_rows, clean_jobs, clean_scope["observed_at"], set(),
+                                 artifact_run_key=clean_key, finished_at=clean_scope["observed_at"],
+                                 buildout_observation_context={"scope": clean_scope, "prior": None}))
+            assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "false"
+            assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='disappeared';").stdout.strip() == "1"
+            # Legacy v1 receipts could contain both holds and an absence. Keep
+            # their existing events and make them readable without replay writes.
+            clean_job = str(uuid.uuid5(ingest._RUN_UUID_NAMESPACE, f"{clean_key}:{source}"))
+            clean_receipt = json.loads(run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{clean_job}';").stdout.strip())
+            clean_receipt.update(identity_held=1, held_external_ids=["legacy-held"])
+            legacy_json = json.dumps(clean_receipt).replace("'", "''")
+            run(f"UPDATE credeals.cre_scrape_jobs SET notes=E'\\nCRE_BUILDOUT_OBSERVATION_V1:' || '{legacy_json}' WHERE id='{clean_job}';")
+            with patch("cre_ingest.load_db_url", return_value=("fixture", "fixture")), \
+                 patch("cre_ingest.database_target_fingerprint_from_url", return_value={"value": TARGET}), \
+                 patch("cre_ingest.find_psql", return_value="fixture"), \
+                 patch("cre_validate._run_psql_script", side_effect=fixture_query):
+                assert readback(clean_scope, None) == clean_receipt
+            run(ingest.build_sql(clean_rows, clean_jobs, clean_scope["observed_at"], set(),
+                                 artifact_run_key=clean_key, finished_at=clean_scope["observed_at"],
+                                 buildout_observation_context={"scope": clean_scope, "prior": None}))
+            assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='disappeared';").stdout.strip() == "1"
             wrong_job = sql_fragment(scope, [absent], str(uuid.uuid4()), jobkey)
             assert run("BEGIN; SET LOCAL standard_conforming_strings=on;\n" + wrong_job + "\nCOMMIT;", check=False).returncode != 0
             newer_job = str(uuid.uuid4())
-            run(f"INSERT INTO credeals.cre_scrape_jobs(id,brokerage_id,status,artifact_run_key,completed_at) VALUES ('{newer_job}','{bid}','completed','newer-synthetic-job','{at(1)}');")
+            run(f"INSERT INTO credeals.cre_scrape_jobs(id,brokerage_id,status,artifact_run_key,completed_at) VALUES ('{newer_job}','{bid}','completed','newer-synthetic-job','{at(2)}');")
             assert run(tx, check=False).returncode != 0
             older = dict(scope, generation_id="older", observed_at=at(-3))
             assert run("BEGIN; SET LOCAL standard_conforming_strings=on;\n" + sql_fragment(older, [absent], job, jobkey) + "\nCOMMIT;", check=False).returncode != 0
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "1"
-            later = at(1)
+            later = at(3)
             row = ingest.to_row({"sourceKey": source, "id": "99", "url": "https://example.test/99"}, {}, later)
             script = ingest.build_sql([row], [{"slug": source, "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}], later, set())
             run(script)
@@ -232,7 +264,7 @@ def main():
                 jobs = [{"slug": source, "discovered": len(rows), "saved": len(rows),
                          "errors": 0, "notes": "synthetic"}]
                 run(ingest.build_sql(rows, jobs, observed, set()))
-            first, second, third, fourth, fifth = (at(day) for day in range(2, 7))
+            first, second, third, fourth, fifth = (at(day) for day in range(4, 9))
             ingest_rows([dual_row(["101", "102"], "first", first)], first)
             ingest_rows([dual_row(["101", "102"], "updated", second)], second)
             assert run("SELECT title FROM credeals.cre_listings WHERE external_id='dual-live';").stdout.strip() == "updated"
@@ -266,12 +298,13 @@ def main():
             run("UPDATE credeals.cre_listings SET raw_data=raw_data || "
                 "jsonb_build_object('id', CASE WHEN external_id='dual-live' THEN '999998' ELSE '999999' END, "
                 "'url','https://example.test/stale') WHERE external_id IN ('dual-live','flat-inventory');")
-            scope2 = {**scope, "generation_id": "later-complete", "observed_at": at(8),
+            scope2 = {**scope, "generation_id": "later-complete", "observed_at": at(10),
                       "artifact_sha256": "f" * 64}
             key2 = artifact_run_identity_from_digests([scope2["artifact_sha256"]])[0]
+            rows2 = [dict(row, scraped_at=scope2["observed_at"]) for row in rows]
             jobs2 = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows),
                       "errors": 0, "notes": "synthetic", "finished_at": scope2["observed_at"]}]
-            run(ingest.build_sql(rows, jobs2, scope2["observed_at"], set(), artifact_run_key=key2,
+            run(ingest.build_sql(rows2, jobs2, scope2["observed_at"], set(), artifact_run_key=key2,
                                  finished_at=scope2["observed_at"],
                                  buildout_observation_context={"scope": scope2, "prior": None}))
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
@@ -283,7 +316,7 @@ def main():
                  patch("cre_validate._run_psql_script", side_effect=fixture_query):
                 assessed = readback(scope2, None)
                 assert {"dual-live", "flat-inventory"} <= {row["external_id"] for row in assessed["applied"]}
-            returned = at(9)
+            returned = at(11)
             ingest_rows([dual_row(["101", "102"], "dual returned again", returned),
                          ingest.to_row({**flat_input, "name": "flat returned"}, {}, returned)], returned)
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "

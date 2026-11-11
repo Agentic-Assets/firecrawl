@@ -392,8 +392,12 @@ WITH changed AS (
  JOIN credeals.cre_scrape_jobs j ON j.id={job_sql} AND j.brokerage_id=c.brokerage_id
   AND j.artifact_run_key={job_key_sql}
  WHERE si.brokerage_id=c.brokerage_id AND si.external_id=c.external_id
+   -- An unresolved staged identity makes this source inventory ambiguous.
+   -- No absence from this enumeration is authoritative until it is resolved.
    AND NOT EXISTS (SELECT 1 FROM _buildout_identity_held h
-                   WHERE h.brokerage_id=c.brokerage_id AND h.external_id=c.external_id)
+                   WHERE h.brokerage_id=c.brokerage_id)
+   -- An artifact-keyed receipt freezes its absence outcome on replay.
+   AND position(E'\\nCRE_BUILDOUT_OBSERVATION_V1:' in COALESCE(j.notes, '')) = 0
    AND si.source_key={source_sql} AND si.url=c.source_url
    AND si.observation_present IS TRUE AND si.presence_generation=c.presence_generation
    AND si.last_enumerated_at=c.last_enumerated_at AND si.last_enumerated_at < {time_sql}
