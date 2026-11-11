@@ -524,6 +524,138 @@ def preseal_essex_identity(run_dir: Path, manifest: dict, artifact: Path, env_fi
     return True
 
 
+def preseal_buildout_identity(run_dir: Path, manifest: dict, source: str, artifact: Path,
+                              env_file, coverage_path: Path, coverage_digest: str, coverage_gate: dict) -> bool:
+    """Hold a positively ambiguous full source before writes; this is not partial admission."""
+    import hashlib
+    import os
+    import secrets
+    import sys
+
+    import cre_checkpoint_refresh as refresh
+    from cre_code_handoff_git import read_file
+    from source_fields.buildout_partial import prepare_partition
+
+    checkpoint = manifest["sources"][source]
+    artifact_record = dict(checkpoint["artifact"])
+    target = refresh.manifest_database_target_sha256(manifest)
+    producer = manifest.get("collector_git_sha")
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    raw = read_file(artifact)
+    if (manifest.get("collector_git_dirty") is not False or not target
+            or refresh.git_identity() != (producer, False)
+            or refresh.database_target_fingerprint(env_file).get("value") != target
+            or type(artifact_record.get("bytes")) is not int or len(raw) != artifact_record["bytes"]
+            or refresh._relative_to_run(artifact, run_dir) != artifact_record.get("path")
+            or hashlib.sha256(raw).hexdigest() != artifact_record.get("sha256")):
+        raise refresh.GlobalStageError("Buildout pre-seal input identity changed")
+    config = manifest.get("config") or {}
+    if (config.get("additive") is not True or config.get("max_items") != 0
+            or tuple(config.get("transactions") or ()) != ("sale", "lease")
+            or config.get("mark_missing") is not False or config.get("status_activation") is not False):
+        checkpoint["identity_preseal"] = {"verdict": "not_applicable", "reason": "outside_full_inventory_scope"}
+        return True
+    attempt = secrets.token_hex(16)
+    try:
+        partition = prepare_partition(raw, manifest, source, code_sha=producer,
+                                      dirty=False, target_sha=target, attempt_id=attempt)
+    except (ValueError, TypeError, KeyError):
+        # The candidate has not entered a database unit. Only a still-bound
+        # input can become a source-local hold; infrastructure drift is global.
+        require_pipeline_owner(manifest, _OWNER_LEASE.get())
+        if (read_file(artifact) != raw or refresh.git_identity() != (producer, False)
+                or refresh.database_target_fingerprint(env_file).get("value") != target
+                or manifest.get("collector_git_sha") != producer or manifest.get("collector_git_dirty") is not False
+                or manifest["sources"].get(source) is not checkpoint or checkpoint.get("artifact") != artifact_record
+                or checkpoint.get("gate") != coverage_gate or refresh.sha256_file(coverage_path) != coverage_digest
+                or refresh.manifest_database_target_sha256(manifest) != target):
+            raise refresh.GlobalStageError("Buildout invalid inventory binding changed")
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "buildout_full_inventory_invalid"
+        refresh.save_manifest(run_dir, manifest)
+        return False
+    attempts = checkpoint.setdefault("identity_preseal_attempts", [])
+    if not isinstance(attempts, list) or any(
+            not isinstance(item, dict) or item.get("state") not in {"complete", "failed"} for item in attempts):
+        raise refresh.GlobalStageError("Buildout prior pre-seal settlement is unknown")
+    gate_dir = run_dir / "gates"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    input_path = gate_dir / f"{source}-identity-preseal-{attempt}-input.json"
+    report = gate_dir / f"{source}-identity-preseal-{attempt}.json"
+    log = run_dir / "logs" / f"{source}-identity-preseal-{attempt}.log"
+    if any(path.exists() or path.is_symlink() for path in (input_path, report, log)):
+        raise refresh.GlobalStageError("Buildout pre-seal output already exists")
+    attempt_record = {"attempt_id": attempt, "state": "running",
+                      "input": refresh._relative_to_run(input_path, run_dir),
+                      "report": refresh._relative_to_run(report, run_dir),
+                      "log": refresh._relative_to_run(log, run_dir)}
+    attempts.append(attempt_record)
+    refresh.save_manifest(run_dir, manifest)
+    fd = os.open(input_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    input_raw = read_file(input_path)
+    input_sha = hashlib.sha256(input_raw).hexdigest()
+    argv = [sys.executable, "-m", "source_fields.buildout_preseal",
+            "--artifact", str(artifact), "--manifest", str(input_path), "--manifest-sha", input_sha,
+            "--source", source, "--producer", producer, "--target", target,
+            "--attempt", attempt, "--out", str(report)]
+    if env_file:
+        argv.extend(["--env-file", str(env_file)])
+    rc = refresh.run_command(argv, log, env=refresh.safe_process_env())
+    if type(rc) is not int or rc != 0:
+        attempt_record["state"] = "failed"
+        attempt_record["rc"] = rc
+        refresh.save_manifest(run_dir, manifest)
+        raise refresh.GlobalStageError("Buildout pre-seal identity probe failed")
+    try:
+        result_raw, log_raw = read_file(report), read_file(log)
+        result = json.loads(result_raw)
+        expected = {"schema", "scope", "manifest_sha256", "attempt_id", "staged_sha256",
+                    "staged_count", "held", "verdict"}
+        held = result.get("held")
+        staged = {item["external_id"] for item in partition["staged"]}
+        valid = (isinstance(result, dict) and set(result) == expected
+                 and result["schema"] == "cre-buildout-preseal-identity-v1"
+                 and result["scope"] == partition["scope"] and result["manifest_sha256"] == input_sha
+                 and result["attempt_id"] == attempt and result["staged_sha256"] == partition["staged_sha256"]
+                 and type(result["staged_count"]) is int and result["staged_count"] == len(staged)
+                 and isinstance(held, list) and all(isinstance(item, str) and item for item in held)
+                 and len(held) == len(set(held)) and set(held) <= staged
+                 and result["verdict"] == ("hold" if held else "clear"))
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise refresh.GlobalStageError("Buildout pre-seal identity report invalid") from exc
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if (not valid or read_file(report) != result_raw or read_file(log) != log_raw
+            or read_file(input_path) != input_raw or read_file(artifact) != raw
+            or refresh.git_identity() != (producer, False)
+            or refresh.database_target_fingerprint(env_file).get("value") != target
+            or manifest.get("collector_git_sha") != producer or manifest.get("collector_git_dirty") is not False
+            or manifest["sources"].get(source) is not checkpoint or checkpoint.get("artifact") != artifact_record
+            or checkpoint.get("gate") != coverage_gate or refresh.sha256_file(coverage_path) != coverage_digest
+            or manifest.get("run_id") != partition["scope"]["generation_id"]
+            or refresh.manifest_database_target_sha256(manifest) != target):
+        raise refresh.GlobalStageError("Buildout pre-seal identity evidence changed")
+    checkpoint["identity_preseal"] = {"path": refresh._relative_to_run(report, run_dir),
+                                      "sha256": hashlib.sha256(result_raw).hexdigest(),
+                                      "bytes": len(result_raw), "log": refresh._relative_to_run(log, run_dir),
+                                      "log_sha256": hashlib.sha256(log_raw).hexdigest(), "log_bytes": len(log_raw),
+                                      "verdict": result["verdict"], "held_count": len(held)}
+    attempt_record["state"] = "complete"
+    attempt_record["rc"] = rc
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if held:
+        checkpoint["state"] = "gate_blocked"
+        checkpoint["partial_probe_hold"] = "buildout_identity_ambiguous"
+        refresh.save_manifest(run_dir, manifest)
+        return False
+    refresh.save_manifest(run_dir, manifest)
+    return True
+
+
 def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) -> bool:
     """Retain a confirmed source hold before it can enter a database unit."""
     import cre_checkpoint_refresh as refresh
@@ -635,8 +767,12 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
             f"pre-seal gate evidence changed or is invalid: {source}"
         )
     if refresh.gate_verdict_is_admitted(manifest, gate["verdict"], source=source):
-        return (preseal_essex_identity(run_dir, manifest, artifact, env_file, path, digest, dict(gate))
-                if source == "essex-realty" else True)
+        if source == "essex-realty":
+            return preseal_essex_identity(run_dir, manifest, artifact, env_file, path, digest, dict(gate))
+        from source_fields.buildout import observation_sources
+        if source in observation_sources():
+            return preseal_buildout_identity(run_dir, manifest, source, artifact, env_file, path, digest, dict(gate))
+        return True
     if (gate["verdict"], gate["rc"]) not in {
         ("hold", 2),
         ("first_seen", 0),
@@ -891,7 +1027,7 @@ def run_database_unit(
                 run_dir, manifest, aggregate, existing[0], "aggregate", source=source
             )
         require_pipeline_owner(manifest, _OWNER_LEASE.get())
-        refresh.ingest_source(run_dir, manifest, source, existing[0], env_file)
+        refresh.ingest_source(run_dir, manifest, source, existing[0], env_file, require_buildout_preseal=True)
         manifest["pipeline"]["source_timings"][source]["ingested_at"] = (
             refresh.utc_now()
         )
@@ -1023,6 +1159,7 @@ def run_bounded_pipeline(
 ):
     """Run a finite rolling acquisition pool inside the existing flat owner."""
     import cre_checkpoint_refresh as refresh
+    from source_fields.buildout import observation_sources
 
     selected = refresh.scoped_source_keys(manifest, sources)
     source_workers = resolve_source_workers(True, source_workers)
@@ -1366,6 +1503,7 @@ def run_bounded_pipeline(
                     # completed siblings therefore use the normal verified
                     # unit/baseline chain before a source-local rollback.
                     guarded = next((source for source in ready[:take] if source in {"pyramid-brokerage", "transwestern", "jll", "daum-commercial"}
+                                    or source in observation_sources()
                                     or refresh.colliers_partial_candidate(manifest, source)
                                     or (source == "colliers" and
                                         (manifest["sources"][source].get("attempts") or [{}])[-1]
@@ -1426,6 +1564,10 @@ def run_bounded_pipeline(
                             terminal_source_holds.add(source)
                             reason = ("all emitted observations held by target checks"
                                       if manifest["sources"][source].get("partial_probe_hold") == "all_emitted_target_held"
+                                      else "Buildout source held before write due to identity ambiguity"
+                                      if manifest["sources"][source].get("partial_probe_hold") == "buildout_identity_ambiguous"
+                                      else "Buildout full inventory evidence invalid before write"
+                                      if manifest["sources"][source].get("partial_probe_hold") == "buildout_full_inventory_invalid"
                                       else "pre-seal source gate refused")
                             retry_or_fail(source, reason)
                     sealed = tuple(qualified)

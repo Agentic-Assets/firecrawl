@@ -6077,6 +6077,8 @@ def ingest_source(
     source: str,
     artifact: Path,
     env_file: str | None,
+    *,
+    require_buildout_preseal: bool = False,
 ) -> None:
     checkpoint = manifest["sources"][source]
     suffix = _partial_window_suffix(checkpoint, source)
@@ -6106,6 +6108,44 @@ def ingest_source(
                        and isinstance(code_sha, str) and re.fullmatch(r"[a-f0-9]{40}", code_sha) is not None)
     if atomic_recovery and not subset:
         argv.extend(["--checkpoint-ingest-attempt", attempt_id])
+    preseal = checkpoint.get("identity_preseal")
+    from source_fields.buildout import observation_sources
+    config = manifest.get("config") or {}
+    strict_buildout_pipeline = (require_buildout_preseal and source in observation_sources()
+                                and config.get("additive") is True and config.get("max_items") == 0
+                                and tuple(config.get("transactions") or ()) == ("sale", "lease")
+                                and config.get("mark_missing") is False and config.get("status_activation") is False)
+    if strict_buildout_pipeline and (not isinstance(preseal, dict) or preseal.get("verdict") != "clear"):
+        raise GlobalStageError("Buildout full-inventory ingest lacks a clear pre-seal proof")
+    if strict_buildout_pipeline:
+        from cre_code_handoff_git import read_file
+        from source_fields.buildout_partial import prepare_partition
+        from source_fields.buildout_preseal import verify_clear
+
+        if not atomic_recovery or subset or observation is None:
+            raise GlobalStageError("Buildout pre-seal clear cannot bind a guarded atomic ingest")
+        try:
+            records = [item for item in checkpoint.get("identity_preseal_attempts", [])
+                       if item.get("state") == "complete" and item.get("report") == preseal["path"]]
+            if len(records) != 1:
+                raise ValueError("pre-seal attempt differs")
+            record = records[0]
+            proof_path, input_path = run_dir / preseal["path"], run_dir / record["input"]
+            if (not proof_path.is_relative_to(run_dir) or not input_path.is_relative_to(run_dir)
+                    or proof_path.is_symlink() or input_path.is_symlink()):
+                raise ValueError("pre-seal evidence path differs")
+            proof_raw, input_raw = read_file(proof_path), read_file(input_path)
+            if (hashlib.sha256(proof_raw).hexdigest() != preseal["sha256"]
+                    or len(proof_raw) != preseal["bytes"]):
+                raise ValueError("pre-seal report differs")
+            partition = prepare_partition(artifact.read_bytes(), manifest, source, code_sha=code_sha,
+                                          dirty=False, target_sha=target_sha, attempt_id=record["attempt_id"])
+            verify_clear(json.loads(proof_raw), partition, hashlib.sha256(input_raw).hexdigest())
+            if partition["scope"] != observation["scope"]:
+                raise ValueError("pre-seal observation scope differs")
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise GlobalStageError("Buildout pre-seal proof changed before ingest") from exc
+        argv.append("--checkpoint-reject-buildout-holds")
     if source == "pyramid-brokerage":
         from cre_pyramid_rollback_result import expected_binding
         if not subset:

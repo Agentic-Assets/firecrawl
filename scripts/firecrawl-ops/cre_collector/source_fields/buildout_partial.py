@@ -68,6 +68,26 @@ def _validated_partition_payload(partition):
     return raw
 
 
+def identity_preseal_sql(partition):
+    """Read a whole-source hold decision; never authorize a partial write."""
+    raw = _validated_partition_payload(partition)
+    source = partition["scope"]["source_key"]
+    predicate = identity_partition_ctes([source])
+    return f"""
+WITH _src AS MATERIALIZED (
+SELECT b.id AS brokerage_id, b.slug AS slug, item.value->>'external_id' AS external_id,
+       item.value->>'source_url' AS source_url, item.value->'raw_data' AS raw_data,
+       (item.value->>'scraped_at')::timestamptz AS scraped_at
+FROM jsonb_array_elements({_literal(raw)}::jsonb) AS item(value)
+JOIN credeals.cre_brokerages b ON b.slug={_literal(source)}
+),
+{predicate}
+SELECT (SELECT count(*) FROM credeals.cre_brokerages WHERE slug={_literal(source)})::text AS brokerages,
+       (SELECT count(*) FROM _src)::text AS staged,
+       COALESCE((SELECT jsonb_agg(external_id ORDER BY external_id) FROM _buildout_identity_held), '[]'::jsonb)::text AS held;
+"""
+
+
 def identity_probe_sql(partition):
     """Project the guard's actual partition and exact parent/index/child preimages.
 

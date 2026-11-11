@@ -144,11 +144,14 @@ def identity_partition_ctes(sources):
             f"_buildout_identity_held AS MATERIALIZED ({held})")
 
 
-def identity_guard_sql(sources):
+def identity_guard_sql(sources, *, reject_held=False):
     """Hold ambiguous existing identities before the ingest replaces them."""
     sources = frozenset(sources)
     partition = identity_partition_sql(sources)
     source = ", ".join(_literal(item) for item in sorted(sources))
+    refusal = ("DO $$ BEGIN IF EXISTS (SELECT 1 FROM _buildout_identity_held) THEN "
+               "RAISE EXCEPTION 'Buildout identity ambiguity requires source hold'; "
+               "END IF; END $$;" if reject_held else "")
     return f"""
 -- Lock in lifecycle order before reading prior native identity.
 DO $$ BEGIN
@@ -158,6 +161,7 @@ PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, exter
 WHERE s.slug IN ({source}) ORDER BY l.id FOR UPDATE OF l;
 END $$;
 {partition}
+{refusal}
 DELETE FROM _src s USING _buildout_identity_held h
 WHERE s.brokerage_id = h.brokerage_id AND s.external_id = h.external_id;
 SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;
