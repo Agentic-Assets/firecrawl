@@ -135,7 +135,9 @@ investigation, Greysteel's old numeric key and new Cobblestone Village slug
 shared a native ID; Gibson's 44 Trapelo native ID was already claimed by two
 stored parents. These are identity conflicts, not evidence of a sale or a safe
 automatic merge. See [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
-for the record-local partial-write and history work. The existing guard holds
+for record-local partial-write and presence-event work and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255) for historical
+field and child retention. The existing guard holds
 ambiguous rows, but a verified committed subset and continued broad-run
 qualification are not yet implemented for every Buildout hold.
 
