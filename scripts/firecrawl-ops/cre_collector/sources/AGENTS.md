@@ -1095,6 +1095,14 @@ and missing IDs/URLs remain private unqualified context. This is parsed JSON,
 not original response bytes or exact numeric lexemes. It excludes closed and
 other unmapped rows; native page evidence has its own scope and controls.
 
+Optional `broker_contacts` may have an invalid container or malformed entries.
+Map usable contact fields and keep eligible peer listings; the sparse
+`buildoutContactMapping` diagnostic records an invalid-container flag and entry count
+without copying contact details into logs. Inventory enumeration proof does not
+prove contact completeness. Existing children use the established additive
+preservation path. A raw-retention omission receipt is not the omitted source
+record, and large inputs can still meet separate staging inspection limits.
+
 Full or monitor collection selecting Buildout, SRS, Kidder or Newmark requires `--out` before
 acquisition. Artifacts carrying new raw receipts are written exclusively as
 mode 0600 files; existing paths (including symlinks) are refused. Existing

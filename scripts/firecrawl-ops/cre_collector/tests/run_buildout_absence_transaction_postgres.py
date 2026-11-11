@@ -6,6 +6,7 @@ the full collector CLI.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -366,6 +367,39 @@ process.stdout.write(JSON.stringify(listings));
             assert unchanged_offer == "700:44", unchanged_offer
             assert run(f"SELECT count(*) FROM credeals.cre_listing_contacts WHERE listing_id='{parent}' AND name='Prior Broker';").stdout.strip() == "1"
             assert run(f"SELECT size_sf FROM credeals.cre_listings WHERE brokerage_id='{newmark_bid}' AND external_id='measurement-peer';").stdout.strip() == "5000"
+            # Map a malformed optional contact through the actual Buildout
+            # adapter, then prove additive ingest retains the previous child.
+            contact_url = "https://example.test/listings/?propertyId=contact-proof"
+            prior = ingest.to_row({"sourceKey": source, "id": "88111", "url": contact_url,
+                                   "name": "Contact proof"}, {}, at(12))
+            ingest_rows([prior], at(12))
+            parent = run(f"SELECT id FROM credeals.cre_listings WHERE brokerage_id='{bid}' "
+                         "AND external_id='contact-proof';").stdout.strip()
+            assert parent
+            run(f"INSERT INTO credeals.cre_listing_contacts(listing_id,name) VALUES ('{parent}','Prior Broker');")
+            script = r'''
+import { allBuildoutFeeds } from './sources/buildout-feeds/index.js';
+import { buildoutCache, buildoutQueryFingerprint, srcBuildout } from './sources/buildout.js';
+import { brokers } from './lib/broker.js';
+const feed = allBuildoutFeeds.find(f => f.sourceKey === process.env.CONTACT_FIXTURE_SOURCE);
+const opts = {cacheSlug:feed.feedKey};
+const raw = {id:88111,sale:true,show_link:'https://example.test/listings/?propertyId=contact-proof',
+ broker_contacts:[null,{name:'Current Broker',email:'current@example.test'}]};
+globalThis.fetch = async () => { throw Error('unexpected network request'); };
+buildoutCache.set(`${feed.pluginKey}\u0000${buildoutQueryFingerprint(opts)}`, {items:[raw],total:1});
+const result = await srcBuildout(feed.company,feed.pluginKey,feed.listingsPage,'sale',10,false,opts);
+process.stdout.write(JSON.stringify({listing:{sourceKey:feed.sourceKey,transactionMode:'sale',...result.listings[0]},brokers}));
+'''
+            mapped = subprocess.run(["node", "--import", "tsx", "--input-type=module", "-e", script],
+                                    cwd=ROOT, env={**os.environ, "CONTACT_FIXTURE_SOURCE": source},
+                                    capture_output=True, text=True, check=False, timeout=15)
+            assert mapped.returncode == 0, mapped.stderr
+            mapped = json.loads(mapped.stdout)
+            current = ingest.to_row(mapped["listing"], dict(enumerate(mapped["brokers"])), at(13))
+            assert current["raw_data"]["buildoutContactMapping"] == {"invalidEntryCount": 1}
+            ingest_rows([current], at(13))
+            contacts = run(f"SELECT name FROM credeals.cre_listing_contacts WHERE listing_id='{parent}' ORDER BY name;").stdout.splitlines()
+            assert contacts == ["Current Broker", "Prior Broker"], contacts
             proof_tmp.cleanup()
             print("PASS: actual schema and ingest builder, absent and held peers, concurrent replay, wrong job and stale source job refused, preserved status, actual ingest reappearance")
         finally:
