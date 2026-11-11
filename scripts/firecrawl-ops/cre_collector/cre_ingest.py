@@ -4024,6 +4024,12 @@ def build_sql(
     newmark_page_requires_witness=True,
     buildout_observation_context=None,
 ):
+    from source_fields.buildout import observation_sources
+
+    row_buildout = {row.get("slug") for row in rows if row.get("slug") in observation_sources()}
+    if any(sum(job.get("slug") == source for job in job_meta) != 1 for source in row_buildout):
+        raise ValueError("each staged Buildout source requires exactly one job")
+
     def daum_marker(payload):
         if not isinstance(payload, dict):
             return False
@@ -4470,6 +4476,11 @@ WHERE p.image_id IS NULL;
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
+    buildout_jobs = {job["slug"] for job in job_meta} & observation_sources()
+    if buildout_jobs:
+        # Recheck committed receipt state after any conflicting job insert
+        # waits; an older repeatable-read snapshot must not hide that commit.
+        w("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;")
     w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
@@ -4575,6 +4586,10 @@ CREATE TEMP TABLE _jobmeta (
         )
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
+    if buildout_jobs:
+        from source_fields.buildout_partial_receipt import replay_fence_sql
+
+        w(replay_fence_sql(buildout_jobs))
     if daum_fallback_guard:
         w("""
 -- A committed immutable fallback artifact must be resolved by readback, not
@@ -4622,7 +4637,13 @@ SELECT jm.job_id, b.id,
        jm.artifact_run_key
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug
 ON CONFLICT DO NOTHING;
+""")
+    if buildout_jobs:
+        # ON CONFLICT can wait on a noncooperating transaction. The second
+        # statement sees its committed receipt before source data mutation.
+        w(replay_fence_sql(buildout_jobs))
 
+    w("""
 -- Provider cards without a stable listing URL are enumeration evidence only.
 -- Keep them out of canonical cre_listings (no fake URL or stable-history
 -- claim), but persist their provisional identity in cre_source_index so the

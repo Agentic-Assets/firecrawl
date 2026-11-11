@@ -28,6 +28,7 @@ from source_fields.buildout import (
     qualify_prior_inventory_binding,
 )
 from source_fields.buildout_observation_sql import sql_fragment
+from source_fields.buildout_partial_receipt import experimental_sql, replay_fence_sql, validate_partition_consistency
 
 
 def main():
@@ -128,11 +129,150 @@ def main():
                 f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','other','{source}','{conflict['source_url']}',false,1,'{old_time}');")
             # One provider-native ID under a different historical external key
             # reproduces the Greysteel URL-key transition without rekeying it.
-            create("legacy-dual", "10")
+            legacy = create("legacy-dual", "10")
+            for listing_id in (conflict_id, legacy["listing_id"]):
+                run(f"INSERT INTO credeals.cre_listing_contacts(listing_id,name) VALUES ('{listing_id}','fixture contact');"
+                    f"INSERT INTO credeals.cre_listing_documents(listing_id,url) VALUES ('{listing_id}','https://example.test/doc');"
+                    f"INSERT INTO credeals.cre_listing_images(listing_id,url) VALUES ('{listing_id}','https://example.test/image');"
+                    f"INSERT INTO credeals.cre_listing_media(listing_id,url) VALUES ('{listing_id}','https://example.test/video');"
+                    f"INSERT INTO credeals.cre_listing_links(listing_id,url) VALUES ('{listing_id}','https://example.test/link');")
+            held_snapshot_sql = f"""
+SELECT jsonb_agg(jsonb_build_object('listing',to_jsonb(l),'index',to_jsonb(si),
+ 'contacts',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM credeals.cre_listing_contacts c WHERE c.listing_id=l.id),
+ 'documents',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM credeals.cre_listing_documents d WHERE d.listing_id=l.id),
+ 'images',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM credeals.cre_listing_images i WHERE i.listing_id=l.id),
+ 'media',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM credeals.cre_listing_media m WHERE m.listing_id=l.id),
+ 'links',(SELECT jsonb_agg(to_jsonb(x) ORDER BY x.id) FROM credeals.cre_listing_links x WHERE x.listing_id=l.id)) ORDER BY l.external_id)::text
+FROM credeals.cre_listings l JOIN credeals.cre_source_index si USING (brokerage_id,external_id)
+WHERE l.id IN ('{conflict_id}','{legacy['listing_id']}');
+"""
+            held_before = json.loads(run(held_snapshot_sql).stdout)
             jobs = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows), "errors": 0, "notes": "synthetic", "finished_at": scope["observed_at"]}]
             tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
                                   finished_at=scope["observed_at"],
                                   buildout_observation_context={"scope": scope, "prior": None})
+            # A writer outside the lifecycle advisory lock can commit a job
+            # while this builder waits between its precheck and insert. The
+            # post-insert check must observe it and abort before listing writes.
+            fence = replay_fence_sql([source])
+            assert tx.count(fence) == 2
+            delayed = tx.replace(fence, fence + "SELECT pg_sleep(3);", 1)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(run, delayed, check=False)
+                for _ in range(40):
+                    sleeping = run("SELECT count(*) FROM pg_stat_activity WHERE state='active' "
+                                   "AND query='SELECT pg_sleep(3);';").stdout.strip()
+                    if sleeping == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("fixture generic writer did not reach pre-insert pause")
+                run(f"INSERT INTO credeals.cre_scrape_jobs(id,brokerage_id,status,artifact_run_key,notes) "
+                    f"VALUES ('{job}','{bid}','completed','{jobkey}',E'\\nCRE_BUILDOUT_PARTITION_V1:{{}}');")
+                raced = pending.result()
+                assert raced.returncode != 0 and "requires reconciliation before replay" in raced.stderr
+            assert json.loads(run(held_snapshot_sql).stdout) == held_before
+            assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
+            run(f"DELETE FROM credeals.cre_scrape_jobs WHERE id='{job}';")
+            # Exercise the candidate receipts in the real ingest builder and
+            # schema, in a transaction rolled back before any fixture commit.
+            before_job, before_guard, held_snapshot, receipt_sql = experimental_sql(scope, "a" * 32)
+            assert run("BEGIN ISOLATION LEVEL REPEATABLE READ;" + before_job + "ROLLBACK;", check=False).returncode != 0
+            poisoned = run("BEGIN; CREATE TEMP TABLE _jobmeta(notes text); "
+                           "INSERT INTO _jobmeta VALUES (E'\\nCRE_BUILDOUT_OBSERVATION_V1:fake');"
+                           + before_job + "ROLLBACK;", check=False)
+            assert poisoned.returncode != 0 and "reserved receipt marker" in poisoned.stderr
+            # A noncooperating writer cannot alter the guarded listing/child
+            # tables while the experimental partition transaction owns them.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                held_lock = pool.submit(run, "BEGIN; CREATE TEMP TABLE _jobmeta(notes text);"
+                                        + before_job + "SELECT pg_sleep(3); ROLLBACK;")
+                for _ in range(40):
+                    locked = run("SELECT count(*) FROM pg_locks WHERE relation='credeals.cre_listing_contacts'::regclass "
+                                 "AND mode='ShareRowExclusiveLock' AND granted;").stdout.strip()
+                    if locked == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("fixture partition lock did not appear")
+                assert run("SELECT count(*) FROM credeals.cre_listing_contacts;").returncode == 0
+                blocked = run("BEGIN; SET LOCAL lock_timeout='400ms'; "
+                              f"INSERT INTO credeals.cre_listing_contacts(listing_id,name) VALUES ('{conflict_id}','race');"
+                              "COMMIT;", check=False)
+                assert blocked.returncode != 0 and "lock timeout" in blocked.stderr
+                held_lock.result()
+            job_anchor = "-- Fail loudly if a sourceKey maps to a brokerage slug that is not seeded."
+            guard_anchor = "-- Lock in lifecycle order before reading prior native identity."
+            assert tx.count(job_anchor) == tx.count(guard_anchor) == tx.count("COMMIT;") == 1
+            experimental_tx = tx.replace(job_anchor, before_job + job_anchor, 1)
+            experimental_tx = experimental_tx.replace(guard_anchor, before_guard + guard_anchor, 1)
+            snapshot_anchor = "SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;"
+            assert experimental_tx.count(snapshot_anchor) == 1
+            experimental_tx = experimental_tx.replace(snapshot_anchor, snapshot_anchor + held_snapshot, 1)
+            inspect = f"""
+SELECT 'PARTITION_RECEIPT:' || split_part(split_part(notes, E'\\nCRE_BUILDOUT_PARTITION_V1:', 2),
+                  E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 1)
+ FROM credeals.cre_scrape_jobs WHERE id='{job}';
+SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',s.external_id,'listing_id',u.id::text)
+ ORDER BY s.external_id),'[]'::jsonb)::text FROM _src s JOIN _up u USING (brokerage_id,external_id);
+"""
+            experimental_tx = experimental_tx.replace("COMMIT;", receipt_sql + inspect + "ROLLBACK;", 1)
+            for tamper in (
+                f"UPDATE credeals.cre_listings SET title='synthetic corruption' WHERE id='{conflict_id}';",
+                f"UPDATE credeals.cre_listings SET title='synthetic corruption' WHERE id='{legacy['listing_id']}';",
+                f"DELETE FROM credeals.cre_listing_contacts WHERE listing_id='{conflict_id}';",
+                f"INSERT INTO credeals.cre_listing_links(listing_id,url) VALUES ('{legacy['listing_id']}','https://example.test/injected');",
+                f"UPDATE credeals.cre_source_index SET observation_present=true WHERE external_id='other' AND brokerage_id='{bid}';",
+            ):
+                changed_held = run(experimental_tx.replace(receipt_sql, tamper + receipt_sql, 1), check=False)
+                assert changed_held.returncode != 0 and "partial emitted partition differs" in changed_held.stderr
+            false_event = ("INSERT INTO credeals.cre_listing_events "
+                           "(listing_id,brokerage_id,scrape_job_id,event_type,source_value,source_url,presence_generation,detected_at) "
+                           f"VALUES ('{conflict_id}','{bid}','{job}','disappeared','synthetic',"
+                           f"'https://example.test/other',1,'{scope['observed_at']}');")
+            changed_event = run(experimental_tx.replace(receipt_sql, false_event + receipt_sql, 1), check=False)
+            assert changed_event.returncode != 0 and "partial observation receipt differs" in changed_event.stderr
+            output = run(experimental_tx).stdout.splitlines()
+            receipt_line = next(line for line in output if line.startswith("PARTITION_RECEIPT:"))
+            rows_line = next(line for line in output if line.startswith("PARTITION_ROWS:"))
+            candidate_receipt = json.loads(receipt_line.removeprefix("PARTITION_RECEIPT:"))
+            candidate_rows = json.loads(rows_line.removeprefix("PARTITION_ROWS:"))
+            partial = validate_partition_consistency(scope, "a" * 32, candidate_receipt, candidate_rows)
+            assert partial["held"] == ["dual", "other"] and partial["emitted_count"] == len(rows) - 2
+            assert run(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip() == "0"
+            committed = experimental_tx.replace("ROLLBACK;", "COMMIT;", 1)
+            run(committed)
+            assert run(f"SELECT status || ':' || listings_saved::text FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip() == f"partial:{len(rows) - 2}"
+            # The fixture's run() starts a new psql connection. Re-read the
+            # stored receipt and all source rows after COMMIT, not temp tables.
+            persisted = run(f"SELECT split_part(split_part(notes, E'\\nCRE_BUILDOUT_PARTITION_V1:', 2), "
+                            f"E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 1) FROM credeals.cre_scrape_jobs WHERE id='{job}';")
+            stored_receipt = json.loads(persisted.stdout)
+            assert stored_receipt == candidate_receipt
+            assert json.loads(run(held_snapshot_sql).stdout) == held_before
+            from cre_validate import persisted_freshness_provenance
+            actual = json.loads(run(f"SELECT COALESCE(jsonb_agg(jsonb_build_object('external_id',l.external_id,"
+                                    f"'listing_id',l.id::text,'raw_data',l.raw_data) ORDER BY l.external_id),'[]')::text "
+                                    f"FROM credeals.cre_listings l WHERE l.brokerage_id='{bid}' AND l.deleted_at IS NULL;").stdout)
+            generation_rows = [{"external_id": row["external_id"], "listing_id": row["listing_id"]}
+                               for row in actual if persisted_freshness_provenance(row["raw_data"], source_key=source)
+                               .get("generation_id") == scope["generation_id"]]
+            assert validate_partition_consistency(scope, "a" * 32, stored_receipt, generation_rows) == partial
+            replay = run(committed, check=False)
+            assert replay.returncode != 0 and "requires reconciliation before replay" in replay.stderr
+            # The legacy builder must also refuse, even if the original
+            # identity conflict is removed in the attempted transaction.
+            changed_identity = tx.replace("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;", "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; "
+                f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id='legacy-dual'; "
+                f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id='legacy-dual';", 1)
+            legacy_replay = run(changed_identity, check=False)
+            assert legacy_replay.returncode != 0 and "requires reconciliation before replay" in legacy_replay.stderr
+            assert json.loads(run(held_snapshot_sql).stdout) == held_before
+            # Continue the separate historical V1-only replay tests with a
+            # fixture-only removal of the experimental marker.
+            run(f"UPDATE credeals.cre_scrape_jobs SET notes=split_part(notes,E'\\nCRE_BUILDOUT_PARTITION_V1:',1) "
+                f"|| E'\\nCRE_BUILDOUT_OBSERVATION_V1:' || split_part(notes,E'\\nCRE_BUILDOUT_OBSERVATION_V1:',2) "
+                f"WHERE id='{job}';")
             with ThreadPoolExecutor(max_workers=2) as pool:
                 attempts = [pool.submit(run, tx) for _ in range(2)]
                 for attempt in attempts:
