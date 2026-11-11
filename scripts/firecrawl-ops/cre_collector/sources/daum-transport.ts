@@ -1,4 +1,4 @@
-import { DAUM_SEARCH_URL, daumAbsoluteUrl, daumPageUrl } from "./pure/daum-identity.js";
+import { canonicalDaumPropertyUrl, DAUM_SEARCH_URL, daumAbsoluteUrl, daumPageUrl } from "./pure/daum-identity.js";
 import {
   cancelResponseBody,
   readBoundedUtf8,
@@ -108,7 +108,7 @@ export class DaumPoliteTransport {
     private readonly maxResponseBytes = DAUM_MAX_RESPONSE_BYTES,
   ) {}
 
-  private request(url: string, method: DaumRequestMethod): Promise<string> {
+  private request(url: string, method: DaumRequestMethod, expectedRedirect?: string, observePage = false): Promise<string> {
     const safeUrl = daumAbsoluteUrl(url);
     if (!safeUrl) {
       return Promise.reject(new Error(`DAUM refused unsafe URL ${url}`));
@@ -147,6 +147,7 @@ export class DaumPoliteTransport {
               },
               ...(method === "POST" ? { body: "" } : {}),
               redirect: "manual",
+              ...(expectedRedirect || observePage ? { cache: "no-store" as const } : {}),
               signal: controller.signal,
             });
           } catch (error) {
@@ -154,6 +155,31 @@ export class DaumPoliteTransport {
               throw new DaumRetryableTransportError("DAUM fetch failed", { cause: error });
             }
             throw error;
+          }
+          if (expectedRedirect && response.status === 301) {
+            const location = response.headers.get("location");
+            if (!await daumCancelBody(response.body)) {
+              this.poisoned = true;
+              throw new DaumUnsettledBodyError("DAUM redirect body did not settle");
+            }
+            let resolved: string | null = null;
+            try { resolved = location ? canonicalDaumPropertyUrl(new URL(location, safeUrl).toString()) : null; } catch { /* invalid Location stays unproved */ }
+            if (!location || location.length > 2048 || [...location].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || resolved !== expectedRedirect) throw new Error("DAUM redirect target differs");
+            return JSON.stringify({ rawLocation: location, observedAt: new Date().toISOString() });
+          }
+          if (expectedRedirect && response.ok) {
+            if (!await daumCancelBody(response.body)) {
+              this.poisoned = true;
+              throw new DaumUnsettledBodyError("DAUM non-redirect body did not settle");
+            }
+            throw new Error("DAUM permanent redirect not observed");
+          }
+          if (observePage && response.ok && response.status !== 200) {
+            if (!await daumCancelBody(response.body)) {
+              this.poisoned = true;
+              throw new DaumUnsettledBodyError("DAUM unexpected page body did not settle");
+            }
+            throw new Error("DAUM current page did not return HTTP 200");
           }
           if (!response.ok) {
             if (!await daumCancelBody(response.body)) {
@@ -183,6 +209,20 @@ export class DaumPoliteTransport {
     });
     this.queue = task.catch(() => undefined);
     return task as Promise<string>;
+  }
+
+  async observePermanentRedirect(oldUrl: string, newUrl: string): Promise<{ status: 301; oldUrl: string; newUrl: string; rawLocation: string; observedAt: string }> {
+    const oldCanonical = canonicalDaumPropertyUrl(oldUrl);
+    const newCanonical = canonicalDaumPropertyUrl(newUrl);
+    if (!oldCanonical || !newCanonical || oldCanonical === newCanonical) throw new Error("DAUM redirect candidate URLs invalid");
+    const observation = JSON.parse(await this.request(oldCanonical, "GET", newCanonical)) as { rawLocation: string; observedAt: string };
+    return { status: 301, oldUrl: oldCanonical, newUrl: newCanonical, ...observation };
+  }
+
+  observeCurrentPage(url: string): Promise<string> {
+    const canonical = canonicalDaumPropertyUrl(url);
+    if (!canonical || canonical !== url) return Promise.reject(new Error("DAUM current page URL invalid"));
+    return this.request(url, "GET", undefined, true);
   }
 
   get(url: string): Promise<string> {
