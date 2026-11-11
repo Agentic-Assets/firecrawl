@@ -173,21 +173,24 @@ ROLLBACK;"""
     receipt = json.loads(notes.split(marker, 1)[1])
     ids = receipt.get("held_external_ids")
     applied = receipt.get("applied")
+    # PostgreSQL aggregate ordering follows the database collation, which need
+    # not match Python's Unicode ordering. Preserve exact receipt/readback
+    # equality below while checking uniqueness without assuming either order.
     if (receipt.get("source") != scope["source_key"]
             or receipt.get("generation") != scope["generation_id"]
             or receipt.get("artifact_sha256") != scope["artifact_sha256"]
             or type(receipt.get("disappeared")) is not int
             or type(receipt.get("identity_held")) is not int
             or not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids)
-            or ids != sorted(set(ids)) or len(ids) != receipt["identity_held"]
+            or len(ids) != len(set(ids)) or len(ids) != receipt["identity_held"]
             or not isinstance(applied, list) or len(applied) != receipt["disappeared"]
             or any(not isinstance(item, dict) or set(item) != {"listing_id", "external_id", "native_ids"}
                    or not isinstance(item["listing_id"], str) or not isinstance(item["external_id"], str)
                    or not item["external_id"] or not isinstance(item["native_ids"], list)
                    or not item["native_ids"] or any(not isinstance(n, str) for n in item["native_ids"])
-                   or item["native_ids"] != sorted(set(item["native_ids"]))
+                   or len(item["native_ids"]) != len(set(item["native_ids"]))
                    or set(item["native_ids"]) & set(scope["native_ids"]) for item in applied)
-            or [item["external_id"] for item in applied] != sorted({item["external_id"] for item in applied})
+            or len({item["external_id"] for item in applied}) != len(applied)
             or receipt["disappeared"] < 0
             or value.get("events") != receipt["disappeared"]
             or value.get("applied") != applied):
