@@ -1,14 +1,15 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
+
 import cre_checkpoint_refresh as refresh
 import cre_ingest
 import cre_refresh_pipeline
 import cre_validate
-import pytest
 from source_fields.buildout import observation_sources
 from source_fields.buildout_observation_sql import readback
-from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 
 
 def test_owner_binds_complete_artifact_and_partial_does_not_block_ingest(tmp_path, monkeypatch):
