@@ -191,6 +191,22 @@ def main():
                                  buildout_observation_context={"scope": clean_scope, "prior": None}))
             assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "false"
             assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='disappeared';").stdout.strip() == "1"
+            # Legacy v1 receipts could contain both holds and an absence. Keep
+            # their existing events and make them readable without replay writes.
+            clean_job = str(uuid.uuid5(ingest._RUN_UUID_NAMESPACE, f"{clean_key}:{source}"))
+            clean_receipt = json.loads(run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{clean_job}';").stdout.strip())
+            clean_receipt.update(identity_held=1, held_external_ids=["legacy-held"])
+            legacy_json = json.dumps(clean_receipt).replace("'", "''")
+            run(f"UPDATE credeals.cre_scrape_jobs SET notes=E'\\nCRE_BUILDOUT_OBSERVATION_V1:' || '{legacy_json}' WHERE id='{clean_job}';")
+            with patch("cre_ingest.load_db_url", return_value=("fixture", "fixture")), \
+                 patch("cre_ingest.database_target_fingerprint_from_url", return_value={"value": TARGET}), \
+                 patch("cre_ingest.find_psql", return_value="fixture"), \
+                 patch("cre_validate._run_psql_script", side_effect=fixture_query):
+                assert readback(clean_scope, None) == clean_receipt
+            run(ingest.build_sql(clean_rows, clean_jobs, clean_scope["observed_at"], set(),
+                                 artifact_run_key=clean_key, finished_at=clean_scope["observed_at"],
+                                 buildout_observation_context={"scope": clean_scope, "prior": None}))
+            assert run("SELECT count(*) FROM credeals.cre_listing_events WHERE event_type='disappeared';").stdout.strip() == "1"
             wrong_job = sql_fragment(scope, [absent], str(uuid.uuid4()), jobkey)
             assert run("BEGIN; SET LOCAL standard_conforming_strings=on;\n" + wrong_job + "\nCOMMIT;", check=False).returncode != 0
             newer_job = str(uuid.uuid4())
