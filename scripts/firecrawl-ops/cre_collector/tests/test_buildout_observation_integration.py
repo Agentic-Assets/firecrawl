@@ -37,7 +37,7 @@ def test_each_singleton_source_binds_its_own_feed_and_rejects_cross_source(tmp_p
     assert refresh.prepare_buildout_observation(run, manifest, other, path, None) is None
 
 
-@pytest.mark.parametrize("case", ["zero", "mixed_case", "duplicate_applied", "duplicate_held", "events_mismatch", "missing", "wrong_generation", "held_mismatch", "wrong_identity", "observed_native"])
+@pytest.mark.parametrize("case", ["zero", "mixed_case", "reordered_readback", "changed_native", "duplicate_readback", "duplicate_native", "duplicate_applied", "duplicate_held", "events_mismatch", "missing", "wrong_generation", "held_mismatch", "wrong_identity", "observed_native"])
 def test_readback_requires_bound_receipt_even_when_zero(case, monkeypatch):
     scope = {"database_target_sha256": TARGET, "artifact_sha256": "c" * 64,
              "source_key": SOURCE, "generation_id": "run_1", "native_ids": ["10"]}
@@ -50,24 +50,35 @@ def test_readback_requires_bound_receipt_even_when_zero(case, monkeypatch):
     if case in {"wrong_identity", "observed_native"}:
         receipt["disappeared"] = 1
         receipt["applied"] = [{"listing_id": "id", "external_id": "key", "native_ids": ["10" if case == "observed_native" else "11"]}]
-    if case in {"mixed_case", "duplicate_applied", "duplicate_held"}:
+    multi_cases = {"mixed_case", "reordered_readback", "changed_native", "duplicate_readback", "duplicate_native", "duplicate_applied", "duplicate_held"}
+    if case in multi_cases:
         receipt["disappeared"] = 2
         receipt["identity_held"] = 2
         receipt["held_external_ids"] = ["lower", "Upper" if case != "duplicate_held" else "lower"]
         receipt["applied"] = [
-            {"listing_id": "id1", "external_id": "lower", "native_ids": ["11"]},
+            {"listing_id": "id1", "external_id": "lower", "native_ids": ["11", "13"]},
             {"listing_id": "id2", "external_id": "Upper" if case != "duplicate_applied" else "lower", "native_ids": ["12"]},
         ]
+    if case == "duplicate_native":
+        receipt["applied"][0]["native_ids"] = ["11", "11"]
     notes = "job\nCRE_BUILDOUT_OBSERVATION_V1:" + json.dumps(receipt)
     value = {"notes": notes if case != "missing" else "job",
-             "events": 2 if case in {"mixed_case", "duplicate_applied", "duplicate_held"} else 1 if case in {"events_mismatch", "wrong_identity", "observed_native"} else 0,
+             "events": 2 if case in multi_cases else 1 if case in {"events_mismatch", "wrong_identity", "observed_native"} else 0,
              "applied": receipt["applied"] if case != "wrong_identity" else [{"listing_id": "other", "external_id": "key", "native_ids": ["11"]}]}
+    if case in {"reordered_readback", "changed_native", "duplicate_readback"}:
+        value["applied"] = json.loads(json.dumps(receipt["applied"]))
+        value["applied"].reverse()
+        value["applied"][1]["native_ids"].reverse()
+        if case == "changed_native":
+            value["applied"][1]["native_ids"][0] = "14"
+        if case == "duplicate_readback":
+            value["applied"][1]["external_id"] = value["applied"][0]["external_id"]
     monkeypatch.setattr(cre_ingest, "load_db_url", lambda _: ("db", "env"))
     monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url", lambda _: {"value": TARGET})
     monkeypatch.setattr(cre_ingest, "find_psql", lambda: "psql")
     monkeypatch.setattr(cre_validate, "_run_psql_script", lambda *a, **k: SimpleNamespace(returncode=0, stdout=""))
     monkeypatch.setattr(cre_validate, "parse_tsv", lambda _: [{"result": json.dumps(value)}])
-    if case in {"zero", "mixed_case"}:
+    if case in {"zero", "mixed_case", "reordered_readback"}:
         assert readback(scope, None) == receipt
     else:
         with pytest.raises(ValueError):

@@ -26,6 +26,26 @@ def _current_raw_sql(value):
             f"THEN {value}->'latestInventoryObservation' ELSE {value} END)")
 
 
+def _canonical_applied(items):
+    """Compare complete identities without depending on database collation."""
+    if not isinstance(items, list):
+        return None
+    result = []
+    seen = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {"listing_id", "external_id", "native_ids"}
+                or not isinstance(item["listing_id"], str)
+                or not isinstance(item["external_id"], str) or not item["external_id"]
+                or item["external_id"] in seen
+                or not isinstance(item["native_ids"], list) or not item["native_ids"]
+                or any(not isinstance(n, str) for n in item["native_ids"])
+                or len(item["native_ids"]) != len(set(item["native_ids"]))):
+            return None
+        seen.add(item["external_id"])
+        result.append((item["external_id"], item["listing_id"], tuple(sorted(item["native_ids"]))))
+    return sorted(result)
+
+
 def identity_guard_sql(sources):
     """Hold ambiguous existing identities before the ingest replaces them."""
     from source_fields.buildout import observation_sources
@@ -173,9 +193,8 @@ ROLLBACK;"""
     receipt = json.loads(notes.split(marker, 1)[1])
     ids = receipt.get("held_external_ids")
     applied = receipt.get("applied")
-    # PostgreSQL aggregate ordering follows the database collation, which need
-    # not match Python's Unicode ordering. Preserve exact receipt/readback
-    # equality below while checking uniqueness without assuming either order.
+    # PostgreSQL aggregate ordering follows the database collation, which can
+    # differ from Python's ordering or change between a receipt and readback.
     if (receipt.get("source") != scope["source_key"]
             or receipt.get("generation") != scope["generation_id"]
             or receipt.get("artifact_sha256") != scope["artifact_sha256"]
@@ -193,7 +212,7 @@ ROLLBACK;"""
             or len({item["external_id"] for item in applied}) != len(applied)
             or receipt["disappeared"] < 0
             or value.get("events") != receipt["disappeared"]
-            or value.get("applied") != applied):
+            or _canonical_applied(value.get("applied")) != _canonical_applied(applied)):
         raise ValueError("observation receipt and event readback differ")
     current, _ = load_db_url(env_file)
     if database_target_fingerprint_from_url(current).get("value") != target:
