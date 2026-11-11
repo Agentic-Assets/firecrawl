@@ -1097,7 +1097,7 @@ other unmapped rows; native page evidence has its own scope and controls.
 
 Optional `broker_contacts` may have an invalid container or malformed entries.
 Map usable contact fields and keep eligible peer listings; the sparse
-`buildoutContactMapping` diagnostic records invalid container/entry counts
+`buildoutContactMapping` diagnostic records an invalid-container flag and entry count
 without copying contact details into logs. Inventory enumeration proof does not
 prove contact completeness. Existing children use the established additive
 preservation path. A raw-retention omission receipt is not the omitted source
