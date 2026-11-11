@@ -1234,6 +1234,17 @@ and otherwise unmapped input rows remain outside normal listing output; the
 separate native page evidence has its own controls. Legacy Algolia and targeted
 RCM enrichment retain their existing paths.
 
+The guarded Newmark page-witness fallback accepts either the split street and
+locality layout or a full street/city/state/ZIP address that exactly matches
+the witnessed components after case/whitespace normalization. A marketing H1
+may accompany the full address; an H1 recognized as a different complete street
+address is a conflict, and an unrecognized numeric heading is withheld rather
+than assumed to be a marketing title. This is a narrow fallback check, not general page-identity
+proof; substantive JSON-LD follows its separate existing path before this fallback.
+Retain URL, canonical, source identity, unit and in-transaction witness guards;
+do not promote data from an access denial or ambiguous page. Queue retry or
+defer behavior follows the existing worker outcome and is a separate concern.
+
 An unsupported, malformed or negative optional NIM measurement is reported
 in `newmarkNimMeasurement` by reason, field, value type and, for finite numeric
 values, the source number. Use an independently usable square-foot sibling

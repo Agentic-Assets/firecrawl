@@ -10,6 +10,8 @@ const html = readFileSync(new URL("../../fixtures/newmark-property-detail-saniti
 test("exact source-bound single-address detail preserves prose and contacts",()=>{
  const out=extractNewmarkPage(claim,witness,html,200);
  assert.equal(out?.prose,"Property prose from source."); assert.equal(out?.contacts.length,2);
+ const otherStreet = html.replace("10 Main Street</h1>", "205 N Wisconsin Highway</h1>");
+ assert.equal(extractNewmarkPage(claim,{...witness,address:"205 N Wisconsin Highway"},otherStreet,200)?.prose,"Property prose from source.");
 });
 test("holds stale or duplicate identity and ambiguous unit",()=>{
  for (const [item,w,page,status] of [
@@ -40,6 +42,10 @@ test("accepts exact full street address when the H1 is a marketing title", () =>
   const normalized = fullHtml.replace("203 N Wisconsin Street, Port Washington, Wisconsin 53074",
     "203  n WISCONSIN Street,   Port Washington, WISCONSIN 53074");
   assert.equal(extractNewmarkPage(fullClaim, fullWitness, normalized, 200)?.prose, "Synthetic property description.");
+  const matchingHeading = fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street</h1>");
+  assert.equal(extractNewmarkPage(fullClaim, fullWitness, matchingHeading, 200)?.prose, "Synthetic property description.");
+  const matchingFullHeading = fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street, Port Washington</h1>");
+  assert.equal(extractNewmarkPage(fullClaim, fullWitness, matchingFullHeading, 200)?.prose, "Synthetic property description.");
 });
 
 test("full address layout refuses each mismatched witness component and ambiguous page", () => {
@@ -54,6 +60,19 @@ test("full address layout refuses each mismatched witness component and ambiguou
     fullHtml.replace("53074", "53075"),
     fullHtml.replace("203 N Wisconsin Street,", "203 N Wisconsin Street Suite 2,"),
     fullHtml.replace("Historic Poole Property</h1>", " </h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin Street</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin St.</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin Street, Port Washington, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin Street - Retail</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street, Milwaukee, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street, Port Washington, Wisconsin 53075</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street; Milwaukee, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street | Milwaukee, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street - Milwaukee, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "203 N Wisconsin Street: Milwaukee, Wisconsin 53074</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin Highway</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "205 N Wisconsin Parkway East</h1>"),
+    fullHtml.replace("Historic Poole Property</h1>", "Property at 205 N Wisconsin Street</h1>"),
     fullHtml.replace("</main>", '<div class="property-detail"></div></main>'),
     fullHtml.replace("</h1>", '</h1><p class="street-address">duplicate</p>'),
     fullHtml.replace('rel="canonical" href="' + fullUrl, 'rel="canonical" href="https://www.nmrk.com/properties/unrelated'),

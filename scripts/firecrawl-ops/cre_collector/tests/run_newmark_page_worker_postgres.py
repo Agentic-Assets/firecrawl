@@ -101,7 +101,7 @@ def main():
         assert "other-source" in sql(worker.build_claim_sql(1, source="svn")), "other source must retain claim behavior"
         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=NULL WHERE source_key='svn';")
 
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page", "generic-403", "generic-403-omitted", "generic-403-stale"):
+        for kind in ("success", "success-no-license", "full-success", "full-stale", "full-conflict", "full-conflict-long", "full-locality-conflict", "full-unrecognized", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page", "generic-403", "generic-403-omitted", "generic-403-stale"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -157,6 +157,15 @@ const claimPath=process.env.FIXTURE_CLAIM, outPath=process.env.FIXTURE_OUT;
 const claims=JSON.parse(fs.readFileSync(claimPath,"utf8")), item=claims.items[0], url=item.url;
 const mode=process.env.FIXTURE_MODE;
 let html=fs.readFileSync("./tests/fixtures/newmark-property-detail-sanitized.html","utf8").replaceAll("{{URL}}",url);
+if (mode.startsWith("full-")) {
+  html=html.replace("Example, Florida 12345", "10 Main Street, Example, Florida 12345")
+    .replace("10 Main Street</h1>",
+      (mode==="full-conflict" ? "20 Other Street" : mode==="full-conflict-long" ? "20 Other Street, Example, Florida 12345" : mode==="full-locality-conflict" ? "10 Main Street, Other, Florida 12345" : mode==="full-unrecognized" ? "Property at 20 Other Street" : "Marketing title")+"</h1>");
+  if (!html.includes('>10 Main Street, Example, Florida 12345</p>')) throw Error('full-address fixture invalid');
+  if (mode==="full-conflict-long" && !html.includes('>20 Other Street, Example, Florida 12345</h1>')) throw Error('conflicting heading fixture invalid');
+  if (mode==="full-locality-conflict" && !html.includes('>10 Main Street, Other, Florida 12345</h1>')) throw Error('conflicting locality fixture invalid');
+  if (mode==="full-unrecognized" && !html.includes('>Property at 20 Other Street</h1>')) throw Error('unrecognized heading fixture invalid');
+}
 if (["generic-no-canonical","generic-no-metadata","generic-empty-page"].includes(mode)) html="<html><body>No special page template.</body></html>";
 if (mode.startsWith("generic-") && mode!=="generic-empty-page") html += '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Fixture listing","description":"Fixture description"}</script>';
 if (mode==="generic-canonical") html=html.replace('rel="canonical" href="'+url+'"', 'rel="canonical" href="https://www.nmrk.com/properties/other"');
@@ -209,7 +218,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                                 data["sources"][0]["error"]="synthetic failure"
                             Path(out_path).write_text(json.dumps(data))
                         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
-                    if kind == "generic-native-change":
+                    if kind in {"generic-native-change", "full-stale"}:
                         sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{latestInventoryObservation,rawNewmarkNimRecord,id}', to_jsonb('changed'::text)) WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind in {"stale", "refusal-uncertain", "generic-url-changed"}:
                         sql("UPDATE credeals.cre_listings SET source_url='https://example.test/changed' WHERE external_id="+ingest.sql_lit(external)+";")
@@ -255,7 +264,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
             elif kind == "generic-stale":
                 assert rc==21 and queue=="0|false", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
-            elif kind in {"success", "success-no-license"}:
+            elif kind in {"success", "success-no-license", "full-success"}:
                 assert rc==0 and queue=="", (kind,rc,queue)
                 assert sql("SELECT description FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Original long description"
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
@@ -271,7 +280,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
                 assert sql("SELECT count(*) FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")=="2"
 
-            elif kind in {"stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "generic-url-changed", "generic-duplicate-after", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-host-mismatch", "generic-canonical"}:
+            elif kind in {"stale", "full-stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "generic-url-changed", "generic-duplicate-after", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-host-mismatch", "generic-canonical"}:
                 assert rc==21 and queue=="0|false", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'newmarkPageObservation' OR raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
                 if kind in {"duplicate-before", "generic-duplicate-before", "duplicate-claim-stale", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-host-mismatch", "generic-canonical"}:
@@ -305,7 +314,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                     assert "peer-after-403" in next_claim, next_claim
                     sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id='peer-after-403';")
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
-            elif kind in {"generic-status", "generic-404-mismatch", "generic-empty-page"}:
+            elif kind in {"full-conflict", "full-conflict-long", "full-locality-conflict", "full-unrecognized", "generic-status", "generic-404-mismatch", "generic-empty-page"}:
                 assert rc == 21 and queue == "1|true", (kind, rc, queue)
                 evidence = json.loads((private/"enriched.json").read_text())
                 assert evidence["sources"][0]["retainedObservations"][0]["scrapedDoc"]["rawHtml"]

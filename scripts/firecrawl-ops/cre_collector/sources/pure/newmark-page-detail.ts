@@ -30,7 +30,19 @@ export function extractNewmarkPage(claim: { externalId: string; url: string }, w
   const address = normalize(title.find(".street-address").text());
   const locality = normalize([witness.city, [witness.state, witness.zip].join(" ")].join(", "));
   const splitAddress = normalize(heading) === normalize(witness.address) && address === locality;
+  // A marketing title is allowed, but a heading that is itself a complete
+  // street address must not name a different property than the witness.
+  const headingStreet = /^(\d+[a-z]?\s+[a-z0-9 .'-]+\s(?:street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd|lane|ln|court|ct|parkway|pkwy|place|pl|way)\.?)(?=$|[\s,;|:/–—-])/i.exec(heading)?.[1];
+  // Numeric headings outside this narrow recognizable form may themselves
+  // assert an address. Hold the fallback instead of assuming a marketing name.
+  if (!splitAddress && /\d/.test(heading) && !headingStreet) return null;
+  const headingSuffix = headingStreet ? clean(heading.slice(headingStreet.length)) : "";
+  const headingLocality = headingSuffix ? normalize(headingSuffix.replace(/^[,;|:/–—-]\s*/, "")) : null;
+  const compatibleLocality = !headingLocality || [normalize(witness.city),
+    normalize([witness.city, witness.state].join(", ")), locality].includes(headingLocality);
   const fullAddress = safeText(heading) &&
+    (!headingStreet || normalize(headingStreet) === normalize(witness.address)) &&
+    compatibleLocality &&
     address === normalize([witness.address, witness.city, [witness.state, witness.zip].join(" ")].join(", "));
   if (!splitAddress && !fullAddress) return null;
   const block = details.find(".property-detail__prose");
