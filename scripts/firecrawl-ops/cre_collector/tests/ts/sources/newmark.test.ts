@@ -468,30 +468,25 @@ test("Newmark NIM identity uses the canonical URL path instead of the internal s
       }),
     /safe HTTPS URL/
   );
-  assert.throws(
-    () =>
-      newmarkNimMeasurementFields({
-        unitOfMeasurement: "Units",
-        size: 12.5,
-      }),
-    /positive integer/
-  );
-  assert.throws(
-    () =>
-      newmarkNimMeasurementFields({
-        unitOfMeasurement: "Square Furlongs",
-        size: 1,
-      }),
-    /unsupported unit/
-  );
-  assert.throws(
-    () =>
-      newmarkNimMeasurementFields({
-        unitOfMeasurement: "Acres",
-        size: -1,
-      }),
-    /measurement must be positive/
-  );
+  assert.equal(newmarkNimMeasurementFields({unitOfMeasurement: "Units", size: 12.5}).invalidReason, "fractional_units");
+  assert.equal(newmarkNimMeasurementFields({unitOfMeasurement: "Square Furlongs", size: 1}).invalidReason, "unsupported_unit");
+  assert.equal(newmarkNimMeasurementFields({unitOfMeasurement: "Acres", size: -1}).invalidReason, "negative_size");
+  assert.equal(newmarkNimMeasurementFields({unitOfMeasurement: "Sq. Ft.", size: "invalid"}).invalidReason, "invalid_size");
+  assert.equal(newmarkNimMeasurementFields({unitOfMeasurement: "Sq. Ft.", sizeSf: -2}).invalidReason, "negative_size");
+  const first = newmarkNimMeasurementFields({unitOfMeasurement: "Sq. Ft.", size: 5000, sizeSf: -2});
+  assert.equal(first.buildingSizeSqft, 5000);
+  assert.equal(first.invalidField, "sizeSf");
+  assert.equal(first.invalidNumericValue, -2);
+  const second = newmarkNimMeasurementFields({sizeSf: 4000, size: "invalid"});
+  assert.equal(second.buildingSizeSqft, 4000);
+  assert.equal(second.invalidField, "size");
+  assert.equal(second.invalidValueType, "string");
+  const fallbackA = newmarkNimMeasurementFields({unitOfMeasurement: "Sq. Ft.", size: "invalid", sizeSf: 5000});
+  assert.equal(fallbackA.buildingSizeSqft, 5000);
+  assert.equal(fallbackA.invalidField, "size");
+  const fallbackB = newmarkNimMeasurementFields({sizeSf: "invalid", size: 4000});
+  assert.equal(fallbackB.buildingSizeSqft, 4000);
+  assert.equal(fallbackB.invalidField, "sizeSf");
 });
 
 test("Newmark NIM measurement units map to the correct database dimensions", () => {
@@ -706,6 +701,77 @@ test("Newmark NIM source reconciles complete global pagination before US filteri
     assert.equal(result.listings.length, 1);
     assert.equal(result.listings[0]?.id, "listing-100");
     assert.equal(result.truncated, false);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("Newmark NIM retains valid peers when optional measurements are invalid", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const cases = [
+    {unitOfMeasurement: "Square Furlongs", size: 1, reason: "unsupported_unit"},
+    {unitOfMeasurement: "Acres", size: -1, reason: "negative_size"},
+    {unitOfMeasurement: "Units", size: 12.5, reason: "fractional_units"},
+    {unitOfMeasurement: "Sq. Ft.", size: 5000, reason: null},
+  ];
+  const records = cases.map((value, index) => ({
+    id: `provider-invalid-${index}`, slug: `invalid-${index}`, name: `Listing ${index}`,
+    createdOn: "2026-07-29T00:00:00Z", modifiedOn: "2026-07-29T12:00:00Z", priceSummary: "$5,000,000",
+    properties: [{countryCode: "US", address: `${index} Main Street`, city: "Tulsa",
+      stateAbbreviation: "OK", zip: "74103", unitOfMeasurement: value.unitOfMeasurement, size: value.size}],
+  }));
+  globalThis.fetch = async () => new Response(JSON.stringify({data: records, total: records.length}), {
+    status: 200, headers: {"content-type": "application/json"},
+  });
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const result = await srcNewmark("sale", Infinity, false);
+    assert.equal(result.listings.length, cases.length);
+    assert.equal(result.truncated, false);
+    for (let index = 0; index < cases.length; index++) {
+      const listing = result.listings[index];
+      assert.equal(listing.id, `invalid-${index}`);
+      assert.equal(listing.preserveChildCollections, true);
+      assert.equal(listing.rawNewmarkNimRecord.properties[0].size, cases[index].size);
+      if (cases[index].reason) {
+        assert.equal(listing.newmarkNimMeasurement.invalidReason, cases[index].reason);
+        assert.equal(listing.buildingSizeSqft, null);
+        assert.equal(listing.lotSizeAcres, null);
+        assert.equal(listing.units, null);
+        assert.equal(listing.salePriceUsd, 5_000_000);
+        assert.equal(listing.salePriceText, "$5,000,000");
+        assert.equal(listing.newmarkNimPriceRejected, null);
+        assert.equal(listing.newmarkNimMeasurement.invalidField, index === 0 ? "unitOfMeasurement" : "size");
+      } else {
+        assert.equal(listing.buildingSizeSqft, 5000);
+        assert.equal(listing.salePriceUsd, 5_000_000);
+      }
+    }
+    for (const priceSummary of ["$500/SF", "Subject to Offer ($500/SF)", "$100-$500/SF", "$500/unit", "$500/acre", "$500/month", "$500/sq m", "$1M–$2M", "$12,34", "$10,000 million"]) {
+      const ambiguous = mapNewmarkNimListing({...records[0], priceSummary}, "sale", "2026-11-11T12:00:00Z", true);
+      assert.equal(ambiguous.salePriceUsd, null, priceSummary);
+      assert.equal(ambiguous.salePriceText, priceSummary);
+      assert.equal(ambiguous.newmarkNimPriceRejected, "ambiguous_price_basis");
+    }
+    const explicit = mapNewmarkNimListing({...records[0], priceSummary: "$5M"}, "sale", "2026-11-11T12:00:00Z", true);
+    assert.equal(explicit.salePriceUsd, 5_000_000);
+    const noPrice = mapNewmarkNimListing({...records[0], priceSummary: "Subject to Offer"}, "sale", "2026-11-11T12:00:00Z", true);
+    assert.equal(noPrice.newmarkNimPriceRejected, null);
+    const lease = mapNewmarkNimListing(records[0], "lease", "2026-11-11T12:00:00Z", true);
+    assert.equal(lease.newmarkNimPriceRejected, null);
+    const oversized = mapNewmarkNimListing({...records[1], oversized: "x".repeat(1_000_001)}, "sale", "2026-11-11T12:00:00Z", true);
+    assert.equal(oversized.rawNewmarkNimRecord, undefined);
+    assert.equal(oversized.newmarkNimMeasurement.invalidField, "size");
+    assert.equal(oversized.newmarkNimMeasurement.invalidNumericValue, -1);
+    const largeSibling = mapNewmarkNimListing({...records[3], oversized: "x".repeat(1_000_001),
+      properties: [{...records[3].properties[0], sizeSf: -2}]}, "sale", "2026-11-11T12:00:00Z", true);
+    assert.equal(largeSibling.rawNewmarkNimRecord, undefined);
+    assert.equal(largeSibling.buildingSizeSqft, 5000);
+    assert.equal(largeSibling.newmarkNimMeasurement.invalidField, "sizeSf");
+    assert.equal(largeSibling.newmarkNimMeasurement.invalidNumericValue, -2);
   } finally {
     globalThis.fetch = oldFetch;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;

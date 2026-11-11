@@ -1234,6 +1234,17 @@ and otherwise unmapped input rows remain outside normal listing output; the
 separate native page evidence has its own controls. Legacy Algolia and targeted
 RCM enrichment retain their existing paths.
 
+An unsupported, malformed or negative optional NIM measurement is reported
+in `newmarkNimMeasurement` by reason, field, value type and, for finite numeric
+values, the source number. Use an independently usable square-foot sibling
+when the normal source mapping supports it; otherwise leave the affected
+dimension unknown and retain the listing. An invalid size does not establish
+an inventory gap or invalidate an independently stated total price, though it
+can prevent the size-based price outlier check. In this invalid-measurement
+path, only an explicit dollar total may populate the numeric total; retain
+other price text without treating a rate or range as a total. When the bounded raw snapshot is omitted,
+the diagnostic does not retain arbitrary nonnumeric source values.
+
 `srcNewmark` serves full and monitor collection from the direct public NIM
 search POST. It enumerates ascending 100-row pages for each transaction,
 then filters US geography and caps output. Strict mode additionally reconciles

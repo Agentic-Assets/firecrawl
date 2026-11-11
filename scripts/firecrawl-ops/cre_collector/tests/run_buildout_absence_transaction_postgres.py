@@ -323,6 +323,50 @@ def main():
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
                          "WHERE external_id IN ('dual-live','flat-inventory') ORDER BY external_id;").stdout.splitlines()
             assert states == ["dual-live:true", "flat-inventory:true"], states
+            # Exercise a Newmark field-local failure through the real mapper
+            # and additive SQL with a previously saved size and child contact.
+            newmark_bid = run("SELECT id FROM credeals.cre_brokerages WHERE slug='newmark';").stdout.strip()
+            parent = str(uuid.uuid4())
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,size_sf,sale_price_usd) "
+                f"VALUES ('{parent}','{newmark_bid}','measurement-proof','https://www.nmrk.com/properties/measurement-proof',1000,1000000);"
+                f"INSERT INTO credeals.cre_listing_contacts(listing_id,name) VALUES ('{parent}','Prior Broker');")
+            ambiguous_parent = str(uuid.uuid4())
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,size_sf,sale_price_usd) "
+                f"VALUES ('{ambiguous_parent}','{newmark_bid}','ambiguous-price','https://www.nmrk.com/properties/ambiguous-price',900,1250000);")
+            range_parent = str(uuid.uuid4())
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,size_sf,sale_price_per_sf) "
+                f"VALUES ('{range_parent}','{newmark_bid}','range-price','https://www.nmrk.com/properties/range-price',800,55);")
+            offer_parent = str(uuid.uuid4())
+            run(f"INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,source_url,size_sf,sale_price_per_sf) "
+                f"VALUES ('{offer_parent}','{newmark_bid}','offer-price','https://www.nmrk.com/properties/offer-price',700,44);")
+            script = r'''
+import { mapNewmarkNimListing } from './sources/newmark.js';
+const cases = [['measurement-proof','Square Furlongs',1,'$5,000,000'], ['measurement-peer','Sq. Ft.',5000,'$5,000,000'],
+ ['ambiguous-price','Square Furlongs',1,'$500/unit'], ['range-price','Square Furlongs',1,'$100-$500/SF'],
+ ['offer-price','Square Furlongs',1,'Subject to Offer ($500/SF)']];
+const listings = cases.map(([slug,unitOfMeasurement,size,priceSummary]) => ({sourceKey:'newmark',transactionMode:'sale',
+  ...mapNewmarkNimListing({id:`provider-${slug}`,slug,priceSummary,properties:[{
+    countryCode:'US',stateAbbreviation:'OK',zip:'74103',unitOfMeasurement,size}]},
+    'sale','2026-11-11T12:00:00Z',true)}));
+process.stdout.write(JSON.stringify(listings));
+'''
+            mapped = subprocess.run(["node", "--import", "tsx", "--input-type=module", "-e", script],
+                                    cwd=ROOT, capture_output=True, text=True, check=True, timeout=15)
+            mapped = json.loads(mapped.stdout)
+            mapped_rows = [ingest.to_row(listing, {}, at(12), allow_newmark_nim=True) for listing in mapped]
+            assert all(mapped_rows)
+            newmark_jobs = [{"slug": "newmark", "discovered": 5, "saved": 5, "errors": 0, "notes": "synthetic"}]
+            run(ingest.build_sql(mapped_rows, newmark_jobs, at(12), set()))
+            persisted = run(f"SELECT size_sf || ':' || sale_price_usd FROM credeals.cre_listings WHERE id='{parent}';").stdout.strip()
+            assert persisted == "1000:5000000", persisted
+            unchanged = run(f"SELECT size_sf || ':' || sale_price_usd FROM credeals.cre_listings WHERE id='{ambiguous_parent}';").stdout.strip()
+            assert unchanged == "900:1250000", unchanged
+            unchanged_range = run(f"SELECT size_sf || ':' || sale_price_per_sf FROM credeals.cre_listings WHERE id='{range_parent}';").stdout.strip()
+            assert unchanged_range == "800:55", unchanged_range
+            unchanged_offer = run(f"SELECT size_sf || ':' || sale_price_per_sf FROM credeals.cre_listings WHERE id='{offer_parent}';").stdout.strip()
+            assert unchanged_offer == "700:44", unchanged_offer
+            assert run(f"SELECT count(*) FROM credeals.cre_listing_contacts WHERE listing_id='{parent}' AND name='Prior Broker';").stdout.strip() == "1"
+            assert run(f"SELECT size_sf FROM credeals.cre_listings WHERE brokerage_id='{newmark_bid}' AND external_id='measurement-peer';").stdout.strip() == "5000"
             # Map a malformed optional contact through the actual Buildout
             # adapter, then prove additive ingest retains the previous child.
             contact_url = "https://example.test/listings/?propertyId=contact-proof"

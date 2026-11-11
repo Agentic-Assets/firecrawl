@@ -3038,7 +3038,16 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     # already drops a non-numeric salePriceUsd, and parse_money only matches a real
     # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
     # No extra branch needed; the existing numeric clamps cover it.
-    if is_sale_psf_text(sale_price_text):
+    newmark_ambiguous_price = (
+        source_key == "newmark"
+        and listing.get("newmarkNimPriceRejected") == "ambiguous_price_basis"
+    )
+    if newmark_ambiguous_price:
+        # Do not re-promote a rejected NIM range/rate through the shared
+        # salePriceText per-square-foot fallback. Keep the text in raw_data.
+        sale_price = None
+        price_per_sf = None
+    elif is_sale_psf_text(sale_price_text):
         # The new CBRE source-price context may retain a dollar symbol whose
         # currency is unverified. Preserve its text without inventing USD/SF.
         if rcm_fields.permits_psf_inference(source_key, listing, sale_price_text):
