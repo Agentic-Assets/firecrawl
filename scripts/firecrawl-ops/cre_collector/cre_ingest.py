@@ -3038,7 +3038,16 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     # already drops a non-numeric salePriceUsd, and parse_money only matches a real
     # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
     # No extra branch needed; the existing numeric clamps cover it.
-    if is_sale_psf_text(sale_price_text):
+    newmark_ambiguous_price = (
+        source_key == "newmark"
+        and listing.get("newmarkNimPriceRejected") == "ambiguous_price_basis"
+    )
+    if newmark_ambiguous_price:
+        # Do not re-promote a rejected NIM range/rate through the shared
+        # salePriceText per-square-foot fallback. Keep the text in raw_data.
+        sale_price = None
+        price_per_sf = None
+    elif is_sale_psf_text(sale_price_text):
         # The new CBRE source-price context may retain a dollar symbol whose
         # currency is unverified. Preserve its text without inventing USD/SF.
         if rcm_fields.permits_psf_inference(source_key, listing, sale_price_text):
@@ -4022,6 +4031,7 @@ def build_sql(
     newmark_page_attempt=None,
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
+    buildout_observation_context=None,
 ):
     def daum_marker(payload):
         if not isinstance(payload, dict):
@@ -4238,6 +4248,21 @@ WHERE p.image_id IS NULL;
         }
         for jm in job_meta
     ]
+    buildout_observation_fragment = ""
+    if buildout_observation_context is not None:
+        # The checkpoint caller binds its owner, target and sealed source proof.
+        scope = buildout_observation_context.get("scope")
+        prior = buildout_observation_context.get("prior")
+        if not isinstance(scope, dict) or (prior is not None and not isinstance(prior, list)):
+            raise ValueError("invalid Buildout observation context")
+        mapping = SOURCE_TO_BROKERAGE.get(scope.get("source_key"))
+        if (mapping is None or len(job_meta) != 1 or job_meta[0]["slug"] != mapping[0]
+                or any(row.get("slug") != mapping[0] for row in rows)
+                or sorted(row.get("external_id") for row in rows) != scope.get("staged_external_ids")
+                or mark_missing_slugs or targeted or inventory_only_rows or inventory_only_scopes):
+            raise ValueError("Buildout observation context does not match ingest scope")
+        from source_fields.buildout_observation_sql import sql_fragment
+        buildout_observation_fragment = sql_fragment(scope, prior, job_meta[0]["job_id"], artifact_run_key)
     svn_enrichment_ids = set(svn_enrichment_ids)
     if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
         raise ValueError("invalid SVN enrichment identity")
@@ -4805,6 +4830,12 @@ JOIN _src s USING (brokerage_id, external_id);
 DELETE FROM _src s USING _daum_identity_held h
  WHERE s.brokerage_id=h.brokerage_id AND s.external_id=h.external_id;
 """)
+
+    from source_fields.buildout import observation_sources
+    observation_slugs = {job["slug"] for job in job_meta} & observation_sources()
+    if observation_slugs:
+        from source_fields.buildout_observation_sql import identity_guard_sql
+        w(identity_guard_sql(observation_slugs))
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.
@@ -6026,6 +6057,9 @@ WHERE (p.observation_present = false OR pv.deleted_at IS NOT NULL)
   AND NOT ({detail_source_sql})
 ON CONFLICT DO NOTHING;
 """)
+    if buildout_observation_fragment:
+        w(buildout_observation_fragment)
+
     w(f"""-- Children: refresh wholesale only when the latest source row completed a
 -- detail pass. This protects previously good documents/images/contacts from
 -- transient errors and from deliberate API-only/base refresh modes.
@@ -7707,6 +7741,8 @@ def main():
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-code-sha", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-buildout-observation", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-buildout-observation-sha256", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-transactions", choices=("sale", "lease", "sale,lease"), default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
@@ -8381,6 +8417,41 @@ def main():
             )
         except (ValueError, KeyError, TypeError, OSError) as exc:
             sys.exit(f"refusing Pyramid guard outcome: {exc}")
+    buildout_observation_context = None
+    if args.checkpoint_buildout_observation is not None:
+        from pathlib import Path
+
+        from cre_checkpoint_refresh import git_identity
+        from source_fields.buildout import (
+            observation_sources,
+            prepare_inventory_observation_scope,
+        )
+        try:
+            claim_path = Path(args.checkpoint_buildout_observation)
+            if (len(args.inputs) != 1 or args.dry_run or args.mark_missing or activate_status
+                    or not args.expected_db_target_sha256 or claim_path.is_symlink()):
+                raise ValueError("invalid observation invocation")
+            raw_claim = claim_path.read_bytes()
+            if hashlib.sha256(raw_claim).hexdigest() != args.checkpoint_buildout_observation_sha256:
+                raise ValueError("observation envelope changed")
+            claim = json.loads(raw_claim)
+            if claim.get("source") not in observation_sources():
+                raise ValueError("unsupported observation source")
+            db_url, _ = load_db_url(args.env_file)
+            assert_expected_database_target(db_url, args.expected_db_target_sha256)
+            sha, dirty = git_identity()
+            artifact_bytes = Path(args.inputs[0]).read_bytes()
+            if artifact_bytes != image_transition_input:
+                raise ValueError("observation artifact changed during staging")
+            scope = prepare_inventory_observation_scope(
+                artifact_bytes, claim["manifest"], claim["source"],
+                current_code_sha=sha, current_git_dirty=dirty,
+                current_target_sha256=args.expected_db_target_sha256)
+            buildout_observation_context = {"scope": scope, "prior": None}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            sys.exit(f"refusing Buildout observation: {exc}")
+    elif args.checkpoint_buildout_observation_sha256 is not None:
+        sys.exit("refusing observation hash without envelope")
     if lyon_partial_claims is not None:
         from cre_lyon_partial import build_partial_sql
 
@@ -8425,6 +8496,7 @@ def main():
             newmark_page_attempt=args.newmark_page_attempt,
             newmark_page_claim=newmark_page_claim,
             newmark_page_requires_witness=bool(page_rows),
+            buildout_observation_context=buildout_observation_context,
         )
 
     print(

@@ -73,10 +73,83 @@ leave missing values unknown, continue valid peers and do not retire records
 based on a partial sample. Neither an evidence artifact nor a successful test is
 proof of a live database write.
 
+An individual bad row, redirect or detail failure should not prevent eligible
+peer listings from being collected and saved through a tested partial path.
+Keep the affected source evidence and tell operators what remains unresolved;
+do not describe partial coverage as a full successful source run. Investigate
+redirect destinations and changed URLs rather than guessing identity or status.
+
+Keep prior listing information, including historical source values, contacts,
+documents and images, even after the listing is no longer visible. A complete,
+source-appropriate enumeration can establish an absence observation; record its
+source and time and record reappearance when it is seen again. Absence itself
+does not establish a sale, lease or reason for removal. A failed, partial or
+ambiguous enumeration cannot establish absence. The existing event model is not
+yet connected to every scheduled complete refresh, and current upserts can
+replace older raw data and child rows. Track implementation and readback in
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
 Record attempted routes, methods, observations, source-specific limitations and
 the next concrete fix in Linear. In user updates, name working and failed feeds,
 provide representative listing URLs, and distinguish merged code, deployed
 runtime, source success and generation-exact database readback.
+
+### Triage changed paths and held identities
+
+1. Read the actual attempt and artifact first: capture the source key,
+   generation, artifact digest, outcome, staged and committed counts, held
+   identities, and whether the owned process and database transaction settled.
+   A generic scheduler or Slack failure is not a brokerage diagnosis. If a write
+   is uncertain, reconcile its exact attempt before retrying or changing keys.
+2. Compare the configured inventory endpoint and the brokerage's current
+   first-party navigation with bounded, permitted requests. Record the original
+   URL, HTTP status, redirect chain and destination, response time, and the
+   provider-native identity and listing fields actually present. An HTML shell,
+   access challenge, or one successful page does not prove a complete feed.
+   A denied route is not permission to evade access controls.
+3. Compare the exact source/native identity and old and new URLs to the matching
+   database parent, source index and existing child records. Treat a matching
+   name or address as supporting evidence, not proof that offerings or parents
+   can be merged. Preserve source URLs and contradictory evidence; do not
+   automatically rekey, delete a duplicate, or claim an old listing disappeared.
+   Check whether two existing parents already claim the same native identity.
+4. Classify the smallest affected scope: one field, one identifiable listing,
+   a page or transaction, a brokerage, or shared infrastructure. Keep valid
+   fields and unaffected records moving through an implemented, verified partial
+   path. Preserve the held source observation and previously stored parent and
+   children. A source with held or missing records is incomplete, even if its
+   valid peers were saved; absence and reappearance require their own evidence.
+5. Test the real adapter and persistence path with the changed URL and a
+   conflicting-identity negative case. For database writes, verify exact staged,
+   emitted and held identities and attempt-bound commit or rollback evidence;
+   equal counts alone are insufficient. Test replay after the conflict changes,
+   a source-local failure alongside a successful peer, and unknown settlement.
+   Only claim a live fix after fresh source collection, generation-exact database
+   readback and owner settlement; report incomplete coverage and the remaining
+   source-specific follow-up explicitly.
+
+For the Buildout family, a changed `propertyId` URL can preserve the provider's
+native ID while changing the collector's external key. In the November 11
+investigation, Greysteel's old numeric key and new Cobblestone Village slug
+shared a native ID; Gibson's 44 Trapelo native ID was already claimed by two
+stored parents. These are identity conflicts, not evidence of a sale or a safe
+automatic merge. See [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
+for record-local partial-write and presence-event work and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255) for historical
+field and child retention. The existing guard holds
+ambiguous rows, but a verified committed subset and continued broad-run
+qualification are not yet implemented for every Buildout hold.
+
+For a Buildout listing with missing contacts, inspect `buildoutContactMapping`
+for an invalid container or entry count, then compare usable mapped contacts,
+the original provider record and database children. The inventory feed preserves
+prior children and adds usable current contacts; an invalid optional contact is
+not proof that the listing disappeared. `buildoutRawRetention` can report an
+omitted record when its existing size or validity limit is exceeded: do not
+claim raw evidence was retained in that case. Handle the listing's incomplete
+contact evidence separately from independently proven inventory completeness,
+and avoid copying contact details into diagnostic logs.
 
 ## Verify at the appropriate boundary
 

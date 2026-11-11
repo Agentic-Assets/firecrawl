@@ -11,6 +11,17 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+Source adapters should isolate a settled record-local failure, retain its
+available observations and continue eligible peers through an implemented,
+tested partial path. Investigate redirects and changed URLs with source evidence;
+do not treat a redirect or missing optional field as proof a listing disappeared.
+Report partial coverage and preserve identity, timestamps and conflicting values.
+Only a complete, source-appropriate enumeration can support an absence event;
+retain the listing and never infer a sale or lease from disappearance. The
+scheduled absence and full-history paths remain work in progress under
+[AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337) and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
 DAUM detail captures available-space blocks as source text and serialized DOM
 HTML in `daumAvailableSpaceObservations`, including conflicting values. These
 observations do not establish tenure or full-source coverage. The optional
@@ -1084,6 +1095,14 @@ and missing IDs/URLs remain private unqualified context. This is parsed JSON,
 not original response bytes or exact numeric lexemes. It excludes closed and
 other unmapped rows; native page evidence has its own scope and controls.
 
+Optional `broker_contacts` may have an invalid container or malformed entries.
+Map usable contact fields and keep eligible peer listings; the sparse
+`buildoutContactMapping` diagnostic records an invalid-container flag and entry count
+without copying contact details into logs. Inventory enumeration proof does not
+prove contact completeness. Existing children use the established additive
+preservation path. A raw-retention omission receipt is not the omitted source
+record, and large inputs can still meet separate staging inspection limits.
+
 Full or monitor collection selecting Buildout, SRS, Kidder or Newmark requires `--out` before
 acquisition. Artifacts carrying new raw receipts are written exclusively as
 mode 0600 files; existing paths (including symlinks) are refused. Existing
@@ -1214,6 +1233,17 @@ provide no new source, freshness, lifecycle or display authorization. Non-US
 and otherwise unmapped input rows remain outside normal listing output; the
 separate native page evidence has its own controls. Legacy Algolia and targeted
 RCM enrichment retain their existing paths.
+
+An unsupported, malformed or negative optional NIM measurement is reported
+in `newmarkNimMeasurement` by reason, field, value type and, for finite numeric
+values, the source number. Use an independently usable square-foot sibling
+when the normal source mapping supports it; otherwise leave the affected
+dimension unknown and retain the listing. An invalid size does not establish
+an inventory gap or invalidate an independently stated total price, though it
+can prevent the size-based price outlier check. In this invalid-measurement
+path, only an explicit dollar total may populate the numeric total; retain
+other price text without treating a rate or range as a total. When the bounded raw snapshot is omitted,
+the diagnostic does not retain arbitrary nonnumeric source values.
 
 `srcNewmark` serves full and monitor collection from the direct public NIM
 search POST. It enumerates ascending 100-row pages for each transaction,

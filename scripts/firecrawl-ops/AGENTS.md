@@ -16,6 +16,15 @@ requirement for an otherwise settled current-state resume.
 Agent routing for this folder. This file stays compact; use `README.md` for
 the longer human guide and runbook.
 
+For listing work, isolate record-local errors and continue eligible peers,
+preserving partial data and reporting incomplete coverage. Retain prior listing
+details and record source disappearance and reappearance when a complete,
+source-appropriate inventory supports that observation. Do not infer a sale or
+lease from absence. These are operating goals, not claims that every path is
+implemented: see [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
+for scheduled disappearance tracking and
+[AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255) for history.
+
 Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
 `.agents/skills/firecrawl-ops/SKILL.md`.
 

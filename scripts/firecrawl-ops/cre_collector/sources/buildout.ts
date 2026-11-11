@@ -1126,6 +1126,34 @@ function buildoutSpaceFacts(attributes: unknown): Record<string, string> | undef
   return values.size === 1 ? { number_of_spaces: [...values][0] } : undefined;
 }
 
+function buildoutContacts(contacts: unknown, company: string): {
+  brokerIds: number[];
+  contactMapping?: { invalidContainer?: true; invalidEntryCount?: number };
+} {
+  const invalidContainer = contacts != null && !Array.isArray(contacts);
+  const contactRows: unknown[] = Array.isArray(contacts) ? contacts : [];
+  let invalidEntryCount = 0;
+  const brokerIds: number[] = [];
+  for (const contact of contactRows) {
+    if (!contact || typeof contact !== "object" || Array.isArray(contact)) {
+      invalidEntryCount++;
+      continue;
+    }
+    const b = contact as Record<string, unknown>;
+    const fields = [b.name, b.email, b.phone, b.photo_url];
+    const name = clean(b.name), email = clean(b.email);
+    if (fields.some((value) => value != null && typeof value !== "string") || (!name && !email)) {
+      invalidEntryCount++;
+    }
+    const id = brokerRef({ name, email, phone: clean(b.phone), avatarUrl: clean(b.photo_url), company });
+    if (id !== null) brokerIds.push(id);
+  }
+  return { brokerIds, ...(invalidContainer || invalidEntryCount ? { contactMapping: {
+    ...(invalidContainer ? { invalidContainer: true as const } : {}),
+    ...(invalidEntryCount ? { invalidEntryCount } : {}),
+  } } : {}) };
+}
+
 export async function srcBuildout(
   company: string,
   pluginKey: string,
@@ -1166,17 +1194,10 @@ export async function srcBuildout(
       // values are spread in, so a row without an Available attr is unchanged.
       const availSf = buildoutAvailableSf(attrs.get("Available"));
       const spaceFacts = buildoutSpaceFacts(x.index_attributes);
-      const brokerIds = (x.broker_contacts ?? [])
-        .map((b: any) =>
-          brokerRef({
-            name: clean(b.name),
-            email: clean(b.email),
-            phone: clean(b.phone),
-            avatarUrl: clean(b.photo_url),
-            company,
-          })
-        )
-        .filter((v: number | null): v is number => v !== null);
+      // Contact metadata is optional and is independent of inventory identity.
+      // Keep usable contacts and the listing if the provider returns malformed
+      // contact data; preserveChildCollections below retains earlier contacts.
+      const { brokerIds, contactMapping } = buildoutContacts(x.broker_contacts, company);
 
       // --- Phase-2 scalar lift (additive; emits nullable camelCase fields) ---
 
@@ -1244,6 +1265,7 @@ export async function srcBuildout(
               malformedAttributeCount: mappedAttributes.malformedAttributeCount,
               omittedAttributeCount: mappedAttributes.omittedAttributeCount } } : {}),
         ...(spaceFacts ? { extraFacts: spaceFacts } : {}),
+        ...(contactMapping ? { buildoutContactMapping: contactMapping } : {}),
         brokerIds,
         brochures: x.pdf_url ? [{ name: "Listing brochure (PDF)", url: x.pdf_url }] : [],
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),

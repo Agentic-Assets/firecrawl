@@ -739,15 +739,55 @@ export function newmarkNimMeasurementFields(property: any): {
   units: number | null;
   kind: "building_sqft" | "lot_acres" | "units" | null;
   normalizedValue: number | null;
+  invalidReason?: "negative_size" | "fractional_units" | "unsupported_unit" | "invalid_size";
+  invalidField?: "unitOfMeasurement" | "size" | "sizeSf";
+  invalidValueType?: string;
+  invalidNumericValue?: number;
 } {
+  const invalid = (invalidReason: "negative_size" | "fractional_units" | "unsupported_unit" | "invalid_size",
+    invalidField: "unitOfMeasurement" | "size" | "sizeSf", value: unknown) => ({
+    buildingSizeSqft: null, lotSizeAcres: null, units: null, kind: null, normalizedValue: null, invalidReason,
+    invalidField, invalidValueType: Array.isArray(value) ? "array" : typeof value,
+    ...(typeof value === "number" && Number.isFinite(value) ? { invalidNumericValue: value } : {}),
+  });
+  if (property?.unitOfMeasurement != null && typeof property.unitOfMeasurement !== "string") {
+    return invalid("unsupported_unit", "unitOfMeasurement", property.unitOfMeasurement);
+  }
   const unit = clean(property?.unitOfMeasurement)?.toLowerCase();
+  // A malformed unused sibling must not erase a valid preferred value.
+  const problem = (value: unknown) => value != null &&
+    (typeof value !== "number" || !Number.isFinite(value) || value < 0);
+  const preferred = unit === "sq. ft." ? property?.size : !unit ? property?.sizeSf : null;
+  const sibling = unit === "sq. ft." ? property?.sizeSf : !unit ? property?.size : null;
+  if (typeof preferred === "number" && Number.isFinite(preferred) && preferred > 0 && problem(sibling)) {
+    const field = unit === "sq. ft." ? "sizeSf" : "size";
+    const reason = typeof sibling === "number" && Number.isFinite(sibling) && sibling < 0 ? "negative_size" : "invalid_size";
+    return { ...invalid(reason, field, sibling), buildingSizeSqft: preferred,
+      kind: "building_sqft", normalizedValue: preferred };
+  }
+  if (problem(preferred) && typeof sibling === "number" && Number.isFinite(sibling) && sibling > 0) {
+    const field = unit === "sq. ft." ? "size" : "sizeSf";
+    const reason = typeof preferred === "number" && Number.isFinite(preferred) && preferred < 0 ? "negative_size" : "invalid_size";
+    return { ...invalid(reason, field, preferred), buildingSizeSqft: sibling,
+      kind: "building_sqft", normalizedValue: sibling };
+  }
+  if (property?.size != null && (typeof property.size !== "number" || !Number.isFinite(property.size))) {
+    return invalid("invalid_size", "size", property.size);
+  }
+  if ((!unit || unit === "sq. ft.") && property?.sizeSf != null &&
+      (typeof property.sizeSf !== "number" || !Number.isFinite(property.sizeSf))) {
+    return invalid("invalid_size", "sizeSf", property.sizeSf);
+  }
+  if ((!unit || unit === "sq. ft.") && typeof property?.sizeSf === "number" && property.sizeSf < 0) {
+    return invalid("negative_size", "sizeSf", property.sizeSf);
+  }
   const size = num(property?.size);
   if (size !== null && size < 0) {
-    throw new Error("Newmark NIM measurement must be positive");
+    return invalid("negative_size", "size", property.size);
   }
   if (unit === "units") {
     if (size !== null && !Number.isInteger(size)) {
-      throw new Error("Newmark NIM unit count must be a positive integer");
+      return invalid("fractional_units", "size", property.size);
     }
     return {
       buildingSizeSqft: null,
@@ -788,9 +828,7 @@ export function newmarkNimMeasurementFields(property: any): {
     };
   }
   if (unit && unit !== "sq. ft.") {
-    throw new Error(
-      `Newmark NIM has an unsupported unit of measurement: ${unit}`
-    );
+    return invalid("unsupported_unit", "unitOfMeasurement", property.unitOfMeasurement);
   }
   const buildingSizeSqft =
     unit === "sq. ft."
@@ -840,6 +878,7 @@ export function mapNewmarkNimListing(
   );
   const priceText = clean(record?.priceSummary);
   const measurements = newmarkNimMeasurementFields(property);
+  const measurementIssue = measurements.invalidReason;
   const candidateSalePrice =
     tx === "sale" ? newmarkSalePrice(priceText) : null;
   const rejectSalePrice =
@@ -847,6 +886,14 @@ export function mapNewmarkNimListing(
     && measurements.buildingSizeSqft !== null
     && measurements.buildingSizeSqft > 100
     && candidateSalePrice / measurements.buildingSizeSqft > 10_000;
+  const totalMatch = /^\$\s*((?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k))?$/i.exec(priceText ?? "");
+  // The shared parser deliberately does not multiply large bases. Reject a
+  // suffix in that range instead of silently misreading the source amount.
+  const explicitTotal = totalMatch !== null && (!totalMatch[2] || Number(totalMatch[1].replace(/,/g, "")) < 10000);
+  const ambiguousPrice = measurementIssue && tx === "sale" && /\$\s*\d/.test(priceText ?? "") && !explicitTotal;
+  // A bad optional size does not invalidate an independent total price. The
+  // size-based outlier check remains unavailable until a usable size exists;
+  // an explicit per-square-foot string must not become a total price.
   const propertyType = clean(property?.propertyTypeLabelOverride);
   const mainImageUrl = clean(record?.mainImageUrl);
   const cardPhotos =
@@ -873,7 +920,7 @@ export function mapNewmarkNimListing(
     country: "US",
     latitude: num(property?.latitude),
     longitude: num(property?.longitude),
-    salePriceUsd: rejectSalePrice ? null : candidateSalePrice,
+    salePriceUsd: rejectSalePrice || ambiguousPrice ? null : candidateSalePrice,
     salePriceText: tx === "sale" ? priceText : null,
     buildingSizeSqft: measurements.buildingSizeSqft,
     lotSizeAcres: measurements.lotSizeAcres,
@@ -887,10 +934,13 @@ export function mapNewmarkNimListing(
       kind: measurements.kind,
       sourceUnit: clean(property?.unitOfMeasurement),
       normalizedValue: measurements.normalizedValue,
+      ...(measurementIssue ? { invalidReason: measurementIssue } : {}),
+      ...(measurementIssue ? { invalidField: measurements.invalidField, invalidValueType: measurements.invalidValueType,
+        ...(measurements.invalidNumericValue !== undefined ? { invalidNumericValue: measurements.invalidNumericValue } : {}) } : {}),
     },
     newmarkNimPriceRejected: rejectSalePrice
       ? "implausible_price_per_square_foot"
-      : null,
+      : ambiguousPrice ? "ambiguous_price_basis" : null,
     photos: cardPhotos,
     freshnessProvenance: {
       detailScope: "authoritative_inventory_feed",

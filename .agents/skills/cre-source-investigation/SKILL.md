@@ -11,4 +11,25 @@ Check whether the configured URL, provider, operation, or listing location still
 
 Trace identifiable records and useful fields, including addresses, coordinates, price/rate terms, spaces, contacts, and document/image URLs, from source through extraction and, when available, Supabase readback. Preserve raw observations and contradictions, distinguish source facts from supported inference, and keep incomplete identified records moving through a tested partial path. A partial sample does not establish full coverage or authorize retiring absent listings.
 
+Investigate a redirect or one failed detail as a record-local problem when its
+settled outcome permits; keep eligible peers moving and retain the failed
+record's evidence. Preserve earlier listing details and child records when new
+observations omit or replace them. After a complete, source-appropriate
+inventory, record an absent previously seen identity as a disappearance and a
+later sighting as a reappearance, without guessing a sale or lease. Partial or
+ambiguous coverage cannot prove absence. These remain implementation goals, not
+proof that current schedules record every event or preserve every historical
+version: see [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
+and [AGENTIC-5255](https://linear.app/agenticassets/issue/AGENTIC-5255).
+
+For a changed path, compare the configured endpoint with current first-party
+navigation, record the actual HTTP status and redirect chain, and trace the
+source-native ID and both URLs to the stored parent and source index. Check for
+multiple stored parents claiming the same native ID. Preserve conflicts and do
+not infer a safe rekey from a matching address, title, or redirect alone. A
+successful detail page does not prove complete inventory, and a failed page
+does not establish disappearance. See the playbook's
+[changed-path and held-identity triage](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#triage-changed-paths-and-held-identities)
+for exact artifact, settlement, partial-write and readback checks.
+
 Record attempted URLs, methods, outcomes, limitations, and the next concrete fix in the owning Linear issue. Tell the user which feeds actually wrote and passed readback, which failed or are pending, what each tool revealed, and whether the proposed fix is merged, deployed, or still unverified. Do not report a site sample or an enabled schedule as proof of database ingestion.
