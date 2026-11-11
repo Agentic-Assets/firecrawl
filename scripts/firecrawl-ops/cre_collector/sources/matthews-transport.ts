@@ -1,4 +1,4 @@
-import { readBoundedUtf8, ResponseBodyDeadlineError, ResponseBodyLimitError } from "../lib/response-body.js";
+import { cancelResponseBody, readBoundedUtf8, ResponseBodyDeadlineError, ResponseBodyLimitError } from "../lib/response-body.js";
 import { Agent, fetch as undiciFetch } from "undici";
 import { requireFreshDetails } from "../lib/freshness.js";
 
@@ -154,11 +154,26 @@ function logMatthewsAttempt(event: {
   try { console.warn(`  matthews/http ${JSON.stringify(event)}`); } catch { /* best effort */ }
 }
 
+export class MatthewsRedirectCleanupUnknown extends Error {}
+export const MATTHEWS_REDIRECT_CLEANUP_UNKNOWN_EXIT = 71;
+
+/** A fulfilled destroy promise is required; timeout and rejection remain unknown. */
+export async function confirmMatthewsDestroy(destroy: () => Promise<unknown>, timeoutMs = 1000): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(destroy).then(() => true, () => false),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
 export async function matthewsFetch(
   url: string,
   manualRedirect = false,
   strict = requireFreshDetails(),
-  observeTemporaryRedirect = false
+  observeTemporaryRedirect = false,
+  requireRedirectSettlement = false
 ): Promise<MatthewsFetchResult> {
   let lastError: unknown = null;
   const role = matthewsRequestRole(url);
@@ -167,6 +182,7 @@ export async function matthewsFetch(
     const started = performance.now();
     let phase: "headers" | "body" | "http" = "headers";
     let status = 0;
+    let confirmRedirectCleanup = false;
     let attemptError: unknown = null;
     const controller = new AbortController();
     // Own each transport so a provider socket that ignores abort cannot remain
@@ -209,6 +225,10 @@ export async function matthewsFetch(
         };
       }
       if (manualRedirect && (status === 301 || status === 308 || (observeTemporaryRedirect && status === 307))) {
+        if (status === 307 && requireRedirectSettlement) {
+          confirmRedirectCleanup = true;
+          if (!await cancelResponseBody(res.body, 1000)) throw new MatthewsRedirectCleanupUnknown("Matthews redirect body cleanup unknown");
+        }
         return { html: null, status, location: res.headers.get("location") };
       }
     } catch (error) {
@@ -217,8 +237,13 @@ export async function matthewsFetch(
       // to avoid converting a transient body stall into a hard HTTP failure.
       attemptError = error;
     } finally {
-      agent?.destroy();
+      if (confirmRedirectCleanup && agent) {
+        if (!await confirmMatthewsDestroy(() => agent.destroy())) {
+          throw new MatthewsRedirectCleanupUnknown("Matthews redirect dispatcher cleanup unknown");
+        }
+      } else agent?.destroy();
     }
+    if (attemptError instanceof MatthewsRedirectCleanupUnknown) throw attemptError;
     if (matthewsRetryableFetchFailure(status, attemptError)) {
       lastError = attemptError;
       matthewsInterval = Math.min(matthewsInterval + 700, 7000);
