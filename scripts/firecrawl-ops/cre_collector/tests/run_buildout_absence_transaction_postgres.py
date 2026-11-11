@@ -545,6 +545,32 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
             states = run("SELECT external_id || ':' || observation_present::text FROM credeals.cre_source_index "
                          "WHERE external_id IN ('dual-live','flat-inventory') ORDER BY external_id;").stdout.splitlines()
             assert states == ["dual-live:true", "flat-inventory:true"], states
+            # Also test the opposite ordering: a legacy writer commits first,
+            # and the experimental writer refuses its already-recorded job.
+            reverse_scope = {**scope, "generation_id": "legacy-first", "observed_at": at(12),
+                             "artifact_sha256": "c" * 64}
+            reverse_key = artifact_run_identity_from_digests([reverse_scope["artifact_sha256"]])[0]
+            reverse_rows = [dict(row, scraped_at=reverse_scope["observed_at"]) for row in rows]
+            reverse_jobs = [{**jobs[0], "finished_at": reverse_scope["observed_at"]}]
+            reverse_args = (reverse_rows, reverse_jobs, reverse_scope["observed_at"], set())
+            reverse_kwargs = {"artifact_run_key": reverse_key, "finished_at": reverse_scope["observed_at"],
+                              "buildout_observation_context": {"scope": reverse_scope, "prior": None}}
+            reverse_legacy = ingest.build_sql(*reverse_args, **reverse_kwargs)
+            reverse_partial = ingest.build_sql(*reverse_args, **reverse_kwargs,
+                                               experimental_buildout_partial_attempt="c" * 32)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                winner = pool.submit(run, reverse_legacy.replace("COMMIT;", "SELECT pg_sleep(3); COMMIT;", 1))
+                for _ in range(40):
+                    sleeping = run("SELECT count(*) FROM pg_stat_activity WHERE state='active' "
+                                   "AND query='SELECT pg_sleep(3);';").stdout.strip()
+                    if sleeping == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("fixture legacy writer did not reach commit pause")
+                loser = run(reverse_partial, check=False)
+                winner.result()
+                assert loser.returncode != 0 and "artifact already has a job" in loser.stderr, loser.stderr
             proof_tmp.cleanup()
             print("PASS: actual schema and ingest builder, absent and held peers, concurrent replay, wrong job and stale source job refused, preserved status, actual ingest reappearance")
         finally:
