@@ -95,6 +95,50 @@ the next concrete fix in Linear. In user updates, name working and failed feeds,
 provide representative listing URLs, and distinguish merged code, deployed
 runtime, source success and generation-exact database readback.
 
+### Triage changed paths and held identities
+
+1. Read the actual attempt and artifact first: capture the source key,
+   generation, artifact digest, outcome, staged and committed counts, held
+   identities, and whether the owned process and database transaction settled.
+   A generic scheduler or Slack failure is not a brokerage diagnosis. If a write
+   is uncertain, reconcile its exact attempt before retrying or changing keys.
+2. Compare the configured inventory endpoint and the brokerage's current
+   first-party navigation with bounded, permitted requests. Record the original
+   URL, HTTP status, redirect chain and destination, response time, and the
+   provider-native identity and listing fields actually present. An HTML shell,
+   access challenge, or one successful page does not prove a complete feed.
+   A denied route is not permission to evade access controls.
+3. Compare the exact source/native identity and old and new URLs to the matching
+   database parent, source index and existing child records. Treat a matching
+   name or address as supporting evidence, not proof that offerings or parents
+   can be merged. Preserve source URLs and contradictory evidence; do not
+   automatically rekey, delete a duplicate, or claim an old listing disappeared.
+   Check whether two existing parents already claim the same native identity.
+4. Classify the smallest affected scope: one field, one identifiable listing,
+   a page or transaction, a brokerage, or shared infrastructure. Keep valid
+   fields and unaffected records moving through an implemented, verified partial
+   path. Preserve the held source observation and previously stored parent and
+   children. A source with held or missing records is incomplete, even if its
+   valid peers were saved; absence and reappearance require their own evidence.
+5. Test the real adapter and persistence path with the changed URL and a
+   conflicting-identity negative case. For database writes, verify exact staged,
+   emitted and held identities and attempt-bound commit or rollback evidence;
+   equal counts alone are insufficient. Test replay after the conflict changes,
+   a source-local failure alongside a successful peer, and unknown settlement.
+   Only claim a live fix after fresh source collection, generation-exact database
+   readback and owner settlement; report incomplete coverage and the remaining
+   source-specific follow-up explicitly.
+
+For the Buildout family, a changed `propertyId` URL can preserve the provider's
+native ID while changing the collector's external key. In the November 11
+investigation, Greysteel's old numeric key and new Cobblestone Village slug
+shared a native ID; Gibson's 44 Trapelo native ID was already claimed by two
+stored parents. These are identity conflicts, not evidence of a sale or a safe
+automatic merge. See [AGENTIC-5337](https://linear.app/agenticassets/issue/AGENTIC-5337)
+for the record-local partial-write and history work. The existing guard holds
+ambiguous rows, but a verified committed subset and continued broad-run
+qualification are not yet implemented for every Buildout hold.
+
 ## Verify at the appropriate boundary
 
 | Work being done | Required verification at this stage |
