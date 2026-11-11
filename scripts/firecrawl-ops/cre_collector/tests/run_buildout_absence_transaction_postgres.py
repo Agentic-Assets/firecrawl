@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
+
 import cre_ingest as ingest
 from cre_ingest import artifact_run_identity_from_digests
 from source_fields.buildout import (
@@ -25,7 +27,6 @@ from source_fields.buildout import (
     qualify_prior_inventory_binding,
 )
 from source_fields.buildout_observation_sql import sql_fragment
-from test_buildout_current_inventory import CODE, SOURCE, TARGET, setup
 
 
 def main():
@@ -79,7 +80,7 @@ def main():
                                                         current_target_sha256=TARGET)
             jobkey = artifact_run_identity_from_digests([scope["artifact_sha256"]])[0]
             job = str(uuid.uuid5(ingest._RUN_UUID_NAMESPACE, f"{jobkey}:{source}"))
-            observed = datetime.fromisoformat(scope["observed_at"].replace("Z", "+00:00"))
+            observed = datetime.fromisoformat(scope["observed_at"])
             def at(days):
                 return (observed + timedelta(days=days)).isoformat()
             old_time = at(-2)
