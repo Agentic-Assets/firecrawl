@@ -46,23 +46,15 @@ def _canonical_applied(items):
     return sorted(result)
 
 
-def identity_guard_sql(sources):
-    """Hold ambiguous existing identities before the ingest replaces them."""
+def _identity_partition_queries(sources):
+    """Return shared source-bound identity queries for writer and read-only probe."""
     from source_fields.buildout import observation_sources
 
     sources = frozenset(sources)
     if not sources or not sources <= observation_sources():
         raise ValueError("invalid Buildout observation sources")
     source = ", ".join(_literal(item) for item in sorted(sources))
-    return f"""
--- Lock in lifecycle order before reading prior native identity.
-DO $$ BEGIN
-PERFORM si.id FROM credeals.cre_source_index si JOIN _src s USING (brokerage_id, external_id)
-WHERE s.slug IN ({source}) ORDER BY si.id FOR UPDATE OF si;
-PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, external_id)
-WHERE s.slug IN ({source}) ORDER BY l.id FOR UPDATE OF l;
-END $$;
-CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS
+    claims = f"""
 -- A historical ID is collision evidence, not a current identity. Include
 -- plausible claims even when the latest observation is missing or malformed.
 SELECT l.brokerage_id, l.external_id, claim.value #>> '{{}}' AS native_id
@@ -72,11 +64,11 @@ CROSS JOIN LATERAL jsonb_path_query(l.raw_data, '$.**.id') AS claim(value)
 UNION
 SELECT s.brokerage_id, s.external_id, claim.value #>> '{{}}' AS native_id
 FROM _src s CROSS JOIN LATERAL jsonb_path_query(s.raw_data, '$.**.id') AS claim(value)
-WHERE s.slug IN ({source});
-CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
+WHERE s.slug IN ({source})
+"""
+    shapes = f"""
 -- Qualify each whole source-native shape before comparing it. A canonical
 -- property may have one flat observation or two merged sale/lease members.
-CREATE TEMP TABLE _buildout_identity_shapes ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id, input.kind,
        array_agg(member.value->>'id' ORDER BY member.value->>'id') AS native_ids
 FROM _src s JOIN credeals.cre_listings l USING (brokerage_id, external_id)
@@ -100,8 +92,9 @@ HAVING bool_and(COALESCE(jsonb_typeof(member.value)='object'
                 THEN (member.value->>'id')::numeric <= 9007199254740991 ELSE false END
        AND NULLIF(member.value->>'url','') IS NOT NULL, false))
    AND bool_or(member.value->>'url'=input.url)
-   AND count(DISTINCT member.value->>'id')=count(*);
-CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS
+   AND count(DISTINCT member.value->>'id')=count(*)
+"""
+    held = f"""
 -- Include newly staged keys: they may conflict with a historical parent or
 -- another newly staged parent even though they do not yet join cre_listings.
 SELECT DISTINCT s.brokerage_id, s.external_id
@@ -127,7 +120,44 @@ WHERE s.slug IN ({source}) AND NOT COALESCE(
                 AND prior.kind='prior' AND incoming.kind='incoming'
                 AND (prior.native_ids @> incoming.native_ids
                      OR prior.native_ids <@ incoming.native_ids)),
-  false);
+  false)
+"""
+    return claims, shapes, held
+
+
+def identity_partition_sql(sources):
+    """Classify staged identities in transaction-local tables without deleting rows."""
+    claims, shapes, held = _identity_partition_queries(sources)
+    return f"""
+CREATE TEMP TABLE _buildout_identity_claims ON COMMIT DROP AS {claims};
+CREATE INDEX ON _buildout_identity_claims (brokerage_id, native_id);
+CREATE TEMP TABLE _buildout_identity_shapes ON COMMIT DROP AS {shapes};
+CREATE TEMP TABLE _buildout_identity_held ON COMMIT DROP AS {held};
+"""
+
+
+def identity_partition_ctes(sources):
+    """Render the same identity predicates as read-only materialized CTEs."""
+    claims, shapes, held = _identity_partition_queries(sources)
+    return (f"_buildout_identity_claims AS MATERIALIZED ({claims}),\n"
+            f"_buildout_identity_shapes AS MATERIALIZED ({shapes}),\n"
+            f"_buildout_identity_held AS MATERIALIZED ({held})")
+
+
+def identity_guard_sql(sources):
+    """Hold ambiguous existing identities before the ingest replaces them."""
+    sources = frozenset(sources)
+    partition = identity_partition_sql(sources)
+    source = ", ".join(_literal(item) for item in sorted(sources))
+    return f"""
+-- Lock in lifecycle order before reading prior native identity.
+DO $$ BEGIN
+PERFORM si.id FROM credeals.cre_source_index si JOIN _src s USING (brokerage_id, external_id)
+WHERE s.slug IN ({source}) ORDER BY si.id FOR UPDATE OF si;
+PERFORM l.id FROM credeals.cre_listings l JOIN _src s USING (brokerage_id, external_id)
+WHERE s.slug IN ({source}) ORDER BY l.id FOR UPDATE OF l;
+END $$;
+{partition}
 DELETE FROM _src s USING _buildout_identity_held h
 WHERE s.brokerage_id = h.brokerage_id AND s.external_id = h.external_id;
 SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;
