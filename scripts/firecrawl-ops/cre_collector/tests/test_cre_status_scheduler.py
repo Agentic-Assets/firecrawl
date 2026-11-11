@@ -178,6 +178,32 @@ def test_external_reports_unsafe_lock_path(status_host, kind):
         assert lock.is_symlink()
 
 
+@pytest.mark.parametrize("contents", ["malformed", '{"phase":"completed"}'])
+def test_external_warns_when_recovery_journal_completion_is_unverified(status_host, contents):
+    collector, _root, _env = status_host
+    daily = collector / "out" / "daily"
+    daily.mkdir(parents=True)
+    guard = daily / ".cre-quarantine-recovery.json"
+    guard.write_text(contents)
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert "completion is not evaluated" in result.stdout
+    assert guard.read_text() == contents
+
+
+@pytest.mark.parametrize("marker", ["capacity-benchmark-active.json", "capacity-benchmark-quarantine.json"])
+def test_external_warns_when_benchmark_interlock_is_present(status_host, marker):
+    collector, _root, _env = status_host
+    lock = collector / "out" / "daily" / ".cre.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{os.getpid()} {int(time.time())}\n")
+    (lock / marker).write_text("preserve")
+    result = run_status(status_host, "--scheduler", "external")
+    assert result.returncode == 1
+    assert f"benchmark interlock {marker} is present" in result.stdout
+    assert (lock / marker).read_text() == "preserve"
+
+
 @pytest.mark.parametrize("args", [("--scheduler",), ("--scheduler", "cron")])
 def test_scheduler_argument_fails_before_checks(status_host, args):
     _collector, root, _env = status_host

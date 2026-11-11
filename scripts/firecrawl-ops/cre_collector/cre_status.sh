@@ -307,9 +307,18 @@ case "$AUTHORITY_STATE" in
   reclaiming) warn "authority reclaim is in progress or requires inspection; preserve its evidence" ;;
   *) warn "authority is unsafe, unreadable, changing or malformed; inspect before acting" ;;
 esac
+RECOVERY_GUARD="$OUT_DAILY/.cre-quarantine-recovery.json"
+if [ -e "$RECOVERY_GUARD" ] || [ -L "$RECOVERY_GUARD" ]; then
+  warn "quarantine recovery journal is present; completion is not evaluated by this status check"
+fi
 if [ -L "$LOCKDIR" ]; then
   warn "lock path is a symbolic link; preserve it and inspect authority before acting"
 elif [ -d "$LOCKDIR" ]; then
+  for marker in capacity-benchmark-active.json capacity-benchmark-quarantine.json; do
+    if [ -e "$LOCKDIR/$marker" ] || [ -L "$LOCKDIR/$marker" ]; then
+      warn "benchmark interlock $marker is present; inspect it before acting"
+    fi
+  done
   lpid=""; lepoch=""
   [ -f "$LOCKDIR/pid" ] && read -r lpid lepoch <"$LOCKDIR/pid" 2>/dev/null || true
   lage=""
