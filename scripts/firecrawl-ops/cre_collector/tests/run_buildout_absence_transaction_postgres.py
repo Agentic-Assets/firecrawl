@@ -28,6 +28,8 @@ from source_fields.buildout import (
     qualify_prior_inventory_binding,
 )
 from source_fields.buildout_observation_sql import sql_fragment
+from source_fields.buildout_partial import identity_preseal_sql, identity_probe_sql, prepare_partition, validate_probe, verify_probe
+from source_fields.buildout_preseal import classify as classify_preseal
 
 
 def main():
@@ -74,6 +76,25 @@ def main():
             run("\\set CRE_APPROVE_BUILDING_SOURCE_FACTS 1\n\\set CRE_BUILDING_SOURCE_FACTS_OPERATOR cayman\n\\set CRE_BUILDING_SOURCE_FACTS_APPROVAL_REF AGENTIC-5337\n\\set CRE_BUILDING_SOURCE_FACTS_CONFIRM 'APPLY 018_cre_building_source_facts'\n" + (migrations / "018_cre_building_source_facts.sql").read_text())
             source = args.source
             bid = run(f"SELECT id FROM credeals.cre_brokerages WHERE slug='{source}';").stdout.strip()
+            # Competing noncooperating DML must wait on the same relation lock
+            # used by the guarded writer, including a new phantom claimant.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                holder = pool.submit(run, "BEGIN; LOCK TABLE credeals.cre_brokerages, credeals.cre_listings "
+                                     "IN SHARE ROW EXCLUSIVE MODE; SELECT pg_sleep(3); ROLLBACK;")
+                for _ in range(40):
+                    locks = run("SELECT count(*) FROM pg_locks WHERE relation='credeals.cre_listings'::regclass "
+                                "AND mode='ShareRowExclusiveLock' AND granted;").stdout.strip()
+                    if locks == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("fixture relation lock did not appear")
+                blocked = run("BEGIN; SET LOCAL lock_timeout='400ms'; "
+                              f"INSERT INTO credeals.cre_listings(brokerage_id,external_id,source_url) "
+                              f"VALUES ('{bid}','concurrent-phantom','https://example.test/phantom'); COMMIT;", check=False)
+                assert blocked.returncode != 0 and "lock timeout" in blocked.stderr
+                holder.result()
+            assert run("SELECT count(*) FROM credeals.cre_listings WHERE external_id='concurrent-phantom';").stdout.strip() == "0"
             proof_tmp = tempfile.TemporaryDirectory(prefix="cre-buildout-proof-")
             _, artifact_path, artifact, manifest, _ = setup(Path(proof_tmp.name), source=source)
             scope = prepare_inventory_observation_scope(artifact_path.read_bytes(), manifest, source,
@@ -128,7 +149,41 @@ def main():
                 f"INSERT INTO credeals.cre_source_index(brokerage_id,external_id,source_key,url,observation_present,presence_generation,last_enumerated_at) VALUES ('{bid}','other','{source}','{conflict['source_url']}',false,1,'{old_time}');")
             # One provider-native ID under a different historical external key
             # reproduces the Greysteel URL-key transition without rekeying it.
-            create("legacy-dual", "10")
+            legacy = create("legacy-dual", "10")
+            for table, column, value in (("cre_listing_contacts", "name", "Fixture Á"),
+                                         ("cre_listing_documents", "url", "https://example.test/doc"),
+                                         ("cre_listing_images", "url", "https://example.test/image"),
+                                         ("cre_listing_media", "url", "https://example.test/video"),
+                                         ("cre_listing_links", "url", "https://example.test/link")):
+                run(f"INSERT INTO credeals.{table}(listing_id,{column}) VALUES ('{legacy['listing_id']}','{value}');")
+            partition = prepare_partition(artifact_path.read_bytes(), manifest, source,
+                                          code_sha=CODE, dirty=False, target_sha=TARGET, attempt_id="a" * 32)
+            tables = ("cre_listings", "cre_source_index", "cre_listing_contacts", "cre_listing_documents",
+                      "cre_listing_images", "cre_listing_media", "cre_listing_links", "cre_listing_events", "cre_scrape_jobs")
+            snapshot_sql = "SELECT md5(concat_ws('|', " + ", ".join(
+                f"(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, '[]') FROM credeals.{table} t)"
+                for table in tables) + "));"
+            before_probe = run(snapshot_sql).stdout
+            preseal_sql = identity_preseal_sql(partition).strip().removesuffix(";")
+            preseal = json.loads(run("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
+                                     "SET LOCAL standard_conforming_strings=on; "
+                                     f"SELECT row_to_json(q)::text FROM ({preseal_sql}) q; ROLLBACK;").stdout)
+            assert set(classify_preseal([preseal], partition)) == {"dual", "other"}
+            probe_sql = identity_probe_sql(partition).strip().removesuffix(";")
+            probe_row = json.loads(run("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
+                                       "SET LOCAL standard_conforming_strings=on; "
+                                       f"SELECT row_to_json(q)::text FROM ({probe_sql}) q; ROLLBACK;").stdout)
+            probe = validate_probe(partition, probe_row)
+            assert verify_probe(partition, probe) == probe
+            assert probe["brokerage_id"] == bid and set(probe["held"]) == {"dual", "other"}, probe
+            assert {"held_external_id": "dual", "related_external_id": "legacy-dual"} in probe["conflicts"]
+            captured = next(row for row in json.loads(probe["preimage"]) if row["external_id"] == "legacy-dual")
+            assert captured["listing"] == json.loads(run(f"SELECT to_jsonb(l)::text FROM credeals.cre_listings l WHERE id='{legacy['listing_id']}';").stdout)
+            assert captured["source_index"] == json.loads(run(f"SELECT to_jsonb(s)::text FROM credeals.cre_source_index s WHERE brokerage_id='{bid}' AND external_id='legacy-dual';").stdout)
+            for key in ("contacts", "documents", "images", "media", "links"):
+                expected_children = json.loads(run(f"SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id),'[]')::text FROM credeals.cre_listing_{key} t WHERE listing_id='{legacy['listing_id']}';").stdout)
+                assert captured["children"][key] == expected_children and len(expected_children) == 1
+            assert run(snapshot_sql).stdout == before_probe
             jobs = [{"slug": source, "discovered": len(artifact["listings"]), "saved": len(rows), "errors": 0, "notes": "synthetic", "finished_at": scope["observed_at"]}]
             tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
                                   finished_at=scope["observed_at"],
@@ -144,6 +199,7 @@ def main():
             assert run(f"SELECT raw_data->>'id' FROM credeals.cre_listings WHERE id='{conflict_id}';").stdout.strip() == "98"
             receipt = run(f"SELECT split_part(notes, E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 2) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip()
             receipt = json.loads(receipt)
+            assert set(receipt["held_external_ids"]) == set(probe["held"])
             assert receipt == {"source": source, "generation": scope["generation_id"],
                                "artifact_sha256": scope["artifact_sha256"],
                                "disappeared": 0, "identity_held": 2,
@@ -176,6 +232,24 @@ def main():
             # the old artifact must not create events outside its first receipt.
             run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');"
                 f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');")
+            clear = json.loads(run("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
+                                   "SET LOCAL standard_conforming_strings=on; "
+                                   f"SELECT row_to_json(q)::text FROM ({preseal_sql}) q; ROLLBACK;").stdout)
+            assert classify_preseal([clear], partition) == []
+            # A new conflicting parent after a clear snapshot must abort the
+            # whole writer transaction; no job, listing, index or child change
+            # is permitted just because the earlier read-only probe was clear.
+            create("legacy-dual", "10")
+            before_race = run(snapshot_sql).stdout
+            guarded = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
+                                       finished_at=scope["observed_at"],
+                                       buildout_observation_context={"scope": scope, "prior": None},
+                                       reject_buildout_identity_holds=True)
+            failed = run(guarded, check=False)
+            assert failed.returncode != 0 and "Buildout identity ambiguity requires source hold" in failed.stderr
+            assert run(snapshot_sql).stdout == before_race
+            run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id='legacy-dual';"
+                f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id='legacy-dual';")
             run(tx)
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
             assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "true"

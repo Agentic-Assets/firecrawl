@@ -21,6 +21,29 @@ SOURCES = (
 )
 
 
+def test_buildout_members_use_singleton_units_and_peers_continue(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 3, sources=("33-realty", "savills", "fortis-net-lease")
+    )
+    assert failures == []
+    units = [event[1] for event in events if event[0] == "db_start"]
+    assert ("33-realty",) in units and ("fortis-net-lease",) in units
+    assert any("savills" in unit for unit in units)
+    assert all(manifest["pipeline"]["source_results"][source]["state"] == "verified"
+               for source in ("33-realty", "savills", "fortis-net-lease"))
+
+
+def test_buildout_preseal_hold_does_not_write_that_source_or_stop_peer(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 2, sources=("33-realty", "savills"), buildout_hold="33-realty"
+    )
+    assert "33-realty" in failures
+    units = [event[1] for event in events if event[0] == "db_start"]
+    assert all("33-realty" not in unit for unit in units)
+    assert any("savills" in unit for unit in units)
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+
+
 @pytest.fixture(autouse=True)
 def isolated_resource_trip_state():
     """Existing fault suites may leave a synthetic sticky watchdog trip."""
@@ -63,6 +86,7 @@ def run_schedule(
     clock_deferrals=None,
     owner_check=None,
     daum_all_held=False,
+    buildout_hold=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -246,6 +270,14 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     actual_preseal = pipeline.preseal_source_gate
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda _root, _owner, source, _env: not (lyon_partial == "probe_hold" and source == "lyon-stahl"))
+    if buildout_hold:
+        def preseal(_root, owner, source, _env):
+            if source == buildout_hold:
+                owner["sources"][source]["state"] = "gate_blocked"
+                owner["sources"][source]["partial_probe_hold"] = "buildout_identity_ambiguous"
+                return False
+            return True
+        monkeypatch.setattr(pipeline, "preseal_source_gate", preseal)
     if daum_all_held:
         def preseal(_root, owner, source, _env):
             if source == "daum-commercial":

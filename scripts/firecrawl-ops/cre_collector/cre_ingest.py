@@ -4023,6 +4023,7 @@ def build_sql(
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
     buildout_observation_context=None,
+    reject_buildout_identity_holds=False,
 ):
     def daum_marker(payload):
         if not isinstance(payload, dict):
@@ -4469,7 +4470,7 @@ WHERE p.image_id IS NULL;
     jll_document_title_clear_sql = _jll_hidden_label_sql("d.title")
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
-    w("BEGIN;")
+    w("BEGIN ISOLATION LEVEL READ COMMITTED;" if reject_buildout_identity_holds else "BEGIN;")
     w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
@@ -4575,6 +4576,14 @@ CREATE TEMP TABLE _jobmeta (
         )
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
+    if reject_buildout_identity_holds:
+        # The predicate reads every listing in the brokerage. Existing row
+        # locks do not prevent a new cross-key claimant before commit.
+        w("""DO $$ DECLARE prior_timeout text := current_setting('lock_timeout'); BEGIN
+ PERFORM set_config('lock_timeout', '5s', true);
+ LOCK TABLE credeals.cre_brokerages, credeals.cre_listings IN SHARE ROW EXCLUSIVE MODE;
+ PERFORM set_config('lock_timeout', prior_timeout, true);
+END $$;""")
     if daum_fallback_guard:
         w("""
 -- A committed immutable fallback artifact must be resolved by readback, not
@@ -4824,9 +4833,12 @@ DELETE FROM _src s USING _daum_identity_held h
 
     from source_fields.buildout import observation_sources
     observation_slugs = {job["slug"] for job in job_meta} & observation_sources()
+    if reject_buildout_identity_holds and (len(job_meta) != 1 or len(observation_slugs) != 1
+                                           or buildout_observation_context is None):
+        raise ValueError("Buildout whole-source refusal requires one bound observation")
     if observation_slugs:
         from source_fields.buildout_observation_sql import identity_guard_sql
-        w(identity_guard_sql(observation_slugs))
+        w(identity_guard_sql(observation_slugs, reject_held=reject_buildout_identity_holds))
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.
@@ -7734,6 +7746,7 @@ def main():
     ap.add_argument("--checkpoint-jll-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-buildout-observation", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-buildout-observation-sha256", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-reject-buildout-holds", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-jll-transactions", choices=("sale", "lease", "sale,lease"), default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
@@ -8443,6 +8456,10 @@ def main():
             sys.exit(f"refusing Buildout observation: {exc}")
     elif args.checkpoint_buildout_observation_sha256 is not None:
         sys.exit("refusing observation hash without envelope")
+    if args.checkpoint_reject_buildout_holds and (args.dry_run or not args.checkpoint_ingest_attempt
+                                                 or not args.expected_db_target_sha256
+                                                 or buildout_observation_context is None):
+        sys.exit("refusing unbound Buildout identity hold guard")
     if lyon_partial_claims is not None:
         from cre_lyon_partial import build_partial_sql
 
@@ -8488,6 +8505,7 @@ def main():
             newmark_page_claim=newmark_page_claim,
             newmark_page_requires_witness=bool(page_rows),
             buildout_observation_context=buildout_observation_context,
+            reject_buildout_identity_holds=args.checkpoint_reject_buildout_holds,
         )
 
     print(

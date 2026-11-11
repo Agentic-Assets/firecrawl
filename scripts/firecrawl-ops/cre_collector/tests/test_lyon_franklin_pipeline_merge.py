@@ -40,7 +40,8 @@ def test_mixed_partial_unit_uses_distinct_source_claims_in_both_orders(tmp_path,
         (evidence / "aggregate-gate.json").write_text("{}")
         return {"ok": True}
 
-    def ingest_source(_run, state, source, _artifact, _env):
+    def ingest_source(_run, state, source, _artifact, _env, *, require_buildout_preseal):
+        assert require_buildout_preseal is True
         flags = refresh.subset_ingest_arguments(root, state, source)
         events.append((source, flags[0]))
 
