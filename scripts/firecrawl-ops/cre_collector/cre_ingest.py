@@ -4023,7 +4023,14 @@ def build_sql(
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
     buildout_observation_context=None,
+    experimental_buildout_partial_attempt=None,
 ):
+    from source_fields.buildout import observation_sources
+
+    row_buildout = {row.get("slug") for row in rows if row.get("slug") in observation_sources()}
+    if any(sum(job.get("slug") == source for job in job_meta) != 1 for source in row_buildout):
+        raise ValueError("each staged Buildout source requires exactly one job")
+
     def daum_marker(payload):
         if not isinstance(payload, dict):
             return False
@@ -4240,6 +4247,7 @@ WHERE p.image_id IS NULL;
         for jm in job_meta
     ]
     buildout_observation_fragment = ""
+    experimental_buildout_parts = None
     if buildout_observation_context is not None:
         # The checkpoint caller binds its owner, target and sealed source proof.
         scope = buildout_observation_context.get("scope")
@@ -4254,6 +4262,12 @@ WHERE p.image_id IS NULL;
             raise ValueError("Buildout observation context does not match ingest scope")
         from source_fields.buildout_observation_sql import sql_fragment
         buildout_observation_fragment = sql_fragment(scope, prior, job_meta[0]["job_id"], artifact_run_key)
+    if experimental_buildout_partial_attempt is not None:
+        if buildout_observation_context is None:
+            raise ValueError("experimental Buildout partial requires bound observation")
+        from source_fields.buildout_partial_receipt import experimental_sql
+
+        experimental_buildout_parts = experimental_sql(scope, experimental_buildout_partial_attempt)
     svn_enrichment_ids = set(svn_enrichment_ids)
     if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
         raise ValueError("invalid SVN enrichment identity")
@@ -4470,6 +4484,11 @@ WHERE p.image_id IS NULL;
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
+    buildout_jobs = {job["slug"] for job in job_meta} & observation_sources()
+    if buildout_jobs:
+        # Recheck committed receipt state after any conflicting job insert
+        # waits; an older repeatable-read snapshot must not hide that commit.
+        w("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;")
     w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
@@ -4575,6 +4594,12 @@ CREATE TEMP TABLE _jobmeta (
         )
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
+    if buildout_jobs:
+        from source_fields.buildout_partial_receipt import replay_fence_sql
+
+        w(replay_fence_sql(buildout_jobs))
+    if experimental_buildout_parts:
+        w(experimental_buildout_parts[0])
     if daum_fallback_guard:
         w("""
 -- A committed immutable fallback artifact must be resolved by readback, not
@@ -4622,7 +4647,13 @@ SELECT jm.job_id, b.id,
        jm.artifact_run_key
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug
 ON CONFLICT DO NOTHING;
+""")
+    if buildout_jobs:
+        # ON CONFLICT can wait on a noncooperating transaction. The second
+        # statement sees its committed receipt before source data mutation.
+        w(replay_fence_sql(buildout_jobs))
 
+    w("""
 -- Provider cards without a stable listing URL are enumeration evidence only.
 -- Keep them out of canonical cre_listings (no fake URL or stable-history
 -- claim), but persist their provisional identity in cre_source_index so the
@@ -4826,7 +4857,11 @@ DELETE FROM _src s USING _daum_identity_held h
     observation_slugs = {job["slug"] for job in job_meta} & observation_sources()
     if observation_slugs:
         from source_fields.buildout_observation_sql import identity_guard_sql
+        if experimental_buildout_parts:
+            w(experimental_buildout_parts[1])
         w(identity_guard_sql(observation_slugs))
+        if experimental_buildout_parts:
+            w(experimental_buildout_parts[2])
 
     w(f"""
 -- Capture the checkpoint-quality baseline before any listing or child mutation.
@@ -7103,9 +7138,10 @@ BEGIN
 {image_outcome_sql}
   END IF;
 END $$;
-
-COMMIT;
 """)
+    if experimental_buildout_parts:
+        w(experimental_buildout_parts[3])
+    w("COMMIT;")
     if jll_guard_binding is not None:
         from cre_jll_guard_result import result_sql
         w(result_sql(jll_guard_binding, "committed"))
