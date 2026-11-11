@@ -276,7 +276,22 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
             assert partial["held"] == ["dual", "other"] and partial["emitted_count"] == 1
             assert run(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip() == "0"
             committed = experimental_tx.replace("ROLLBACK;", "COMMIT;", 1)
-            run(committed)
+            # A cooperating legacy replay must wait for the experimental
+            # writer, then observe its durable receipt and refuse to replay.
+            delayed_commit = committed.replace("COMMIT;", "SELECT pg_sleep(3); COMMIT;", 1)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                winner = pool.submit(run, delayed_commit)
+                for _ in range(40):
+                    sleeping = run("SELECT count(*) FROM pg_stat_activity WHERE state='active' "
+                                   "AND query='SELECT pg_sleep(3);';").stdout.strip()
+                    if sleeping == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("fixture experimental writer did not reach commit pause")
+                loser = run(tx, check=False)
+                winner.result()
+                assert loser.returncode != 0 and "requires reconciliation before replay" in loser.stderr
             assert run(f"SELECT status || ':' || listings_saved::text FROM credeals.cre_scrape_jobs WHERE id='{job}';").stdout.strip() == f"partial:{len(rows) - 2}"
             # The fixture's run() starts a new psql connection. Re-read the
             # stored receipt and all source rows after COMMIT, not temp tables.
