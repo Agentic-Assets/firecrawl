@@ -9,6 +9,187 @@ from recovery import colliers_cursor as recovery
 import cre_colliers_partial_checkpoint as partial
 
 _REAL_VERIFY_WORKER_ARTIFACT = partial.verify_worker_artifact
+_REAL_READ_RECEIPT = recovery.read_receipt
+
+
+@pytest.fixture
+def legacy_journal(incident, monkeypatch, tmp_path):
+    """Historical producer: final window already published, no unknown flag."""
+    series_dir, run, owner, parent_receipt, cursor, child = incident
+    monkeypatch.setattr(refresh, "__file__", str(tmp_path / "collector.py"))
+    monkeypatch.setattr(refresh, "_group_alive", lambda _pid: False)
+    parent = json.loads((series_dir / "manifest.json").read_text())
+    parent.update(status="failed", collector_git_sha=recovery.LEGACY_SETTLED_PRODUCER)
+    child.update(status="failed", collector_git_sha=recovery.LEGACY_SETTLED_PRODUCER,
+                 started_at="2026-11-06T03:01:00Z", finished_at="2026-11-06T05:00:00Z")
+    pipeline = child["pipeline"]
+    del pipeline["commit_outcome_unknown"]
+    pipeline.update(status="partial", active_unit=None)
+    pipeline["units"] = [pipeline["units"][0]]
+    source = child["sources"]["colliers"]
+    last = source["partial_windows"][-1]
+    previous = last["checkpoint"]
+    worker = previous["colliers_partial_worker"]
+    worker.update(state="settled", rc=0)
+    source["colliers_partial_worker"] = worker.copy()
+    source["subset_ingest_attempt_id"] = last["attempt_id"]
+    source["ingest"]["attempt_id"] = last["attempt_id"]
+    source["gate"]["current_inventory_proof"].update(
+        artifact_sha256=last["artifact_sha256"], cursor=last["cursor"], next_cursor=last["next_cursor"])
+    source["partial_cursor_settlement"] = {"state": "settled", "attempt_id": last["attempt_id"],
+        "artifact_sha256": last["artifact_sha256"], "cursor": last["cursor"], "next_cursor": last["next_cursor"]}
+    parent["sources"]["colliers"]["pipeline_result"] = last["result"]
+    parent_receipt["last_checkpoint"]["pid"] = 999999
+    control = {"schema_version": 1, "invocation_id": parent["latest_invocation_control"]["invocation_id"],
+        "child_invocation_id": parent_receipt["last_checkpoint"]["child_invocation_id"],
+        "run_id": child["run_id"], "collector_git_sha": recovery.LEGACY_SETTLED_PRODUCER, "pid": 999999,
+        "guards_stopped": True, "nested_cleanup_confirmed": True,
+        "terminal_evidence_saved": True, "pre_acquisition_refusal": False}
+    control_dir = run / ".series-control"
+    control_dir.mkdir(mode=0o700)
+    _write(control_dir / (control["child_invocation_id"] + ".json"), control)
+    _write(series_dir / "manifest.json", parent)
+    _write(run / "manifest.json", child)
+    return series_dir, run, owner, parent_receipt, cursor, parent, child, control
+
+
+def test_known_settled_legacy_journal_is_noop(legacy_journal, monkeypatch):
+    series_dir, run, owner, _receipt, _cursor, _parent, child, _control = legacy_journal
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not replay"))
+    result = recovery.recover_prior_generation(owner, expected_target=child["preflight"]["database_target"]["value"],
+        env_file=None, before_publish=lambda: pytest.fail("must not publish"),
+        after_publish=lambda: pytest.fail("must not publish"))
+    assert result is None
+
+
+@pytest.mark.parametrize("changed_device", [False, True])
+def test_legacy_parent_control_uses_real_directory_identity(legacy_journal, monkeypatch, changed_device):
+    from cre_stop_guarded_tier import _identity
+
+    series_dir, _run, owner, receipt, _cursor, parent, _child, _control = legacy_journal
+    directory = series_dir / ".series-control"
+    directory.mkdir(mode=0o700)
+    invocation = parent["latest_invocation_control"]["invocation_id"]
+    identity = _identity(series_dir.stat())
+    if changed_device:
+        identity[0] += 1
+    receipt["stop_owner"] = {"schema_version": 1, "owner_role": "checkpoint_series_one_shot_cli",
+        "invocation_id": invocation, "series_directory_identity": identity,
+        "control_directory_identity": _identity(directory.stat())}
+    _write(directory / (invocation + ".json"), receipt)
+    monkeypatch.setattr(recovery, "read_receipt", _REAL_READ_RECEIPT)
+    options = {"expected_target": parent["database_target"]["value"], "env_file": None,
+               "before_publish": lambda: pytest.fail("must not publish"),
+               "after_publish": lambda: pytest.fail("must not publish")}
+    if changed_device:
+        with pytest.raises(refresh.GlobalStageError, match="unknown"):
+            recovery.recover_prior_generation(owner, **options)
+    else:
+        assert recovery.recover_prior_generation(owner, **options) is None
+
+
+@pytest.mark.parametrize("damage", ["unknown_true", "unknown_null", "wrong_producer", "active_unit", "unfinished_unit",
+                                   "ingesting_peer", "unsettled_child", "wrong_pid", "bad_cursor", "pending_window",
+                                   "missing_parent_settlement", "invalid_child_id", "wrong_target", "bad_clock",
+                                   "boolean_settlement_cursor", "boolean_worker_cursor", "boolean_binding_next"])
+def test_legacy_journal_never_assumes_uncertain_or_pending_is_settled(legacy_journal, monkeypatch, damage):
+    series_dir, run, owner, receipt, _cursor, parent, child, control = legacy_journal
+    if damage == "unknown_true":
+        child["pipeline"]["commit_outcome_unknown"] = True
+    elif damage == "unknown_null":
+        child["pipeline"]["commit_outcome_unknown"] = None
+    elif damage == "wrong_producer":
+        child["collector_git_sha"] = "f" * 40
+    elif damage == "active_unit":
+        child["pipeline"]["active_unit"] = "unit-0054"
+    elif damage == "unfinished_unit":
+        child["pipeline"]["units"][0]["state"] = "failed"
+    elif damage == "ingesting_peer":
+        child["sources"]["other"] = {"state": "ingesting"}
+    elif damage == "unsettled_child":
+        control["nested_cleanup_confirmed"] = False
+    elif damage == "wrong_pid":
+        control["pid"] = 123
+    elif damage == "bad_cursor":
+        child["sources"]["colliers"]["partial_windows"][-1]["next_cursor"] += 1
+    elif damage == "pending_window":
+        child["sources"]["colliers"]["colliers_partial_worker"]["window_index"] += 1
+    elif damage == "missing_parent_settlement":
+        receipt["local_settlement"] = "unknown"
+    elif damage == "invalid_child_id":
+        receipt["last_checkpoint"]["child_invocation_id"] = "../invalid"
+        parent["sources"]["colliers"]["attempts"][-1]["series_control_child_id"] = "../invalid"
+        _write(series_dir / "manifest.json", parent)
+    elif damage == "wrong_target":
+        child["preflight"]["database_target"]["value"] = "f" * 64
+    elif damage == "bad_clock":
+        child["finished_at"] = "2026-11-06T06:00:00Z"
+    elif damage == "boolean_settlement_cursor":
+        child["sources"]["colliers"]["partial_cursor_settlement"]["cursor"] = True
+    elif damage == "boolean_worker_cursor":
+        child["sources"]["colliers"]["colliers_partial_worker"]["cursor"] = True
+    else:
+        child["sources"]["colliers"]["gate"]["current_inventory_proof"]["next_cursor"] = True
+    _write(run / "manifest.json", child)
+    _write(run / ".series-control" / (control["child_invocation_id"] + ".json"), control)
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not replay"))
+    with pytest.raises(refresh.GlobalStageError, match="unknown"):
+        recovery.recover_prior_generation(owner, expected_target=parent["database_target"]["value"], env_file=None,
+                                           before_publish=lambda: None, after_publish=lambda: None)
+
+
+def test_large_manifest_is_bounded_and_preserves_safe_reads(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_bytes(b"x" * (6 * 1024 * 1024))
+    path.chmod(0o600)
+    raw, digest = recovery._digest(path, recovery.MAX_CHILD_MANIFEST_BYTES)
+    assert len(raw) == 6 * 1024 * 1024 and len(digest) == 64
+    with pytest.raises(recovery.StopRefused):
+        recovery._digest(path, 4 * 1024 * 1024)
+    link = tmp_path / "alias.json"
+    link.symlink_to(path)
+    with pytest.raises((OSError, recovery.StopRefused)):
+        recovery._digest(link, recovery.MAX_CHILD_MANIFEST_BYTES)
+
+
+def test_duplicate_legacy_shape_cannot_hide_unknown_settlement(legacy_journal, monkeypatch):
+    import shutil
+
+    series_dir, _run, owner, _receipt, _cursor, parent, _child, _control = legacy_journal
+    shutil.copytree(series_dir, series_dir.with_name("2026-11-06T030005Z"))
+    monkeypatch.setattr(recovery, "recover", lambda *args, **kwargs: pytest.fail("must not replay"))
+    with pytest.raises(refresh.GlobalStageError, match="unknown"):
+        recovery.recover_prior_generation(owner, expected_target=parent["database_target"]["value"], env_file=None,
+                                           before_publish=lambda: None, after_publish=lambda: None)
+
+
+@pytest.mark.parametrize("member", ["settlement_cursor", "settlement_next", "worker_cursor", "binding_next"])
+def test_boolean_one_cannot_impersonate_cursor_position_one(legacy_journal, monkeypatch, member):
+    series_dir, run, owner, _receipt, cursor, parent, child, _control = legacy_journal
+    source = child["sources"]["colliers"]
+    last = source["partial_windows"][-1]
+    last["cursor"] = last["next_cursor"] = 1
+    source["partial_cursor_settlement"]["cursor"] = source["partial_cursor_settlement"]["next_cursor"] = 1
+    source["colliers_partial_worker"]["cursor"] = 1
+    source["gate"]["current_inventory_proof"]["next_cursor"] = 1
+    cursor["position"] = 1
+    monkeypatch.setattr(recovery, "read_cursor", lambda *_args: (1, cursor))
+    _write(run / "manifest.json", child)
+    options = {"expected_target": parent["database_target"]["value"], "env_file": None,
+               "before_publish": lambda: pytest.fail("must not publish"),
+               "after_publish": lambda: pytest.fail("must not publish")}
+    assert recovery.recover_prior_generation(owner, **options) is None
+    if member == "settlement_cursor":
+        source["partial_cursor_settlement"]["cursor"] = True
+    elif member == "settlement_next":
+        source["partial_cursor_settlement"]["next_cursor"] = True
+    elif member == "worker_cursor":
+        source["colliers_partial_worker"]["cursor"] = True
+    else:
+        source["gate"]["current_inventory_proof"]["next_cursor"] = True
+    _write(run / "manifest.json", child)
+    with pytest.raises(refresh.GlobalStageError, match="unknown"):
+        recovery.recover_prior_generation(owner, **options)
 
 
 def _write(path, value):
