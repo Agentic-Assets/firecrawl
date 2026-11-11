@@ -100,6 +100,14 @@ def test_staged_buildout_requires_exactly_one_job():
             build_sql([row], jobs, "2026-11-11T00:00:00Z", set())
 
 
+def test_experimental_builder_requires_bound_observation():
+    row = to_row({"sourceKey": "greysteel", "id": "123", "url": "https://example.test/123"}, {},
+                 "2026-11-11T00:00:00Z")
+    job = {"slug": "greysteel", "discovered": 1, "saved": 1, "errors": 0, "notes": "fixture"}
+    with pytest.raises(ValueError, match="requires bound observation"):
+        build_sql([row], [job], "2026-11-11T00:00:00Z", set(), experimental_buildout_partial_attempt="a" * 32)
+
+
 def test_expected_bindings_derive_from_the_sealed_original_artifact(tmp_path):
     _run, path, _artifact, manifest, _report = setup(tmp_path)
     raw = path.read_bytes()

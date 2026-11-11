@@ -213,6 +213,9 @@ CREATE TEMP TABLE _buildout_held_preimage ON COMMIT DROP AS
 """
     receipt = f"""
 DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM _buildout_identity_held) THEN
+  RAISE EXCEPTION 'experimental Buildout partial requires a held identity';
+ END IF;
  IF EXISTS (SELECT brokerage_id,external_id FROM _buildout_partition_staged
             EXCEPT (SELECT brokerage_id,external_id FROM _src
                     UNION SELECT brokerage_id,external_id FROM _buildout_identity_held))

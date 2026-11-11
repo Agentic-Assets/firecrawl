@@ -238,11 +238,12 @@ WHERE l.id IN ('{conflict_id}','{legacy['listing_id']}');
             job_anchor = "-- Fail loudly if a sourceKey maps to a brokerage slug that is not seeded."
             guard_anchor = "-- Lock in lifecycle order before reading prior native identity."
             assert tx.count(job_anchor) == tx.count(guard_anchor) == tx.count("COMMIT;") == 1
-            experimental_tx = tx.replace(job_anchor, before_job + job_anchor, 1)
-            experimental_tx = experimental_tx.replace(guard_anchor, before_guard + guard_anchor, 1)
+            experimental_tx = ingest.build_sql(rows, jobs, scope["observed_at"], set(), artifact_run_key=jobkey,
+                finished_at=scope["observed_at"], buildout_observation_context={"scope": scope, "prior": None},
+                experimental_buildout_partial_attempt="a" * 32)
             snapshot_anchor = "SELECT 'buildout_identity_held=' || count(*)::text FROM _buildout_identity_held;"
+            assert all(experimental_tx.count(fragment) == 1 for fragment in (before_job, before_guard, held_snapshot, receipt_sql))
             assert experimental_tx.count(snapshot_anchor) == 1
-            experimental_tx = experimental_tx.replace(snapshot_anchor, snapshot_anchor + held_snapshot, 1)
             inspect = f"""
 SELECT 'PARTITION_RECEIPT:' || split_part(split_part(notes, E'\\nCRE_BUILDOUT_PARTITION_V1:', 2),
                   E'\\nCRE_BUILDOUT_OBSERVATION_V1:', 1)
@@ -250,7 +251,7 @@ SELECT 'PARTITION_RECEIPT:' || split_part(split_part(notes, E'\\nCRE_BUILDOUT_PA
 SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',s.external_id,'listing_id',u.id::text)
  ORDER BY s.external_id),'[]'::jsonb)::text FROM _src s JOIN _up u USING (brokerage_id,external_id);
 """
-            experimental_tx = experimental_tx.replace("COMMIT;", receipt_sql + inspect + "ROLLBACK;", 1)
+            experimental_tx = experimental_tx.replace("COMMIT;", inspect + "ROLLBACK;", 1)
             for tamper in (
                 f"UPDATE credeals.cre_listings SET title='synthetic corruption' WHERE id='{conflict_id}';",
                 f"UPDATE credeals.cre_listings SET title='synthetic corruption' WHERE id='{legacy['listing_id']}';",
@@ -360,6 +361,29 @@ SELECT 'PARTITION_ROWS:' || COALESCE(jsonb_agg(jsonb_build_object('external_id',
             # the old artifact must not create events outside its first receipt.
             run(f"DELETE FROM credeals.cre_source_index WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');"
                 f"DELETE FROM credeals.cre_listings WHERE brokerage_id='{bid}' AND external_id IN ('legacy-dual','other');")
+            # An experimental partial must not create a partial receipt for a
+            # fully clear source. Its whole transaction, including any events,
+            # is rolled back so the normal complete path can run separately.
+            clear_scope = {**scope, "generation_id": "clear-experimental", "observed_at": at(1),
+                           "artifact_sha256": "d" * 64}
+            clear_key = artifact_run_identity_from_digests([clear_scope["artifact_sha256"]])[0]
+            clear_rows = [dict(row, scraped_at=clear_scope["observed_at"]) for row in rows]
+            clear_jobs = [{**jobs[0], "finished_at": clear_scope["observed_at"]}]
+            rollback_tables = ("cre_listings", "cre_source_index", "cre_listing_contacts", "cre_listing_documents",
+                               "cre_listing_images", "cre_listing_media", "cre_listing_links", "cre_listing_events")
+            def rollback_snapshot():
+                return {table: json.loads(run(f"SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),"
+                                             f"'[]'::jsonb) FROM credeals.{table} t;").stdout)
+                        for table in rollback_tables}
+            before_clear = rollback_snapshot()
+            clear_sql = ingest.build_sql(clear_rows, clear_jobs, clear_scope["observed_at"], set(),
+                artifact_run_key=clear_key, finished_at=clear_scope["observed_at"],
+                buildout_observation_context={"scope": clear_scope, "prior": None},
+                experimental_buildout_partial_attempt="b" * 32)
+            clear_result = run(clear_sql, check=False)
+            assert clear_result.returncode != 0 and "partial requires a held identity" in clear_result.stderr, clear_result.stderr
+            assert run(f"SELECT count(*) FROM credeals.cre_scrape_jobs WHERE artifact_run_key='{clear_key}';").stdout.strip() == "0"
+            assert rollback_snapshot() == before_clear
             run(tx)
             assert run("SELECT count(*) FROM credeals.cre_listing_events;").stdout.strip() == "0"
             assert run("SELECT observation_present::text FROM credeals.cre_source_index WHERE external_id='99';").stdout.strip() == "true"
