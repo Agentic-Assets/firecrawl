@@ -165,3 +165,29 @@ def test_windows_token_preserved_by_producer(monkeypatch):
         series.admit_series_invocation(SHA, 42, "not-an-id")
     with pytest.raises(series.SeriesError):
         series.admit_series_invocation(SHA, None, WINDOWS_ID)
+
+
+def test_source_failures_terminal_from_series_control(evidence, monkeypatch):
+    """Producer's known settled terminal permits local-only partial outcome."""
+    import cre_series_control as control_module
+
+    series, parent, receipt, _, _ = evidence
+    producer = control_module.SeriesControl.__new__(control_module.SeriesControl)
+    producer.defer_depth = 0
+    producer.cleanup_unknown = False
+    producer.spawn_uncertain = False
+    producer.group = None
+    producer.child_unverified = False
+    producer.child_invocation_id = CHILD
+    producer.checkpoint_run = series / "runs" / RUN
+    producer.checkpoint_pid = 12346
+    producer.work_started = True
+    producer.receipt = receipt
+    monkeypatch.setattr(control_module.signal, "setitimer", lambda *args: None)
+    monkeypatch.setattr(producer, "settle_active", lambda: None)
+    monkeypatch.setattr(producer, "publish", lambda: None)
+    assert producer.finish("complete_with_source_failures") is True
+    parent["status"] = "complete_with_source_failures"
+    write(series / "manifest.json", parent)
+    write(series / ".series-control" / f"{INVOCATION}.json", producer.receipt)
+    assert attest(evidence)["terminal_status"] == "complete_with_source_failures"

@@ -86,7 +86,7 @@ def attest(series_directory, sources, pipeline, expected_sha, admission_ms, wind
         require(isinstance(owner.get("boot_id"), str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", owner["boot_id"]))
         # Narrow supported cases. Unknown/interrupted and no-work receipts stay unverified.
         status = parent.get("status")
-        require(status in {"complete", "qualified_partial_subset", "failed"})
+        require(status in {"complete", "complete_with_source_failures", "qualified_partial_subset", "failed"})
         require(control.get("status") == status and control.get("local_settlement") == "confirmed")
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
         now = int(time.time() * 1000)

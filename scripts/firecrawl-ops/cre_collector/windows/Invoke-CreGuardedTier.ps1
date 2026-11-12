@@ -400,10 +400,11 @@ function Get-CreLocalSeriesSettlement {
     $capture = $Record.capture
     if ($capture.Failed -or -not $capture.Started -or $capture.NativeExitCode -ne $Record.nativeExitCode -or -not $capture.Stdout.Eof -or
         -not $capture.Stderr.Eof -or $capture.Stdout.Truncated -or $capture.Stderr.Truncated -or
-        $capture.Stdout.RunReferenceConflict -or $capture.Stderr.RunReferenceConflict) { return $null }
+        $capture.Stdout.RunReferenceConflict) { return $null }
+    # Capture recognizes run references from stdout only. Stderr is drained but
+    # is not parsed for run references.
     $directory = $capture.Stdout.ObservedRunDirectory
-    if (-not $directory -or ($capture.Stderr.ObservedRunDirectory -and
-        $capture.Stderr.ObservedRunDirectory -cne $directory)) { return $null }
+    if (-not $directory) { return $null }
     $collector = $LinuxRepo.TrimEnd('/') + '/scripts/firecrawl-ops/cre_collector'
     if ($directory -cnotmatch ('^' + [Regex]::Escape($collector + '/out/checkpoint-series/') + '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z$')) { return $null }
     $wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -427,7 +428,7 @@ function Get-CreLocalSeriesSettlement {
         $proof.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
         $proof.pipeline -isnot [bool] -or $proof.pipeline -ne [bool]$Pipeline -or
         ($proof.source_keys -join ',') -cne ($selectedSourceKeys -join ',') -or
-        @('complete','qualified_partial_subset','failed') -cnotcontains $proof.terminal_status) { return $null }
+        @('complete','complete_with_source_failures','qualified_partial_subset','failed') -cnotcontains $proof.terminal_status) { return $null }
     return $proof
 }
 function Get-CreVerifiedSummary {

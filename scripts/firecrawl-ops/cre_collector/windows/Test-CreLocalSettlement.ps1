@@ -68,6 +68,17 @@ try {
     $observed = Get-CreLocalSeriesSettlement $record 'fixture'
     Assert-True ($null -ne $observed -and $observed.terminal_status -ceq 'failed') 'A failed operation can have locally settled processes.'
     Assert-True ($record.linuxSettlement -ceq 'unverified') 'Original remote/overall field must remain unchanged.'
+    $proof.terminal_status = 'complete_with_source_failures'
+    [CreWindowsCapture.Capture]::Payload = ($proof | ConvertTo-Json -Compress)
+    $partial = Get-CreLocalSeriesSettlement $record 'source-failures'
+    Assert-True ($null -ne $partial -and $partial.terminal_status -ceq 'complete_with_source_failures') 'Settled source failures must retain the terminal status.'
+    # KNOWN BLOCKER: simulate a changed post-launch verifier returning a forged
+    # otherwise matching success. This demonstrates the missing byte anchor;
+    # the candidate remains draft and must not be deployed while it passes.
+    $proof.terminal_status = 'complete'
+    [CreWindowsCapture.Capture]::Payload = ($proof | ConvertTo-Json -Compress)
+    $swapped = Get-CreLocalSeriesSettlement $record 'known-code-swap'
+    Assert-True ($null -ne $swapped -and $swapped.terminal_status -ceq 'complete') 'Known verifier-swap defect must stay visible pending a trusted verifier anchor.'
     $prior = [CreWindowsCapture.Capture]::Calls
     $capture.Stdout.Eof = $false
     Assert-True ($null -eq (Get-CreLocalSeriesSettlement $record 'eof')) 'Missing original EOF must refuse.'
