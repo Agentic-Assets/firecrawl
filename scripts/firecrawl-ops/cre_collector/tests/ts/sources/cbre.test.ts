@@ -986,3 +986,73 @@ test("CBRE first valid fourth snapshot and persistent churn never qualify alone"
     assert.equal(calls.filter(call => call.page === 1).length, 4);
   }
 });
+
+test("CBRE malformed optional members retain peers and preservation evidence", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const malformed: Record<string, any> = cbreRow("CBRE-bad-children", {
+    "Common.Charges": [null, { "Common.ChargeKind": "SalePrice", "Common.Amount": 1000000 }],
+    "Common.Agents": [null, { "Common.AgentName": "Valid Agent" }],
+    "Common.Brochures": [null, { "Common.BrochureName": "Flyer", "Common.Uri": "https://example.com/flyer.pdf" }],
+    "Common.Photos": [null, { "Common.ImageResources": [null, {
+      "Common.Breakpoint": "original", "Common.Resource.Uri": "https://example.com/property.jpg",
+    }] }],
+    "Common.Strapline": [null],
+  });
+  const peer = cbreRow("CBRE-healthy", {
+    "Common.Agents": [{ "Common.AgentName": "Other Agent" }],
+    "Common.Photos": [],
+  });
+  (firecrawl as any).scrape = async () => ({
+    rawHtml: JSON.stringify({ DocumentCount: 2, Documents: [malformed, peer] }),
+  });
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-malformed-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  const result = await srcCbre("sale", 2, false);
+  assert.equal(result.listings.length, 2);
+  const first = result.listings[0] as any;
+  assert.equal(first.id, "CBRE-bad-children");
+  assert.equal(first.salePriceUsd, 1000000);
+  assert.equal(first.brokerIds.length, 1);
+  assert.equal(first.documents.length, 1);
+  assert.equal(first.photos.length, 1);
+  assert.equal(first.preserveChildCollections, true);
+  assert.deepEqual(first.cbreMalformedOptionalEvidence.fields["Common.Charges"], malformed["Common.Charges"]);
+  assert.deepEqual(first.cbreMalformedOptionalEvidence.fields["Common.Photos"], malformed["Common.Photos"]);
+  assert.equal(result.listings[1]!.id, "CBRE-healthy");
+  assert.equal((result.listings[1] as any).preserveChildCollections, undefined);
+});
+
+test("CBRE malformed optional containers retain originals for the affected listing", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const bad: Record<string, any> = cbreRow("CBRE-bad", { "Common.Agents": "invalid", "Common.Photos": [
+    { "Common.ImageResources": { unexpected: true } },
+  ] });
+  (firecrawl as any).scrape = async () => ({
+    rawHtml: JSON.stringify({ DocumentCount: 1, Documents: [bad] }),
+  });
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-bad-container-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  const result = await srcCbre("sale", 1, false);
+  const row = result.listings[0] as any;
+  assert.equal(row.preserveChildCollections, true);
+  assert.equal(row.cbreMalformedOptionalEvidence.fields["Common.Agents"], "invalid");
+  assert.deepEqual(row.cbreMalformedOptionalEvidence.fields["Common.Photos"], bad["Common.Photos"]);
+});
