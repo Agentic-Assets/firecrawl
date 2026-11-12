@@ -823,12 +823,33 @@ export async function srcCbre(
     snapshotObservedAt ?? observationNow(),
   );
   const text = (loc: any) =>
-    Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;
+    Array.isArray(loc) && loc.length ? clean(loc[0]?.["Common.Text"]) : null;
   const listings = docs.map((d: any) => {
+    const malformedOptional: Record<string, any> = {};
+    const isObject = (value: any) =>
+      value !== null && typeof value === "object" && !Array.isArray(value);
+    const optionalRecords = (key: string): any[] => {
+      const value = d[key];
+      if (value === undefined) return [];
+      if (!Array.isArray(value) || value.some((entry: any) => !isObject(entry))) {
+        malformedOptional[key] = value;
+      }
+      return Array.isArray(value) ? value.filter(isObject) : [];
+    };
+    const charges = optionalRecords("Common.Charges");
+    const agents = optionalRecords("Common.Agents");
+    const brochures = optionalRecords("Common.Brochures");
+    const photos = optionalRecords("Common.Photos");
+    for (const photo of photos) {
+      const resources = photo["Common.ImageResources"];
+      if (resources !== undefined &&
+          (!Array.isArray(resources) || resources.some((item: any) => !isObject(item)))) {
+        malformedOptional["Common.Photos"] = d["Common.Photos"];
+      }
+    }
+    const malformedChildren = ["Common.Agents", "Common.Brochures", "Common.Photos"]
+      .some((key) => Object.hasOwn(malformedOptional, key));
     const addr = d["Common.ActualAddress"] ?? {};
-    const charges: any[] = Array.isArray(d["Common.Charges"])
-      ? d["Common.Charges"]
-      : [];
     const sale = charges.find(
       (c: any) =>
         c["Common.ChargeKind"] === "SalePrice" && num(c["Common.Amount"]),
@@ -846,9 +867,7 @@ export async function srcCbre(
     const state = clean(addr["Common.Region"]);
     const zip = clean(addr["Common.PostCode"]);
     const slug = cbreListingSlug({ name, street, city, state, zip });
-    const brokerIds = (
-      Array.isArray(d["Common.Agents"]) ? d["Common.Agents"] : []
-    )
+    const brokerIds = agents
       .map((a: any) =>
         brokerRef({
           name: clean(a["Common.AgentName"]),
@@ -859,20 +878,17 @@ export async function srcCbre(
         }),
       )
       .filter((x: number | null): x is number => x !== null);
-    const brochureItems = (
-      Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []
-    ).map((b: any) => ({
+    const brochureItems = brochures.map((b: any) => ({
       name: clean(b["Common.BrochureName"]),
       url: cbreBrochureUrl(clean(b["Common.Uri"])),
     }));
-    const photoUrls = (
-      Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : []
-    )
+    const photoUrls = photos
       .map((p: any) => {
-        const r =
-          (p["Common.ImageResources"] ?? []).find(
-            (x: any) => x["Common.Breakpoint"] === "original",
-          ) ?? (p["Common.ImageResources"] ?? [])[0];
+        const resources = Array.isArray(p["Common.ImageResources"])
+          ? p["Common.ImageResources"].filter(isObject) : [];
+        const r = resources.find(
+          (x: any) => x["Common.Breakpoint"] === "original",
+        ) ?? resources[0];
         return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
       })
       .filter((u: string | null): u is string => Boolean(u));
@@ -908,6 +924,14 @@ export async function srcCbre(
       buildingSizeSqft: num(d["Dynamic.TotalArea"]),
       ...cbreStrandedStructured(d),
       brokerIds,
+      ...(Object.keys(malformedOptional).length ? {
+        cbreMalformedOptionalEvidence: {
+          schema: "cbre-malformed-optional-v1",
+          providerId: d["Common.PrimaryKey"],
+          fields: malformedOptional,
+        },
+      } : {}),
+      ...(malformedChildren ? { preserveChildCollections: true } : {}),
       // Brochures are classified by name into typed DocItems on the `documents`
       // channel; `brochures` left empty to avoid a double-insert (no unique key
       // on cre_listing_documents). CBRE has no detail page, so no media/links.
