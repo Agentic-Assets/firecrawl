@@ -203,7 +203,10 @@ foreach ($case in $cases) {
     try { $count = $reader.ReadInt32(); $forwarded = @(for ($i = 0; $i -lt $count; $i++) { $reader.ReadString() }) } finally { $reader.Dispose() }
     Assert-True (($forwarded[0..5] -join '|') -ceq '-d|Ubuntu-24.04|-u|cayman|--exec|env') 'Fixed WSL executable boundary must remain separate argv.'
     Assert-True ($forwarded -contains '--windows-admission-unix-ms' -and $forwarded -contains $sha) 'Reviewed SHA and startup admission must be forwarded.'
-    if ($case.Name -in @('monitor', 'enrich')) {
+    if ($admissionAudit.tier -ceq 'series') {
+        $tokenIndex = [array]::IndexOf($forwarded, '--windows-invocation-id')
+        Assert-True ($tokenIndex -ge 0 -and $forwarded[$tokenIndex + 1] -ceq $admissionAudit.windowsInvocationId -and $admissionAudit.windowsInvocationId -cmatch '^[0-9a-f]{32}$') 'The exact fresh Windows invocation must cross the actual argv boundary.'
+    }    if ($case.Name -in @('monitor', 'enrich')) {
         Assert-True ($forwarded -contains '/home/cayman/code/firecrawl/scripts/firecrawl-ops/cre_collector/cre_guarded_tier.py' -and -not ($forwarded -contains '--work-deadline-seconds')) 'Incremental worker must be unchanged.'
         if ($case.Name -eq 'monitor') { Assert-True (($forwarded -join '|').Contains('monitor|--source|hanley|--expected-sha|' + $sha + '|--batch|50|--deadline-seconds|1800|')) 'Default monitor argv must remain unchanged.' }
         else { Assert-True ($forwarded -contains '--apply' -and ($forwarded -join '|').Contains('--batch|3|--deadline-seconds|90')) 'Enrich apply/batch/deadline must remain meaningful.' }

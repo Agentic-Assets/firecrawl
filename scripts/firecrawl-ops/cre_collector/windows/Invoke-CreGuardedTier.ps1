@@ -390,6 +390,47 @@ function Test-CreDaumSubsetSummary {
     } catch { return $false }
 }
 
+function Get-CreLocalSeriesSettlement {
+    param([System.Collections.IDictionary]$Record, [string]$AttemptId)
+    # This reports only owned local process settlement, never a database or
+    # provider outcome. A run reference is a locator, not an attestation.
+    if ($Tier -ne 'series' -or $Record.status -cne 'returned' -or
+        $null -eq $Record.nativeExitCode -or -not $Record.Contains('capture') -or
+        -not $Record.Contains('windowsAdmissionUnixMs')) { return $null }
+    $capture = $Record.capture
+    if ($capture.Failed -or -not $capture.Started -or $capture.NativeExitCode -ne $Record.nativeExitCode -or -not $capture.Stdout.Eof -or
+        -not $capture.Stderr.Eof -or $capture.Stdout.Truncated -or $capture.Stderr.Truncated -or
+        $capture.Stdout.RunReferenceConflict) { return $null }
+    # Capture recognizes run references from stdout only. Stderr is drained but
+    # is not parsed for run references.
+    $directory = $capture.Stdout.ObservedRunDirectory
+    if (-not $directory) { return $null }
+    $collector = $LinuxRepo.TrimEnd('/') + '/scripts/firecrawl-ops/cre_collector'
+    if ($directory -cnotmatch ('^' + [Regex]::Escape($collector + '/out/checkpoint-series/') + '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z$')) { return $null }
+    $wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $output = Join-Path $auditDir ($AttemptId + '.local-settlement.json')
+    $errors = Join-Path $auditDir ($AttemptId + '.local-settlement.stderr.log')
+    $readerArgs = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'timeout', '--signal=TERM', '--kill-after=1s', '3s',
+        'python3', "$collector/cre_local_settlement.py", '--series-directory', $directory,
+        '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', [string]$Record.windowsAdmissionUnixMs,
+        '--source-keys', ($selectedSourceKeys -join ','), '--windows-invocation-id', $Record.windowsInvocationId)
+    if ($Pipeline) { $readerArgs += '--pipeline' }
+    $observed = [CreWindowsCapture.Capture]::RunReadOnly($wsl, $readerArgs, $output, $errors, 5000)
+    if ($observed.Failed -or $observed.NativeExitCode -ne 0 -or -not $observed.Stdout.Eof -or
+        -not $observed.Stderr.Eof -or $observed.Stdout.Truncated -or $observed.Stderr.Truncated -or
+        $observed.Stdout.ObservedBytes -gt 4096 -or $observed.Stderr.ObservedBytes -ne 0) { return $null }
+    $proof = [IO.File]::ReadAllText($output) | ConvertFrom-Json
+    if ($proof.schema_version -ne 1 -or $proof.scope -cne 'owned_local_processes_only' -or
+        $proof.local_settlement -cne 'confirmed' -or $proof.collector_git_sha -cne $ExpectedSha -or
+        $proof.windows_admission_unix_ms -ne $Record.windowsAdmissionUnixMs -or
+        $proof.windows_invocation_id -cne $Record.windowsInvocationId -or
+        $proof.series_id -cne ($directory.Split('/')[-1]) -or
+        $proof.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
+        $proof.pipeline -isnot [bool] -or $proof.pipeline -ne [bool]$Pipeline -or
+        ($proof.source_keys -join ',') -cne ($selectedSourceKeys -join ',') -or
+        @('complete','complete_with_source_failures','qualified_partial_subset','failed') -cnotcontains $proof.terminal_status) { return $null }
+    return $proof
+}
 function Get-CreVerifiedSummary {
     param([System.Collections.IDictionary]$Record, [string]$AttemptId,
         [ValidateRange(50,12000)][int]$ReadDeadlineMilliseconds = 12000)
@@ -818,8 +859,9 @@ $record = [ordered]@{
     admitBaselineHoldAdditively = [bool]$AdmitBaselineHoldAdditively
     admitDaumVerifiedSubset = [bool]$AdmitDaumVerifiedSubset
     tier = $Tier; source = $selectedSourceArgument; pipeline = [bool]$Pipeline; sourceWorkers = $resolvedSourceWorkers; expectedSha = $ExpectedSha; apply = [bool]$Apply
+    windowsInvocationId = [Guid]::NewGuid().ToString('N')
     status = 'admission_pending'; dispatch = 'not_attempted'
-    nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
+    nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'; linuxLocalProcessSettlement = 'unverified'
     notificationMode = $NotificationMode
     notificationStart = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     notification = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
@@ -917,7 +959,7 @@ try {
                 '--page-cap', [string]$PageCap, '--attempts-per-source', [string][int]$AttemptsPerSource, '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
-                '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
+                '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs", '--windows-invocation-id', $record.windowsInvocationId,
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
@@ -955,6 +997,13 @@ try {
         Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue
     }
 }
+try {
+    $localProof = Get-CreLocalSeriesSettlement $record $basename
+    if ($null -ne $localProof) {
+        $record.linuxLocalProcessSettlement = 'confirmed'
+        $record['linuxLocalProcessSettlementEvidence'] = $localProof
+    }
+} catch { } # Observational readback must never change the operation result.
 $record.wrapperExitCode = $result
 if ($NotificationMode -eq 'Failure' -and ($result -eq 0 -or -not $AlertWebhookFile)) {
     Set-CreNotification $record $basename $result

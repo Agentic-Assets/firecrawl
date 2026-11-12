@@ -1909,11 +1909,11 @@ def verify_reviewed_checkout(expected_sha: str, *, control=None) -> None:
 
 
 def admit_series_invocation(
-    expected_sha: str | None, windows_unix_ms: int | None
+    expected_sha: str | None, windows_unix_ms: int | None, windows_invocation_id: str | None = None
 ) -> dict | None:
     """Current invocation only; optional Windows evidence is startup-only."""
     if expected_sha is None:
-        if windows_unix_ms is not None:
+        if windows_unix_ms is not None or windows_invocation_id is not None:
             raise SeriesError("Windows startup admission requires an expected SHA")
         return None
     # Reject malformed invocation identity before local inspection.
@@ -1922,6 +1922,10 @@ def admit_series_invocation(
         or re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None
     ):
         raise SeriesError("expected SHA must be a lowercase full40 revision")
+    if windows_invocation_id is not None and (
+        windows_unix_ms is None or not re.fullmatch(r"[0-9a-f]{32}", windows_invocation_id)
+    ):
+        raise SeriesError("invalid Windows invocation identity")
     verify_reviewed_checkout(expected_sha)
     if windows_unix_ms is not None:
         from cre_guarded_tier import GuardedTierError, validate_windows_admission
@@ -1931,6 +1935,7 @@ def admit_series_invocation(
         except (GuardedTierError, OverflowError, TypeError, ValueError):
             raise SeriesError("Windows startup admission is stale or invalid") from None
     return {
+        **({"windows_invocation_id": windows_invocation_id} if windows_invocation_id is not None else {}),
         "expected_sha": expected_sha,
         "checked_at": utc_now(),
         "origin_tracking": "matching_local_tip_not_remote_freshness",
@@ -3518,6 +3523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--work-deadline-seconds", type=int, default=None)
     parser.add_argument("--expected-sha", default=None)
     parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
+    parser.add_argument("--windows-invocation-id", default=None)
     parser.add_argument(
         "--reconcile-stale-series",
         action="store_true",
@@ -3696,9 +3702,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "when recovery is enabled"
         )
 
-    invocation_admission = admit_series_invocation(
-        args.expected_sha, args.windows_admission_unix_ms
-    )
+    if args.windows_invocation_id is None:
+        invocation_admission = admit_series_invocation(
+            args.expected_sha, args.windows_admission_unix_ms
+        )
+    else:
+        invocation_admission = admit_series_invocation(
+            args.expected_sha, args.windows_admission_unix_ms, args.windows_invocation_id
+        )
     git_sha, git_dirty = (
         (args.expected_sha, False) if args.expected_sha is not None else git_identity()
     )
