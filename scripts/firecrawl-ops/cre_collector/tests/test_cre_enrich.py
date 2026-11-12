@@ -503,7 +503,7 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
     monkeypatch.setattr(cre_enrich, "load_db_url",
                         lambda env_file: (DB_URL_SENTINEL, "/fake/.env.local"))
 
-    def _fake_query(db_url, sql):
+    def _fake_query(db_url, sql, *, timeout=None):
         assert db_url == DB_URL_SENTINEL
         if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
             return [(str(newmark_pending),)]
@@ -582,6 +582,17 @@ def test_pending_readback_failure_reports_partial_after_eligible_peer(monkeypatc
     assert calls["ingest_called"] and "unknown; reporting partial" in capsys.readouterr().err
 
 
+def test_pending_readback_timeout_reports_partial_after_eligible_peer(monkeypatch, tmp_path, capsys):
+    calls = _wire_run(monkeypatch, tmp_path,
+        claimed=[("id-1", "colliers-main", "main:usa1", "https://x/a", "new", "0")])
+    def timed_out(_):
+        raise cre_enrich.subprocess.TimeoutExpired("psql", 15)
+    monkeypatch.setattr(cre_enrich, "newmark_pending_count", timed_out)
+    assert cre_enrich.run(_Args(env_file=None)) == 20
+    assert calls["ingest_called"] and "unknown; reporting partial" in capsys.readouterr().err
+    assert any("DELETE FROM credeals.cre_enrichment_queue" in sql for sql in calls["exec_sql"])
+
+
 def test_newmark_requires_bound_guard_before_claim(monkeypatch, capsys):
     monkeypatch.setattr(cre_enrich, "load_db_url", lambda *_: pytest.fail("must not load credentials"))
     monkeypatch.setattr(cre_enrich, "_psql_query", lambda *_: pytest.fail("must not claim"))
@@ -615,7 +626,7 @@ def test_newmark_batch_claims_at_most_one_and_reports_pending(monkeypatch, tmp_p
     monkeypatch.setattr(cre_enrich, "load_db_url", lambda _: (DB_URL_SENTINEL, "/private/env"))
     monkeypatch.setattr(cre_enrich, "assert_expected_database_target", lambda *_: None)
     statements = []
-    def query(_url, sql):
+    def query(_url, sql, *, timeout=None):
         statements.append(sql)
         return [("2",)] if "count(*)::text" in sql else []
     monkeypatch.setattr(cre_enrich, "_psql_query", query)

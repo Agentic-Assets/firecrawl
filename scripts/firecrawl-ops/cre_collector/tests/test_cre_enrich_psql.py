@@ -11,11 +11,12 @@ regress:
   FIX-3  subprocess.run() passes `text=True` AND `input=sql` (str); without
          `text=True`, `input=sql` (str) raises TypeError in Python 3
 
-No live DB, no network.  subprocess.run is monkeypatched for every test.
+No live DB, no network. One test launches a disposable hung fake psql process.
 conftest.py already puts cre_collector/ on sys.path.
 """
 
 import json
+import os
 import sys
 
 import pytest
@@ -101,6 +102,40 @@ class TestPsqlQuery:
             "argv must have `-f` immediately followed by `-` (stdin); "
             f"got: {argv}"
         )
+
+    def test_query_does_not_load_psql_startup_file(self, monkeypatch):
+        calls, _ = self._call(monkeypatch, "BEGIN READ ONLY; SELECT 1; ROLLBACK;")
+        assert "-X" in calls[0][0]
+
+    def test_pending_query_runs_read_only_with_bounded_psql_child(self, monkeypatch):
+        monkeypatch.setattr(cre_enrich, "find_psql", lambda: "psql")
+        calls, fake_run = _make_fake_subprocess(stdout="2\n")
+        monkeypatch.setattr(cre_enrich.subprocess, "run", fake_run)
+        assert cre_enrich.newmark_pending_count(DB_URL) == 2
+        argv, kwargs = calls[0]
+        assert "-X" in argv and kwargs["timeout"] == 15
+        assert "BEGIN READ ONLY;" in kwargs["input"] and "ROLLBACK;" in kwargs["input"]
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process identity")
+    def test_timed_out_query_kills_and_reaps_its_direct_psql_child(self, monkeypatch, tmp_path):
+        import subprocess
+
+        pid_file = tmp_path / "pid"
+        fake_psql = tmp_path / "psql"
+        fake_psql.write_text(
+            "#!/usr/bin/env python3\nimport os,time\n"
+            f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n"
+        )
+        fake_psql.chmod(0o700)
+        monkeypatch.setattr(cre_enrich, "find_psql", lambda: str(fake_psql))
+        with pytest.raises(subprocess.TimeoutExpired):
+            _psql_query(DB_URL, "BEGIN READ ONLY; SELECT 1; ROLLBACK;", timeout=2)
+        pid = int(pid_file.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
 
     def test_fix1_argv_has_no_dash_c(self, monkeypatch):
         """FIX-1 corollary: `-c` must NOT appear in the argv."""
@@ -269,6 +304,10 @@ class TestPsqlExec:
             f"argv must have `-f` followed by `-` (stdin); got: {argv}"
         )
 
+    def test_exec_does_not_load_psql_startup_file(self, monkeypatch):
+        calls = self._call(monkeypatch, "BEGIN; COMMIT;")
+        assert "-X" in calls[0][0]
+
     def test_fix1_argv_has_no_dash_c(self, monkeypatch):
         """FIX-1 corollary: `-c` must NOT appear in the argv."""
         calls = self._call(monkeypatch, "BEGIN; COMMIT;")
@@ -413,7 +452,7 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
     monkeypatch.setattr(cre_enrich, "load_db_url",
                         lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
 
-    def _fake_query(db_url, sql):
+    def _fake_query(db_url, sql, *, timeout=None):
         calls["query_sqls"].append(sql)
         if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
             return [("0",)]
@@ -671,7 +710,7 @@ class TestMain:
         monkeypatch.setattr(cre_enrich, "load_db_url",
                             lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
 
-        def _fake_query(db_url, sql):
+        def _fake_query(db_url, sql, *, timeout=None):
             if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
                 return [("0",)]
             return [("id-1", "colliers-main", "main:a",

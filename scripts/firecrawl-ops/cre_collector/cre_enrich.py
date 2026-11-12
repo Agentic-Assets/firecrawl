@@ -221,7 +221,7 @@ def newmark_pending_count(db_url):
     rows = _psql_query(db_url, "\\set ON_ERROR_STOP on\nBEGIN READ ONLY;\n"
                        "SET LOCAL statement_timeout = '10s';\n"
                        "SELECT count(*)::text FROM credeals.cre_enrichment_queue "
-                       "WHERE source_key = 'newmark' AND done_at IS NULL;\nROLLBACK;\n")
+                       "WHERE source_key = 'newmark' AND done_at IS NULL;\nROLLBACK;\n", timeout=15)
     if len(rows) != 1 or len(rows[0]) != 1 or not re.fullmatch(r"[0-9]+", rows[0][0]):
         raise ValueError("Newmark pending queue count is unavailable")
     return int(rows[0][0])
@@ -559,7 +559,7 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
 # ---------------------------------------------------------------------------
 
 
-def _psql_query(db_url, sql):
+def _psql_query(db_url, sql, *, timeout=None):
     """Run one statement-set and return the RETURNING tuples as a list of tuples.
 
     Uses -tA -F$'\\t' so NULL renders as an empty field (mirrors
@@ -572,6 +572,7 @@ def _psql_query(db_url, sql):
     proc = subprocess.run(
         [
             psql,
+            "-X",
             *psql_connection_args(db_url),
             "-q",
             "-tA",
@@ -584,7 +585,7 @@ def _psql_query(db_url, sql):
         ],
         env=psql_connection_env(db_url),
         input=sql,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
     )
     if proc.returncode != 0:
         sys.exit(f"psql read failed ({proc.returncode}): {proc.stderr.strip()}")
@@ -608,6 +609,7 @@ def _psql_exec(db_url, sql):
     proc = subprocess.run(
         [
             psql,
+            "-X",
             *psql_connection_args(db_url),
             "-q",
             "-v",
@@ -915,16 +917,18 @@ def run(args):
     assert_expected_database_target(db_url, expected_target)
     print(f"credentials: {env_path}", file=sys.stderr)
     def report_newmark_remaining():
-        """A fresh target-bound read prevents an empty/full-success overclaim."""
+        """Use the selected connection for a fresh, bounded pending read."""
         if source not in (None, "newmark"):
             return False
         require_owner()
         try:
             assert_expected_database_target(db_url, expected_target)
             count = newmark_pending_count(db_url)
-        except (OSError, ValueError, SystemExit):
+        except (OSError, ValueError, SystemExit, subprocess.TimeoutExpired):
             print("Newmark pending queue status is unknown; reporting partial", file=sys.stderr)
             return True
+        if expected_target is None:
+            print("Newmark pending count used the selected database without an expected target binding", file=sys.stderr)
         if count:
             print(f"{count} Newmark enrichment item(s) remain pending; "
                   "they require the guarded Newmark lane", file=sys.stderr)
