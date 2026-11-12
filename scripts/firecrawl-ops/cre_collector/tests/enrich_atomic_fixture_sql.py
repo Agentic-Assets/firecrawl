@@ -59,9 +59,10 @@ CREATE TEMP TABLE decision ON COMMIT DROP AS
    OR q.url IS DISTINCT FROM r.url OR q.reason IS DISTINCT FROM r.reason OR q.claimed_at IS DISTINCT FROM r.claimed_at
    OR q.enqueued_at IS DISTINCT FROM r.enqueued_at OR q.attempts IS DISTINCT FROM r.attempts
    OR q.done_at IS NOT NULL THEN 'superseded'
-  WHEN q.claimed_at > (SELECT checked_at FROM decision_clock) THEN 'unverified'
-  WHEN q.claimed_at <= (SELECT checked_at FROM decision_clock)-interval '1 hour'
-   OR q.attempts < 0 OR q.attempts >= 5
+  WHEN q.claimed_at > (SELECT checked_at FROM decision_clock)
+   OR q.claimed_at <= (SELECT checked_at FROM decision_clock)-interval '1 hour'
+   THEN 'unverified'
+  WHEN q.attempts < 0 OR q.attempts >= 5
    OR (SELECT count(*) FROM requested dups WHERE dups.brokerage_id=r.brokerage_id
           AND dups.external_id=r.external_id)>1
    OR (SELECT count(*) FROM credeals.cre_enrichment_queue others

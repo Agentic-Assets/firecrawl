@@ -176,13 +176,14 @@ UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 secon
                 "detail_verified": witness_a if letter == "a" else letter != "d",
                 "observed_native_id": letter, "title": "after-ATTEMPT-HASH" if letter == "a" else "after-" + digit})
         attempt = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+        expired_before = sql("SELECT to_jsonb(q)::text FROM credeals.cre_enrichment_queue q WHERE external_id='f';")
         prototype = build_sql(claims, attempt)
         # No result printed before commit is accepted as proof. The fixture
         # discards this SQL client's stdout to simulate a lost acknowledgement.
         sql(prototype)
         assert hashlib.sha256(payload).hexdigest() == before
         receipt = sql("SELECT value||':'||count(*) FROM credeals.fixture_atomic_receipts r, jsonb_each_text(r.decisions) d WHERE attempt_id='" + attempt + "' GROUP BY value ORDER BY value;")
-        assert receipt.splitlines() == ["accepted:1", "held:5", "superseded:1"], receipt
+        assert receipt.splitlines() == ["accepted:1", "held:4", "superseded:1", "unverified:1"], receipt
         # Independent fresh connection: exact identities and immutable input hash,
         # not just the same aggregate counts.
         saved = sql("SELECT decisions::text || '|' || request_hash FROM credeals.fixture_atomic_receipts WHERE attempt_id='"+attempt+"';")
@@ -190,9 +191,9 @@ UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 secon
         expected_hash = hashlib.sha256(json.dumps(claims, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         assert saved_hash == expected_hash
         outcomes = {row["claim_id"]: ("accepted" if row["external_id"] == "a" else
-                    "superseded" if row["external_id"] == "c" else "held") for row in claims}
+                    "superseded" if row["external_id"] == "c" else "unverified" if row["external_id"] == "f" else "held") for row in claims}
         assert json.loads(decisions_raw) == outcomes
-        assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE external_id IN ('b','d','e','f') AND claimed_at>now()-interval '1 minute' AND attempts=0;") == "5"
+        assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE external_id IN ('b','d','e') AND claimed_at>now()-interval '1 minute' AND attempts=0;") == "4"
         assert sql("SELECT string_agg(external_id||':'||title||':'||write_count,',' ORDER BY external_id) FROM credeals.cre_listings;") == "a:after-ATTEMPT-HASH:1,b:before:0,c:before:0,d:before:0,e:before:0,f:before:0"
         assert sql("SELECT string_agg(external_id,',' ORDER BY external_id) FROM credeals.cre_enrichment_queue;") == "b,c,d,e,e,f"
         try:
@@ -203,12 +204,18 @@ UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 secon
         assert sql("SELECT write_count FROM credeals.cre_listings WHERE external_id='a';") == "1"
         assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE external_id='e';") == "2"
         assert sql("SELECT claimed_at > now()-interval '1 minute' FROM credeals.cre_enrichment_queue WHERE external_id='c';") == "t"
-        print("CONFIRMED synthetic prototype: one committed, five held, one successor untouched; receipt replay refused")
+        print("CONFIRMED synthetic prototype: one committed, four held, expired claim untouched, one successor untouched; receipt replay refused")
         # Held oldest claims are cooled without retry consumption, so a new
         # eligible peer is next even when it has the same priority.
         sql("""INSERT INTO credeals.cre_enrichment_queue
 (id,brokerage_id,source_key,external_id,url,reason,claimed_at,enqueued_at,attempts)
 VALUES ('99999999-9999-9999-9999-999999999999','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','cbre','g','https://example.invalid/g','changed',NULL,now(),0);""")
+        assert sql("SELECT to_jsonb(q)::text FROM credeals.cre_enrichment_queue q WHERE external_id='f';") == expired_before
+        # A stale worker cannot renew an expired claim; a new owner may reclaim
+        # it, after which the unclaimed equal-priority healthy peer proceeds.
+        sql(build_claim_sql(1, source="cbre"))
+        assert sql("SELECT claimed_at > now()-interval '1 minute' AND attempts=0 FROM credeals.cre_enrichment_queue WHERE external_id='f';") == "t"
+        assert sql("SELECT claimed_at IS NULL FROM credeals.cre_enrichment_queue WHERE external_id='g';") == "t"
         sql(build_claim_sql(1, source="cbre"))
         assert sql("SELECT claimed_at IS NOT NULL AND attempts=0 FROM credeals.cre_enrichment_queue WHERE external_id='g';") == "t"
         assert sql("SELECT count(*) FROM credeals.cre_enrichment_queue WHERE external_id IN ('b','d','e','f') AND attempts=0;") == "5"
