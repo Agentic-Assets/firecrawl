@@ -2909,6 +2909,28 @@ def generic_enrichment_substantive(listing):
     return False
 
 
+def hold_unbound_newmark_enrichment(data, *, page_attempt):
+    """Keep unbound Newmark enrichment out of canonical staging.
+
+    The original input remains the evidence of held listings and observations.
+    Full inventory has its own admission and is deliberately unchanged here.
+    A page attempt is still subject to the existing exact claim and transaction
+    witness checks; this partition does not itself authenticate it.
+    """
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict) or run_meta.get("mode") != "enrich" or page_attempt:
+        return data, 0, 0
+    listings, sources = data.get("listings"), data.get("sources")
+    if not isinstance(listings, list) or not isinstance(sources, list):
+        raise ValueError("enrichment artifact must contain listings and sources arrays")
+    kept_listings = [row for row in listings if not isinstance(row, dict) or row.get("sourceKey") != "newmark"]
+    kept_sources = [row for row in sources if not isinstance(row, dict) or row.get("sourceKey") != "newmark"]
+    held_listings, held_sources = len(listings) - len(kept_listings), len(sources) - len(kept_sources)
+    if not held_listings and not held_sources:
+        return data, 0, 0
+    return {**data, "listings": kept_listings, "sources": kept_sources}, held_listings, held_sources
+
+
 def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None, *, allow_newmark_nim=False):
     """Map one collector listing to a staging row dict, or None to skip."""
     # Qualification maps are bound to the input artifact object, before any
@@ -7814,6 +7836,8 @@ def main():
     inventory_only_merged = {}  # (slug, external_id) -> source-index row
     inventory_only_scopes_merged = {}  # source_key -> proven full scope
     skipped_no_url = 0
+    held_newmark_listings = 0
+    held_newmark_sources = 0
     per_source_counts = {}
     source_entries = []  # all sources[] entries across files
     started_at = None
@@ -8004,6 +8028,20 @@ def main():
             require_canonical_artifact(data)
         except ValueError as exc:
             sys.exit(str(exc))
+        try:
+            data, held_rows, held_sources = hold_unbound_newmark_enrichment(
+                data, page_attempt=args.newmark_page_attempt
+            )
+        except ValueError as exc:
+            sys.exit(str(exc))
+        held_newmark_listings += held_rows
+        held_newmark_sources += held_sources
+        if held_rows or held_sources:
+            print(
+                f"holding unbound Newmark enrichment from {path}: "
+                f"{held_rows} listing(s), {held_sources} source result(s)",
+                file=sys.stderr,
+            )
         is_lyon_partial = data.get("schema") == "lyon-search-partial/v1"
         if data.get("schema") in {"nai-post-inventory-recovery/v1", "nai-post-coverage-partial/v1"}:
             sys.exit("refusing NAI partial artifact without guarded checkpoint admission")
@@ -8106,6 +8144,7 @@ def main():
             listings = data.get("listings", [])
             if (not args.newmark_page_attempt or len(args.inputs) != 1 or mode != "enrich"
                     or len(listings) != 1 or not isinstance(listings[0], dict)
+                    or len(page_rows) != 1
                     or listings[0].get("sourceKey") != "newmark"
                     or listings[0].get("id") != newmark_page_claim.get("externalId")
                     or listings[0].get("url") != newmark_page_claim.get("url")
@@ -8249,7 +8288,16 @@ def main():
             "refusing inventory-only ingest without a strict complete full "
             f"enumeration scope: {sorted(unscoped_inventory_sources)}"
         )
+    if held_newmark_listings or held_newmark_sources:
+        print(
+            f"Newmark enrichment held: {held_newmark_listings} listing(s), "
+            f"{held_newmark_sources} source result(s); original input retained; "
+            "no Newmark enrichment write was admitted",
+            file=sys.stderr,
+        )
     if not rows and not inventory_only_rows and not inventory_only_scopes:
+        if held_newmark_listings or held_newmark_sources:
+            sys.exit(20)
         sys.exit("nothing to ingest (0 usable listings or inventory-only rows)")
     for r in rows:
         r.pop("_modes", None)
@@ -8525,6 +8573,8 @@ def main():
 
     if args.dry_run:
         print("dry run: not connecting", file=sys.stderr)
+        if held_newmark_listings or held_newmark_sources:
+            sys.exit(20)
         return
 
     db_url, env_path = load_db_url(args.env_file)
@@ -8550,6 +8600,9 @@ def main():
         shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None and jll_guard_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
+    if held_newmark_listings or held_newmark_sources:
+        print("ingest partially completed; Newmark enrichment remains held", file=sys.stderr)
+        sys.exit(20)
     print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None
           else "psql finished; bound Newmark page outcome required" if args.newmark_page_attempt
           else "ingest complete", file=sys.stderr)
