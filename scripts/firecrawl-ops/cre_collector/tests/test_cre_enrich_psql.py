@@ -415,11 +415,14 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
 
     def _fake_query(db_url, sql):
         calls["query_sqls"].append(sql)
+        if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
+            return [("0",)]
         return [
             (r["id"], r.get("source_key", "colliers-main"),
              r.get("external_id", "ext:1"), r.get("url", "https://x/1"),
              r.get("reason", "new"), str(r.get("attempts", 0)))
             for r in claimed_rows
+            if not ("source_key IS DISTINCT FROM 'newmark'" in sql and r.get("source_key") == "newmark")
         ]
 
     def _fake_exec(db_url, sql):
@@ -431,8 +434,6 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
     class _Proc:
         def __init__(self, rc):
             self.returncode = rc
-
-    claimed_urls = [r.get("url", "https://x/1") for r in claimed_rows]
 
     def _fake_subprocess_run(argv, **kwargs):
         if "collect.ts" in argv:
@@ -665,15 +666,14 @@ class TestMain:
 
     def test_db_url_never_printed_by_main(self, monkeypatch, tmp_path, capsys):
         """main() entry point must never print the DB url."""
-        rows = [{"id": "id-1", "url": "https://x/a", "source_key": "colliers-main",
-                 "external_id": "main:a", "reason": "new", "attempts": 0}]
-
         # Wire up a full run
         monkeypatch.setattr(cre_enrich, "OUT_ENRICH_DIR", str(tmp_path))
         monkeypatch.setattr(cre_enrich, "load_db_url",
                             lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
 
         def _fake_query(db_url, sql):
+            if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
+                return [("0",)]
             return [("id-1", "colliers-main", "main:a",
                      "https://x/a", "new", "0")]
 

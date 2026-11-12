@@ -146,7 +146,7 @@ def _normalize_source_filter(source):
     return source
 
 
-def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False, source_detail_witness=False, source_page_witness=False):
+def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False, source_detail_witness=False, source_page_witness=False, exclude_newmark=False):
     """Atomically claim up to `batch` pending rows and return their fields.
 
     Mirrors cre_monitor.build_write_sql GUC pins (ON_ERROR_STOP +
@@ -169,7 +169,11 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         raise ValueError("source detail witness requires mixed or Newmark-only non-targeted claims")
     if source_page_witness and (source != "newmark" or batch != 1 or targeted or source_detail_witness):
         raise ValueError("Newmark page witness requires a Newmark-only one-item claim")
+    if exclude_newmark and (source is not None or source_detail_witness or source_page_witness):
+        raise ValueError("Newmark exclusion requires a generic mixed-source claim")
     where_source = []
+    if exclude_newmark:
+        where_source.append("    AND source_key IS DISTINCT FROM 'newmark'")
     if source is not None:
         # This predicate lives inside the locked claim CTE. Consequently a
         # --source run cannot touch unrelated rows, including their attempts.
@@ -210,6 +214,49 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         + ((", q.claimed_at, " + newmark_claim_witness.page_returning_sql() + ", q.brokerage_id") if source_page_witness else "") + ";",
         "COMMIT;",
     ])
+
+
+def newmark_pending_count(db_url):
+    """Count unfinished Newmark work without claiming or changing it."""
+    rows = _psql_query(db_url, "\\set ON_ERROR_STOP on\nBEGIN READ ONLY;\n"
+                       "SET LOCAL statement_timeout = '10s';\n"
+                       "SELECT count(*)::text FROM credeals.cre_enrichment_queue "
+                       "WHERE source_key = 'newmark' AND done_at IS NULL;\nROLLBACK;\n")
+    if len(rows) != 1 or len(rows[0]) != 1 or not re.fullmatch(r"[0-9]+", rows[0][0]):
+        raise ValueError("Newmark pending queue count is unavailable")
+    return int(rows[0][0])
+
+
+def require_guarded_newmark_parent(artifact_out, target, requested_batch):
+    """Authenticate the running one-shot owner before Newmark queue mutations."""
+    from pathlib import Path
+    from cre_checkpoint_refresh import canonical_shared_lock_dir, git_identity
+    from cre_stop_guarded_tier import OUT_ROOT, RUN_ID, StopRefused, _read_receipt, _validate_owner
+
+    if sys.platform != "linux" or not isinstance(artifact_out, str):
+        raise StopRefused("Newmark enrichment requires a Linux guarded owner")
+    path = Path(artifact_out)
+    run_id = path.parent.name
+    if not RUN_ID.fullmatch(run_id) or path != OUT_ROOT / run_id / "enriched.json":
+        raise StopRefused("Newmark enrichment output is outside the guarded run")
+    receipt = _read_receipt(OUT_ROOT, run_id)
+    owner = receipt["stop_owner"]
+    marker = receipt.get("enrichment_artifact")
+    expected_marker = {"schema_version": "cre-enrichment-custody/v1", "source_key": "newmark",
+                       "state": "awaiting_worker", "artifact_path": "enriched.json",
+                       "claims_path": "claims.json", "database_retention": "not_performed"}
+    if (receipt.get("status") != "running" or receipt.get("tier") != "enrich"
+            or receipt.get("phase") != "enrich_apply" or receipt.get("source") != "newmark"
+            or receipt.get("apply") is not True or receipt.get("database_target_sha256") != target
+            or type(receipt.get("batch")) is not int or receipt["batch"] != requested_batch
+            or not 1 <= requested_batch <= 50 or marker != expected_marker
+            or owner.get("pid") != os.getppid() or os.getpgrp() != os.getpid()
+            or os.getsid(0) != os.getpid() or git_identity() != (receipt.get("expected_sha"), False)):
+        raise StopRefused("Newmark guarded owner context differs")
+    _validate_owner(owner, receipt, canonical_shared_lock_dir())
+    if _read_receipt(OUT_ROOT, run_id) != receipt or owner.get("pid") != os.getppid():
+        raise StopRefused("Newmark guarded owner context changed")
+    _validate_owner(owner, receipt, canonical_shared_lock_dir())
 
 
 def build_collect_argv(claim_path, out_path, *, targeted=False):
@@ -810,14 +857,19 @@ def run(args):
                      or not getattr(args, "expected_db_target_sha256", None)
                      or not 1 <= getattr(args, "work_seconds", 600) <= 600):
         raise ValueError("targeted Matthews worker requires exact bounded target admission")
-    evidence_witness = (os.environ.get("CRE_NEWMARK_PUBLISHED_DETAIL") == "1"
-                        and getattr(args, "artifact_out", None) is not None and not targeted
-                        and source in (None, "newmark"))
-    page_witness = (source == "newmark" and batch == 1 and not targeted
-                    and not evidence_witness and getattr(args, "artifact_out", None) is not None
-                    and getattr(args, "expected_db_target_sha256", None) is not None)
-    claim_sql = build_claim_sql(batch, source=source, targeted=targeted, source_detail_witness=evidence_witness,
-                                source_page_witness=page_witness)
+    requested_batch = batch
+    page_witness = source == "newmark" and not targeted
+    # The experimental published-detail path needs its own transaction-bound
+    # admission; do not silently switch an explicit operator choice to another
+    # route or claim rows that the generic writer cannot safely settle.
+    if page_witness and os.environ.get("CRE_NEWMARK_PUBLISHED_DETAIL") == "1" and not args.dry_run:
+        print("Newmark published-detail enrichment is held pending bound admission", file=sys.stderr)
+        return 21
+    if page_witness:
+        batch = 1
+    claim_sql = build_claim_sql(batch, source=source, targeted=targeted,
+                                source_page_witness=page_witness,
+                                exclude_newmark=source is None and not targeted)
 
     if args.dry_run:
         # Never connect; print the claim SQL so the shape is auditable. No url.
@@ -829,6 +881,9 @@ def run(args):
     # guarded parent owns this directory and records the matching marker.
     artifact_out = getattr(args, "artifact_out", None)
     claim_path = enriched_path = None
+    if page_witness and (artifact_out is None or not getattr(args, "expected_db_target_sha256", None)):
+        print("Newmark enrichment requires a target-bound guarded run", file=sys.stderr)
+        return 21
     if artifact_out is not None:
         from pathlib import Path
         from source_evidence.enrichment_custody import preflight
@@ -849,6 +904,9 @@ def run(args):
             from cre_stop_guarded_tier import require_guarded_matthews_parent
             return require_guarded_matthews_parent(
                 getattr(args, "guarded_run_id", None), args.expected_db_target_sha256, batch)
+        if page_witness:
+            return require_guarded_newmark_parent(artifact_out, args.expected_db_target_sha256,
+                                                   requested_batch)
 
     require_owner()
 
@@ -856,10 +914,29 @@ def run(args):
     expected_target = getattr(args, "expected_db_target_sha256", None)
     assert_expected_database_target(db_url, expected_target)
     print(f"credentials: {env_path}", file=sys.stderr)
+    def report_newmark_remaining():
+        """A fresh target-bound read prevents an empty/full-success overclaim."""
+        if source not in (None, "newmark"):
+            return False
+        require_owner()
+        try:
+            assert_expected_database_target(db_url, expected_target)
+            count = newmark_pending_count(db_url)
+        except (OSError, ValueError, SystemExit):
+            print("Newmark pending queue status is unknown; reporting partial", file=sys.stderr)
+            return True
+        if count:
+            print(f"{count} Newmark enrichment item(s) remain pending; "
+                  "they require the guarded Newmark lane", file=sys.stderr)
+            return True
+        return False
 
     # (1) Claim a batch atomically.
-    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql), source_detail_witness=evidence_witness, source_page_witness=page_witness)
+    require_owner()
+    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql), source_page_witness=page_witness)
     if not claimed_rows:
+        if report_newmark_remaining():
+            return 20
         print("0 claimed: queue empty, nothing to enrich", file=sys.stderr)
         return 0
     print(f"claimed {len(claimed_rows)} row(s)", file=sys.stderr)
@@ -1125,6 +1202,8 @@ def run(args):
                 last_error="claimed but absent from enriched artifact") if targeted else build_retry_increment_sql(
                 absent, last_error="claimed but absent from enriched artifact"))
     state = "completed" if not absent and not deferred_ids else ("partial" if done_ids else "failed")
+    if state == "completed" and report_newmark_remaining():
+        state = "partial"
     code = {"completed": 0, "partial": 20, "failed": 21}[state]
     print(f"enrich {state}: {len(done_ids)} done, {len(absent)} retry, "
           f"{len(deferred_ids)} deferred without established attempt", file=sys.stderr)

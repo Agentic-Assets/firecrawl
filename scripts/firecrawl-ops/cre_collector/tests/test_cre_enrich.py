@@ -483,7 +483,7 @@ class _Args:
 
 
 def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
-              write_enriched="__unset__"):
+              write_enriched="__unset__", newmark_pending=0):
     """Wire cre_enrich.run() against fakes so it never touches a real DB or shell.
 
     `claimed` is a list of RETURNING tuples (id, source_key, external_id, url,
@@ -505,6 +505,9 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
 
     def _fake_query(db_url, sql):
         assert db_url == DB_URL_SENTINEL
+        if "SELECT count(*)::text FROM credeals.cre_enrichment_queue" in sql:
+            return [(str(newmark_pending),)]
+        calls["claim_sql"] = sql
         return list(claimed)
 
     def _fake_exec(db_url, sql):
@@ -552,6 +555,148 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
 
     monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
     return calls
+
+
+def test_mixed_worker_preserves_non_newmark_progress_and_reports_pending(monkeypatch, tmp_path, capsys):
+    calls = _wire_run(monkeypatch, tmp_path,
+        claimed=[("id-1", "colliers-main", "main:usa1", "https://x/a", "new", "0")],
+        newmark_pending=3)
+    assert cre_enrich.run(_Args(env_file=None)) == 20
+    assert calls["collect_called"] and calls["ingest_called"]
+    assert "source_key IS DISTINCT FROM 'newmark'" in calls["claim_sql"]
+    assert "3 Newmark enrichment item(s) remain pending" in capsys.readouterr().err
+
+
+def test_mixed_worker_does_not_report_empty_when_newmark_is_pending(monkeypatch, tmp_path, capsys):
+    calls = _wire_run(monkeypatch, tmp_path, claimed=[], newmark_pending=2)
+    assert cre_enrich.run(_Args(env_file=None)) == 20
+    assert not calls["collect_called"] and not calls["ingest_called"]
+    assert "2 Newmark enrichment item(s) remain pending" in capsys.readouterr().err
+
+
+def test_pending_readback_failure_reports_partial_after_eligible_peer(monkeypatch, tmp_path, capsys):
+    calls = _wire_run(monkeypatch, tmp_path,
+        claimed=[("id-1", "colliers-main", "main:usa1", "https://x/a", "new", "0")])
+    monkeypatch.setattr(cre_enrich, "newmark_pending_count", lambda _: (_ for _ in ()).throw(ValueError()))
+    assert cre_enrich.run(_Args(env_file=None)) == 20
+    assert calls["ingest_called"] and "unknown; reporting partial" in capsys.readouterr().err
+
+
+def test_newmark_requires_bound_guard_before_claim(monkeypatch, capsys):
+    monkeypatch.setattr(cre_enrich, "load_db_url", lambda *_: pytest.fail("must not load credentials"))
+    monkeypatch.setattr(cre_enrich, "_psql_query", lambda *_: pytest.fail("must not claim"))
+    assert cre_enrich.run(_Args(env_file=None, source="newmark", batch=50)) == 21
+    assert "target-bound guarded run" in capsys.readouterr().err
+
+
+def test_published_route_is_explicitly_held_before_claim(monkeypatch, capsys):
+    monkeypatch.setenv("CRE_NEWMARK_PUBLISHED_DETAIL", "1")
+    monkeypatch.setattr(cre_enrich, "load_db_url", lambda *_: pytest.fail("must not claim"))
+    assert cre_enrich.run(_Args(env_file=None, source="newmark", batch=1)) == 21
+    assert "published-detail enrichment is held" in capsys.readouterr().err
+
+
+def test_newmark_dry_run_caps_claim_and_requests_page_witness(capsys):
+    assert cre_enrich.run(_Args(env_file=None, source="newmark", batch=50, dry_run=True)) == 0
+    output = capsys.readouterr().out
+    assert "LIMIT 1" in output
+    assert "ORDER BY claimed_at NULLS FIRST" in output
+
+
+def test_newmark_batch_claims_at_most_one_and_reports_pending(monkeypatch, tmp_path, capsys):
+    from source_evidence import enrichment_custody
+
+    args = _Args(source="newmark", batch=40)
+    args.artifact_out = str(tmp_path / "enriched.json")
+    args.expected_db_target_sha256 = "a" * 64
+    monkeypatch.setattr(enrichment_custody, "preflight", lambda _: (tmp_path / "claims.json", tmp_path / "enriched.json"))
+    owner_checks = []
+    monkeypatch.setattr(cre_enrich, "require_guarded_newmark_parent", lambda *a: owner_checks.append(a))
+    monkeypatch.setattr(cre_enrich, "load_db_url", lambda _: (DB_URL_SENTINEL, "/private/env"))
+    monkeypatch.setattr(cre_enrich, "assert_expected_database_target", lambda *_: None)
+    statements = []
+    def query(_url, sql):
+        statements.append(sql)
+        return [("2",)] if "count(*)::text" in sql else []
+    monkeypatch.setattr(cre_enrich, "_psql_query", query)
+    assert cre_enrich.run(args) == 20
+    assert len(owner_checks) == 3 and all(check[2] == 40 for check in owner_checks)
+    assert "LIMIT 1" in statements[0] and "ORDER BY claimed_at NULLS FIRST" in statements[0]
+    assert "remain pending" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("changed", ["source", "target", "parent", "batch", "marker", "code", "receipt"])
+def test_newmark_guard_requires_matching_live_parent(monkeypatch, tmp_path, changed):
+    import cre_checkpoint_refresh as refresh
+    import cre_stop_guarded_tier as stop
+
+    monkeypatch.setattr(cre_enrich.sys, "platform", "linux")
+    monkeypatch.setattr(stop, "OUT_ROOT", tmp_path)
+    monkeypatch.setattr(cre_enrich.os, "getpid", lambda: 100)
+    monkeypatch.setattr(cre_enrich.os, "getppid", lambda: 90)
+    monkeypatch.setattr(cre_enrich.os, "getpgrp", lambda: 100)
+    monkeypatch.setattr(cre_enrich.os, "getsid", lambda _: 100)
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: tmp_path / "lock")
+    validated = []
+    monkeypatch.setattr(stop, "_validate_owner", lambda *args: validated.append(args))
+    owner = {"pid": 90}
+    marker = {"schema_version": "cre-enrichment-custody/v1", "source_key": "newmark",
+              "state": "awaiting_worker", "artifact_path": "enriched.json",
+              "claims_path": "claims.json", "database_retention": "not_performed"}
+    receipt = {"stop_owner": owner, "status": "running", "tier": "enrich", "phase": "enrich_apply",
+               "source": "newmark", "apply": True, "database_target_sha256": "b" * 64,
+               "batch": 5, "expected_sha": "a" * 40, "enrichment_artifact": marker}
+    if changed == "source":
+        receipt["source"] = "other"
+    elif changed == "target":
+        receipt["database_target_sha256"] = "c" * 64
+    elif changed == "parent":
+        owner["pid"] = 91
+    elif changed == "batch":
+        receipt["batch"] = True
+    elif changed == "marker":
+        marker["state"] = "settled"
+    elif changed == "code":
+        receipt["expected_sha"] = "c" * 40
+    reads = []
+    def read(*_args):
+        reads.append(True)
+        return {**receipt, "phase": "other"} if changed == "receipt" and len(reads) > 1 else receipt
+    monkeypatch.setattr(stop, "_read_receipt", read)
+    output = str(tmp_path / "2026-11-11T000000Z-aaaaaaaaaaaa" / "enriched.json")
+    with pytest.raises(stop.StopRefused):
+        cre_enrich.require_guarded_newmark_parent(output, "b" * 64, 5)
+    if changed == "receipt":
+        assert len(validated) == 1
+
+
+def test_newmark_guard_calls_existing_parent_verifiers(monkeypatch, tmp_path):
+    # Mocked plumbing only; the real parent/process/lock contract needs its own
+    # guarded subprocess integration test.
+    import cre_checkpoint_refresh as refresh
+    import cre_stop_guarded_tier as stop
+
+    monkeypatch.setattr(cre_enrich.sys, "platform", "linux")
+    monkeypatch.setattr(stop, "OUT_ROOT", tmp_path)
+    monkeypatch.setattr(cre_enrich.os, "getpid", lambda: 100)
+    monkeypatch.setattr(cre_enrich.os, "getppid", lambda: 90)
+    monkeypatch.setattr(cre_enrich.os, "getpgrp", lambda: 100)
+    monkeypatch.setattr(cre_enrich.os, "getsid", lambda _: 100)
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("a" * 40, False))
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: tmp_path / "lock")
+    validated = []
+    monkeypatch.setattr(stop, "_validate_owner", lambda *args: validated.append(args))
+    receipt = {"stop_owner": {"pid": 90}, "status": "running", "tier": "enrich", "phase": "enrich_apply",
+               "source": "newmark", "apply": True, "database_target_sha256": "b" * 64,
+               "batch": 5, "expected_sha": "a" * 40,
+               "enrichment_artifact": {"schema_version": "cre-enrichment-custody/v1", "source_key": "newmark",
+                   "state": "awaiting_worker", "artifact_path": "enriched.json",
+                   "claims_path": "claims.json", "database_retention": "not_performed"}}
+    monkeypatch.setattr(stop, "_read_receipt", lambda *_: receipt)
+    output = str(tmp_path / "2026-11-11T000000Z-aaaaaaaaaaaa" / "enriched.json")
+    cre_enrich.require_guarded_newmark_parent(output, "b" * 64, 5)
+    assert len(validated) == 2
 
 
 def test_newmark_403_requires_bound_generic_observation():

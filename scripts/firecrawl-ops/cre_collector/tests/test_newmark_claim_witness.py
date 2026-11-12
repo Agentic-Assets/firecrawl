@@ -63,9 +63,8 @@ def test_property_witness_preserves_missing_null_and_exact_literals():
     assert parse(json.dumps(value)) == {'status':'unresolved','reason':'invalid_carrier'}
 
 
-@pytest.mark.parametrize('source', [None, 'newmark'])
 @pytest.mark.parametrize('enabled', [False, True])
-def test_worker_source_evidence_mode_carries_witness_only_when_selected(source, enabled, tmp_path, monkeypatch):
+def test_mixed_worker_never_claims_newmark_for_unbound_published_mode(enabled, tmp_path, monkeypatch):
     from test_cre_enrich_psql import _Args, _wire_run
 
     import cre_enrich
@@ -73,26 +72,15 @@ def test_worker_source_evidence_mode_carries_witness_only_when_selected(source, 
     rows = [{'id':'1','source_key':'newmark','external_id':'property','url':'https://example.com/1'},
             {'id':'2','source_key':'other','external_id':'other','url':'https://example.com/2'}]
     calls = _wire_run(monkeypatch, tmp_path, claimed_rows=rows, collect_rc=1)
-    prior = cre_enrich._psql_query
-    def query(db_url, sql):
-        values = prior(db_url, sql)
-        if 'rawNewmarkNimRecord' in sql:
-            witness = {'status':'observed', 'schema':'newmark-nim-link-witness/v1', 'sourceKey':'newmark',
-                       'sourcePath':'raw_data.rawNewmarkNimRecord', 'recordId':'record', 'slug':'property',
-                       'url':'https://my.rcm1.com/handler/modern.aspx?pv=Fixture123', 'inventoryObservedAt':None,
-                       'sourceName': {'state':'missing'}, 'sourceProperty': {'selection':'unresolved','fields':{}}}
-            return [tuple(row) + ('', json.dumps(witness) if row[1] == 'newmark' else '') for row in values]
-        return values
-    monkeypatch.setattr(cre_enrich, '_psql_query', query)
     if enabled: monkeypatch.setenv('CRE_NEWMARK_PUBLISHED_DETAIL', '1')
     else: monkeypatch.delenv('CRE_NEWMARK_PUBLISHED_DETAIL', raising=False)
-    args = _Args(source=source)
+    args = _Args(source=None)
     args.artifact_out = str(tmp_path / 'enriched.json')
     assert cre_enrich.run(args) == 1
     claims = json.loads((tmp_path / 'claims.json').read_text())['items']
-    assert ('rawNewmarkNimRecord' in calls['query_sqls'][0]) is enabled
-    assert ('sourcePublishedDetail' in claims[0]) is enabled
-    assert 'sourcePublishedDetail' not in claims[1]
+    assert "source_key IS DISTINCT FROM 'newmark'" in calls['query_sqls'][0]
+    assert len(claims) == 1 and claims[0]['sourceKey'] == 'other'
+    assert 'sourcePublishedDetail' not in claims[0]
 
 
 def test_policy_v4_is_explicit_and_legacy_policy_does_not_enable_detail(tmp_path):
