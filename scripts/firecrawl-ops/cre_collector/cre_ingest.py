@@ -8106,6 +8106,7 @@ def main():
             listings = data.get("listings", [])
             if (not args.newmark_page_attempt or len(args.inputs) != 1 or mode != "enrich"
                     or len(listings) != 1 or not isinstance(listings[0], dict)
+                    or len(page_rows) != 1
                     or listings[0].get("sourceKey") != "newmark"
                     or listings[0].get("id") != newmark_page_claim.get("externalId")
                     or listings[0].get("url") != newmark_page_claim.get("url")

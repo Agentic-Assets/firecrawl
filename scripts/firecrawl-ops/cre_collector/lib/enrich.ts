@@ -316,8 +316,8 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
             ...(observation as Record<string, unknown>), newmarkIdentityConflict: true,
           } };
         }
-        const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
-        if (genericHasSubstantiveFields(row)) return { listing: row, observation };
+        // A guarded Newmark claim needs the source-bound page fallback first;
+        // malformed or unrelated generic JSON-LD must not prevent that path.
         if (item.sourceKey === "newmark" && item.sourcePageWitness && evidenceCaptured &&
             doc.metadata?.url === item.url && doc.metadata?.sourceURL === item.url) {
           const page = extractNewmarkPage(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode);
@@ -328,6 +328,10 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
             contactsDetailed: page.contacts,
           }, observation };
         }
+        const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
+        // Preserve generic extraction in the private artifact; the guarded
+        // worker decides whether the entity is sufficiently bound to promote.
+        if (genericHasSubstantiveFields(row)) return { listing: row, observation };
         return { listing: null, observation };
       } catch {
         console.error("  enrich/generic: parsing failed; retained source observation");

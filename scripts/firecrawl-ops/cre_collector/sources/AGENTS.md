@@ -1240,7 +1240,9 @@ the witnessed components after case/whitespace normalization. A marketing H1
 may accompany the full address; an H1 recognized as a different complete street
 address is a conflict, and an unrecognized numeric heading is withheld rather
 than assumed to be a marketing title. This is a narrow fallback check, not general page-identity
-proof; substantive JSON-LD follows its separate existing path before this fallback.
+proof. In the guarded one-item worker, the bound fallback runs before generic
+JSON-LD and unbound generic results are deferred with private evidence. Batch,
+mixed-source and direct generic-ingest paths have not yet acquired this protection.
 Retain URL, canonical, source identity, unit and in-transaction witness guards;
 do not promote data from an access denial or ambiguous page. Queue retry or
 defer behavior follows the existing worker outcome and is a separate concern.

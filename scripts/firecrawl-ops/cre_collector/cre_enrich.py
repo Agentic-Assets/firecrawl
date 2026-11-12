@@ -945,8 +945,12 @@ def run(args):
         )
         require_owner()
         if page_witness:
-            changed = settle_newmark_page_claim(db_url, claimed_rows[0], "release", last_error=err)
-            print("Newmark collection failed; " + ("claim released" if changed else "claim superseded; no queue change"), file=sys.stderr)
+            # A known missing witness stays in cooldown even if collection
+            # failed, so this unproven record cannot monopolize peer retries.
+            disposition = "defer" if claimed_rows[0].get("source_page_witness") is None else "release"
+            changed = settle_newmark_page_claim(db_url, claimed_rows[0], disposition, last_error=err)
+            label = "claim deferred" if disposition == "defer" else "claim released"
+            print("Newmark collection failed; " + (label if changed else "claim superseded; no queue change"), file=sys.stderr)
             return 21
         _psql_exec(db_url, build_targeted_queue_sql(claims["items"], "release", last_error=err)
                    if targeted else build_release_sql(claimed_ids, last_error=err))
@@ -967,6 +971,28 @@ def run(args):
               + ("claim deferred; private evidence retained" if changed
                  else "claim superseded; no queue change"), file=sys.stderr)
         return 21
+
+    if page_witness:
+        witness = claimed_rows[0].get("source_page_witness")
+        page_bound = (
+            isinstance(witness, dict)
+            and witness != {"refused": True}
+            and len(enriched_listings) == 1
+            and isinstance(enriched_listings[0].get("newmarkPageObservation"), dict)
+            and enriched_listings[0]["newmarkPageObservation"].get("witness") == witness
+        )
+        if (enriched_listings and not page_bound) or (not enriched_listings and witness is None):
+            # A generic JSON-LD entity is not yet bound to this parent. Keep
+            # the private artifact and defer only this exact claim, preserving
+            # attempts and the ability to select an unclaimed peer.
+            denied = newmark_403_claim_ids(claimed_rows, artifact)
+            reason = "Newmark provider HTTP 403" if denied else "Newmark detail entity identity unverified"
+            require_owner()
+            changed = settle_newmark_page_claim(db_url, claimed_rows[0], "defer", last_error=reason)
+            print("Newmark detail identity unverified; "
+                  + ("claim deferred; private evidence retained" if changed
+                     else "claim superseded; no queue change"), file=sys.stderr)
+            return 21
 
     # (5) Additive ingest. ALWAYS ["--in", path]; never --mark-missing /
     # --no-mark-missing / --activate-status. A valid empty artifact means every
